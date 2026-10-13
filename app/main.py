@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import time
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -24,6 +25,7 @@ APP_NAME = os.getenv("APP_NAME", "Atlas Metadata")
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+ONE_TIME_TOKENS: dict[str, tuple[int, str, float]] = {}
 
 
 class Base(DeclarativeBase):
@@ -201,10 +203,19 @@ def home(request: Request, db: Db):
     user = current_user(request, db)
     games = db.scalars(select(Game).order_by(Game.title).limit(100)).all()
     tokens = db.scalars(select(ApiToken).where(ApiToken.user_id == user.id).order_by(ApiToken.created_at.desc())).all() if user else []
+    one_time_token = None
+    flash_id = request.query_params.get("token_notice")
+    if flash_id:
+        flash = ONE_TIME_TOKENS.pop(flash_id, None)
+        if flash and user and flash[0] == user.id and flash[2] > time.time():
+            one_time_token = flash[1]
+    expired = [key for key, value in ONE_TIME_TOKENS.items() if value[2] <= time.time()]
+    for key in expired:
+        ONE_TIME_TOKENS.pop(key, None)
     return templates.TemplateResponse(request, "index.html", {
         "app_name": APP_NAME, "user": user, "games": games, "tokens": tokens,
         "notice": request.query_params.get("notice"), "error": request.query_params.get("error"),
-        "one_time_token": request.session.pop("one_time_token", None),
+        "one_time_token": one_time_token,
     })
 
 
@@ -255,8 +266,9 @@ def create_token(request: Request, db: Db, label: Annotated[str, Form()]):
     db.add(ApiToken(user_id=user.id, label=label,
                     token_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(), token_prefix=raw[:16]))
     db.commit()
-    request.session["one_time_token"] = raw
-    return RedirectResponse("/?notice=API+key+created", status_code=303)
+    flash_id = secrets.token_urlsafe(18)
+    ONE_TIME_TOKENS[flash_id] = (user.id, raw, time.time() + 120)
+    return RedirectResponse("/?notice=API+key+created&token_notice=" + flash_id, status_code=303)
 
 
 @app.post("/tokens/{token_id}/revoke")
