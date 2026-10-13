@@ -20,16 +20,13 @@ The default database is SQLite in a named Docker volume, so records survive cont
 
 ### PostgreSQL option
 
-The Compose file also includes an optional PostgreSQL 16 service. Set a strong `POSTGRES_PASSWORD` and use a PostgreSQL URL for the app:
+A separate Compose overlay starts PostgreSQL 16 and waits for its health check before starting the API. Set a strong password in `.env` as `POSTGRES_PASSWORD=...`, then run:
 
 ```sh
-DATABASE_URL=postgresql+psycopg://atlas:YOUR_PASSWORD@postgres:5432/atlas \
-POSTGRES_PASSWORD=YOUR_PASSWORD \
-SESSION_SECRET=YOUR_LONG_RANDOM_SECRET \
-docker compose --profile postgres up --build -d
+docker compose -f compose.yaml -f compose.postgres.yaml up --build -d
 ```
 
-The app and database share the internal Compose network. Do not publish the PostgreSQL port to the internet.
+The overlay configures the API to use PostgreSQL on the internal Compose network. Do not publish the PostgreSQL port to the internet. To switch an existing SQLite instance to PostgreSQL, export/import the data first; changing `DATABASE_URL` does not migrate records automatically.
 
 ## What works
 
@@ -80,7 +77,7 @@ Before exposing this publicly, it needs security hardening, including CSRF prote
 - `app/main.py` — FastAPI application, database models, web routes and JSON API
 - `app/templates/index.html` — website and account dashboard
 - `app/static/style.css` — responsive styling
-- `Dockerfile`, `compose.yaml` — container setup
+- `Dockerfile`, `compose.yaml`, `compose.postgres.yaml` — container setup
 - `index.html` — earlier standalone visual concept retained for comparison
 
 This branch is a foundation for trying the end-to-end workflow and deciding what should become part of the real service.
