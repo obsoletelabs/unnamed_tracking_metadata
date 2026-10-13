@@ -12,9 +12,6 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
     volumes:
       - atlas_data:/data
-    depends_on:
-      postgres:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
       interval: 30s
@@ -22,22 +19,5 @@ services:
       retries: 3
       start_period: 15s
 
-  postgres:
-    image: postgres:16-alpine
-    profiles: ["postgres"]
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: atlas
-      POSTGRES_USER: atlas
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-postgres-password}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
 volumes:
   atlas_data:
-  postgres_data:
