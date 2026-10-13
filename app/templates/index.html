@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#151923">
+  <title>{{ app_name }} · Catalogue</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/"><span class="brand-mark">A</span><span><b>atlas</b><small>metadata catalogue</small></span></a>
+  <nav><a href="#catalogue">Explore</a><a href="#api">API docs</a><a href="#contribute">Contribute</a></nav>
+  <div class="account">{% if user %}<span class="signed-in">{{ user.display_name }}</span><form method="post" action="/auth/logout"><button class="button subtle" type="submit">Sign out</button></form>{% else %}<a class="button" href="#account">Sign in</a>{% endif %}</div>
+</header>
+<main class="container">
+  {% if notice %}<div class="flash success">{{ notice.replace('+',' ') }}</div>{% endif %}
+  {% if error %}<div class="flash error">{{ error.replace('+',' ') }}</div>{% endif %}
+  {% if one_time_token %}
+  <section class="token-reveal panel">
+    <div><span class="eyebrow">New API key · shown once</span><h2>Copy your key now</h2><p>This full token will not be displayed again. Store it securely; do not commit it to source control.</p></div>
+    <div class="token-line"><code id="newToken">{{ one_time_token }}</code><button class="button primary" onclick="copyToken()">Copy key</button></div>
+    <button class="close" onclick="this.parentElement.remove()" aria-label="Dismiss">×</button>
+  </section>
+  {% endif %}
+  <section class="hero">
+    <div class="eyebrow">A shared source of truth</div>
+    <h1>Game metadata,<br><span>connected.</span></h1>
+    <p>A searchable catalogue of games and identifiers, with a small API for applications that need consistent metadata.</p>
+    <div class="hero-actions"><a class="button primary" href="#catalogue">Explore catalogue <span>↗</span></a><a class="button" href="#api">Read API guide</a></div>
+    <div class="hero-note"><span class="pulse"></span> Prototype environment <span class="dot">·</span> Sample records included</div>
+  </section>
+  <section class="stats">
+    <article class="stat"><span>Catalogue records</span><b>{{ games|length }}</b><small>Stored in this instance</small></article>
+    <article class="stat"><span>API access</span><b>Beta</b><small>Managed personal keys</small></article>
+    <article class="stat"><span>Database</span><b>Persistent</b><small>SQLite by default · PostgreSQL supported</small></article>
+  </section>
+  <section id="catalogue" class="section">
+    <div class="section-heading"><div><div class="eyebrow">Discover</div><h2>Explore the catalogue</h2><p>Search by title, developer or canonical ID.</p></div><span class="count" id="resultCount">{{ games|length }} records</span></div>
+    <div class="searchbar"><span>⌕</span><input id="search" type="search" placeholder="Try “Hollow Knight” or “Mojang”…" autocomplete="off"><button id="clearSearch" class="button subtle" type="button">Clear</button></div>
+    <div class="game-grid" id="gameGrid">
+      {% for game in games %}
+      <article class="game-card" data-search="{{ (game.title ~ ' ' ~ game.developer ~ ' ' ~ game.canonical_id)|lower }}">
+        <div class="game-symbol symbol-{{ loop.index0 % 4 }}">{{ game.title[:2]|upper }}</div>
+        <div class="game-info"><div class="game-title-row"><h3>{{ game.title }}</h3><span class="tag">{{ game.release_year or 'Year unknown' }}</span></div>
+          <p class="developer">{{ game.developer or 'Developer not recorded' }}</p><p class="description">{{ game.description or 'No description has been added yet.' }}</p>
+          <div class="card-bottom"><code>{{ game.canonical_id }}</code><button class="text-button" type="button" onclick="showGame(this)" data-title="{{ game.title }}" data-id="{{ game.canonical_id }}" data-developer="{{ game.developer }}" data-year="{{ game.release_year or '' }}" data-description="{{ game.description }}">View record ↗</button></div>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    <div id="noResults" class="empty" hidden><b>No matching games</b><p>Try a different search, or add a new catalogue entry below.</p></div>
+  </section>
+  <section class="split-section">
+    <div id="account" class="panel account-panel">
+      <div class="eyebrow">Developer account</div>
+      {% if user %}
+        <h2>Welcome, {{ user.display_name }}.</h2><p>Manage your personal beta API keys. New keys are displayed only once.</p>
+        <form method="post" action="/tokens" class="inline-form"><label for="tokenLabel">New key label</label><div class="form-row"><input id="tokenLabel" name="label" maxlength="80" required placeholder="e.g. Local development"><button class="button primary" type="submit">＋ Generate key</button></div></form>
+        <div class="list-heading"><b>Your API keys</b><span>{{ tokens|length }} total</span></div>
+        {% if tokens %}
+        <div class="token-list">{% for token in tokens %}
+          <div class="token-item"><div class="token-icon">⌘</div><div class="token-info"><b>{{ token.label }}</b><code>{{ token.token_prefix }}••••••••</code><small>Created {{ token.created_at.strftime('%Y-%m-%d') }} · {% if token.revoked_at %}<span class="revoked">Revoked</span>{% else %}<span class="active">Active</span>{% endif %}</small></div>
+            {% if not token.revoked_at %}<form method="post" action="/tokens/{{ token.id }}/revoke" onsubmit="return confirm('Revoke this key? Applications using it will stop working.')"><button class="button danger subtle" type="submit">Revoke</button></form>{% endif %}
+          </div>
+        {% endfor %}</div>
+        {% else %}<p class="muted">No keys yet. Create one to call the write API.</p>{% endif %}
+      {% else %}
+        <h2>Sign in to build with Atlas.</h2><p>Create a local account to generate beta API keys and submit catalogue records.</p>
+        <div class="auth-tabs"><button type="button" class="auth-tab active" data-auth-tab="login">Sign in</button><button type="button" class="auth-tab" data-auth-tab="register">Create account</button></div>
+        <form method="post" action="/auth/login" id="loginForm" class="auth-form"><label>Email address<input name="email" type="email" autocomplete="email" required placeholder="you@example.com"></label><label>Password<input name="password" type="password" autocomplete="current-password" required minlength="10"></label><button class="button primary full" type="submit">Sign in</button></form>
+        <form method="post" action="/auth/register" id="registerForm" class="auth-form" hidden><label>Display name<input name="display_name" required maxlength="80" autocomplete="nickname" placeholder="How should we call you?"></label><label>Email address<input name="email" type="email" autocomplete="email" required placeholder="you@example.com"></label><label>Password<input name="password" type="password" autocomplete="new-password" required minlength="10" maxlength="256" placeholder="At least 10 characters"></label><button class="button primary full" type="submit">Create account</button></form>
+        <p class="small-note">Prototype accounts are stored in this instance only. Email verification and password recovery are not implemented.</p>
+      {% endif %}
+    </div>
+    <div id="contribute" class="panel contribute-panel">
+      <div class="eyebrow">Community catalogue</div><h2>Add a game</h2><p>New records are added to this prototype catalogue immediately. A production service should put submissions through a review queue.</p>
+      {% if user %}
+      <form method="post" action="/games" class="stack-form">
+        <label>Game title <input name="title" required maxlength="200" placeholder="e.g. Tunic"></label>
+        <div class="form-row two"><label>Developer / studio<input name="developer" maxlength="200" placeholder="e.g. TUNIC Team"></label><label>Release year<input name="release_year" type="number" min="1950" max="2100" placeholder="2022"></label></div>
+        <label>Description <textarea name="description" maxlength="3000" rows="3" placeholder="A short description…"></textarea></label>
+        <button class="button primary" type="submit">＋ Add catalogue record</button>
+      </form>
+      {% else %}
+      <div class="locked"><div class="lock-icon">⌑</div><div><b>Sign in to contribute</b><p>Accounts are required to add records. This keeps basic accountability for catalogue changes.</p><a href="#account" class="text-button">Sign in or create an account →</a></div></div>
+      {% endif %}
+      <div class="callout"><b>What happens next?</b><p>This MVP writes directly to the catalogue. Review states, evidence, provenance and edit history are planned for a later iteration.</p></div>
+    </div>
+  </section>
+  <section id="api" class="section api-section">
+    <div class="section-heading"><div><div class="eyebrow">For applications</div><h2>A small, usable REST API</h2><p>Public read endpoints and token-authenticated catalogue writes.</p></div><a class="button" href="/docs" target="_blank" rel="noreferrer">Open interactive API docs ↗</a></div>
+    <div class="endpoint-list">
+      <article class="endpoint"><span class="method get">GET</span><div><b>/api/v1/games?q=hollow</b><p>Search and list catalogue records. Supports <code>q</code>, <code>limit</code> and <code>offset</code>.</p></div><span class="access public">Public</span></article>
+      <article class="endpoint"><span class="method get">GET</span><div><b>/api/v1/games/{id}</b><p>Retrieve one record by its canonical ID.</p></div><span class="access public">Public</span></article>
+      <article class="endpoint"><span class="method post">POST</span><div><b>/api/v1/games</b><p>Add a record using JSON and an <code>Authorization: Bearer …</code> header.</p></div><span class="access private">API key</span></article>
+    </div>
+    <div class="code-sample"><div class="code-heading"><span>Example request</span><button class="text-button" type="button" onclick="copyExample()">Copy</button></div><pre id="exampleCode">curl "http://localhost:8000/api/v1/games?q=hollow" \
+  -H "Accept: application/json"
+
+curl -X POST "http://localhost:8000/api/v1/games" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Tunic","developer":"TUNIC Team","release_year":2022,"description":"An isometric adventure."}'</pre></div>
+    <p class="small-note">The prototype does not yet enforce rate limits or beta quotas. Do not expose it to the public internet as a production service.</p>
+  </section>
+  <footer><a class="brand small-brand" href="/"><span class="brand-mark">A</span><b>atlas</b></a><span>Prototype · Fictional sample data · Not a production API</span><a href="/openapi.json">OpenAPI schema ↗</a></footer>
+</main>
+<dialog id="gameDialog"><button class="close" onclick="document.getElementById('gameDialog').close()" aria-label="Close">×</button><div class="eyebrow">Catalogue record</div><h2 id="modalTitle"></h2><p id="modalSubtitle" class="muted"></p><p id="modalDescription"></p><div class="modal-id"><span>Canonical ID</span><code id="modalId"></code><button class="button subtle" onclick="copyText(document.getElementById('modalId').textContent)">Copy</button></div><a id="apiRecordLink" class="text-button" href="#">View JSON response ↗</a></dialog>
+<script>
+const search=document.getElementById('search'), cards=[...document.querySelectorAll('.game-card')];
+function filterGames(){const q=search.value.trim().toLowerCase();let n=0;cards.forEach(card=>{const show=card.dataset.search.includes(q);card.hidden=!show;if(show)n++});document.getElementById('resultCount').textContent=n+' record'+(n===1?'':'s');document.getElementById('noResults').hidden=n!==0}
+search.addEventListener('input',filterGames);document.getElementById('clearSearch').addEventListener('click',()=>{search.value='';filterGames();search.focus()});
+function showGame(button){const d=button.dataset;document.getElementById('modalTitle').textContent=d.title;document.getElementById('modalSubtitle').textContent=[d.developer,d.year].filter(Boolean).join(' · ')||'Details not recorded';document.getElementById('modalDescription').textContent=d.description||'No description recorded.';document.getElementById('modalId').textContent=d.id;document.getElementById('apiRecordLink').href='/api/v1/games/'+encodeURIComponent(d.id);document.getElementById('gameDialog').showModal()}
+document.querySelectorAll('[data-auth-tab]').forEach(tab=>tab.addEventListener('click',()=>{const reg=tab.dataset.authTab==='register';document.getElementById('loginForm').hidden=reg;document.getElementById('registerForm').hidden=!reg;document.querySelectorAll('[data-auth-tab]').forEach(t=>t.classList.toggle('active',t===tab))}));
+async function copyText(text){try{await navigator.clipboard.writeText(text);alert('Copied to clipboard.')}catch{prompt('Copy this value:',text)}}
+function copyToken(){copyText(document.getElementById('newToken').textContent)}
+function copyExample(){copyText(document.getElementById('exampleCode').textContent)}
+</script>
+</body>
+</html>
