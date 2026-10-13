@@ -164,7 +164,7 @@ def health(db: Db) -> dict:
 
 
 @app.get("/api/v1/games")
-def search_games(q: str = "", limit: int = 20, offset: int = 0, db: Db = Depends(get_db)) -> dict:
+def search_games(q: str = "", limit: int = 20, offset: int = 0, db: Db) -> dict:
     limit, offset = max(1, min(limit, 100)), max(0, offset)
     statement = select(Game)
     if q.strip():
