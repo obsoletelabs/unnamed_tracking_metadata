@@ -1,32 +1,86 @@
 # Atlas metadata catalogue — mockup 1
 
-This branch contains a **static UI concept** for the planned central game metadata and achievement catalogue.
+A small, runnable MVP of the proposed central game metadata service. This branch is for experimentation and review; it is not production-ready.
 
-## Preview
+## Run with Docker
 
-Open `index.html` directly in a browser, or enable GitHub Pages for the `mockup-1` branch to host the prototype. No build tooling is required.
+Requirements: Docker Engine and the Docker Compose plugin.
 
-## Included screens
+1. Copy `.env.example` to `.env`.
+2. Set `SESSION_SECRET` to a long random value. Do not use the example value for an instance other people can access.
+3. Start the app:
 
-- Catalogue landing page with sample metrics, search and filters
-- Game detail pages with canonical-ID and external-identifier examples
-- Shared achievement-definition examples
-- Recent-change and incremental-sync concept
-- Strict beta API access / client quota concept
-- Contribution form and human-review workflow concept
-- Responsive desktop, tablet and mobile layouts
+   ```sh
+   docker compose up --build -d
+   ```
 
-## Explicitly a mockup
+4. Open [http://localhost:8000](http://localhost:8000).
 
-All catalogue records, identifiers, statistics, quotas and activity are fictional sample content for exploring the product experience. Forms only show local feedback; there is no backend, account system, API, key issuance, persistence, moderation queue or real rate limiting.
+The default database is SQLite in a named Docker volume, so records survive container recreation. To stop the service, run `docker compose down`. This preserves the data volume; `docker compose down -v` deletes it.
 
-## Design direction
+### PostgreSQL option
 
-The concept assumes:
-- Public website browsing, but controlled programmatic access through managed beta keys.
-- Stable canonical IDs and explicit external identifier mappings.
-- Achievement definitions as first-class catalogue records, distinct from a user's unlock state.
-- Contributions as proposals that are reviewed before publication.
-- Revision-based incremental sync and an eventual ability to serve read traffic from multiple regions behind a stable API domain.
+The Compose file also includes an optional PostgreSQL 16 service. Set a strong `POSTGRES_PASSWORD` and use a PostgreSQL URL for the app:
 
-This is a disposable starting point for discussion, not a commitment to the final stack or visual identity.
+```sh
+DATABASE_URL=postgresql+psycopg://atlas:YOUR_PASSWORD@postgres:5432/atlas \
+POSTGRES_PASSWORD=YOUR_PASSWORD \
+SESSION_SECRET=YOUR_LONG_RANDOM_SECRET \
+docker compose --profile postgres up --build -d
+```
+
+The app and database share the internal Compose network. Do not publish the PostgreSQL port to the internet.
+
+## What works
+
+- Responsive catalogue website backed by the live database
+- Search games by title, developer or canonical ID
+- Register an account, sign in and sign out
+- Generate API bearer tokens; the full token is displayed once
+- List owned tokens and revoke a token
+- Add a game through the website after signing in
+- Public JSON reads and token-authenticated JSON creation
+- Auto-generated interactive API docs at `/docs` and OpenAPI at `/openapi.json`
+- Health check at `/health`
+- Seed records added to an empty database on first startup
+
+### API examples
+
+Search without a key:
+
+```sh
+curl 'http://localhost:8000/api/v1/games?q=hollow'
+```
+
+Fetch a canonical record:
+
+```sh
+curl 'http://localhost:8000/api/v1/games/gm_YOURID'
+```
+
+Create a record with a key generated from the website:
+
+```sh
+curl -X POST 'http://localhost:8000/api/v1/games' \
+  -H 'Authorization: Bearer YOUR_API_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Tunic","developer":"TUNIC Team","release_year":2022,"description":"An isometric adventure."}'
+```
+
+The actual canonical ID returned by the API should be used for subsequent lookups.
+
+## Important limitations
+
+This is a **local MVP/mockup, not a secure public beta**. It intentionally keeps the data model small: game title, developer, release year and description. Achievement sets, external identifier mappings, source provenance, revisions, moderation, sync cursors, quotas, rate limits and multi-region routing are not implemented yet.
+
+Before exposing this publicly, it needs security hardening, including CSRF protection for browser forms, secure deployment configuration and cookie settings behind HTTPS, abuse controls/rate limiting, account recovery and verification, stronger API key policy/scopes, database migrations, automated tests, logging and backup/restore procedures. The default session secret is for local development only. Do not use real passwords or production credentials in this prototype.
+
+## Files
+
+- `app/main.py` — FastAPI application, database models, web routes and JSON API
+- `app/templates/index.html` — website and account dashboard
+- `app/static/style.css` — responsive styling
+- `Dockerfile`, `compose.yaml` — container setup
+- `index.html` — earlier standalone visual concept retained for comparison
+
+This branch is a foundation for trying the end-to-end workflow and deciding what should become part of the real service.
