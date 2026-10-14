@@ -329,6 +329,9 @@ def create_game(payload: GameCreate, db: Db, background_tasks: BackgroundTasks,
 
 @app.get("/")
 def root(request: Request, db: Db):
+    # Route a fresh installation to the first-run administrator setup screen.
+    if (db.scalar(select(func.count()).select_from(User)) or 0) == 0:
+        return RedirectResponse("/setup", status_code=303)
     user = current_user(request, db)
     if user and user.email_verified:
         return RedirectResponse("/dashboard", status_code=303)
