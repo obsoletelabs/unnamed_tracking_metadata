@@ -19,6 +19,24 @@ Requirements: Docker Engine and the Docker Compose plugin.
 
 The default database is SQLite in a named Docker volume, so records survive container recreation. To stop the service, run `docker compose down`. This preserves the data volume; `docker compose down -v` deletes it.
 
+
+### SMTP and self-registration
+
+Self-registration is disabled by default. To enable it, configure these environment variables in \`.env\` and set \`ALLOW_SELF_REGISTRATION=true\`:
+
+\`\`\`dotenv
+PUBLIC_BASE_URL=https://metadata.example.com
+ALLOW_SELF_REGISTRATION=true
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=your-smtp-user
+SMTP_PASSWORD=your-smtp-password
+SMTP_FROM=metadata@example.com
+SMTP_STARTTLS=true
+\`\`\`
+
+Use the externally reachable HTTPS URL for \`PUBLIC_BASE_URL\` in a deployed instance. The SMTP sender must be authorised by your mail provider. Existing accounts are treated as verified during the compatibility migration; self-registered accounts remain blocked until their one-time verification link is used. The first administrator is created through \`/setup\` while the database has no users.
+
 ### PostgreSQL option
 
 A separate Compose overlay starts PostgreSQL 16 and waits for its health check before starting the API. Set a strong password in `.env` as `POSTGRES_PASSWORD=...`, then run:
@@ -83,19 +101,19 @@ The actual canonical ID returned by the API should be used for subsequent lookup
 List and create achievements for a game:
 
 ```sh
-curl 'http://localhost:8000/api/v1/games/gm_YOURID/achievements' \\
+curl 'http://localhost:8000/api/v1/games/gm_YOURID/achievements' \
   -H 'Authorization: Bearer YOUR_API_KEY'
 
-curl -X POST 'http://localhost:8000/api/v1/games/gm_YOURID/achievements' \\
-  -H 'Authorization: Bearer YOUR_API_KEY' \\
-  -H 'Content-Type: application/json' \\
+curl -X POST 'http://localhost:8000/api/v1/games/gm_YOURID/achievements' \
+  -H 'Authorization: Bearer YOUR_API_KEY' \
+  -H 'Content-Type: application/json' \
   -d '{"name":"First steps","description":"Complete the tutorial"}'
 ```
 
 Run provider ID discovery manually:
 
 ```sh
-curl -X POST 'http://localhost:8000/api/v1/games/gm_YOURID/discover-identifiers' \\
+curl -X POST 'http://localhost:8000/api/v1/games/gm_YOURID/discover-identifiers' \
   -H 'Authorization: Bearer YOUR_API_KEY'
 ```
 
