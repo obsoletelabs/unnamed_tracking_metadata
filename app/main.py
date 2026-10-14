@@ -331,11 +331,45 @@ def auth_context(request: Request, mode: str) -> dict:
             "notice": request.query_params.get("notice"), "error": request.query_params.get("error")}
 
 
+@app.get("/setup", response_class=HTMLResponse)
+def setup_page(request: Request, db: Db):
+    if (db.scalar(select(func.count()).select_from(User)) or 0) > 0:
+        return RedirectResponse("/login", status_code=303)
+    if not ADMIN_EMAILS:
+        raise HTTPException(status_code=503, detail="Set ADMIN_EMAILS before creating the first administrator")
+    return templates.TemplateResponse(request, "setup.html", {
+        "request": request, "app_name": APP_NAME, "error": request.query_params.get("error"),
+        "admin_email": next(iter(ADMIN_EMAILS)),
+    })
+
+
+@app.post("/auth/setup")
+def setup_first_admin(request: Request, db: Db, email: Annotated[str, Form()],
+                      display_name: Annotated[str, Form()], password: Annotated[str, Form()]):
+    from urllib.parse import quote_plus
+    if (db.scalar(select(func.count()).select_from(User)) or 0) > 0:
+        return RedirectResponse("/login?error=Initial+setup+has+already+been+completed", status_code=303)
+    email, display_name = email.strip().lower(), display_name.strip()
+    if email not in ADMIN_EMAILS:
+        return RedirectResponse("/setup?error=" + quote_plus("Email must match an address in ADMIN_EMAILS"), status_code=303)
+    if not display_name or len(display_name) > 80 or len(password) < 12 or len(password) > 256:
+        return RedirectResponse("/setup?error=" + quote_plus("Enter a display name and a 12-256 character password"), status_code=303)
+    user = User(email=email, display_name=display_name, password_hash=hash_password(password), email_verified=True)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    request.session.clear()
+    request.session["user_id"] = user.id
+    return RedirectResponse("/admin?notice=Initial+administrator+created", status_code=303)
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, db: Db):
     user = current_user(request, db)
     if user and user.email_verified:
         return RedirectResponse("/dashboard", status_code=303)
+    if (db.scalar(select(func.count()).select_from(User)) or 0) == 0 and ADMIN_EMAILS:
+        return RedirectResponse("/setup", status_code=303)
     return templates.TemplateResponse(request, "auth.html", auth_context(request, "login"))
 
 
