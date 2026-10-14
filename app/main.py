@@ -313,61 +313,183 @@ def create_game(payload: GameCreate, db: Db, authorization: Annotated[str | None
     return serialize_game(game, db)
 
 
-@app.get("/", response_class=HTMLResponse)
-def home(request: Request, db: Db):
+@app.get("/")
+def root(request: Request, db: Db):
     user = current_user(request, db)
-    games = db.scalars(select(Game).order_by(Game.title).limit(100)).all() if user else []
-    tokens = db.scalars(select(ApiToken).where(ApiToken.user_id == user.id).order_by(ApiToken.created_at.desc())).all() if user else []
-    one_time_token = None
-    flash_id = request.query_params.get("token_notice")
-    if flash_id:
-        flash = ONE_TIME_TOKENS.pop(flash_id, None)
-        if flash and user and flash[0] == user.id and flash[2] > time.time():
-            one_time_token = flash[1]
-    expired = [key for key, value in ONE_TIME_TOKENS.items() if value[2] <= time.time()]
-    for key in expired:
-        ONE_TIME_TOKENS.pop(key, None)
-    return templates.TemplateResponse(request, "index.html", {
-        "app_name": APP_NAME, "user": user, "games": games, "tokens": tokens,
-        "notice": request.query_params.get("notice"), "error": request.query_params.get("error"),
-        "one_time_token": one_time_token, "is_admin": bool(user and user.email.lower() in ADMIN_EMAILS),
-        "schema_fields": json.loads((db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game")).schema_json) if db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game")) else "[]"),
-    })
+    if user and user.email_verified:
+        return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse("/login", status_code=303)
+
+
+def auth_context(request: Request, mode: str) -> dict:
+    return {"request": request, "app_name": APP_NAME, "mode": mode,
+            "allow_registration": ALLOW_SELF_REGISTRATION and smtp_configured(),
+            "notice": request.query_params.get("notice"), "error": request.query_params.get("error")}
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, db: Db):
+    user = current_user(request, db)
+    if user and user.email_verified:
+        return RedirectResponse("/dashboard", status_code=303)
+    return templates.TemplateResponse(request, "auth.html", auth_context(request, "login"))
+
+
+@app.get("/register", response_class=HTMLResponse)
+def register_page(request: Request, db: Db):
+    if not (ALLOW_SELF_REGISTRATION and smtp_configured()):
+        return RedirectResponse("/login?error=Self+registration+is+disabled+until+SMTP+is+configured", status_code=303)
+    user = current_user(request, db)
+    if user and user.email_verified:
+        return RedirectResponse("/dashboard", status_code=303)
+    return templates.TemplateResponse(request, "auth.html", auth_context(request, "register"))
 
 
 @app.post("/auth/register")
 def register(request: Request, db: Db, email: Annotated[str, Form()],
              display_name: Annotated[str, Form()], password: Annotated[str, Form()]):
+    from urllib.parse import quote_plus
+    if not (ALLOW_SELF_REGISTRATION and smtp_configured()):
+        return RedirectResponse("/register?error=Self+registration+is+not+enabled", status_code=303)
     email, display_name = email.strip().lower(), display_name.strip()
-    if len(email) > 254 or "@" not in email or not display_name or len(display_name) > 80:
-        return RedirectResponse("/?error=Please+enter+a+valid+email+and+display+name", status_code=303)
-    if len(password) < 10 or len(password) > 256:
-        return RedirectResponse("/?error=Password+must+be+10-256+characters", status_code=303)
+    if (len(email) > 254 or email.count("@") != 1 or "." not in email.rsplit("@", 1)[-1]
+            or any(ch.isspace() for ch in email) or not display_name or len(display_name) > 80):
+        return RedirectResponse("/register?error=Enter+a+valid+email+and+display+name", status_code=303)
+    if len(password) < 12 or len(password) > 256:
+        return RedirectResponse("/register?error=Password+must+be+12-256+characters", status_code=303)
     if db.scalar(select(User).where(User.email == email)):
-        return RedirectResponse("/?error=An+account+with+that+email+already+exists", status_code=303)
-    user = User(email=email, display_name=display_name, password_hash=hash_password(password))
+        return RedirectResponse("/register?error=An+account+with+that+email+already+exists", status_code=303)
+    user = User(email=email, display_name=display_name, password_hash=hash_password(password), email_verified=False)
     db.add(user)
     db.commit()
     db.refresh(user)
-    request.session.clear()
-    request.session["user_id"] = user.id
-    return RedirectResponse("/?notice=Account+created", status_code=303)
+    try:
+        issue_verification(db, user)
+    except (OSError, smtplib.SMTPException, RuntimeError) as exc:
+        app.logger.warning("Verification email could not be sent: %s", type(exc).__name__)
+        return RedirectResponse("/login?error=Your+account+is+pending+but+the+verification+email+could+not+be+sent", status_code=303)
+    return RedirectResponse("/login?notice=Check+your+email+for+a+verification+link", status_code=303)
+
+
+@app.get("/auth/verify")
+def verify_email(request: Request, db: Db, token: str = ""):
+    digest = hashlib.sha256(token.encode()).hexdigest() if token else ""
+    record = db.scalar(select(EmailVerification).where(EmailVerification.token_hash == digest,
+                                                       EmailVerification.used_at.is_(None)))
+    if not record or record.expires_at < utcnow():
+        return RedirectResponse("/login?error=That+verification+link+is+invalid+or+expired", status_code=303)
+    user = db.get(User, record.user_id)
+    if not user:
+        return RedirectResponse("/login?error=That+verification+link+is+invalid", status_code=303)
+    user.email_verified = True
+    record.used_at = utcnow()
+    db.commit()
+    return RedirectResponse("/login?notice=Email+verified.+You+can+now+sign+in", status_code=303)
+
+
+@app.post("/auth/resend-verification")
+def resend_verification(db: Db, email: Annotated[str, Form()]):
+    if not (ALLOW_SELF_REGISTRATION and smtp_configured()):
+        return RedirectResponse("/login?notice=If+the+account+needs+verification,+a+new+email+will+be+sent", status_code=303)
+    user = db.scalar(select(User).where(User.email == email.strip().lower(), User.email_verified.is_(False)))
+    if user:
+        try:
+            issue_verification(db, user)
+        except (OSError, smtplib.SMTPException, RuntimeError) as exc:
+            app.logger.warning("Verification resend failed: %s", type(exc).__name__)
+    return RedirectResponse("/login?notice=If+the+account+needs+verification,+a+new+email+will+be+sent", status_code=303)
 
 
 @app.post("/auth/login")
 def login(request: Request, db: Db, email: Annotated[str, Form()], password: Annotated[str, Form()]):
     user = db.scalar(select(User).where(User.email == email.strip().lower()))
     if not user or not verify_password(password, user.password_hash):
-        return RedirectResponse("/?error=Email+or+password+was+not+recognised", status_code=303)
+        return RedirectResponse("/login?error=Email+or+password+was+not+recognised", status_code=303)
+    if not user.email_verified:
+        return RedirectResponse("/login?error=Please+verify+your+email+before+signing+in", status_code=303)
     request.session.clear()
     request.session["user_id"] = user.id
-    return RedirectResponse("/?notice=Welcome+back", status_code=303)
+    return RedirectResponse("/dashboard?notice=Welcome+back", status_code=303)
 
 
 @app.post("/auth/logout")
 def logout(request: Request):
     request.session.clear()
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/login", status_code=303)
+
+
+def require_signed_in(request: Request, db: Session) -> User:
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        raise HTTPException(status_code=401, detail="Sign in to continue")
+    return user
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request, db: Db):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    tokens = db.scalars(select(ApiToken).where(ApiToken.user_id == user.id).order_by(ApiToken.created_at.desc())).all()
+    one_time_token = None
+    flash_id = request.query_params.get("token_notice")
+    if flash_id:
+        flash = ONE_TIME_TOKENS.pop(flash_id, None)
+        if flash and flash[0] == user.id and flash[2] > time.time():
+            one_time_token = flash[1]
+    for key in [key for key, value in ONE_TIME_TOKENS.items() if value[2] <= time.time()]:
+        ONE_TIME_TOKENS.pop(key, None)
+    game_count = db.scalar(select(func.count()).select_from(Game)) or 0
+    achievement_count = db.scalar(select(func.count()).select_from(GameAchievement)) or 0
+    return templates.TemplateResponse(request, "dashboard.html", {
+        "request": request, "app_name": APP_NAME, "user": user, "tokens": tokens,
+        "one_time_token": one_time_token, "notice": request.query_params.get("notice"),
+        "error": request.query_params.get("error"), "game_count": game_count,
+        "achievement_count": achievement_count, "is_admin": user.email.lower() in ADMIN_EMAILS,
+    })
+
+
+@app.get("/catalogue", response_class=HTMLResponse)
+def catalogue_page(request: Request, db: Db):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login?error=Sign+in+to+search+the+catalogue", status_code=303)
+    return templates.TemplateResponse(request, "catalogue.html", {
+        "request": request, "app_name": APP_NAME, "user": user,
+        "is_admin": user.email.lower() in ADMIN_EMAILS,
+    })
+
+
+@app.get("/games/{canonical_id}", response_class=HTMLResponse)
+def game_detail_page(canonical_id: str, request: Request, db: Db):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    achievements = db.scalars(select(GameAchievement).where(GameAchievement.game_id == game.id)
+                              .order_by(GameAchievement.name)).all()
+    return templates.TemplateResponse(request, "game_detail.html", {
+        "request": request, "app_name": APP_NAME, "user": user,
+        "game": serialize_game(game, db), "achievements": achievements,
+        "is_admin": user.email.lower() in ADMIN_EMAILS,
+        "notice": request.query_params.get("notice"), "error": request.query_params.get("error"),
+    })
+
+
+@app.get("/achievements", response_class=HTMLResponse)
+def achievements_page(request: Request, db: Db):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    rows = db.execute(select(Game, func.count(GameAchievement.id))
+                      .outerjoin(GameAchievement, GameAchievement.game_id == Game.id)
+                      .group_by(Game.id).order_by(Game.title)).all()
+    return templates.TemplateResponse(request, "achievements.html", {
+        "request": request, "app_name": APP_NAME, "user": user, "rows": rows,
+        "is_admin": user.email.lower() in ADMIN_EMAILS,
+    })
 
 
 @app.post("/tokens")
