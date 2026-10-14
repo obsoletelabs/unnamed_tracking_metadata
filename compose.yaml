@@ -11,6 +11,7 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-change-this-before-sharing}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      UPLOAD_DIR: /data/uploads
     volumes:
       - atlas_data:/data
     healthcheck:
