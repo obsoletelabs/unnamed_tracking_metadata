@@ -855,11 +855,11 @@ def discover_provider_ids(db: Session, game: Game) -> dict:
                             "grant_type": "client_credentials"}, timeout=4.0)
                 token_response.raise_for_status()
                 access_token = token_response.json().get("access_token")
+                safe_title = game.title.replace("\\\\", "").replace('"', "").replace(";", "")
                 response = httpx.post("https://api.igdb.com/v4/games",
                     headers={"Client-ID": os.getenv("IGDB_CLIENT_ID"), "Authorization": f"Bearer {access_token}",
                              "Content-Type": "text/plain"},
-                    safe_title = game.title.replace("\\", "").replace('"', "").replace(";", "")
-                content=f'search "{safe_title}"; fields id,name; limit 10;',
+                    content=f'search "{safe_title}"; fields id,name; limit 10;',
                     timeout=4.0)
                 response.raise_for_status()
                 candidates = [{"id": str(item.get("id", "")), "name": str(item.get("name", ""))}
