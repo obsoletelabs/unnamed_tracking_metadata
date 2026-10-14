@@ -202,3 +202,11 @@ All three endpoints require an API key with the \`read\` scope. Export pages are
 - \`GET /api/v1/providers\` lists provider slugs, display names, homepages and adapter types for client setup and capability discovery. It intentionally omits credentials and internal health details.
 
 Both endpoints require an API key with the \`read\` scope. The change feed is based on the existing revision log; it does not yet represent hard deletions or promise a transactional snapshot across multiple pages.
+
+
+### Catalogue quality report
+
+- \`GET /api/v1/quality/report?limit=50&offset=0\` scores catalogue completeness across developer, description, release year, tags, external IDs and provenance. Each record includes a percentage and explicit missing-field list so maintenance tools can prioritise weak records.
+- Results are deterministically ordered by completeness, title and canonical ID; pages are capped at 100 records. The report is advisory and does not modify published data.
+
+Requires a \`read\`-scoped API key. The score is a transparent completeness heuristic, not a claim that the metadata is factually correct.

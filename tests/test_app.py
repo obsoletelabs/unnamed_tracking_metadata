@@ -698,3 +698,29 @@ def test_provider_directory_lists_only_safe_provider_metadata(client):
     payload = response.json()
     assert any(item["slug"] == "igdb" for item in payload["items"])
     assert all(set(item) == {"slug", "name", "homepage", "adapter"} for item in payload["items"])
+
+
+def test_quality_report_identifies_missing_metadata_and_paginates(client):
+    token = create_api_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    created = client.post("/api/v1/games", headers=headers, json={"title": "Quality Report Empty Record"})
+    assert created.status_code == 201, created.text
+    response = client.get("/api/v1/quality/report?limit=100&offset=0", headers=headers)
+    assert response.status_code == 200
+    payload = response.json()
+    item = next(item for item in payload["items"] if item["id"] == created.json()["id"])
+    assert item["completeness"] == 0
+    assert set(item["missing_fields"]) == {
+        "developer", "description", "release_year", "tags", "external_ids", "provenance"
+    }
+    assert payload["scored_fields"]
+    assert payload["pagination"]["total"] >= 1
+
+
+def test_quality_report_requires_read_scope_and_caps_page_size(client):
+    token = create_api_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get("/api/v1/quality/report").status_code == 401
+    response = client.get("/api/v1/quality/report?limit=9999", headers=headers)
+    assert response.status_code == 200
+    assert len(response.json()["items"]) <= 100

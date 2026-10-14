@@ -1464,6 +1464,39 @@ def api_provider_directory(db: Db,
     } for provider in providers], "count": len(providers)}
 
 
+@app.get("/api/v1/quality/report")
+def api_quality_report(db: Db, limit: int = 50, offset: int = 0,
+                       authorization: Annotated[str | None, Header()] = None) -> dict:
+    """Find incomplete records to guide catalogue curation, without exposing submitter identities."""
+    require_api_token(db, authorization, "read")
+    limit, offset = max(1, min(limit, 100)), max(0, offset)
+    total = db.scalar(select(func.count()).select_from(Game)) or 0
+    games = db.scalars(select(Game).order_by(Game.title.asc(), Game.canonical_id.asc())
+                       .offset(offset).limit(limit)).all()
+    report = []
+    for game in games:
+        missing = []
+        if not game.developer.strip():
+            missing.append("developer")
+        if not game.description.strip():
+            missing.append("description")
+        if game.release_year is None:
+            missing.append("release_year")
+        if not db.scalar(select(GameTag.id).where(GameTag.game_id == game.id).limit(1)):
+            missing.append("tags")
+        if not db.scalar(select(GameExternalId.id).where(GameExternalId.game_id == game.id).limit(1)):
+            missing.append("external_ids")
+        if not db.scalar(select(GameProvenance.id).where(GameProvenance.game_id == game.id).limit(1)):
+            missing.append("provenance")
+        score = round((6 - len(missing)) / 6 * 100)
+        report.append({"id": game.canonical_id, "title": game.title, "completeness": score,
+                       "missing_fields": missing})
+    report.sort(key=lambda item: (item["completeness"], item["title"].casefold(), item["id"]))
+    return {"items": report, "pagination": {"total": total, "limit": limit, "offset": offset,
+            "next_offset": offset + len(report) if offset + len(report) < total else None},
+            "scored_fields": ["developer", "description", "release_year", "tags", "external_ids", "provenance"]}
+
+
 @app.get("/api/v1/stats")
 def api_catalogue_stats(db: Db, authorization: Annotated[str | None, Header()] = None) -> dict:
     """Return aggregate catalogue counts without exposing user or submission data."""
