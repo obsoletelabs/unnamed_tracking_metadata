@@ -97,6 +97,11 @@ def test_authenticated_api_can_create_tagged_game_with_provider_id(client):
     assert record["tags"] == ["indie", "puzzle"]
     assert record["external_ids"][0]["provider"] == "igdb"
     assert record["external_ids"][0]["external_id"] == "test-game-001"
+    with SessionLocal() as db:
+        game = db.scalar(select(Game).where(Game.canonical_id == record["id"]))
+        assert game is not None
+        assert db.scalar(select(GameProvenance).where(GameProvenance.game_id == game.id)) is not None
+        assert db.scalar(select(GameRevision).where(GameRevision.game_id == game.id)) is not None
 
 
 
