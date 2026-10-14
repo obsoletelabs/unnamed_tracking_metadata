@@ -523,10 +523,10 @@ def game_detail_page(canonical_id: str, request: Request, db: Db):
         raise HTTPException(status_code=404, detail="Game not found")
     achievements = db.scalars(select(GameAchievement).where(GameAchievement.game_id == game.id)
                               .order_by(GameAchievement.name)).all()
+    providers = db.scalars(select(MetadataProvider).order_by(MetadataProvider.name)).all()
     return templates.TemplateResponse(request, "game_detail.html", {
-        "request": request, "app_name": APP_NAME, "user": user,
+        "request": request, "app_name": APP_NAME, "user": user, "providers": providers,
         "game": serialize_game(game, db), "achievements": achievements,
-        "is_admin": user.email.lower() in ADMIN_EMAILS,
         "notice": request.query_params.get("notice"), "error": request.query_params.get("error"),
     })
 
@@ -967,9 +967,10 @@ def browser_discover_identifiers(canonical_id: str, request: Request, db: Db):
     result = discover_provider_ids(db, game)
     achievements = db.scalars(select(GameAchievement).where(GameAchievement.game_id == game.id)
                               .order_by(GameAchievement.name)).all()
+    providers = db.scalars(select(MetadataProvider).order_by(MetadataProvider.name)).all()
     summary = f"Discovery finished: {len(result['added'])} ID(s) added, {len(result['suggestions'])} provider(s) need review."
     return templates.TemplateResponse(request, "game_detail.html", {
-        "request": request, "app_name": APP_NAME, "user": user, "game": serialize_game(game, db),
+        "request": request, "app_name": APP_NAME, "user": user, "providers": providers, "game": serialize_game(game, db),
         "achievements": achievements, "discovery": result, "notice": summary, "error": None,
         "is_admin": user.email.lower() in ADMIN_EMAILS,
     })
