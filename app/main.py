@@ -1638,6 +1638,44 @@ def api_schemas(db: Db, authorization: Annotated[str | None, Header()] = None):
                        "updated_at": item.updated_at.isoformat() if item.updated_at else None} for item in schemas]}
 
 
+
+@app.get("/api/v1/lookup")
+def api_lookup_external_id(provider: str, external_id: str, db: Db,
+                           authorization: Annotated[str | None, Header()] = None):
+    """Resolve a provider-native identifier to the canonical catalogue record."""
+    require_api_token(db, authorization, "read")
+    provider_slug = provider.strip().lower()
+    external_id = external_id.strip()
+    if not provider_slug or len(provider_slug) > 80 or not external_id or len(external_id) > 200:
+        raise HTTPException(status_code=422, detail="Provider and external_id must be non-empty and within their length limits")
+    result = db.execute(
+        select(Game, MetadataProvider.slug, GameExternalId.external_id)
+        .join(GameExternalId, GameExternalId.game_id == Game.id)
+        .join(MetadataProvider, MetadataProvider.id == GameExternalId.provider_id)
+        .where(MetadataProvider.slug == provider_slug, GameExternalId.external_id == external_id)
+    ).first()
+    if not result:
+        raise HTTPException(status_code=404, detail="No canonical game is mapped to that provider ID")
+    game, slug, resolved_id = result
+    return {"provider": slug, "external_id": resolved_id, "game": serialize_game(game, db)}
+
+
+@app.get("/api/v1/tags")
+def api_list_tags(db: Db, q: str = "", limit: int = 100, offset: int = 0,
+                  authorization: Annotated[str | None, Header()] = None):
+    require_api_token(db, authorization, "read")
+    limit, offset = max(1, min(limit, 200)), max(0, offset)
+    statement = (select(Tag.name, func.count(GameTag.game_id).label("game_count"))
+                 .join(GameTag, GameTag.tag_id == Tag.id)
+                 .group_by(Tag.id, Tag.name))
+    if q.strip():
+        statement = statement.where(Tag.name.ilike(f"%{q.strip().lower()[:80]}%"))
+    total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    rows = db.execute(statement.order_by(Tag.name).offset(offset).limit(limit)).all()
+    return {"items": [{"name": name, "game_count": count} for name, count in rows],
+            "total": total, "limit": limit, "offset": offset}
+
+
 @app.get("/api/v1/providers")
 def api_providers(db: Db, authorization: Annotated[str | None, Header()] = None):
     require_api_token(db, authorization, "read")

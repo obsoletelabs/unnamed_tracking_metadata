@@ -527,3 +527,42 @@ def test_api_edit_proposal_rejects_unsafe_evidence_url(client):
     response = client.post("/api/v1/games/gm_APIEDIT02/proposals", headers={"Authorization": f"Bearer {raw}"},
                           json={"title": "Changed", "evidence_url": "javascript:alert(1)"})
     assert response.status_code == 422
+
+
+def test_api_external_id_lookup_and_tag_directory(client):
+    raw = create_api_token()
+    with SessionLocal() as db:
+        provider = db.scalar(select(MetadataProvider).where(MetadataProvider.slug == "igdb"))
+        game = Game(canonical_id="gm_LOOKUP001", title="Mapped Game", developer="Lookup Studio", release_year=2023)
+        db.add(game)
+        db.flush()
+        from app.main import GameExternalId, Tag, GameTag
+        db.add(GameExternalId(game_id=game.id, provider_id=provider.id, external_id="external-9988"))
+        tag = Tag(name="co-op")
+        db.add(tag)
+        db.flush()
+        db.add(GameTag(game_id=game.id, tag_id=tag.id))
+        db.commit()
+    headers = {"Authorization": f"Bearer {raw}"}
+    lookup = client.get("/api/v1/lookup?provider=igdb&external_id=external-9988", headers=headers)
+    assert lookup.status_code == 200
+    assert lookup.json()["game"]["id"] == "gm_LOOKUP001"
+    missing = client.get("/api/v1/lookup?provider=igdb&external_id=missing", headers=headers)
+    assert missing.status_code == 404
+    tags = client.get("/api/v1/tags?q=co-", headers=headers)
+    assert tags.status_code == 200
+    assert tags.json()["items"] == [{"name": "co-op", "game_count": 1}]
+
+
+def test_api_lookup_requires_read_scope(client):
+    raw = "atlas_noread_" + uuid.uuid4().hex
+    with SessionLocal() as db:
+        user = User(email=f"{uuid.uuid4().hex}@example.test", display_name="No Read", password_hash="test-hash")
+        db.add(user)
+        db.flush()
+        db.add(ApiToken(user_id=user.id, label="write-only", token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+                        token_prefix=raw[:16], scopes="write"))
+        db.commit()
+    response = client.get("/api/v1/lookup?provider=igdb&external_id=x",
+                          headers={"Authorization": f"Bearer {raw}"})
+    assert response.status_code == 403

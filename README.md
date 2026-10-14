@@ -172,3 +172,13 @@ Login attempts are throttled per client IP and hashed email identity, with regis
 ### API editing workflow and audit history
 
 Integrations can submit proposed edits with `POST /api/v1/games/{canonical_id}/proposals`. Proposals use the same administrator review queue as browser submissions and do not change the published game until approved. Optional evidence URLs and notes are retained for review. `GET /api/v1/games/{canonical_id}/history` returns paginated revision snapshots plus provenance sources, allowing clients to build audit views without exposing submitter email addresses. Both endpoints require a scoped API key: `write` for proposals and `read` for history.
+
+
+### Identifier resolution and tag discovery
+
+Two read-scoped endpoints support client-side identity matching and filter UIs:
+
+- `GET /api/v1/lookup?provider=steam&external_id=...` resolves an exact provider-native ID to its canonical game record, returning 404 when unmapped.
+- `GET /api/v1/tags?q=...&limit=...&offset=...` returns matching tags and the number of catalogue games using each tag.
+
+These endpoints use the same canonical ID mappings and tag associations as the browser and submission-review workflows.
