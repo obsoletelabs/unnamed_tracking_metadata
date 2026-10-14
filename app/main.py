@@ -365,7 +365,7 @@ def get_game(canonical_id: str, db: Db, authorization: Annotated[str | None, Hea
 @app.post("/api/v1/games", status_code=status.HTTP_201_CREATED)
 def create_game(payload: GameCreate, db: Db, background_tasks: BackgroundTasks,
                 authorization: Annotated[str | None, Header()] = None) -> dict:
-    _, user = require_api_token(db, authorization)
+    token, user = require_api_token(db, authorization)
     title = payload.title.strip()
     if not title:
         raise HTTPException(status_code=422, detail="Title cannot be blank")
@@ -377,6 +377,14 @@ def create_game(payload: GameCreate, db: Db, background_tasks: BackgroundTasks,
     db.flush()
     apply_tags(db, game, payload.tags)
     apply_external_ids(db, game, payload.external_ids)
+    db.add(GameProvenance(game_id=game.id, field_name="record", source_type="api",
+                          source_label=f"Authenticated API integration: {token.label}", created_by=user.id))
+    db.add(GameRevision(
+        game_id=game.id, actor_id=user.id, action="created", summary="Created via authenticated API",
+        snapshot_json=json.dumps({"canonical_id": game.canonical_id, "title": game.title,
+            "developer": game.developer, "release_year": game.release_year,
+            "description": game.description, "custom_fields": custom_fields}),
+    ))
     db.commit()
     db.refresh(game)
     background_tasks.add_task(discover_game_ids_background, game.id)
