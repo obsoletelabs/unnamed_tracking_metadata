@@ -111,7 +111,7 @@ class GameSubmission(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     review_note: Mapped[str] = mapped_column(Text, default="")
     reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -121,7 +121,7 @@ class SubmissionEvidence(Base):
     submission_id: Mapped[int] = mapped_column(ForeignKey("game_submissions.id", ondelete="CASCADE"), index=True)
     url: Mapped[str] = mapped_column(String(1000), default="")
     note: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class GameProvenance(Base):
@@ -134,7 +134,7 @@ class GameProvenance(Base):
     source_url: Mapped[str] = mapped_column(String(1000), default="")
     evidence_note: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class GameRevision(Base):
@@ -145,7 +145,7 @@ class GameRevision(Base):
     action: Mapped[str] = mapped_column(String(40), default="created")
     summary: Mapped[str] = mapped_column(String(500), default="")
     snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class AchievementCreate(BaseModel):
