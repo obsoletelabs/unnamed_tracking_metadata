@@ -943,8 +943,8 @@ def api_schemas(db: Db, authorization: Annotated[str | None, Header()] = None):
 def api_providers(db: Db, authorization: Annotated[str | None, Header()] = None):
     require_api_token(db, authorization)
     providers = db.scalars(select(MetadataProvider).order_by(MetadataProvider.slug)).all()
-    return {"items": [{"slug": provider.slug, "name": provider.name, "homepage": provider.homepage or None}
-                      for provider in providers]}
+    return {"items": [{"slug": provider.slug, "name": provider.name, "homepage": provider.homepage or None,
+                       "adapter": provider.adapter} for provider in providers]}
 
 
 @app.get("/catalogue/search")
@@ -966,17 +966,69 @@ def browser_search(request: Request, db: Db, q: str = "", limit: int = 100, offs
 def admin_home(request: Request, db: Db):
     user = current_user(request, db)
     if not user:
-        return RedirectResponse("/#account", status_code=303)
+        return RedirectResponse("/login", status_code=303)
     if user.email.lower() not in ADMIN_EMAILS:
         raise HTTPException(status_code=403, detail="Administrator access is not enabled for this account")
+    return templates.TemplateResponse(request, "admin_home.html", {
+        "request": request, "app_name": APP_NAME, "user": user,
+        "is_admin": True, "user_count": db.scalar(select(func.count()).select_from(User)) or 0,
+        "game_count": db.scalar(select(func.count()).select_from(Game)) or 0,
+        "provider_count": db.scalar(select(func.count()).select_from(MetadataProvider)) or 0,
+        "schema_count": db.scalar(select(func.count()).select_from(SchemaDefinition)) or 0,
+    })
+
+
+@app.get("/admin/schemas", response_class=HTMLResponse)
+def admin_schemas_page(request: Request, db: Db):
+    user = require_admin(request, db)
     schemas = db.scalars(select(SchemaDefinition).order_by(SchemaDefinition.name)).all()
     providers = db.scalars(select(MetadataProvider).order_by(MetadataProvider.slug)).all()
     schema_json = next((item.schema_json for item in schemas if item.name == "game"), "[]")
     return templates.TemplateResponse(request, "admin.html", {
-        "app_name": APP_NAME, "user": user, "schemas": schemas, "providers": providers,
-        "schema_json": schema_json, "notice": request.query_params.get("notice"),
-        "error": request.query_params.get("error"),
+        "request": request, "app_name": APP_NAME, "user": user, "schemas": schemas,
+        "providers": providers, "schema_json": schema_json,
+        "notice": request.query_params.get("notice"), "error": request.query_params.get("error"),
     })
+
+
+@app.get("/admin/providers", response_class=HTMLResponse)
+def admin_providers_page(request: Request, db: Db):
+    user = require_admin(request, db)
+    providers = db.scalars(select(MetadataProvider).order_by(MetadataProvider.name)).all()
+    return templates.TemplateResponse(request, "providers.html", {
+        "request": request, "app_name": APP_NAME, "user": user, "providers": providers,
+        "notice": request.query_params.get("notice"), "error": request.query_params.get("error"),
+        "igdb_configured": bool(os.getenv("IGDB_CLIENT_ID") and os.getenv("IGDB_CLIENT_SECRET")),
+        "rawg_configured": bool(os.getenv("RAWG_API_KEY")),
+    })
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+def admin_users_page(request: Request, db: Db):
+    user = require_admin(request, db)
+    users = db.scalars(select(User).order_by(User.created_at.desc())).all()
+    return templates.TemplateResponse(request, "users.html", {
+        "request": request, "app_name": APP_NAME, "user": user, "users": users,
+        "notice": request.query_params.get("notice"), "error": request.query_params.get("error"),
+    })
+
+
+@app.post("/admin/users/create")
+def admin_create_user(request: Request, db: Db, email: Annotated[str, Form()],
+                      display_name: Annotated[str, Form()], password: Annotated[str, Form()]):
+    require_admin(request, db)
+    from urllib.parse import quote_plus
+    email, display_name = email.strip().lower(), display_name.strip()
+    if (len(email) > 254 or email.count("@") != 1 or "." not in email.rsplit("@", 1)[-1]
+            or any(ch.isspace() for ch in email) or not display_name or len(display_name) > 80):
+        return RedirectResponse("/admin/users?error=" + quote_plus("Enter a valid email and display name"), status_code=303)
+    if len(password) < 12 or len(password) > 256:
+        return RedirectResponse("/admin/users?error=" + quote_plus("Password must be 12-256 characters"), status_code=303)
+    if db.scalar(select(User).where(User.email == email)):
+        return RedirectResponse("/admin/users?error=" + quote_plus("An account with that email already exists"), status_code=303)
+    db.add(User(email=email, display_name=display_name, password_hash=hash_password(password), email_verified=True))
+    db.commit()
+    return RedirectResponse("/admin/users?notice=" + quote_plus("Account created and email marked verified"), status_code=303)
 
 
 @app.post("/admin/schemas/save")
@@ -986,18 +1038,18 @@ def save_schema(request: Request, db: Db, name: Annotated[str, Form()],
     name = name.strip().lower()
     display_name = display_name.strip()
     if not name or len(name) > 80 or not name.replace("_", "").isalnum() or not display_name or len(display_name) > 120:
-        return RedirectResponse("/admin?error=Schema+name+or+display+name+is+invalid", status_code=303)
+        return RedirectResponse("/admin/schemas?error=Schema+name+or+display+name+is+invalid", status_code=303)
     try:
         fields = validate_schema_document(schema_json)
     except HTTPException as exc:
-        return RedirectResponse("/admin?error=" + __import__("urllib.parse", fromlist=["quote_plus"]).quote_plus(str(exc.detail)), status_code=303)
+        return RedirectResponse("/admin/schemas?error=" + __import__("urllib.parse", fromlist=["quote_plus"]).quote_plus(str(exc.detail)), status_code=303)
     schema = db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == name))
     if schema:
         schema.display_name, schema.schema_json, schema.updated_at = display_name, json.dumps(fields, indent=2), utcnow()
     else:
         db.add(SchemaDefinition(name=name, display_name=display_name, schema_json=json.dumps(fields, indent=2)))
     db.commit()
-    return RedirectResponse("/admin?notice=Schema+saved", status_code=303)
+    return RedirectResponse("/admin/schemas?notice=Schema+saved", status_code=303)
 
 
 @app.get("/admin/schemas/{schema_id}/export.json")
@@ -1013,21 +1065,24 @@ def export_schema(schema_id: int, request: Request, db: Db):
 
 @app.post("/admin/providers")
 def add_provider(request: Request, db: Db, slug: Annotated[str, Form()],
-                 name: Annotated[str, Form()], homepage: Annotated[str, Form()] = ""):
+                 name: Annotated[str, Form()], homepage: Annotated[str, Form()] = "",
+                 adapter: Annotated[str, Form()] = "manual"):
     require_admin(request, db)
     slug = slug.strip().lower()
     name, homepage = name.strip(), homepage.strip()
     if not slug or len(slug) > 80 or not slug.replace("-", "").replace("_", "").isalnum() or not name or len(name) > 120:
         return RedirectResponse("/admin?error=Provider+slug+or+name+is+invalid", status_code=303)
     if homepage and (not homepage.startswith("https://") or len(homepage) > 500):
-        return RedirectResponse("/admin?error=Provider+homepage+must+be+an+HTTPS+URL", status_code=303)
+        return RedirectResponse("/admin/providers?error=Provider+homepage+must+be+an+HTTPS+URL", status_code=303)
+    if adapter not in {"manual", "steam_store", "igdb", "rawg"}:
+        return RedirectResponse("/admin/providers?error=Unsupported+provider+adapter", status_code=303)
     existing = db.scalar(select(MetadataProvider).where(MetadataProvider.slug == slug))
     if existing:
-        existing.name, existing.homepage = name, homepage
+        existing.name, existing.homepage, existing.adapter = name, homepage, adapter
     else:
-        db.add(MetadataProvider(slug=slug, name=name, homepage=homepage))
+        db.add(MetadataProvider(slug=slug, name=name, homepage=homepage, adapter=adapter))
     db.commit()
-    return RedirectResponse("/admin?notice=Provider+saved", status_code=303)
+    return RedirectResponse("/admin/providers?notice=Provider+saved", status_code=303)
 
 
 @app.get("/api/v1/images/{filename}")
