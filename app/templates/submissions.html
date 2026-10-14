@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ app_name }} · My submissions</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<header class="topbar"><a class="brand" href="/dashboard"><span class="brand-mark">A</span><span><b>atlas</b><small>contribution workspace</small></span></a><nav><a href="/dashboard">Dashboard</a><a href="/catalogue">Catalogue</a><a href="/achievements">Achievements</a><a href="/submissions">My submissions</a>{% if is_admin %}<a href="/admin">Administration</a>{% endif %}</nav><div class="account"><span class="signed-in">{{ user.display_name }}</span><form method="post" action="/auth/logout"><button class="button subtle" type="submit">Sign out</button></form></div></header>
+<main class="container page-container">
+{% if notice %}<div class="flash success">{{ notice.replace('+',' ') }}</div>{% endif %}{% if error %}<div class="flash error">{{ error.replace('+',' ') }}</div>{% endif %}
+<section class="page-heading"><div><div class="eyebrow">CONTRIBUTIONS</div><h1>My <span>submissions.</span></h1><p>Browser submissions are reviewed before publication. Evidence and review notes stay attached to each submission.</p></div><a class="button primary" href="/games/new">＋ Propose a game</a></section>
+{% if submissions %}<div class="review-list">{% for submission in submissions %}
+<article class="panel review-card"><div class="review-card-heading"><div><div class="eyebrow">SUBMISSION #{{ submission.id }} · {{ submission.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</div><h2>{{ submission.proposed_title }}</h2><p class="muted">{{ submission.proposed_developer or 'Developer not provided' }}{% if submission.proposed_release_year %} · {{ submission.proposed_release_year }}{% endif %}</p></div><span class="status-pill status-{{ submission.status }}">{{ submission.status }}</span></div>
+{% if submission.proposed_description %}<p>{{ submission.proposed_description }}</p>{% endif %}
+{% for item in evidence_by_submission.get(submission.id, []) %}<div class="evidence-list"><b>Evidence provided</b><div>{% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">{{ item.url }}</a>{% endif %}{% if item.note %}<p>{{ item.note }}</p>{% endif %}</div></div>{% endfor %}
+{% if submission.review_note %}<div class="review-note"><b>Review note</b><p>{{ submission.review_note }}</p></div>{% endif %}
+{% if submission.status == 'approved' %}<p class="muted">Approved and published to the catalogue.</p>{% elif submission.status == 'rejected' %}<p class="muted">Not published. Review the note before preparing a new submission.</p>{% else %}<p class="muted">Awaiting administrator review. This record is not yet part of catalogue search.</p>{% endif %}</article>
+{% endfor %}</div>{% else %}<section class="panel empty-state"><b>No submissions yet</b><p>When you propose a game, track its review status here.</p><a class="button primary" href="/games/new">Submit your first game</a></section>{% endif %}
+</main></body></html>
