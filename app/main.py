@@ -26,7 +26,7 @@ SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-only-change-this-session-secre
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
 APP_NAME = os.getenv("APP_NAME", "Atlas Metadata")
 ADMIN_EMAILS = {value.strip().lower() for value in os.getenv("ADMIN_EMAILS", "").split(",") if value.strip()}
-UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "/data/uploads"))
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "uploads")))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
