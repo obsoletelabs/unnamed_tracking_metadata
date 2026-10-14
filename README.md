@@ -53,7 +53,7 @@ The overlay configures the API to use PostgreSQL on the internal Compose network
 - Browser game submissions with pending / approved / rejected review states
 - Administrator review queue with decision notes and evidence inspection
 - Evidence URLs and notes retained from submission through approval
-- Record provenance page and initial revision snapshots for reviewed browser submissions
+- Record provenance page and revision history with before/after snapshots for reviewed browser submissions and proposed edits
 - Per-user submission history and status tracking
 - Login-required website search by title, developer or canonical ID
 - Dedicated sign-in, first-run administrator setup, dashboard, catalogue, game detail and achievements pages
@@ -62,7 +62,7 @@ The overlay configures the API to use PostgreSQL on the internal Compose network
 - Sign in and sign out
 - Generate API bearer tokens; the full token is displayed once
 - List owned tokens and revoke a token
-- Propose games through a schema-driven form; canonical IDs are generated on approval
+- Propose games and edits through schema-driven forms; canonical IDs are generated on approval, and edits preserve the existing canonical ID
 - Background provider ID discovery for exact title matches, with ambiguous candidates left for review
 - Add achievements to games with descriptions, optional icons, provider IDs, and hidden/secret status
 - API-key-required JSON reads and writes; health checks remain public
@@ -132,7 +132,7 @@ curl -X POST 'http://localhost:8000/api/v1/games/gm_YOURID/images' \
 
 ## Important limitations
 
-This is a **local MVP/mockup, not a secure public beta**. It now has separate user/admin pages, SMTP verification, admin account provisioning, schema-driven game entry, basic achievements, provider ID discovery and image uploads, but is still early-stage. Achievement unlock/progress tracking, field-level provenance for every individual attribute, edits to existing canonical records, provider refresh schedules, sync cursors, quotas, rate limits, API scopes and multi-region routing are not implemented yet. Provenance and revision snapshots currently cover reviewed browser submissions; direct API writes are treated as integration writes and do not yet generate the same review record.
+This is a **local MVP/mockup, not a secure public beta**. It now has separate user/admin pages, SMTP verification, admin account provisioning, schema-driven game entry, basic achievements, provider ID discovery and image uploads, but is still early-stage. Achievement unlock/progress tracking, field-level provenance for every individual attribute, provider refresh schedules, sync cursors, quotas, rate limits, API scopes and multi-region routing are not implemented yet. Provenance and revision snapshots currently cover reviewed browser submissions; direct API writes are treated as integration writes and do not yet generate the same review record.
 
 Before exposing this publicly, it needs security hardening, including CSRF protection for browser forms, secure deployment configuration and cookie settings behind HTTPS, abuse controls/rate limiting, password-reset/invitation workflows, scoped API keys, formal database migrations, broader automated tests, logging and backup/restore procedures. SMTP must be configured and `ALLOW_SELF_REGISTRATION=true` set explicitly to enable public self-registration. The schema JSON editor currently defines simple field contracts; it is not a general-purpose arbitrary schema execution system. The default session secret is for local development only. Do not use real passwords or production credentials in this prototype.
 
