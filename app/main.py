@@ -11,7 +11,8 @@ import secrets
 import time
 import uuid
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
+from urllib.parse import urlsplit
 from email.message import EmailMessage
 from typing import Annotated
 
@@ -719,7 +720,7 @@ class GameImage(Base):
 def require_admin(request: Request, db: Session) -> User:
     user = current_user(request, db)
     if not user:
-        raise HTTPException(status_code=303, detail="Sign in required", headers={"Location": "/#account"})
+        raise HTTPException(status_code=303, detail="Sign in required", headers={"Location": "/login"})
     if user.email.lower() not in ADMIN_EMAILS:
         raise HTTPException(status_code=403, detail="Administrator access is not enabled for this account")
     return user
@@ -792,6 +793,14 @@ def validate_custom_fields(db: Session, values: dict[str, object]) -> dict[str, 
                 (kind == "boolean" and isinstance(item, bool)) or
                 (kind == "enum" and item in definition.get("options", []))
             )
+            if valid and kind == "date":
+                try:
+                    date.fromisoformat(item)
+                except ValueError:
+                    valid = False
+            if valid and kind == "url":
+                parsed_url = urlsplit(item)
+                valid = parsed_url.scheme in {"http", "https"} and bool(parsed_url.netloc)
             if not valid:
                 raise HTTPException(status_code=422, detail=f"Invalid value for custom field: {key}")
             if isinstance(item, str) and len(item) > 4000:
