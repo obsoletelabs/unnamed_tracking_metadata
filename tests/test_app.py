@@ -100,6 +100,32 @@ def test_authenticated_api_can_create_tagged_game_with_provider_id(client):
 
 
 
+
+def test_schema_validated_custom_fields_round_trip_and_required_fields(client):
+    token = create_api_token()
+    with SessionLocal() as db:
+        schema = db.scalar(select(__import__("app.main", fromlist=["SchemaDefinition"]).SchemaDefinition)
+                            .where(__import__("app.main", fromlist=["SchemaDefinition"]).SchemaDefinition.name == "game"))
+        schema.schema_json = json.dumps([
+            {"key": "edition", "label": "Edition", "type": "enum", "options": ["standard", "deluxe"], "required": True},
+            {"key": "player_count", "label": "Maximum players", "type": "integer"},
+            {"key": "is_remake", "label": "Is a remake", "type": "boolean"},
+            {"key": "genres", "label": "Genres", "type": "string", "multiple": True},
+        ])
+        db.commit()
+    headers = {"Authorization": f"Bearer {token}"}
+    missing = client.post("/api/v1/games", headers=headers, json={"title": "Missing required edition"})
+    assert missing.status_code == 422
+    response = client.post("/api/v1/games", headers=headers, json={
+        "title": "Schema fields round trip",
+        "custom_fields": {"edition": "deluxe", "player_count": 4, "is_remake": False, "genres": ["RPG", "Indie"]},
+    })
+    assert response.status_code == 201, response.text
+    assert response.json()["custom_fields"] == {
+        "edition": "deluxe", "player_count": 4, "is_remake": False, "genres": ["RPG", "Indie"]
+    }
+
+
 def test_registration_page_is_disabled_without_smtp(client):
     response = client.get("/register", follow_redirects=False)
     assert response.status_code == 303
