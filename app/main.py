@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import logging
 import smtplib
 import ssl
 import secrets
@@ -44,6 +45,7 @@ connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite")
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 ONE_TIME_TOKENS: dict[str, tuple[int, str, float]] = {}
+logger = logging.getLogger("atlas.metadata")
 
 
 class Base(DeclarativeBase):
@@ -366,7 +368,7 @@ def register(request: Request, db: Db, email: Annotated[str, Form()],
     try:
         issue_verification(db, user)
     except (OSError, smtplib.SMTPException, RuntimeError) as exc:
-        app.logger.warning("Verification email could not be sent: %s", type(exc).__name__)
+        logger.warning("Verification email could not be sent: %s", type(exc).__name__)
         return RedirectResponse("/login?error=Your+account+is+pending+but+the+verification+email+could+not+be+sent", status_code=303)
     return RedirectResponse("/login?notice=Check+your+email+for+a+verification+link", status_code=303)
 
@@ -752,6 +754,73 @@ def apply_tags(db: Session, game: Game, tag_names: list[str]) -> None:
             db.add(tag)
             db.flush()
         db.add(GameTag(game_id=game.id, tag_id=tag.id))
+
+
+def _normalise_title(value: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "", value.casefold())
+
+
+def discover_provider_ids(db: Session, game: Game) -> dict:
+    """Search enabled provider adapters and only auto-attach exact title matches."""
+    existing = {row.provider_id: row.external_id for row in db.scalars(
+        select(GameExternalId).where(GameExternalId.game_id == game.id)).all()}
+    providers = db.scalars(select(MetadataProvider).order_by(MetadataProvider.name)).all()
+    added, suggestions, skipped = [], [], []
+    for provider in providers:
+        if provider.id in existing:
+            continue
+        candidates = []
+        try:
+            if provider.adapter == "steam_store":
+                response = httpx.get("https://store.steampowered.com/api/storesearch/",
+                                     params={"term": game.title, "l": "en", "cc": "us"}, timeout=4.0)
+                response.raise_for_status()
+                payload = response.json()
+                candidates = [{"id": str(item.get("id", "")), "name": str(item.get("name", ""))}
+                              for item in payload.get("items", [])[:10] if item.get("id") and item.get("name")]
+            elif provider.adapter == "rawg" and os.getenv("RAWG_API_KEY"):
+                response = httpx.get("https://api.rawg.io/api/games",
+                                     params={"key": os.getenv("RAWG_API_KEY"), "search": game.title, "page_size": 10},
+                                     timeout=4.0)
+                response.raise_for_status()
+                candidates = [{"id": str(item.get("id", "")), "name": str(item.get("name", ""))}
+                              for item in response.json().get("results", [])[:10] if item.get("id") and item.get("name")]
+            elif provider.adapter == "igdb" and os.getenv("IGDB_CLIENT_ID") and os.getenv("IGDB_CLIENT_SECRET"):
+                token_response = httpx.post("https://id.twitch.tv/oauth2/token",
+                    params={"client_id": os.getenv("IGDB_CLIENT_ID"), "client_secret": os.getenv("IGDB_CLIENT_SECRET"),
+                            "grant_type": "client_credentials"}, timeout=4.0)
+                token_response.raise_for_status()
+                access_token = token_response.json().get("access_token")
+                response = httpx.post("https://api.igdb.com/v4/games",
+                    headers={"Client-ID": os.getenv("IGDB_CLIENT_ID"), "Authorization": f"Bearer {access_token}",
+                             "Content-Type": "text/plain"},
+                    content=f'search "{game.title.replace(chr(34), "")}"; fields id,name; limit 10;',
+                    timeout=4.0)
+                response.raise_for_status()
+                candidates = [{"id": str(item.get("id", "")), "name": str(item.get("name", ""))}
+                              for item in response.json()[:10] if item.get("id") and item.get("name")]
+            else:
+                continue
+        except (httpx.HTTPError, ValueError, TypeError, KeyError):
+            skipped.append({"provider": provider.slug, "reason": "Provider search failed or returned invalid data"})
+            continue
+        exact = [item for item in candidates if _normalise_title(item["name"]) == _normalise_title(game.title)]
+        if len(exact) == 1:
+            external_id = exact[0]["id"]
+            duplicate = db.scalar(select(GameExternalId).where(
+                GameExternalId.provider_id == provider.id, GameExternalId.external_id == external_id))
+            if duplicate:
+                skipped.append({"provider": provider.slug, "reason": "Exact ID is already linked to another game"})
+                continue
+            db.add(GameExternalId(game_id=game.id, provider_id=provider.id, external_id=external_id))
+            added.append({"provider": provider.slug, "provider_name": provider.name, "external_id": external_id,
+                          "matched_title": exact[0]["name"]})
+        elif candidates:
+            suggestions.append({"provider": provider.slug, "provider_name": provider.name,
+                                "candidates": candidates[:5]})
+    db.commit()
+    return {"added": added, "suggestions": suggestions, "skipped": skipped}
 
 
 def apply_external_ids(db: Session, game: Game, external_ids: list[dict[str, str]]) -> None:
