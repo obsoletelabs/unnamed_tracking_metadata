@@ -654,3 +654,48 @@ def test_batch_identifier_lookup_is_bounded_and_requires_read_scope(client):
         {"provider": "igdb", "external_id": str(index)} for index in range(101)
     ]})
     assert oversized.status_code == 422
+
+
+def test_change_feed_is_cursor_paginated_and_returns_revision_snapshots(client):
+    token = create_api_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    created = client.post("/api/v1/games", headers=headers, json={
+        "title": "Incremental Sync Game", "tags": ["sync"]
+    })
+    assert created.status_code == 201, created.text
+    game_id = created.json()["id"]
+    with SessionLocal() as db:
+        revision = db.scalar(select(GameRevision).join(Game, Game.id == GameRevision.game_id)
+                              .where(Game.canonical_id == game_id).order_by(GameRevision.id.desc()))
+        assert revision is not None
+        revision_id = revision.id
+    assert client.get("/api/v1/changes").status_code == 401
+    first = client.get("/api/v1/changes?after_revision_id=0&limit=1", headers=headers)
+    assert first.status_code == 200
+    payload = first.json()
+    assert payload["items"]
+    assert payload["items"][0]["revision_id"] >= 1
+    assert "snapshot" in payload["items"][0]
+    assert payload["next_cursor"] == payload["items"][-1]["revision_id"]
+    later = client.get(f"/api/v1/changes?after_revision_id={revision_id}&limit=10", headers=headers)
+    assert later.status_code == 200
+    assert all(item["revision_id"] > revision_id for item in later.json()["items"])
+
+
+def test_change_feed_rejects_negative_cursor_and_caps_limit(client):
+    token = create_api_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get("/api/v1/changes?after_revision_id=-1", headers=headers).status_code == 422
+    response = client.get("/api/v1/changes?limit=9999", headers=headers)
+    assert response.status_code == 401
+    response = client.get("/api/v1/changes?limit=9999", headers=headers)
+    assert response.status_code == 401
+
+
+def test_provider_directory_lists_only_safe_provider_metadata(client):
+    token = create_api_token()
+    response = client.get("/api/v1/providers", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert any(item["slug"] == "igdb" for item in payload["items"])
+    assert all(set(item) == {"slug", "name", "homepage", "adapter"} for item in payload["items"])

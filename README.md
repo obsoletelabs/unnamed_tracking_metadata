@@ -194,3 +194,11 @@ All three endpoints require an API key with the \`read\` scope. Export pages are
 
 
 - \`POST /api/v1/lookup/batch\` resolves up to 100 provider/external-ID pairs in one request. Each result independently reports \`found\` and either the canonical game or \`null\`, so one unmapped ID does not fail the whole batch.
+
+
+### Incremental synchronisation and provider discovery
+
+- \`GET /api/v1/changes?after_revision_id=0&limit=100\` returns a cursor-paginated stream of catalogue revisions, including action, timestamp, summary and the revision snapshot. Persist \`next_cursor\` and send it as \`after_revision_id\` on the next poll. Limits are capped at 200.
+- \`GET /api/v1/providers\` lists provider slugs, display names, homepages and adapter types for client setup and capability discovery. It intentionally omits credentials and internal health details.
+
+Both endpoints require an API key with the \`read\` scope. The change feed is based on the existing revision log; it does not yet represent hard deletions or promise a transactional snapshot across multiple pages.

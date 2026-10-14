@@ -1412,6 +1412,58 @@ def apply_external_ids(db: Session, game: Game, external_ids: list[dict[str, str
 
 
 
+@app.get("/api/v1/changes")
+def api_change_feed(db: Db, after_revision_id: int = 0, limit: int = 100,
+                    authorization: Annotated[str | None, Header()] = None) -> dict:
+    """Cursor-based change feed for incremental sync; cursor is the last consumed revision ID."""
+    require_api_token(db, authorization, "read")
+    if after_revision_id < 0:
+        raise HTTPException(status_code=422, detail="after_revision_id must be zero or greater")
+    limit = max(1, min(limit, 200))
+    revisions = db.scalars(
+        select(GameRevision).where(GameRevision.id > after_revision_id)
+        .order_by(GameRevision.id.asc()).limit(limit + 1)
+    ).all()
+    has_more = len(revisions) > limit
+    revisions = revisions[:limit]
+    items = []
+    for revision in revisions:
+        snapshot = {}
+        try:
+            parsed = json.loads(revision.snapshot_json or "{}")
+            if isinstance(parsed, dict):
+                snapshot = parsed
+        except (ValueError, TypeError):
+            snapshot = {}
+        game = db.get(Game, revision.game_id)
+        items.append({
+            "revision_id": revision.id,
+            "game_id": game.canonical_id if game else None,
+            "action": revision.action,
+            "summary": revision.summary,
+            "created_at": revision.created_at.isoformat() if revision.created_at else None,
+            "snapshot": snapshot,
+            "deleted": game is None,
+        })
+    next_cursor = revisions[-1].id if revisions else after_revision_id
+    return {"items": items, "next_cursor": next_cursor, "has_more": has_more,
+            "limit": limit}
+
+
+@app.get("/api/v1/providers")
+def api_provider_directory(db: Db,
+                           authorization: Annotated[str | None, Header()] = None) -> dict:
+    """List configured metadata providers without leaking credentials or private health data."""
+    require_api_token(db, authorization, "read")
+    providers = db.scalars(select(MetadataProvider).order_by(MetadataProvider.slug)).all()
+    return {"items": [{
+        "slug": provider.slug,
+        "name": provider.name,
+        "homepage": provider.homepage,
+        "adapter": provider.adapter,
+    } for provider in providers], "count": len(providers)}
+
+
 @app.get("/api/v1/stats")
 def api_catalogue_stats(db: Db, authorization: Annotated[str | None, Header()] = None) -> dict:
     """Return aggregate catalogue counts without exposing user or submission data."""
