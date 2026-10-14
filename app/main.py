@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -85,7 +85,6 @@ app = FastAPI(title=APP_NAME, version="0.1.0", description="Prototype catalogue 
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=COOKIE_SECURE)
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
-app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 
 def get_db():
@@ -667,6 +666,19 @@ def add_provider(request: Request, db: Db, slug: Annotated[str, Form()],
     return RedirectResponse("/admin?notice=Provider+saved", status_code=303)
 
 
+@app.get("/api/v1/images/{filename}")
+def get_uploaded_image(filename: str, db: Db, authorization: Annotated[str | None, Header()] = None):
+    require_api_token(db, authorization)
+    if Path(filename).name != filename or not filename.replace(".", "").isalnum():
+        raise HTTPException(status_code=404, detail="Image not found")
+    image_row = db.scalar(select(GameImage).where(GameImage.url == "/api/v1/images/" + filename))
+    target = UPLOAD_DIR / filename
+    if not image_row or not target.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(target, media_type=image_row.content_type,
+                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"})
+
+
 @app.post("/api/v1/games/{canonical_id}/images", status_code=status.HTTP_201_CREATED)
 async def upload_game_image(canonical_id: str, db: Db, file: UploadFile = File(...),
                             authorization: Annotated[str | None, Header()] = None):
@@ -691,7 +703,7 @@ async def upload_game_image(canonical_id: str, db: Db, file: UploadFile = File(.
         filename = uuid.uuid4().hex + allowed[file.content_type]
         target = UPLOAD_DIR / filename
         target.write_bytes(content)
-        image_row = GameImage(game_id=game.id, url="/uploads/" + filename, content_type=file.content_type)
+        image_row = GameImage(game_id=game.id, url="/api/v1/images/" + filename, content_type=file.content_type)
         db.add(image_row)
         db.commit()
         return {"id": image_row.id, "game_id": canonical_id, "url": image_row.url, "content_type": image_row.content_type}
