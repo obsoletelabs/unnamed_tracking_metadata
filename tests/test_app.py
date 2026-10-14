@@ -167,6 +167,35 @@ def test_email_verification_activates_a_pending_account(client):
         assert user.email_verified is True
 
 
+
+def test_self_registration_requires_email_verification_before_login(client, monkeypatch):
+    from app import main as main_module
+    sent = {}
+    monkeypatch.setattr(main_module, "ALLOW_SELF_REGISTRATION", True)
+    monkeypatch.setattr(main_module, "SMTP_HOST", "smtp.example.test")
+    monkeypatch.setattr(main_module, "SMTP_FROM", "noreply@example.test")
+    monkeypatch.setattr(main_module, "send_email", lambda recipient, subject, body: sent.update(body=body))
+    response = client.post("/auth/register", data={
+        "email": "new-person@example.test", "display_name": "New Person", "password": "long-test-password-123"
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.email == "new-person@example.test"))
+        assert user is not None and user.email_verified is False
+    login = client.post("/auth/login", data={
+        "email": "new-person@example.test", "password": "long-test-password-123"
+    }, follow_redirects=False)
+    assert login.status_code == 303
+    assert "verify" in login.headers["location"].lower()
+    token = sent["body"].split("link within 24 hours:\n", 1)[1].splitlines()[0].rsplit("token=", 1)[1]
+    verified = client.get("/auth/verify", params={"token": token}, follow_redirects=False)
+    assert verified.status_code == 303
+    login = client.post("/auth/login", data={
+        "email": "new-person@example.test", "password": "long-test-password-123"
+    }, follow_redirects=False)
+    assert login.headers["location"].startswith("/dashboard")
+
+
 def test_provider_discovery_attaches_only_an_exact_title_match(client, monkeypatch):
     from app import main as main_module
     token = create_api_token()
