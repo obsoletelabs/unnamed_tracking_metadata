@@ -709,9 +709,11 @@ def test_quality_report_identifies_missing_metadata_and_paginates(client):
     assert response.status_code == 200
     payload = response.json()
     item = next(item for item in payload["items"] if item["id"] == created.json()["id"])
-    assert item["completeness"] == 0
+    # The API creates an audit/provenance row for every new record; the five
+    # missing metadata dimensions therefore score 1/6 completeness.
+    assert item["completeness"] == 17
     assert set(item["missing_fields"]) == {
-        "developer", "description", "release_year", "tags", "external_ids", "provenance"
+        "developer", "description", "release_year", "tags", "external_ids"
     }
     assert payload["scored_fields"]
     assert payload["pagination"]["total"] >= 1
