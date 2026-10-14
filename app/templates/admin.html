@@ -6,8 +6,8 @@
 </head>
 <body>
 <header class="topbar">
-  <a class="brand" href="/"><span class="brand-mark">A</span><span><b>atlas</b><small>metadata administration</small></span></a>
-  <nav><a href="/">Catalogue</a><a href="#schemas">Schemas</a><a href="#providers">Providers</a></nav>
+  <a class="brand" href="/admin"><span class="brand-mark">A</span><span><b>atlas</b><small>metadata administration</small></span></a>
+  <nav><a href="/admin">Admin home</a><a href="/admin/schemas">Schemas</a><a href="/admin/providers">Providers</a><a href="/admin/users">Users</a></nav>
   <div class="account"><span class="signed-in">{{ user.display_name }}</span><form method="post" action="/auth/logout"><button class="button subtle" type="submit">Sign out</button></form></div>
 </header>
 <main class="container admin-container">
@@ -36,15 +36,7 @@
   {"key":"is_remake","label":"Is a remake","type":"boolean"}
 ]</pre></details>
   </section>
-  <section id="providers" class="panel admin-panel">
-    <div class="eyebrow">02 · Identifier registry</div><h2>Metadata providers</h2><p>Each provider has a stable slug. A game may have one external ID per provider; an external ID cannot be assigned to two games for the same provider.</p>
-    {% if providers %}<div class="provider-grid">{% for provider in providers %}<article class="provider-card"><b>{{ provider.name }}</b><code>{{ provider.slug }}</code>{% if provider.homepage %}<a href="{{ provider.homepage }}" target="_blank" rel="noreferrer">{{ provider.homepage }}</a>{% else %}<small class="muted">No homepage</small>{% endif %}</article>{% endfor %}</div>{% else %}<p class="muted">No providers registered yet.</p>{% endif %}
-    <form method="post" action="/admin/providers" class="stack-form provider-form">
-      <div class="form-row two"><label>Provider slug<input name="slug" required maxlength="80" pattern="[A-Za-z0-9_-]+" placeholder="e.g. igdb"></label><label>Display name<input name="name" required maxlength="120" placeholder="e.g. IGDB"></label></div>
-      <label>Homepage (optional, HTTPS only)<input name="homepage" type="url" placeholder="https://example.com"></label>
-      <button class="button primary" type="submit">＋ Save provider</button>
-    </form>
-  </section>
+  
   <section class="panel admin-panel"><div class="eyebrow">03 · API contract</div><h2>Integration notes</h2>
     <div class="endpoint-list">
       <article class="endpoint"><span class="method get">GET</span><div><b>/api/v1/schemas</b><p>Retrieve the current public schema contract. Requires an API key.</p></div><span class="access private">API key</span></article>
