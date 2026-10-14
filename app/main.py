@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from collections import defaultdict, deque
+from threading import Lock
 import json
 import os
 import logging
@@ -46,6 +48,8 @@ connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite")
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 ONE_TIME_TOKENS: dict[str, tuple[int, str, float]] = {}
+AUTH_ATTEMPTS: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+AUTH_ATTEMPTS_LOCK = Lock()
 logger = logging.getLogger("atlas.metadata")
 
 
@@ -213,6 +217,32 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def auth_rate_limited(request: Request, action: str, limit: int, window_seconds: int,
+                      identity: str = "") -> bool:
+    """Best-effort per-process throttle; deployments with multiple workers should also limit at the proxy."""
+    host = request.client.host if request.client else "unknown"
+    identity_key = hashlib.sha256(identity.strip().lower().encode("utf-8")).hexdigest()[:20] if identity else ""
+    key = (action, host + ":" + identity_key)
+    now = time.monotonic()
+    with AUTH_ATTEMPTS_LOCK:
+        events = AUTH_ATTEMPTS[key]
+        while events and events[0] <= now - window_seconds:
+            events.popleft()
+        if len(events) >= limit:
+            return True
+        events.append(now)
+        if len(AUTH_ATTEMPTS) > 5000:
+            for old_key in [candidate for candidate, values in AUTH_ATTEMPTS.items()
+                            if not values or values[-1] <= now - 3600]:
+                AUTH_ATTEMPTS.pop(old_key, None)
+    return False
+
+
+def too_many_auth_attempts() -> HTMLResponse:
+    return HTMLResponse("Too many attempts. Please wait before trying again.", status_code=429,
+                        headers={"Retry-After": "600", "Cache-Control": "no-store"})
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
     derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
@@ -376,17 +406,37 @@ def health(db: Db) -> dict:
 
 
 @app.get("/api/v1/games")
-def search_games(db: Db, q: str = "", limit: int = 20, offset: int = 0, authorization: Annotated[str | None, Header()] = None) -> dict:
+def search_games(db: Db, q: str = "", developer: str = "", tag: str = "",
+                 year_from: int | None = None, year_to: int | None = None,
+                 limit: int = 20, offset: int = 0,
+                 authorization: Annotated[str | None, Header()] = None) -> dict:
     require_api_token(db, authorization, "read")
     limit, offset = max(1, min(limit, 100)), max(0, offset)
+    if year_from is not None and not 1950 <= year_from <= 2100:
+        raise HTTPException(status_code=422, detail="year_from must be between 1950 and 2100")
+    if year_to is not None and not 1950 <= year_to <= 2100:
+        raise HTTPException(status_code=422, detail="year_to must be between 1950 and 2100")
+    if year_from is not None and year_to is not None and year_from > year_to:
+        raise HTTPException(status_code=422, detail="year_from cannot be later than year_to")
     statement = select(Game)
     if q.strip():
-        pattern = f"%{q.strip()}%"
+        pattern = f"%{q.strip()[:200]}%"
         statement = statement.where(Game.title.ilike(pattern) | Game.developer.ilike(pattern)
                                     | Game.canonical_id.ilike(pattern))
+    if developer.strip():
+        statement = statement.where(Game.developer.ilike(f"%{developer.strip()[:200]}%"))
+    if year_from is not None:
+        statement = statement.where(Game.release_year.is_not(None), Game.release_year >= year_from)
+    if year_to is not None:
+        statement = statement.where(Game.release_year.is_not(None), Game.release_year <= year_to)
+    if tag.strip():
+        statement = statement.join(GameTag, GameTag.game_id == Game.id).join(Tag, Tag.id == GameTag.tag_id)
+        statement = statement.where(Tag.name == tag.strip().lower()[:80])
     total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
-    games = db.scalars(statement.order_by(Game.title).offset(offset).limit(limit)).all()
-    return {"items": [serialize_game(game, db) for game in games], "total": total, "limit": limit, "offset": offset}
+    games = db.scalars(statement.order_by(Game.title, Game.canonical_id).offset(offset).limit(limit)).all()
+    return {"items": [serialize_game(game, db) for game in games], "total": total, "limit": limit,
+            "offset": offset, "filters": {"q": q, "developer": developer, "tag": tag,
+                                           "year_from": year_from, "year_to": year_to}}
 
 
 @app.get("/api/v1/games/{canonical_id}")
@@ -499,6 +549,8 @@ def register_page(request: Request, db: Db):
 @app.post("/auth/register")
 def register(request: Request, db: Db, email: Annotated[str, Form()],
              display_name: Annotated[str, Form()], password: Annotated[str, Form()]):
+    if auth_rate_limited(request, "register", 5, 3600):
+        return too_many_auth_attempts()
     from urllib.parse import quote_plus
     if not (ALLOW_SELF_REGISTRATION and smtp_configured()):
         return RedirectResponse("/register?error=Self+registration+is+not+enabled", status_code=303)
@@ -540,7 +592,9 @@ def verify_email(request: Request, db: Db, token: str = ""):
 
 
 @app.post("/auth/resend-verification")
-def resend_verification(db: Db, email: Annotated[str, Form()]):
+def resend_verification(request: Request, db: Db, email: Annotated[str, Form()]):
+    if auth_rate_limited(request, "resend-verification", 5, 3600, email):
+        return too_many_auth_attempts()
     if not (ALLOW_SELF_REGISTRATION and smtp_configured()):
         return RedirectResponse("/login?notice=If+the+account+needs+verification,+a+new+email+will+be+sent", status_code=303)
     user = db.scalar(select(User).where(User.email == email.strip().lower(), User.email_verified.is_(False)))
@@ -554,6 +608,8 @@ def resend_verification(db: Db, email: Annotated[str, Form()]):
 
 @app.post("/auth/login")
 def login(request: Request, db: Db, email: Annotated[str, Form()], password: Annotated[str, Form()]):
+    if auth_rate_limited(request, "login", 10, 600, email):
+        return too_many_auth_attempts()
     user = db.scalar(select(User).where(User.email == email.strip().lower()))
     if not user or not verify_password(password, user.password_hash):
         return RedirectResponse("/login?error=Email+or+password+was+not+recognised", status_code=303)
@@ -600,6 +656,57 @@ def dashboard(request: Request, db: Db):
         "achievement_count": achievement_count, "is_admin": user.email.lower() in ADMIN_EMAILS,
     })
 
+
+
+@app.get("/account", response_class=HTMLResponse)
+def account_page(request: Request, db: Db):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    tokens = db.scalars(select(ApiToken).where(ApiToken.user_id == user.id)
+                        .order_by(ApiToken.created_at.desc())).all()
+    return templates.TemplateResponse(request, "account.html", {
+        "request": request, "app_name": APP_NAME, "user": user, "tokens": tokens,
+        "is_admin": user.email.lower() in ADMIN_EMAILS,
+        "notice": request.query_params.get("notice"), "error": request.query_params.get("error"),
+    })
+
+
+@app.post("/account/profile")
+def update_account_profile(request: Request, db: Db, display_name: Annotated[str, Form()]):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    display_name = display_name.strip()
+    if not display_name or len(display_name) > 80 or any(ord(ch) < 32 for ch in display_name):
+        return RedirectResponse("/account?error=Display+name+must+be+1-80+valid+characters", status_code=303)
+    user.display_name = display_name
+    db.commit()
+    return RedirectResponse("/account?notice=Profile+updated", status_code=303)
+
+
+@app.post("/account/password")
+def update_account_password(request: Request, db: Db,
+                            current_password: Annotated[str, Form()],
+                            new_password: Annotated[str, Form()],
+                            confirm_password: Annotated[str, Form()]):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    if not verify_password(current_password, user.password_hash):
+        return RedirectResponse("/account?error=Current+password+was+not+recognised", status_code=303)
+    if len(new_password) < 12 or len(new_password) > 256:
+        return RedirectResponse("/account?error=New+password+must+be+12-256+characters", status_code=303)
+    if not hmac.compare_digest(new_password, confirm_password):
+        return RedirectResponse("/account?error=New+password+confirmation+does+not+match", status_code=303)
+    if hmac.compare_digest(new_password, current_password):
+        return RedirectResponse("/account?error=Choose+a+different+password", status_code=303)
+    user.password_hash = hash_password(new_password)
+    db.commit()
+    # Rotate the signed session payload after a credential change.
+    request.session.clear()
+    request.session["user_id"] = user.id
+    return RedirectResponse("/account?notice=Password+changed+successfully", status_code=303)
 
 @app.get("/catalogue", response_class=HTMLResponse)
 def catalogue_page(request: Request, db: Db):
@@ -1446,18 +1553,37 @@ def api_providers(db: Db, authorization: Annotated[str | None, Header()] = None)
 
 
 @app.get("/catalogue/search")
-def browser_search(request: Request, db: Db, q: str = "", limit: int = 100, offset: int = 0):
+def browser_search(request: Request, db: Db, q: str = "", developer: str = "", tag: str = "",
+                   year_from: int | None = None, year_to: int | None = None,
+                   limit: int = 100, offset: int = 0):
     if not current_user(request, db):
         raise HTTPException(status_code=401, detail="Sign in to search the catalogue")
     limit, offset = max(1, min(limit, 100)), max(0, offset)
+    if year_from is not None and not 1950 <= year_from <= 2100:
+        raise HTTPException(status_code=422, detail="year_from must be between 1950 and 2100")
+    if year_to is not None and not 1950 <= year_to <= 2100:
+        raise HTTPException(status_code=422, detail="year_to must be between 1950 and 2100")
+    if year_from is not None and year_to is not None and year_from > year_to:
+        raise HTTPException(status_code=422, detail="year_from cannot be later than year_to")
     statement = select(Game)
     if q.strip():
-        pattern = f"%{q.strip()}%"
+        pattern = f"%{q.strip()[:200]}%"
         statement = statement.where(Game.title.ilike(pattern) | Game.developer.ilike(pattern) |
                                     Game.canonical_id.ilike(pattern))
+    if developer.strip():
+        statement = statement.where(Game.developer.ilike(f"%{developer.strip()[:200]}%"))
+    if year_from is not None:
+        statement = statement.where(Game.release_year.is_not(None), Game.release_year >= year_from)
+    if year_to is not None:
+        statement = statement.where(Game.release_year.is_not(None), Game.release_year <= year_to)
+    if tag.strip():
+        statement = statement.join(GameTag, GameTag.game_id == Game.id).join(Tag, Tag.id == GameTag.tag_id)
+        statement = statement.where(Tag.name == tag.strip().lower()[:80])
     total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
-    games = db.scalars(statement.order_by(Game.title).offset(offset).limit(limit)).all()
-    return {"items": [serialize_game(game, db) for game in games], "total": total, "limit": limit, "offset": offset}
+    games = db.scalars(statement.order_by(Game.title, Game.canonical_id).offset(offset).limit(limit)).all()
+    return {"items": [serialize_game(game, db) for game in games], "total": total, "limit": limit,
+            "offset": offset, "filters": {"q": q, "developer": developer, "tag": tag,
+                                           "year_from": year_from, "year_to": year_to}}
 
 
 @app.get("/admin", response_class=HTMLResponse)

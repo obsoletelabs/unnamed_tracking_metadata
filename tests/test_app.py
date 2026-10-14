@@ -417,3 +417,69 @@ def test_security_headers_are_set(client):
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-frame-options"] == "DENY"
     assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+
+
+def test_account_profile_and_password_change(client):
+    with SessionLocal() as db:
+        user = User(email="account-settings@example.test", display_name="Before",
+                    password_hash=hash_password("current-password-123"), email_verified=True)
+        db.add(user)
+        db.commit()
+        user_id = user.id
+    with client:
+        client.post("/auth/login", data={"email": "account-settings@example.test",
+                                          "password": "current-password-123"}, follow_redirects=False)
+        assert client.get("/account").status_code == 200
+        bad = client.post("/account/password", data={"current_password": "wrong-password-123",
+            "new_password": "new-password-123", "confirm_password": "new-password-123"}, follow_redirects=False)
+        assert "Current+password" in bad.headers["location"]
+        mismatch = client.post("/account/password", data={"current_password": "current-password-123",
+            "new_password": "new-password-123", "confirm_password": "different-password-123"}, follow_redirects=False)
+        assert "confirmation" in mismatch.headers["location"]
+        changed = client.post("/account/password", data={"current_password": "current-password-123",
+            "new_password": "new-password-123", "confirm_password": "new-password-123"}, follow_redirects=False)
+        assert changed.status_code == 303
+        assert client.get("/account").status_code == 200
+        with SessionLocal() as db:
+            updated = db.get(User, user_id)
+            assert updated is not None and updated.password_hash != "current-password-123"
+            from app.main import verify_password
+            assert verify_password("new-password-123", updated.password_hash)
+        profile = client.post("/account/profile", data={"display_name": "Updated Name"}, follow_redirects=False)
+        assert profile.status_code == 303
+        with SessionLocal() as db:
+            assert db.get(User, user_id).display_name == "Updated Name"
+
+
+def test_api_search_supports_developer_and_year_filters(client):
+    raw = create_api_token()
+    with SessionLocal() as db:
+        db.add_all([
+            Game(canonical_id="gm_FILTER001", title="Filter Game One", developer="Studio Alpha", release_year=2001),
+            Game(canonical_id="gm_FILTER002", title="Filter Game Two", developer="Studio Beta", release_year=2022),
+            Game(canonical_id="gm_FILTER003", title="Filter Game Three", developer="Studio Alpha", release_year=2024),
+        ])
+        db.commit()
+    response = client.get("/api/v1/games?developer=Alpha&year_from=2020",
+                          headers={"Authorization": f"Bearer {raw}"})
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body["items"]] == ["gm_FILTER003"]
+    assert body["total"] == 1
+    invalid = client.get("/api/v1/games?year_from=2025&year_to=2020",
+                         headers={"Authorization": f"Bearer {raw}"})
+    assert invalid.status_code == 422
+
+
+def test_login_rate_limit_returns_retry_after(client):
+    from app.main import AUTH_ATTEMPTS
+    AUTH_ATTEMPTS.clear()
+    for _ in range(10):
+        response = client.post("/auth/login", data={"email": "limited@example.test", "password": "incorrect-password"},
+                               follow_redirects=False)
+        assert response.status_code == 303
+    limited = client.post("/auth/login", data={"email": "limited@example.test", "password": "incorrect-password"},
+                          follow_redirects=False)
+    assert limited.status_code == 429
+    assert limited.headers["retry-after"] == "600"
+    AUTH_ATTEMPTS.clear()
