@@ -956,7 +956,7 @@ def api_discover_identifiers(canonical_id: str, db: Db, authorization: Annotated
     return {"game_id": canonical_id, **discover_provider_ids(db, game)}
 
 
-@app.post("/games/{canonical_id}/discover-identifiers")
+@app.post("/games/{canonical_id}/discover-identifiers", response_class=HTMLResponse)
 def browser_discover_identifiers(canonical_id: str, request: Request, db: Db):
     user = current_user(request, db)
     if not user or not user.email_verified:
@@ -965,9 +965,70 @@ def browser_discover_identifiers(canonical_id: str, request: Request, db: Db):
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
     result = discover_provider_ids(db, game)
+    achievements = db.scalars(select(GameAchievement).where(GameAchievement.game_id == game.id)
+                              .order_by(GameAchievement.name)).all()
     summary = f"Discovery finished: {len(result['added'])} ID(s) added, {len(result['suggestions'])} provider(s) need review."
+    return templates.TemplateResponse(request, "game_detail.html", {
+        "request": request, "app_name": APP_NAME, "user": user, "game": serialize_game(game, db),
+        "achievements": achievements, "discovery": result, "notice": summary, "error": None,
+        "is_admin": user.email.lower() in ADMIN_EMAILS,
+    })
+
+
+@app.post("/games/{canonical_id}/external-ids")
+def browser_attach_external_id(canonical_id: str, request: Request, db: Db,
+                               provider: Annotated[str, Form()], external_id: Annotated[str, Form()]):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
     from urllib.parse import quote_plus
-    return RedirectResponse(f"/games/{canonical_id}?notice={quote_plus(summary)}", status_code=303)
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    provider_row = db.scalar(select(MetadataProvider).where(MetadataProvider.slug == provider.strip().lower()))
+    external_id = external_id.strip()
+    if not game or not provider_row or not external_id or len(external_id) > 200:
+        return RedirectResponse(f"/games/{canonical_id}?error={quote_plus('Game, provider, or external ID is invalid')}", status_code=303)
+    existing_for_game = db.scalar(select(GameExternalId).where(
+        GameExternalId.game_id == game.id, GameExternalId.provider_id == provider_row.id))
+    if existing_for_game:
+        return RedirectResponse(f"/games/{canonical_id}?error={quote_plus('This game already has an ID for that provider')}", status_code=303)
+    duplicate = db.scalar(select(GameExternalId).where(
+        GameExternalId.provider_id == provider_row.id, GameExternalId.external_id == external_id))
+    if duplicate:
+        return RedirectResponse(f"/games/{canonical_id}?error={quote_plus('That provider ID is already linked to another game')}", status_code=303)
+    db.add(GameExternalId(game_id=game.id, provider_id=provider_row.id, external_id=external_id))
+    db.commit()
+    return RedirectResponse(f"/games/{canonical_id}?notice={quote_plus('Provider ID attached')}", status_code=303)
+
+
+@app.post("/games/{canonical_id}/images")
+async def browser_upload_game_image(canonical_id: str, request: Request, db: Db, file: UploadFile = File(...)):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    from urllib.parse import quote_plus
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    allowed = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+    signatures = {"image/png": b"\x89PNG\r\n\x1a\n", "image/jpeg": b"\xff\xd8\xff",
+                  "image/gif": (b"GIF87a", b"GIF89a"), "image/webp": b"RIFF"}
+    try:
+        if file.content_type not in allowed:
+            return RedirectResponse(f"/games/{canonical_id}?error={quote_plus('Unsupported image type')}", status_code=303)
+        content = await file.read(5 * 1024 * 1024 + 1)
+        signature = signatures[file.content_type]
+        valid_signature = any(content.startswith(sig) for sig in signature) if isinstance(signature, tuple) else content.startswith(signature)
+        if not content or len(content) > 5 * 1024 * 1024 or not valid_signature:
+            return RedirectResponse(f"/games/{canonical_id}?error={quote_plus('Image is empty, too large, or does not match its declared type')}", status_code=303)
+        if file.content_type == "image/webp" and content[8:12] != b"WEBP":
+            return RedirectResponse(f"/games/{canonical_id}?error={quote_plus('Invalid WebP image')}", status_code=303)
+        filename = uuid.uuid4().hex + allowed[file.content_type]
+        (UPLOAD_DIR / filename).write_bytes(content)
+        db.add(GameImage(game_id=game.id, url="/api/v1/images/" + filename, content_type=file.content_type))
+        db.commit()
+    finally:
+        await file.close()
+    return RedirectResponse(f"/games/{canonical_id}?notice={quote_plus('Image uploaded')}", status_code=303)
 
 
 @app.post("/games/{canonical_id}/achievements")
