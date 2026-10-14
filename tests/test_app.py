@@ -31,7 +31,8 @@ def create_api_token():
         db.add(user)
         db.flush()
         db.add(ApiToken(user_id=user.id, label="test", token_hash=hashlib.sha256(raw.encode()).hexdigest(), token_prefix=raw[:16]))
-        db.add(MetadataProvider(slug="igdb", name="IGDB", homepage="https://igdb.com"))
+        if not db.scalar(select(MetadataProvider).where(MetadataProvider.slug == "igdb")):
+            db.add(MetadataProvider(slug="igdb", name="IGDB", homepage="https://igdb.com"))
         db.commit()
     return raw
 
