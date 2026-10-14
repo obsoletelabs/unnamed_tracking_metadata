@@ -71,7 +71,7 @@ The overlay configures the API to use PostgreSQL on the internal Compose network
 
 ### API examples
 
-The first two examples below require an `Authorization: Bearer YOUR_API_KEY` header. The only intentionally public API endpoint is `/health`.
+All `/api/v1` examples require an `Authorization: Bearer YOUR_API_KEY` header. The only intentionally public API endpoint is `/health`.
 
 Search with a key generated from the website:
 
