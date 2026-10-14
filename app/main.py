@@ -855,7 +855,7 @@ def discover_provider_ids(db: Session, game: Game) -> dict:
                             "grant_type": "client_credentials"}, timeout=4.0)
                 token_response.raise_for_status()
                 access_token = token_response.json().get("access_token")
-                safe_title = game.title.replace("\\\\", "").replace('"', "").replace(";", "")
+                safe_title = game.title.replace(chr(92), "").replace('"', "").replace(";", "")
                 response = httpx.post("https://api.igdb.com/v4/games",
                     headers={"Client-ID": os.getenv("IGDB_CLIENT_ID"), "Authorization": f"Bearer {access_token}",
                              "Content-Type": "text/plain"},
