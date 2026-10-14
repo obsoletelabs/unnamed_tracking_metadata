@@ -100,6 +100,7 @@ class GameSubmission(Base):
     __tablename__ = "game_submissions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     proposed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    target_game_id: Mapped[int | None] = mapped_column(ForeignKey("games.id", ondelete="CASCADE"), nullable=True, index=True)
     proposed_title: Mapped[str] = mapped_column(String(200))
     proposed_developer: Mapped[str] = mapped_column(String(200), default="")
     proposed_release_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -761,34 +762,57 @@ async def review_submission(submission_id: int, request: Request, db: Db, backgr
     if decision not in {"approve", "reject"}:
         return RedirectResponse("/admin/reviews?error=Choose+approve+or+reject", status_code=303)
     if decision == "approve":
-        game = Game(canonical_id=new_canonical_id(), title=submission.proposed_title,
-                    developer=submission.proposed_developer, release_year=submission.proposed_release_year,
-                    description=submission.proposed_description, custom_fields=submission.proposed_custom_fields,
-                    created_by=submission.proposed_by)
         try:
-            db.add(game)
-            db.flush()
-            apply_tags(db, game, json.loads(submission.proposed_tags or "[]"))
-            apply_external_ids(db, game, json.loads(submission.proposed_external_ids or "[]"))
             evidence = db.scalars(select(SubmissionEvidence).where(SubmissionEvidence.submission_id == submission.id)).all()
             submitter = db.get(User, submission.proposed_by) if submission.proposed_by else None
+            if submission.target_game_id:
+                game = db.get(Game, submission.target_game_id)
+                if not game:
+                    return RedirectResponse("/admin/reviews?error=The+game+being+edited+no+longer+exists", status_code=303)
+                before = serialize_game(game, db)
+                game.title = submission.proposed_title
+                game.developer = submission.proposed_developer
+                game.release_year = submission.proposed_release_year
+                game.description = submission.proposed_description
+                game.custom_fields = submission.proposed_custom_fields
+                db.execute(delete(GameTag).where(GameTag.game_id == game.id))
+                db.execute(delete(GameExternalId).where(GameExternalId.game_id == game.id))
+                db.flush()
+                apply_tags(db, game, json.loads(submission.proposed_tags or "[]"))
+                apply_external_ids(db, game, json.loads(submission.proposed_external_ids or "[]"))
+                after = serialize_game(game, db)
+                db.add(GameRevision(
+                    game_id=game.id, actor_id=reviewer.id, action="updated",
+                    summary=f"Approved edit submission #{submission.id}",
+                    snapshot_json=json.dumps({"before": before, "after": after}),
+                ))
+            else:
+                game = Game(canonical_id=new_canonical_id(), title=submission.proposed_title,
+                            developer=submission.proposed_developer, release_year=submission.proposed_release_year,
+                            description=submission.proposed_description, custom_fields=submission.proposed_custom_fields,
+                            created_by=submission.proposed_by)
+                db.add(game)
+                db.flush()
+                apply_tags(db, game, json.loads(submission.proposed_tags or "[]"))
+                apply_external_ids(db, game, json.loads(submission.proposed_external_ids or "[]"))
+                db.add(GameRevision(
+                    game_id=game.id, actor_id=reviewer.id, action="created",
+                    summary=f"Approved submission #{submission.id}",
+                    snapshot_json=json.dumps({"canonical_id": game.canonical_id, "title": game.title,
+                        "developer": game.developer, "release_year": game.release_year,
+                        "description": game.description, "custom_fields": json.loads(game.custom_fields or "{}")}),
+                ))
             for item in evidence:
                 db.add(GameProvenance(game_id=game.id, field_name="record", source_type="user-submission",
                                       source_label=submitter.email if submitter else "Unknown submitter",
                                       source_url=item.url, evidence_note=item.note, created_by=submission.proposed_by))
-            db.add(GameRevision(
-                game_id=game.id, actor_id=reviewer.id, action="created",
-                summary=f"Approved submission #{submission.id}",
-                snapshot_json=json.dumps({"canonical_id": game.canonical_id, "title": game.title,
-                    "developer": game.developer, "release_year": game.release_year,
-                    "description": game.description, "custom_fields": json.loads(game.custom_fields or "{}")}),
-            ))
             submission.status = "approved"
             submission.review_note = note
             submission.reviewed_by = reviewer.id
             submission.reviewed_at = utcnow()
             db.commit()
-            background_tasks.add_task(discover_game_ids_background, game.id)
+            if not submission.target_game_id:
+                background_tasks.add_task(discover_game_ids_background, game.id)
             return RedirectResponse(f"/games/{game.canonical_id}?notice=Submission+approved+and+published", status_code=303)
         except (HTTPException, ValueError, json.JSONDecodeError) as exc:
             db.rollback()
@@ -800,6 +824,79 @@ async def review_submission(submission_id: int, request: Request, db: Db, backgr
     submission.reviewed_at = utcnow()
     db.commit()
     return RedirectResponse("/admin/reviews?notice=Submission+rejected", status_code=303)
+
+
+@app.get("/games/{canonical_id}/edit", response_class=HTMLResponse)
+def edit_game_page(canonical_id: str, request: Request, db: Db):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    schema = db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game"))
+    return templates.TemplateResponse(request, "game_edit.html", {
+        "request": request, "app_name": APP_NAME, "user": user,
+        "record": serialize_game(game, db),
+        "schema_fields": validate_schema_document(schema.schema_json) if schema else [],
+        "is_admin": user.email.lower() in ADMIN_EMAILS,
+        "error": request.query_params.get("error"),
+    })
+
+
+@app.post("/games/{canonical_id}/propose-edit")
+async def propose_game_edit(canonical_id: str, request: Request, db: Db):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    from urllib.parse import quote_plus
+    form = await request.form()
+    title = str(form.get("title", "")).strip()
+    developer = str(form.get("developer", "")).strip()
+    release_year = str(form.get("release_year", "")).strip()
+    description = str(form.get("description", "")).strip()
+    try:
+        if not title or len(title) > 200:
+            raise ValueError("Title is required and must be under 200 characters")
+        year = int(release_year) if release_year else None
+        if year is not None and not 1950 <= year <= 2100:
+            raise ValueError("Release year must be between 1950 and 2100")
+        custom_raw = json.loads(str(form.get("custom_fields_json", "{}")) or "{}")
+        if not isinstance(custom_raw, dict):
+            raise ValueError("Custom fields must be a JSON object")
+        custom_fields = validate_custom_fields(db, custom_raw)
+        tags = [item.strip() for item in str(form.get("tags", "")).split(",") if item.strip()]
+        external_ids = json.loads(str(form.get("external_ids_json", "[]")) or "[]")
+        if not isinstance(external_ids, list) or any(not isinstance(item, dict) for item in external_ids):
+            raise ValueError("External IDs must be a JSON array of objects")
+        evidence_url = str(form.get("evidence_url", "")).strip()
+        evidence_note = str(form.get("evidence_note", "")).strip()
+        if evidence_url:
+            parsed = urlsplit(evidence_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc or len(evidence_url) > 1000:
+                raise ValueError("Evidence URL must be a valid HTTP or HTTPS link")
+        if len(evidence_note) > 3000:
+            raise ValueError("Evidence note must be under 3000 characters")
+    except (ValueError, json.JSONDecodeError, HTTPException) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        if isinstance(exc, HTTPException):
+            detail = exc.detail
+        return RedirectResponse("/games/" + canonical_id + "/edit?error=" + quote_plus(str(detail)), status_code=303)
+    submission = GameSubmission(
+        proposed_by=user.id, target_game_id=game.id, proposed_title=title,
+        proposed_developer=developer[:200], proposed_release_year=year,
+        proposed_description=description[:3000], proposed_custom_fields=json.dumps(custom_fields),
+        proposed_tags=json.dumps(tags), proposed_external_ids=json.dumps(external_ids), status="pending",
+    )
+    db.add(submission)
+    db.flush()
+    if evidence_url or evidence_note:
+        db.add(SubmissionEvidence(submission_id=submission.id, url=evidence_url, note=evidence_note))
+    db.commit()
+    return RedirectResponse("/submissions?notice=Edit+proposal+sent+for+review", status_code=303)
 
 
 @app.get("/games/{canonical_id}/history", response_class=HTMLResponse)
