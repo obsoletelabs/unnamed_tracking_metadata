@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ app_name }} · Propose an edit</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<header class="topbar"><a class="brand" href="/dashboard"><span class="brand-mark">A</span><span><b>atlas</b><small>record contribution</small></span></a><nav><a href="/dashboard">Dashboard</a><a href="/catalogue">Catalogue</a><a href="/achievements">Achievements</a><a href="/submissions">My submissions</a>{% if is_admin %}<a href="/admin">Administration</a>{% endif %}</nav><div class="account"><span class="signed-in">{{ user.display_name }}</span><form method="post" action="/auth/logout"><button class="button subtle" type="submit">Sign out</button></form></div></header>
+<main class="container page-container"><a class="back-link" href="/games/{{ record.id }}">← Back to record</a>
+<section class="page-heading"><div><div class="eyebrow">PROPOSE AN UPDATE · {{ record.id }}</div><h1>Improve this <span>record.</span></h1><p>Your changes are submitted as a revision proposal. The current catalogue record stays unchanged until an administrator approves it.</p></div></section>
+{% if error %}<div class="flash error">{{ error.replace('+',' ') }}</div>{% endif %}
+<form class="panel stack-form game-create-form" method="post" action="/games/{{ record.id }}/propose-edit">
+<div class="eyebrow">CORE DETAILS</div><label>Game title <span class="required-mark">Required</span><input name="title" required maxlength="200" value="{{ record.title }}"></label>
+<div class="form-row two"><label>Developer<input name="developer" maxlength="200" value="{{ record.developer }}"></label><label>Release year<input name="release_year" type="number" min="1950" max="2100" step="1" value="{{ record.release_year or '' }}"></label></div>
+<label>Description<textarea name="description" rows="4" maxlength="3000">{{ record.description }}</textarea></label>
+{% if schema_fields %}<div class="dynamic-fields"><div class="eyebrow">SHARED GAME SCHEMA</div><p class="muted">These values follow the administrator-managed schema used by the catalogue.</p>
+{% for field in schema_fields %}{% set value = record.custom_fields.get(field.key) %}
+<label>{{ field.label }}{% if field.required %}<span class="required-mark">Required</span>{% endif %}
+{% if field.type == 'boolean' %}<select name="custom__{{ field.key }}" {% if field.required %}required{% endif %}><option value="" {% if value is none %}selected{% endif %}>Not specified</option><option value="true" {% if value is sameas true %}selected{% endif %}>Yes</option><option value="false" {% if value is sameas false %}selected{% endif %}>No</option></select>
+{% elif field.type == 'enum' %}<select name="custom__{{ field.key }}" {% if field.multiple %}multiple{% endif %} {% if field.required %}required{% endif %}>{% if not field.multiple %}<option value="">Choose…</option>{% endif %}{% for option in field.options %}<option value="{{ option }}" {% if (field.multiple and value and option in value) or (not field.multiple and value == option) %}selected{% endif %}>{{ option }}</option>{% endfor %}</select>
+{% elif field.type == 'integer' or field.type == 'number' %}<input name="custom__{{ field.key }}" type="number" value="{{ value if value is not none else '' }}" {% if field.type == 'number' %}step="any"{% else %}step="1"{% endif %} {% if field.required %}required{% endif %} {% if field.multiple %}placeholder="Comma-separated values"{% endif %}>
+{% else %}<input name="custom__{{ field.key }}" value="{{ value if value is not none else '' }}" {% if field.type == 'url' %}type="url"{% elif field.type == 'date' %}type="date"{% else %}type="text"{% endif %} {% if field.required %}required{% endif %} {% if field.multiple %}placeholder="Comma-separated values"{% endif %}>{% endif %}
+</label>{% endfor %}</div>{% endif %}
+<div class="eyebrow">LINKED METADATA</div><label>Tags<input name="tags" maxlength="2000" value="{{ record.tags|join(', ') }}"><small class="muted">Comma-separated labels.</small></label>
+<label>Provider identifiers<textarea name="external_ids_json" rows="4" spellcheck="false">{{ record.external_ids|tojson(indent=2) }}</textarea><small class="muted">Keep registered provider slugs and external IDs. Use an empty array if no IDs should remain.</small></label>
+<section class="evidence-fields"><div class="eyebrow">EVIDENCE & SOURCE</div><p class="muted">Cite the source supporting this change. Reviewers can inspect it before approving the revision.</p><label>Source URL<input name="evidence_url" type="url" maxlength="1000" placeholder="https://official-site.example/game"></label><label>Evidence note<textarea name="evidence_note" rows="3" maxlength="3000" placeholder="What changed and which source supports it?"></textarea></label></section>
+<div class="form-actions"><button class="button primary" type="submit">Submit edit for review</button><a class="button subtle" href="/games/{{ record.id }}">Cancel</a></div>
+</form></main></body></html>
