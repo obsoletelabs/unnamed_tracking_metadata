@@ -469,12 +469,16 @@ def validate_schema_document(raw: str) -> list[dict]:
             raise HTTPException(status_code=422, detail="Field keys must be short identifiers using letters, digits and underscores")
         if key in seen or key in {"id", "title", "canonical_id", "created_at"}:
             raise HTTPException(status_code=422, detail=f"Duplicate or reserved field key: {key}")
-        if not isinstance(label, str) or not label.strip() or len(label) > 120 or kind not in allowed_types:
+        if not isinstance(label, str) or not label.strip() or len(label) > 120 or not isinstance(kind, str) or kind not in allowed_types:
             raise HTTPException(status_code=422, detail=f"Field {key} needs a label and a supported type")
         if not isinstance(item.get("required", False), bool) or not isinstance(item.get("multiple", False), bool):
             raise HTTPException(status_code=422, detail=f"Field {key}: required and multiple must be booleans")
-        if kind == "enum" and (not isinstance(item.get("options"), list) or not item["options"] or len(item["options"]) > 100):
-            raise HTTPException(status_code=422, detail=f"Enum field {key} needs a non-empty options array")
+        if kind == "boolean" and item.get("multiple", False):
+            raise HTTPException(status_code=422, detail=f"Boolean field {key} cannot be multi-value")
+        if kind == "enum":
+            options = item.get("options")
+            if not isinstance(options, list) or not options or len(options) > 100 or any(not isinstance(option, str) or not option or len(option) > 120 for option in options):
+                raise HTTPException(status_code=422, detail=f"Enum field {key} needs a non-empty array of short string options")
         seen.add(key)
     return fields
 
@@ -494,6 +498,10 @@ def validate_custom_fields(db: Session, values: dict[str, object]) -> dict[str, 
     for key, definition in definitions.items():
         value = values.get(key)
         if value is None or value == "":
+            if definition.get("required"):
+                raise HTTPException(status_code=422, detail=f"Missing required custom field: {key}")
+            continue
+        if definition.get("multiple") and isinstance(value, list) and not value:
             if definition.get("required"):
                 raise HTTPException(status_code=422, detail=f"Missing required custom field: {key}")
             continue
@@ -543,7 +551,10 @@ def apply_external_ids(db: Session, game: Game, external_ids: list[dict[str, str
         raise HTTPException(status_code=422, detail="At most 30 external IDs may be attached to a game")
     providers_seen = set()
     for item in external_ids:
-        slug, external_id = item.get("provider", "").strip().lower(), item.get("external_id", "").strip()
+        raw_slug, raw_external_id = item.get("provider", ""), item.get("external_id", "")
+        if not isinstance(raw_slug, str) or not isinstance(raw_external_id, str):
+            raise HTTPException(status_code=422, detail="Provider slug and external ID must be strings")
+        slug, external_id = raw_slug.strip().lower(), raw_external_id.strip()
         if not slug or len(slug) > 80 or not external_id or len(external_id) > 200:
             raise HTTPException(status_code=422, detail="Each external ID needs a provider slug and an ID (maximum 200 characters)")
         if slug in providers_seen:
@@ -563,6 +574,14 @@ def api_schemas(db: Db, authorization: Annotated[str | None, Header()] = None):
     schemas = db.scalars(select(SchemaDefinition).order_by(SchemaDefinition.name)).all()
     return {"items": [{"name": item.name, "display_name": item.display_name, "fields": json.loads(item.schema_json),
                        "updated_at": item.updated_at.isoformat() if item.updated_at else None} for item in schemas]}
+
+
+@app.get("/api/v1/providers")
+def api_providers(db: Db, authorization: Annotated[str | None, Header()] = None):
+    require_api_token(db, authorization)
+    providers = db.scalars(select(MetadataProvider).order_by(MetadataProvider.slug)).all()
+    return {"items": [{"slug": provider.slug, "name": provider.name, "homepage": provider.homepage or None}
+                      for provider in providers]}
 
 
 @app.get("/catalogue/search")
