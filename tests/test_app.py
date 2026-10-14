@@ -687,9 +687,8 @@ def test_change_feed_rejects_negative_cursor_and_caps_limit(client):
     headers = {"Authorization": f"Bearer {token}"}
     assert client.get("/api/v1/changes?after_revision_id=-1", headers=headers).status_code == 422
     response = client.get("/api/v1/changes?limit=9999", headers=headers)
-    assert response.status_code == 401
-    response = client.get("/api/v1/changes?limit=9999", headers=headers)
-    assert response.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["limit"] == 200
 
 
 def test_provider_directory_lists_only_safe_provider_metadata(client):
