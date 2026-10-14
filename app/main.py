@@ -868,10 +868,24 @@ async def propose_game_edit(canonical_id: str, request: Request, db: Db):
         year = int(release_year) if release_year else None
         if year is not None and not 1950 <= year <= 2100:
             raise ValueError("Release year must be between 1950 and 2100")
-        custom_raw = json.loads(str(form.get("custom_fields_json", "{}")) or "{}")
-        if not isinstance(custom_raw, dict):
-            raise ValueError("Custom fields must be a JSON object")
-        custom_fields = validate_custom_fields(db, custom_raw)
+        schema = db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game"))
+        definitions = validate_schema_document(schema.schema_json) if schema else []
+        custom_values = {}
+        for definition in definitions:
+            key = "custom__" + definition["key"]
+            raw = form.getlist(key) if definition.get("multiple") and definition.get("type") == "enum" else form.get(key)
+            if definition.get("multiple") and definition.get("type") != "enum" and isinstance(raw, str):
+                raw = [part.strip() for part in raw.split(",") if part.strip()]
+            if raw is None or raw == "":
+                continue
+            if definition.get("type") == "integer":
+                raw = [int(v) for v in raw] if isinstance(raw, list) else int(raw)
+            elif definition.get("type") == "number":
+                raw = [float(v) for v in raw] if isinstance(raw, list) else float(raw)
+            elif definition.get("type") == "boolean":
+                raw = str(raw).lower() == "true"
+            custom_values[definition["key"]] = raw
+        custom_fields = validate_custom_fields(db, custom_values)
         tags = [item.strip() for item in str(form.get("tags", "")).split(",") if item.strip()]
         external_ids = json.loads(str(form.get("external_ids_json", "[]")) or "[]")
         if not isinstance(external_ids, list) or any(not isinstance(item, dict) for item in external_ids):
