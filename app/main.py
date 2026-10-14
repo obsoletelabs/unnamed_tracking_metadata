@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 import httpx
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, func, inspect, select, text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, func, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -297,6 +297,10 @@ def startup() -> None:
     if "email_verified" not in user_columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT 1"))
+    submission_columns = {column["name"] for column in inspect(engine).get_columns("game_submissions")}
+    if "target_game_id" not in submission_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE game_submissions ADD COLUMN target_game_id INTEGER"))
     provider_columns = {column["name"] for column in inspect(engine).get_columns("metadata_providers")}
     if "adapter" not in provider_columns:
         with engine.begin() as connection:
