@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from jinja2 import TemplateSyntaxError
 from sqlalchemy import select
 
-from app.main import (ApiToken, Base, EmailVerification, Game, GameAchievement, MetadataProvider, SessionLocal, User, app, engine, hash_password, validate_schema_document, discover_provider_ids, utcnow)
+from app.main import (ApiToken, Base, EmailVerification, Game, GameAchievement, MetadataProvider, SchemaDefinition, SessionLocal, User, app, engine, hash_password, validate_schema_document, discover_provider_ids, utcnow)
 
 
 @pytest.fixture(autouse=True)
@@ -104,8 +104,7 @@ def test_authenticated_api_can_create_tagged_game_with_provider_id(client):
 def test_schema_validated_custom_fields_round_trip_and_required_fields(client):
     token = create_api_token()
     with SessionLocal() as db:
-        schema = db.scalar(select(__import__("app.main", fromlist=["SchemaDefinition"]).SchemaDefinition)
-                            .where(__import__("app.main", fromlist=["SchemaDefinition"]).SchemaDefinition.name == "game"))
+        schema = db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game"))
         schema.schema_json = json.dumps([
             {"key": "edition", "label": "Edition", "type": "enum", "options": ["standard", "deluxe"], "required": True},
             {"key": "player_count", "label": "Maximum players", "type": "integer"},
