@@ -85,6 +85,7 @@ app = FastAPI(title=APP_NAME, version="0.1.0", description="Prototype catalogue 
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=COOKIE_SECURE)
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 
 def get_db():
@@ -169,7 +170,15 @@ def require_api_token(db: Db, authorization: Annotated[str | None, Header()] = N
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(engine)
+    # create_all does not alter an existing database volume when a model gains a column.
+    columns = {column["name"] for column in inspect(engine).get_columns("games")}
+    if "custom_fields" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE games ADD COLUMN custom_fields TEXT NOT NULL DEFAULT '{}'"))
     with SessionLocal() as db:
+        if not db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game")):
+            db.add(SchemaDefinition(name="game", display_name="Game", schema_json="[]"))
+            db.commit()
         if (db.scalar(select(func.count()).select_from(Game)) or 0) == 0:
             examples = [
                 ("Hollow Knight", "Team Cherry", 2017, "A hand-drawn action-adventure through a ruined insect kingdom."),
@@ -592,14 +601,8 @@ def add_provider(request: Request, db: Db, slug: Annotated[str, Form()],
 
 
 @app.post("/api/v1/games/{canonical_id}/images", status_code=status.HTTP_201_CREATED)
-async def upload_game_image(canonical_id: str, file: UploadFile = File(...),
-                            db: Db = None, authorization: Annotated[str | None, Header()] = None):
-    # FastAPI resolves the annotated DB dependency via the shared alias in a dedicated dependency below.
-    if db is None:
-        db = SessionLocal()
-        owns_db = True
-    else:
-        owns_db = False
+async def upload_game_image(canonical_id: str, db: Db, file: UploadFile = File(...),
+                            authorization: Annotated[str | None, Header()] = None):
     try:
         require_api_token(db, authorization)
         game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
@@ -627,19 +630,3 @@ async def upload_game_image(canonical_id: str, file: UploadFile = File(...),
         return {"id": image_row.id, "game_id": canonical_id, "url": image_row.url, "content_type": image_row.content_type}
     finally:
         await file.close()
-        if owns_db:
-            db.close()
-
-
-@app.on_event("startup")
-def migrate_existing_database() -> None:
-    # create_all creates new tables but doesn't add columns to an existing SQLite volume.
-    Base.metadata.create_all(engine)
-    columns = {column["name"] for column in inspect(engine).get_columns("games")}
-    if "custom_fields" not in columns:
-        with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE games ADD COLUMN custom_fields TEXT NOT NULL DEFAULT '{}'"))
-    with SessionLocal() as db:
-        if not db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game")):
-            db.add(SchemaDefinition(name="game", display_name="Game", schema_json="[]"))
-        db.commit()
