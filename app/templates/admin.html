@@ -24,6 +24,7 @@
     </div>
     <form method="post" action="/admin/schemas/save" class="stack-form schema-form">
       <div class="form-row two"><label>Schema key<input name="name" required maxlength="80" value="game" pattern="[A-Za-z][A-Za-z0-9_]*" aria-describedby="schemaKeyHelp"><small id="schemaKeyHelp" class="muted">Use <code>game</code> for game record fields.</small></label><label>Display name<input name="display_name" required maxlength="120" value="Game"></label></div>
+      <div class="schema-builder"><div class="builder-heading"><div><b>Visual field builder</b><small>Configure fields here, or edit JSON below.</small></div><button class="button" type="button" id="addField">＋ Add field</button></div><div id="fieldBuilder" class="field-builder"></div></div>
       <label>Import a previously exported schema <input id="schemaFile" type="file" accept="application/json,.json"></label><label>Field definitions (JSON)<textarea name="schema_json" id="schemaJson" required rows="14" spellcheck="false">{{ schema_json }}</textarea></label>
       <div class="schema-help"><b>Supported field types</b><span><code>string</code> <code>integer</code> <code>number</code> <code>boolean</code> <code>date</code> <code>url</code> <code>enum</code></span><p>Each field has <code>key</code>, <code>label</code> and <code>type</code>; optional flags are <code>required</code> and <code>multiple</code>. Enum fields also need an <code>options</code> array.</p></div>
       <div class="admin-actions"><button class="button primary" type="submit">Validate and save schema</button><button class="button" type="button" id="loadExample">Load example fields</button><button class="button subtle" type="button" id="formatJson">Format JSON</button></div>
@@ -56,13 +57,46 @@
 </main>
 <script>
 const editor=document.getElementById('schemaJson');
-document.getElementById('formatJson').addEventListener('click',()=>{try{editor.value=JSON.stringify(JSON.parse(editor.value),null,2);editor.setCustomValidity('')}catch(e){editor.setCustomValidity('Enter valid JSON before formatting');editor.reportValidity()}});
-document.getElementById('schemaFile').addEventListener('change',async event=>{const file=event.target.files[0];if(!file)return;try{const parsed=JSON.parse(await file.text());if(Array.isArray(parsed)){editor.value=JSON.stringify(parsed,null,2)}else if(parsed&&Array.isArray(parsed.fields)){editor.value=JSON.stringify(parsed.fields,null,2);document.querySelector('[name="name"]').value=parsed.name||'game';document.querySelector('[name="display_name"]').value=parsed.display_name||parsed.name||'Game'}else{throw new Error('Expected a schema array or exported schema object')}}catch(error){alert('Could not import schema JSON: '+error.message)}});
+const builder=document.getElementById('fieldBuilder');
+const types=['string','integer','number','boolean','date','url','enum'];
+function syncJson(){
+ const fields=[...builder.children].map(row=>{
+  const value=selector=>row.querySelector(selector);
+  const field={key:value('[data-key]').value.trim(),label:value('[data-label]').value.trim(),type:value('[data-type]').value};
+  if(value('[data-required]').checked)field.required=true;
+  if(value('[data-multiple]').checked)field.multiple=true;
+  if(field.type==='enum')field.options=value('[data-options]').value.split(',').map(v=>v.trim()).filter(Boolean);
+  return field;
+ });
+ editor.value=JSON.stringify(fields,null,2);
+}
+function addField(field={}){
+ const row=document.createElement('div');row.className='field-row';
+ const key=document.createElement('input');key.dataset.key='1';key.placeholder='field_key';key.value=field.key||'';key.setAttribute('aria-label','Field key');
+ const label=document.createElement('input');label.dataset.label='1';label.placeholder='Display label';label.value=field.label||'';label.setAttribute('aria-label','Field label');
+ const type=document.createElement('select');type.dataset.type='1';type.setAttribute('aria-label','Field type');
+ types.forEach(t=>{const option=document.createElement('option');option.value=t;option.textContent=t;type.append(option)});type.value=types.includes(field.type)?field.type:'string';
+ const options=document.createElement('input');options.dataset.options='1';options.placeholder='Enum options, comma-separated';options.value=(field.options||[]).join(', ');options.setAttribute('aria-label','Enum options');options.hidden=type.value!=='enum';
+ const flags=document.createElement('div');flags.className='field-flags';
+ const requiredLabel=document.createElement('label');const required=document.createElement('input');required.type='checkbox';required.dataset.required='1';required.checked=!!field.required;requiredLabel.append(required,document.createTextNode(' Required'));
+ const multipleLabel=document.createElement('label');const multiple=document.createElement('input');multiple.type='checkbox';multiple.dataset.multiple='1';multiple.checked=!!field.multiple;multipleLabel.append(multiple,document.createTextNode(' Multiple'));
+ const remove=document.createElement('button');remove.type='button';remove.className='button subtle danger';remove.textContent='Remove';remove.addEventListener('click',()=>{row.remove();syncJson()});
+ flags.append(requiredLabel,multipleLabel,remove);row.append(key,label,type,options,flags);builder.append(row);
+ row.addEventListener('input',syncJson);row.addEventListener('change',()=>{options.hidden=type.value!=='enum';if(type.value==='boolean'){multiple.checked=false;multiple.disabled=true}else{multiple.disabled=false}syncJson()});
+ if(type.value==='boolean'){multiple.checked=false;multiple.disabled=true}
+}
+function loadEditorIntoBuilder(){
+ try{const parsed=JSON.parse(editor.value);if(!Array.isArray(parsed))throw new Error('Schema fields must be a JSON array');builder.replaceChildren();parsed.forEach(addField)}
+ catch(error){console.warn('Visual builder could not parse the schema JSON',error)}
+}
+document.getElementById('addField').addEventListener('click',()=>{addField();syncJson()});
+document.getElementById('formatJson').addEventListener('click',()=>{try{editor.value=JSON.stringify(JSON.parse(editor.value),null,2);loadEditorIntoBuilder()}catch(e){editor.setCustomValidity('Enter valid JSON before formatting');editor.reportValidity()}});
+document.getElementById('schemaFile').addEventListener('change',async event=>{const file=event.target.files[0];if(!file)return;try{const parsed=JSON.parse(await file.text());if(Array.isArray(parsed)){editor.value=JSON.stringify(parsed,null,2)}else if(parsed&&Array.isArray(parsed.fields)){editor.value=JSON.stringify(parsed.fields,null,2);document.querySelector('[name="name"]').value=parsed.name||'game';document.querySelector('[name="display_name"]').value=parsed.display_name||parsed.name||'Game'}else{throw new Error('Expected a schema array or exported schema object')}loadEditorIntoBuilder()}catch(error){alert('Could not import schema JSON: '+error.message)}});
 document.getElementById('loadExample').addEventListener('click',()=>{editor.value=JSON.stringify([
  {key:'genres',label:'Genres',type:'string',multiple:true},
  {key:'edition',label:'Edition',type:'enum',options:['standard','deluxe','complete']},
  {key:'player_count',label:'Maximum players',type:'integer'},
  {key:'is_remake',label:'Is a remake',type:'boolean'}
-],null,2)});
-</script>
+],null,2);loadEditorIntoBuilder()});
+loadEditorIntoBuilder();</script>
 </body></html>
