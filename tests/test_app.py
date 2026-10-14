@@ -247,7 +247,7 @@ def test_provider_discovery_attaches_only_an_exact_title_match(client, monkeypat
 
 def test_templates_parse():
     from app.main import templates
-    for name in ("admin.html", "auth.html", "dashboard.html", "catalogue.html", "game_detail.html", "achievements.html", "admin_home.html", "providers.html", "users.html", "game_form.html", "setup.html", "submissions.html", "reviews.html", "game_history.html"):
+    for name in ("admin.html", "auth.html", "dashboard.html", "catalogue.html", "game_detail.html", "achievements.html", "admin_home.html", "providers.html", "users.html", "game_form.html", "setup.html", "submissions.html", "reviews.html", "game_history.html", "game_edit.html"):
         try:
             templates.env.get_template(name)
         except TemplateSyntaxError as exc:
@@ -302,3 +302,38 @@ def test_browser_game_submission_requires_review_and_records_provenance(client, 
         assert proposal.status == "approved"
         assert db.scalar(select(GameProvenance).where(GameProvenance.game_id == game.id)) is not None
         assert db.scalar(select(GameRevision).where(GameRevision.game_id == game.id)) is not None
+
+    client.post("/auth/logout", follow_redirects=False)
+    client.post("/auth/login", data={
+        "email": "contributor@example.test", "password": "contributor-password-123"
+    }, follow_redirects=False)
+    canonical_id = game.canonical_id
+    proposed_edit = client.post(f"/games/{canonical_id}/propose-edit", data={
+        "title": "Reviewed Example Game — Updated", "developer": "Example Studio",
+        "release_year": "2025", "description": "Updated after source review.",
+        "custom_fields_json": "{}", "tags": "demo, adventure, verified",
+        "external_ids_json": "[]", "evidence_url": "https://example.test/updated",
+        "evidence_note": "Updated official publisher page",
+    }, follow_redirects=False)
+    assert proposed_edit.status_code == 303
+    with SessionLocal() as db:
+        edit_proposal = db.scalar(select(GameSubmission).where(
+            GameSubmission.proposed_title == "Reviewed Example Game — Updated"))
+        assert edit_proposal is not None and edit_proposal.status == "pending"
+        assert db.get(Game, game.id).title == "Reviewed Example Game"
+        edit_id = edit_proposal.id
+    client.post("/auth/logout", follow_redirects=False)
+    client.post("/auth/login", data={
+        "email": "admin@example.test", "password": "admin-password-123"
+    }, follow_redirects=False)
+    approved_edit = client.post(f"/admin/reviews/{edit_id}/decision", data={
+        "decision": "approve", "review_note": "Updated source checked."
+    }, follow_redirects=False)
+    assert approved_edit.status_code == 303
+    with SessionLocal() as db:
+        edited_game = db.get(Game, game.id)
+        assert edited_game.title == "Reviewed Example Game — Updated"
+        revisions = db.scalars(select(GameRevision).where(GameRevision.game_id == game.id)
+                                .order_by(GameRevision.created_at)).all()
+        assert any(item.action == "updated" and '"before"' in item.snapshot_json and '"after"' in item.snapshot_json
+                   for item in revisions)
