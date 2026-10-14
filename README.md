@@ -74,11 +74,19 @@ curl -X POST 'http://localhost:8000/api/v1/games' \
 
 The actual canonical ID returned by the API should be used for subsequent lookups.
 
+Upload an image (the returned URL also requires an API key):
+
+```sh
+curl -X POST 'http://localhost:8000/api/v1/games/gm_YOURID/images' \
+  -H 'Authorization: Bearer YOUR_API_KEY' \
+  -F 'file=@cover.png'
+```
+
 ## Important limitations
 
 This is a **local MVP/mockup, not a secure public beta**. It now has a schema registry, provider identifiers, tags, custom fields and basic image uploads, but is still early-stage. Achievement sets, field-level provenance, revisions, moderation, sync cursors, quotas, rate limits and multi-region routing are not implemented yet.
 
-Before exposing this publicly, it needs security hardening, including CSRF protection for browser forms, secure deployment configuration and cookie settings behind HTTPS, abuse controls/rate limiting, account recovery and verification, scoped API keys, formal database migrations, automated tests, logging and backup/restore procedures. The schema JSON editor currently defines simple field contracts; it is not a general-purpose arbitrary schema execution system. The default session secret is for local development only. Do not use real passwords or production credentials in this prototype.
+Before exposing this publicly, it needs security hardening, including CSRF protection for browser forms, secure deployment configuration and cookie settings behind HTTPS, abuse controls/rate limiting, account recovery and verification, scoped API keys, formal database migrations, broader automated tests, logging and backup/restore procedures. The schema JSON editor currently defines simple field contracts; it is not a general-purpose arbitrary schema execution system. The default session secret is for local development only. Do not use real passwords or production credentials in this prototype.
 
 ## Files
 
