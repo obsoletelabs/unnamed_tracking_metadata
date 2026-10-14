@@ -566,3 +566,58 @@ def test_api_lookup_requires_read_scope(client):
     response = client.get("/api/v1/lookup?provider=igdb&external_id=x",
                           headers={"Authorization": f"Bearer {raw}"})
     assert response.status_code == 403
+
+
+def test_catalogue_stats_are_scoped_and_do_not_expose_submission_details(client):
+    token = create_api_token()
+    assert client.get("/api/v1/stats").status_code == 401
+    response = client.get("/api/v1/stats", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    assert response.json()["games"] >= 1
+    assert "users" not in response.json()
+
+
+def test_catalogue_export_is_versioned_paginated_and_includes_achievements(client):
+    token = create_api_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    created = client.post("/api/v1/games", headers=headers, json={
+        "title": "Exported Game", "tags": ["export-test"]
+    })
+    assert created.status_code == 201, created.text
+    game_id = created.json()["id"]
+    achievement = client.post(f"/api/v1/games/{game_id}/achievements", headers=headers,
+                              json={"name": "Exporter", "description": "Included in backup"})
+    assert achievement.status_code == 201, achievement.text
+    response = client.get("/api/v1/export?limit=1&offset=0", headers=headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["format"] == "atlas-metadata-export"
+    assert payload["format_version"] == 1
+    assert payload["pagination"]["total"] >= 1
+    assert len(payload["items"]) == 1
+    assert "schema" in payload and "providers" in payload
+    full = client.get("/api/v1/export?limit=100&offset=0", headers=headers).json()
+    exported = next(item for item in full["items"] if item["id"] == game_id)
+    assert exported["achievements"][0]["name"] == "Exporter"
+    assert exported["tags"] == ["export-test"]
+
+
+def test_related_games_rank_by_shared_tags_and_require_read_scope(client):
+    token = create_api_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    first = client.post("/api/v1/games", headers=headers,
+                        json={"title": "Related Seed", "tags": ["co-op", "indie"]})
+    second = client.post("/api/v1/games", headers=headers,
+                         json={"title": "Related Strong", "tags": ["co-op", "indie"]})
+    third = client.post("/api/v1/games", headers=headers,
+                        json={"title": "Related Weak", "tags": ["co-op"]})
+    assert first.status_code == second.status_code == third.status_code == 201
+    seed_id = first.json()["id"]
+    assert client.get(f"/api/v1/games/{seed_id}/related").status_code == 401
+    response = client.get(f"/api/v1/games/{seed_id}/related", headers=headers)
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert items[0]["game"]["id"] == second.json()["id"]
+    assert items[0]["shared_tags"] == 2
+    assert items[1]["game"]["id"] == third.json()["id"]
+    assert items[1]["shared_tags"] == 1

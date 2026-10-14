@@ -1401,6 +1401,85 @@ def apply_external_ids(db: Session, game: Game, external_ids: list[dict[str, str
 
 
 
+
+
+@app.get("/api/v1/stats")
+def api_catalogue_stats(db: Db, authorization: Annotated[str | None, Header()] = None) -> dict:
+    """Return aggregate catalogue counts without exposing user or submission data."""
+    require_api_token(db, authorization, "read")
+    return {
+        "games": db.scalar(select(func.count()).select_from(Game)) or 0,
+        "achievements": db.scalar(select(func.count()).select_from(GameAchievement)) or 0,
+        "tags": db.scalar(select(func.count()).select_from(Tag)) or 0,
+        "providers": db.scalar(select(func.count()).select_from(MetadataProvider)) or 0,
+        "pending_submissions": db.scalar(select(func.count()).select_from(GameSubmission).where(
+            GameSubmission.status == "pending")) or 0,
+    }
+
+
+@app.get("/api/v1/export")
+def api_catalogue_export(db: Db, limit: int = 100, offset: int = 0,
+                         authorization: Annotated[str | None, Header()] = None) -> dict:
+    """Paginated, versioned JSON snapshot for backup and offline synchronisation."""
+    require_api_token(db, authorization, "read")
+    limit, offset = max(1, min(limit, 100)), max(0, offset)
+    total = db.scalar(select(func.count()).select_from(Game)) or 0
+    games = db.scalars(select(Game).order_by(Game.canonical_id).offset(offset).limit(limit)).all()
+    items = []
+    for game in games:
+        item = serialize_game(game, db)
+        item["achievements"] = [{
+            "name": achievement.name,
+            "description": achievement.description,
+            "icon_url": achievement.icon_url,
+            "external_id": achievement.external_id,
+            "hidden": achievement.hidden,
+        } for achievement in db.scalars(
+            select(GameAchievement).where(GameAchievement.game_id == game.id)
+            .order_by(GameAchievement.name, GameAchievement.id)
+        ).all()]
+        items.append(item)
+    schema = db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game"))
+    providers = db.scalars(select(MetadataProvider).order_by(MetadataProvider.slug)).all()
+    return {
+        "format": "atlas-metadata-export",
+        "format_version": 1,
+        "generated_at": utcnow().isoformat(),
+        "pagination": {"total": total, "limit": limit, "offset": offset,
+                       "next_offset": offset + len(items) if offset + len(items) < total else None},
+        "schema": json.loads(schema.schema_json) if schema else [],
+        "providers": [{"slug": provider.slug, "name": provider.name, "homepage": provider.homepage,
+                       "adapter": provider.adapter} for provider in providers],
+        "items": items,
+    }
+
+
+@app.get("/api/v1/games/{canonical_id}/related")
+def api_related_games(canonical_id: str, db: Db, limit: int = 10,
+                      authorization: Annotated[str | None, Header()] = None) -> dict:
+    """Rank related games by shared tags; stable tie-breaking keeps clients predictable."""
+    require_api_token(db, authorization, "read")
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    limit = max(1, min(limit, 30))
+    tag_ids = db.scalars(select(GameTag.tag_id).where(GameTag.game_id == game.id)).all()
+    if not tag_ids:
+        return {"game_id": canonical_id, "items": []}
+    rows = db.execute(
+        select(Game, func.count(GameTag.tag_id).label("shared_tags"))
+        .join(GameTag, GameTag.game_id == Game.id)
+        .where(GameTag.tag_id.in_(tag_ids), Game.id != game.id)
+        .group_by(Game.id)
+        .order_by(func.count(GameTag.tag_id).desc(), Game.title.asc(), Game.canonical_id.asc())
+        .limit(limit)
+    ).all()
+    return {"game_id": canonical_id, "items": [
+        {"shared_tags": int(shared_tags), "game": serialize_game(candidate, db)}
+        for candidate, shared_tags in rows
+    ]}
+
+
 @app.get("/api/v1/games/{canonical_id}/history")
 def api_game_history(canonical_id: str, db: Db, limit: int = 50, offset: int = 0,
                      authorization: Annotated[str | None, Header()] = None):

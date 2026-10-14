@@ -182,3 +182,12 @@ Two read-scoped endpoints support client-side identity matching and filter UIs:
 - `GET /api/v1/tags?q=...&limit=...&offset=...` returns matching tags and the number of catalogue games using each tag.
 
 These endpoints use the same canonical ID mappings and tag associations as the browser and submission-review workflows.
+
+
+### Export, catalogue health and related-game discovery
+
+- \`GET /api/v1/stats\` provides aggregate game, achievement, tag, provider, and pending-review counts without exposing account data.
+- \`GET /api/v1/export?limit=100&offset=0\` returns a versioned, paginated JSON snapshot with canonical game records, tags, external IDs, image references, achievements, schema definitions, and provider metadata. It is suitable for offline sync and backup tooling; it is read-only and does not provide a restore/import endpoint.
+- \`GET /api/v1/games/{canonical_id}/related\` ranks records by shared tags, with stable title/ID tie-breaking and a bounded result count.
+
+All three endpoints require an API key with the \`read\` scope. Export pages are capped at 100 games to avoid unexpectedly large responses.
