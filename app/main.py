@@ -845,6 +845,92 @@ def apply_external_ids(db: Session, game: Game, external_ids: list[dict[str, str
         db.add(GameExternalId(game_id=game.id, provider_id=provider.id, external_id=external_id))
 
 
+@app.get("/api/v1/games/{canonical_id}/achievements")
+def list_game_achievements(canonical_id: str, db: Db, authorization: Annotated[str | None, Header()] = None):
+    require_api_token(db, authorization)
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    items = db.scalars(select(GameAchievement).where(GameAchievement.game_id == game.id)
+                       .order_by(GameAchievement.name)).all()
+    return {"game_id": canonical_id, "items": [
+        {"id": item.id, "name": item.name, "description": item.description, "icon_url": item.icon_url,
+         "external_id": item.external_id, "hidden": item.hidden, "created_at": item.created_at.isoformat()}
+        for item in items]}
+
+
+@app.post("/api/v1/games/{canonical_id}/achievements", status_code=status.HTTP_201_CREATED)
+def create_game_achievement(canonical_id: str, payload: AchievementCreate, db: Db,
+                            authorization: Annotated[str | None, Header()] = None):
+    _, user = require_api_token(db, authorization)
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Achievement name cannot be blank")
+    if payload.icon_url and not payload.icon_url.startswith(("https://", "/api/v1/images/")):
+        raise HTTPException(status_code=422, detail="Achievement icon must use HTTPS or an uploaded API image")
+    if db.scalar(select(GameAchievement).where(GameAchievement.game_id == game.id, GameAchievement.name == name)):
+        raise HTTPException(status_code=409, detail="An achievement with that name already exists for this game")
+    item = GameAchievement(game_id=game.id, name=name, description=payload.description.strip(),
+                           icon_url=payload.icon_url.strip(), external_id=payload.external_id.strip(),
+                           hidden=payload.hidden, created_by=user.id)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return {"id": item.id, "game_id": canonical_id, "name": item.name, "description": item.description,
+            "icon_url": item.icon_url, "external_id": item.external_id, "hidden": item.hidden}
+
+
+@app.post("/api/v1/games/{canonical_id}/discover-identifiers")
+def api_discover_identifiers(canonical_id: str, db: Db, authorization: Annotated[str | None, Header()] = None):
+    require_api_token(db, authorization)
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    return {"game_id": canonical_id, **discover_provider_ids(db, game)}
+
+
+@app.post("/games/{canonical_id}/discover-identifiers")
+def browser_discover_identifiers(canonical_id: str, request: Request, db: Db):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    result = discover_provider_ids(db, game)
+    summary = f"Discovery finished: {len(result['added'])} ID(s) added, {len(result['suggestions'])} provider(s) need review."
+    from urllib.parse import quote_plus
+    return RedirectResponse(f"/games/{canonical_id}?notice={quote_plus(summary)}", status_code=303)
+
+
+@app.post("/games/{canonical_id}/achievements")
+def browser_add_achievement(canonical_id: str, request: Request, db: Db,
+                            name: Annotated[str, Form()], description: Annotated[str, Form()] = "",
+                            external_id: Annotated[str, Form()] = "", icon_url: Annotated[str, Form()] = "",
+                            hidden: Annotated[str | None, Form()] = None):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    name = name.strip()
+    from urllib.parse import quote_plus
+    if not name or len(name) > 200 or len(description) > 3000 or len(external_id) > 200:
+        return RedirectResponse(f"/games/{canonical_id}?error={quote_plus('Achievement fields are invalid')}", status_code=303)
+    if icon_url and not icon_url.startswith(("https://", "/api/v1/images/")):
+        return RedirectResponse(f"/games/{canonical_id}?error={quote_plus('Icon URL must use HTTPS or an uploaded image')}", status_code=303)
+    if db.scalar(select(GameAchievement).where(GameAchievement.game_id == game.id, GameAchievement.name == name)):
+        return RedirectResponse(f"/games/{canonical_id}?error={quote_plus('That achievement already exists')}", status_code=303)
+    db.add(GameAchievement(game_id=game.id, name=name, description=description.strip(), icon_url=icon_url.strip(),
+                           external_id=external_id.strip(), hidden=hidden == "on", created_by=user.id))
+    db.commit()
+    return RedirectResponse(f"/games/{canonical_id}?notice={quote_plus('Achievement added')}", status_code=303)
+
+
 @app.get("/api/v1/schemas")
 def api_schemas(db: Db, authorization: Annotated[str | None, Header()] = None):
     require_api_token(db, authorization)
