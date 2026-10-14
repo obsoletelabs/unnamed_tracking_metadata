@@ -8,14 +8,14 @@ Requirements: Docker Engine and the Docker Compose plugin.
 
 1. Copy `.env.example` to `.env`.
 2. Set `SESSION_SECRET` to a long random value. Do not use the example value for an instance other people can access.
-3. Set `ADMIN_EMAILS` to the email address you will register with if you want to use the schema/provider admin screens. Separate multiple addresses with commas.
+3. Set `ADMIN_EMAILS` to the email address that will own the initial administrator account. Separate multiple addresses with commas.
 4. Start the app:
 
    ```sh
    docker compose up --build -d
    ```
 
-5. Open [http://localhost:8000](http://localhost:8000).
+5. Open [http://localhost:8000](http://localhost:8000). If the database has no users, the app opens the first-run setup screen; create the administrator using an email listed in `ADMIN_EMAILS`.
 
 The default database is SQLite in a named Docker volume, so records survive container recreation. To stop the service, run `docker compose down`. This preserves the data volume; `docker compose down -v` deletes it.
 
@@ -33,13 +33,19 @@ The overlay configures the API to use PostgreSQL on the internal Compose network
 
 - Responsive catalogue website backed by the live database
 - Login-required website search by title, developer or canonical ID
-- Register an account, sign in and sign out
+- Dedicated sign-in, first-run administrator setup, dashboard, catalogue, game detail and achievements pages
+- Admin-created user accounts; optional self-registration only when SMTP is configured and explicitly enabled
+- SMTP email verification is required before self-registered users can sign in
+- Sign in and sign out
 - Generate API bearer tokens; the full token is displayed once
 - List owned tokens and revoke a token
-- Add a game through the website after signing in
+- Add games through a schema-driven form; canonical IDs are generated automatically
+- Background provider ID discovery for exact title matches, with ambiguous candidates left for review
+- Add achievements to games with descriptions, optional icons, provider IDs, and hidden/secret status
 - API-key-required JSON reads and writes; health checks remain public
 - Admin schema editor with JSON export and validated schema-driven game fields
 - Metadata provider registry and per-provider external game IDs
+- Built-in discovery adapters for Steam Store search, IGDB (optional credentials), and RAWG (optional API key)
 - Relational tags, schema-validated custom fields, and image uploads (PNG/JPEG/WebP/GIF, 5 MiB max)
 - Auto-generated interactive API docs at `/docs` and OpenAPI at `/openapi.json`
 - Health check at `/health`
@@ -72,7 +78,26 @@ curl -X POST 'http://localhost:8000/api/v1/games' \
   -d '{"title":"Tunic","developer":"TUNIC Team","release_year":2022,"description":"An isometric adventure."}'
 ```
 
-The actual canonical ID returned by the API should be used for subsequent lookups.
+The actual canonical ID returned by the API should be used for subsequent lookups. Creating a game schedules background discovery against registered provider adapters. Exact title matches may be attached automatically; uncertain matches are not silently assigned.
+
+List and create achievements for a game:
+
+```sh
+curl 'http://localhost:8000/api/v1/games/gm_YOURID/achievements' \\
+  -H 'Authorization: Bearer YOUR_API_KEY'
+
+curl -X POST 'http://localhost:8000/api/v1/games/gm_YOURID/achievements' \\
+  -H 'Authorization: Bearer YOUR_API_KEY' \\
+  -H 'Content-Type: application/json' \\
+  -d '{"name":"First steps","description":"Complete the tutorial"}'
+```
+
+Run provider ID discovery manually:
+
+```sh
+curl -X POST 'http://localhost:8000/api/v1/games/gm_YOURID/discover-identifiers' \\
+  -H 'Authorization: Bearer YOUR_API_KEY'
+```
 
 Upload an image (the returned URL also requires an API key):
 
@@ -84,15 +109,17 @@ curl -X POST 'http://localhost:8000/api/v1/games/gm_YOURID/images' \
 
 ## Important limitations
 
-This is a **local MVP/mockup, not a secure public beta**. It now has a schema registry, provider identifiers, tags, custom fields and basic image uploads, but is still early-stage. Achievement sets, field-level provenance, revisions, moderation, sync cursors, quotas, rate limits and multi-region routing are not implemented yet.
+This is a **local MVP/mockup, not a secure public beta**. It now has separate user/admin pages, SMTP verification, admin account provisioning, schema-driven game entry, basic achievements, provider ID discovery and image uploads, but is still early-stage. Achievement unlock/progress tracking, field-level provenance, revisions, moderation, provider refresh schedules, sync cursors, quotas, rate limits, API scopes and multi-region routing are not implemented yet.
 
-Before exposing this publicly, it needs security hardening, including CSRF protection for browser forms, secure deployment configuration and cookie settings behind HTTPS, abuse controls/rate limiting, account recovery and verification, scoped API keys, formal database migrations, broader automated tests, logging and backup/restore procedures. The schema JSON editor currently defines simple field contracts; it is not a general-purpose arbitrary schema execution system. The default session secret is for local development only. Do not use real passwords or production credentials in this prototype.
+Before exposing this publicly, it needs security hardening, including CSRF protection for browser forms, secure deployment configuration and cookie settings behind HTTPS, abuse controls/rate limiting, password-reset/invitation workflows, scoped API keys, formal database migrations, broader automated tests, logging and backup/restore procedures. SMTP must be configured and `ALLOW_SELF_REGISTRATION=true` set explicitly to enable public self-registration. The schema JSON editor currently defines simple field contracts; it is not a general-purpose arbitrary schema execution system. The default session secret is for local development only. Do not use real passwords or production credentials in this prototype.
 
 ## Files
 
 - `app/main.py` — FastAPI application, database models, web routes and JSON API
-- `app/templates/index.html` — website and account dashboard
-- `app/templates/admin.html` — schema and provider administration
+- `app/templates/auth.html` and `setup.html` — sign-in, registration, first-admin setup
+- `app/templates/dashboard.html` — user dashboard and API key manager
+- `app/templates/catalogue.html`, `game_form.html`, `game_detail.html`, `achievements.html` — catalogue and game workflows
+- `app/templates/admin_home.html`, `admin.html`, `providers.html`, `users.html` — separate administration screens
 - `app/static/style.css` — responsive styling
 - `Dockerfile`, `compose.yaml`, `compose.postgres.yaml` — container setup
 - `index.html` — earlier standalone visual concept retained for comparison
