@@ -724,3 +724,30 @@ def test_quality_report_requires_read_scope_and_caps_page_size(client):
     response = client.get("/api/v1/quality/report?limit=9999", headers=headers)
     assert response.status_code == 200
     assert len(response.json()["items"]) <= 100
+
+
+def test_duplicate_candidates_group_case_insensitive_titles_without_merging(client):
+    token = create_api_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    first = client.post("/api/v1/games", headers=headers, json={"title": "Duplicate Candidate Test"})
+    second = client.post("/api/v1/games", headers=headers, json={"title": " duplicate candidate test "})
+    assert first.status_code == second.status_code == 201
+    response = client.get("/api/v1/quality/duplicate-candidates", headers=headers)
+    assert response.status_code == 200
+    group = next(group for group in response.json()["groups"]
+                 if group["normalized_title"] == "duplicate candidate test")
+    assert {item["id"] for item in group["candidates"]} == {first.json()["id"], second.json()["id"]}
+    assert response.json()["matching_rule"].startswith("case-insensitive")
+    # Detection is advisory: both records remain in the catalogue.
+    with SessionLocal() as db:
+        assert db.scalar(select(Game).where(Game.canonical_id == first.json()["id"])) is not None
+        assert db.scalar(select(Game).where(Game.canonical_id == second.json()["id"])) is not None
+
+
+def test_duplicate_candidates_require_read_scope_and_bound_group_page(client):
+    token = create_api_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get("/api/v1/quality/duplicate-candidates").status_code == 401
+    response = client.get("/api/v1/quality/duplicate-candidates?limit=9999", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["pagination"]["limit"] == 100

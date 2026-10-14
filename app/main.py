@@ -1464,6 +1464,41 @@ def api_provider_directory(db: Db,
     } for provider in providers], "count": len(providers)}
 
 
+@app.get("/api/v1/quality/duplicate-candidates")
+def api_duplicate_candidates(db: Db, limit: int = 50, offset: int = 0,
+                             authorization: Annotated[str | None, Header()] = None) -> dict:
+    """Surface exact case-insensitive title collisions for human review; never merge automatically."""
+    require_api_token(db, authorization, "read")
+    limit, offset = max(1, min(limit, 100)), max(0, offset)
+    title_key = func.lower(func.trim(Game.title))
+    duplicate_titles = (select(title_key.label("title_key"))
+                        .group_by(title_key)
+                        .having(func.count(Game.id) > 1)
+                        .subquery())
+    total = db.scalar(select(func.count()).select_from(duplicate_titles)) or 0
+    keys = db.scalars(select(duplicate_titles.c.title_key).order_by(duplicate_titles.c.title_key)
+                      .offset(offset).limit(limit)).all()
+    groups = []
+    for key in keys:
+        games = db.scalars(select(Game).where(title_key == key)
+                           .order_by(Game.canonical_id.asc())).all()
+        groups.append({"normalized_title": key, "candidates": [
+            {"id": game.canonical_id, "title": game.title, "developer": game.developer,
+             "release_year": game.release_year,
+             "external_ids": [{"provider": provider.slug, "external_id": external_id.external_id}
+                 for external_id, provider in db.execute(
+                     select(GameExternalId, MetadataProvider)
+                     .join(MetadataProvider, MetadataProvider.id == GameExternalId.provider_id)
+                     .where(GameExternalId.game_id == game.id)
+                     .order_by(MetadataProvider.slug)
+                 ).all()]}
+            for game in games
+        ]})
+    return {"groups": groups, "pagination": {"total_groups": total, "limit": limit, "offset": offset,
+            "next_offset": offset + len(groups) if offset + len(groups) < total else None},
+            "matching_rule": "case-insensitive trimmed exact title; candidates require human review"}
+
+
 @app.get("/api/v1/quality/report")
 def api_quality_report(db: Db, limit: int = 50, offset: int = 0,
                        authorization: Annotated[str | None, Header()] = None) -> dict:

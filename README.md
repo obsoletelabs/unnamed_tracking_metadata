@@ -210,3 +210,6 @@ Both endpoints require an API key with the \`read\` scope. The change feed is ba
 - Results are deterministically ordered by completeness, title and canonical ID; pages are capped at 100 records. The report is advisory and does not modify published data.
 
 Requires a \`read\`-scoped API key. The score is a transparent completeness heuristic, not a claim that the metadata is factually correct.
+
+
+- \`GET /api/v1/quality/duplicate-candidates?limit=50&offset=0\` groups records with the same trimmed, case-insensitive title and includes their canonical IDs, developer/year and provider IDs. This deliberately conservative detector only suggests candidates; it never merges or deletes records. Same-title sequels, ports and editions can be legitimate, so human review remains required.
