@@ -380,7 +380,8 @@ def verify_email(request: Request, db: Db, token: str = ""):
     digest = hashlib.sha256(token.encode()).hexdigest() if token else ""
     record = db.scalar(select(EmailVerification).where(EmailVerification.token_hash == digest,
                                                        EmailVerification.used_at.is_(None)))
-    if not record or record.expires_at < utcnow():
+    expires_at = record.expires_at.replace(tzinfo=timezone.utc) if record and record.expires_at.tzinfo is None else (record.expires_at if record else None)
+    if not record or expires_at < utcnow():
         return RedirectResponse("/login?error=That+verification+link+is+invalid+or+expired", status_code=303)
     user = db.get(User, record.user_id)
     if not user:
