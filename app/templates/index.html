@@ -9,7 +9,7 @@
 <body>
 <header class="topbar">
   <a class="brand" href="/"><span class="brand-mark">A</span><span><b>atlas</b><small>metadata catalogue</small></span></a>
-  <nav><a href="#catalogue">Explore</a><a href="#api">API docs</a><a href="#contribute">Contribute</a></nav>
+  <nav><a href="#catalogue">Explore</a><a href="#api">API docs</a><a href="#contribute">Contribute</a>{% if is_admin %}<a href="/admin">Admin ↗</a>{% endif %}</nav>
   <div class="account">{% if user %}<span class="signed-in">{{ user.display_name }}</span><form method="post" action="/auth/logout"><button class="button subtle" type="submit">Sign out</button></form>{% else %}<a class="button" href="#account">Sign in</a>{% endif %}</div>
 </header>
 <main class="container">
@@ -25,7 +25,7 @@
   <section class="hero">
     <div class="eyebrow">A shared source of truth</div>
     <h1>Game metadata,<br><span>connected.</span></h1>
-    <p>A searchable catalogue of games and identifiers, with a small API for applications that need consistent metadata.</p>
+    <p>A searchable catalogue of games and identifiers, with a schema-driven API for applications that need consistent metadata.</p>
     <div class="hero-actions"><a class="button primary" href="#catalogue">Explore catalogue <span>↗</span></a><a class="button" href="#api">Read API guide</a></div>
     <div class="hero-note"><span class="pulse"></span> Prototype environment <span class="dot">·</span> Sample records included</div>
   </section>
@@ -36,8 +36,8 @@
   </section>
   <section id="catalogue" class="section">
     <div class="section-heading"><div><div class="eyebrow">Discover</div><h2>Explore the catalogue</h2><p>Search by title, developer or canonical ID.</p></div><span class="count" id="resultCount">{{ games|length }} records</span></div>
-    <div class="searchbar"><span>⌕</span><input id="search" type="search" placeholder="Try “Hollow Knight” or “Mojang”…" autocomplete="off"><button id="clearSearch" class="button subtle" type="button">Clear</button></div>
-    <div class="game-grid" id="gameGrid">
+    {% if user %}<div class="searchbar"><span>⌕</span><input id="search" type="search" placeholder="Try “Hollow Knight” or “Mojang”…" autocomplete="off"><button id="clearSearch" class="button subtle" type="button">Clear</button></div>{% else %}<div class="locked search-locked"><div class="lock-icon">⌑</div><div><b>Sign in to search the catalogue</b><p>Catalogue records are not served to anonymous browser sessions. Sign in or create an account to search.</p><a href="#account" class="text-button">Sign in or create an account →</a></div></div>{% endif %}
+    <div class="game-grid" id="gameGrid" {% if not user %}hidden{% endif %}>
       {% for game in games %}
       <article class="game-card" data-search="{{ (game.title ~ ' ' ~ game.developer ~ ' ' ~ game.canonical_id)|lower }}">
         <div class="game-symbol symbol-{{ loop.index0 % 4 }}">{{ game.title[:2]|upper }}</div>
@@ -79,6 +79,16 @@
         <label>Game title <input name="title" required maxlength="200" placeholder="e.g. Tunic"></label>
         <div class="form-row two"><label>Developer / studio<input name="developer" maxlength="200" placeholder="e.g. TUNIC Team"></label><label>Release year<input name="release_year" type="number" min="1950" max="2100" placeholder="2022"></label></div>
         <label>Description <textarea name="description" maxlength="3000" rows="3" placeholder="A short description…"></textarea></label>
+        {% if schema_fields %}<div class="dynamic-fields"><div class="eyebrow">Schema-defined fields</div>{% for field in schema_fields %}
+          <label>{{ field.label }}{% if field.required %} <span class="required-mark">Required</span>{% endif %}
+            {% if field.type == 'boolean' %}<select name="custom__{{ field.key }}" {% if field.required %}required{% endif %}><option value="">Not specified</option><option value="true">Yes</option><option value="false">No</option></select>
+            {% elif field.type == 'enum' %}<select name="custom__{{ field.key }}" {% if field.multiple %}multiple{% endif %} {% if field.required %}required{% endif %}>{% if not field.multiple %}<option value="">Choose…</option>{% endif %}{% for option in field.options %}<option value="{{ option }}">{{ option }}</option>{% endfor %}</select>
+            {% elif field.type == 'integer' or field.type == 'number' %}<input name="custom__{{ field.key }}" type="number" {% if field.type == 'number' %}step="any"{% else %}step="1"{% endif %} {% if field.required %}required{% endif %} {% if field.multiple %}placeholder="Comma-separated values"{% endif %}>
+            {% else %}<input name="custom__{{ field.key }}" {% if field.type == 'url' %}type="url"{% elif field.type == 'date' %}type="date"{% else %}type="text"{% endif %} {% if field.required %}required{% endif %} {% if field.multiple %}placeholder="Comma-separated values"{% endif %}>{% endif %}
+          </label>
+        {% endfor %}</div>{% endif %}
+        <label>Tags <input name="tags" maxlength="2000" placeholder="e.g. metroidvania, indie, platformer"></label>
+        <label>External identifiers (JSON) <textarea name="external_ids_json" rows="3" spellcheck="false" placeholder='[{"provider":"igdb","external_id":"12345"}]'></textarea><small class="muted">Only registered provider slugs are accepted. Manage providers in Admin.</small></label>
         <button class="button primary" type="submit">＋ Add catalogue record</button>
       </form>
       {% else %}
@@ -88,11 +98,13 @@
     </div>
   </section>
   <section id="api" class="section api-section">
-    <div class="section-heading"><div><div class="eyebrow">For applications</div><h2>A small, usable REST API</h2><p>Public read endpoints and token-authenticated catalogue writes.</p></div><a class="button" href="/docs" target="_blank" rel="noreferrer">Open interactive API docs ↗</a></div>
+    <div class="section-heading"><div><div class="eyebrow">For applications</div><h2>A small, usable REST API</h2><p>All catalogue API reads and writes require a bearer API key.</p></div><a class="button" href="/docs" target="_blank" rel="noreferrer">Open interactive API docs ↗</a></div>
     <div class="endpoint-list">
-      <article class="endpoint"><span class="method get">GET</span><div><b>/api/v1/games?q=hollow</b><p>Search and list catalogue records. Supports <code>q</code>, <code>limit</code> and <code>offset</code>.</p></div><span class="access public">Public</span></article>
-      <article class="endpoint"><span class="method get">GET</span><div><b>/api/v1/games/{id}</b><p>Retrieve one record by its canonical ID.</p></div><span class="access public">Public</span></article>
-      <article class="endpoint"><span class="method post">POST</span><div><b>/api/v1/games</b><p>Add a record using JSON and an <code>Authorization: Bearer …</code> header.</p></div><span class="access private">API key</span></article>
+      <article class="endpoint"><span class="method get">GET</span><div><b>/api/v1/games?q=hollow</b><p>Search and list catalogue records, including schema fields, tags and provider IDs. Supports <code>q</code>, <code>limit</code> and <code>offset</code>.</p></div><span class="access private">API key</span></article>
+      <article class="endpoint"><span class="method get">GET</span><div><b>/api/v1/games/{id}</b><p>Retrieve one record by its canonical ID, with tags, provider IDs and image references.</p></div><span class="access private">API key</span></article>
+      <article class="endpoint"><span class="method get">GET</span><div><b>/api/v1/schemas</b><p>Fetch the schema contract so clients can discover supported custom fields.</p></div><span class="access private">API key</span></article>
+      <article class="endpoint"><span class="method post">POST</span><div><b>/api/v1/games</b><p>Add a record with schema-validated custom fields, tags and registered external IDs.</p></div><span class="access private">API key</span></article>
+      <article class="endpoint"><span class="method post">POST</span><div><b>/api/v1/games/{id}/images</b><p>Upload an image as multipart field <code>file</code> (PNG, JPEG, WebP or GIF; 5 MiB max).</p></div><span class="access private">API key</span></article>
     </div>
     <div class="code-sample"><div class="code-heading"><span>Example request</span><button class="text-button" type="button" onclick="copyExample()">Copy</button></div><pre id="exampleCode">curl "http://localhost:8000/api/v1/games?q=hollow" \
   -H "Accept: application/json"
@@ -101,15 +113,25 @@ curl -X POST "http://localhost:8000/api/v1/games" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"title":"Tunic","developer":"TUNIC Team","release_year":2022,"description":"An isometric adventure."}'</pre></div>
-    <p class="small-note">The prototype does not yet enforce rate limits or beta quotas. Do not expose it to the public internet as a production service.</p>
+    <p class="small-note">Catalogue reads now require a real bearer key; website search requires login. Rate limits, quotas, moderation and a formal migration system are still pending. Do not expose this prototype publicly yet.</p>
   </section>
   <footer><a class="brand small-brand" href="/"><span class="brand-mark">A</span><b>atlas</b></a><span>Prototype · Fictional sample data · Not a production API</span><a href="/openapi.json">OpenAPI schema ↗</a></footer>
 </main>
 <dialog id="gameDialog"><button class="close" onclick="document.getElementById('gameDialog').close()" aria-label="Close">×</button><div class="eyebrow">Catalogue record</div><h2 id="modalTitle"></h2><p id="modalSubtitle" class="muted"></p><p id="modalDescription"></p><div class="modal-id"><span>Canonical ID</span><code id="modalId"></code><button class="button subtle" onclick="copyText(document.getElementById('modalId').textContent)">Copy</button></div><a id="apiRecordLink" class="text-button" href="#">View JSON response ↗</a></dialog>
 <script>
-const search=document.getElementById('search'), cards=[...document.querySelectorAll('.game-card')];
-function filterGames(){const q=search.value.trim().toLowerCase();let n=0;cards.forEach(card=>{const show=card.dataset.search.includes(q);card.hidden=!show;if(show)n++});document.getElementById('resultCount').textContent=n+' record'+(n===1?'':'s');document.getElementById('noResults').hidden=n!==0}
-search.addEventListener('input',filterGames);document.getElementById('clearSearch').addEventListener('click',()=>{search.value='';filterGames();search.focus()});
+const search=document.getElementById('search');
+function renderCard(game,index){
+ const card=document.createElement('article');card.className='game-card';card.dataset.search=[game.title,game.developer,game.id].join(' ').toLowerCase();
+ const symbol=document.createElement('div');symbol.className='game-symbol symbol-'+(index%4);symbol.textContent=(game.title||'??').slice(0,2).toUpperCase();card.append(symbol);
+ const info=document.createElement('div');info.className='game-info';const titleRow=document.createElement('div');titleRow.className='game-title-row';
+ const title=document.createElement('h3');title.textContent=game.title;const year=document.createElement('span');year.className='tag';year.textContent=game.release_year||'Year unknown';titleRow.append(title,year);info.append(titleRow);
+ const developer=document.createElement('p');developer.className='developer';developer.textContent=game.developer||'Developer not recorded';info.append(developer);
+ const description=document.createElement('p');description.className='description';description.textContent=game.description||'No description has been added yet.';info.append(description);
+ const bottom=document.createElement('div');bottom.className='card-bottom';const id=document.createElement('code');id.textContent=game.id;const view=document.createElement('button');view.className='text-button';view.type='button';view.textContent='View record ↗';view.dataset.title=game.title;view.dataset.id=game.id;view.dataset.developer=game.developer||'';view.dataset.year=game.release_year||'';view.dataset.description=game.description||'';view.addEventListener('click',()=>showGame(view));bottom.append(id,view);info.append(bottom);card.append(info);return card;
+}
+let searchController=null;
+async function filterGames(){if(!search)return;if(searchController)searchController.abort();searchController=new AbortController();try{const response=await fetch('/catalogue/search?q='+encodeURIComponent(search.value.trim()),{signal:searchController.signal,headers:{'Accept':'application/json'}});if(!response.ok){if(response.status===401)document.getElementById('gameGrid').hidden=true;return}const result=await response.json(),grid=document.getElementById('gameGrid');grid.replaceChildren(...result.items.map(renderCard));grid.hidden=false;document.getElementById('resultCount').textContent=result.total+' record'+(result.total===1?'':'s');document.getElementById('noResults').hidden=result.items.length!==0}catch(error){if(error.name!=='AbortError')console.error('Catalogue search failed',error)}}
+if(search){search.addEventListener('input',filterGames);document.getElementById('clearSearch').addEventListener('click',()=>{search.value='';filterGames();search.focus()});filterGames()}
 function showGame(button){const d=button.dataset;document.getElementById('modalTitle').textContent=d.title;document.getElementById('modalSubtitle').textContent=[d.developer,d.year].filter(Boolean).join(' · ')||'Details not recorded';document.getElementById('modalDescription').textContent=d.description||'No description recorded.';document.getElementById('modalId').textContent=d.id;document.getElementById('apiRecordLink').href='/api/v1/games/'+encodeURIComponent(d.id);document.getElementById('gameDialog').showModal()}
 document.querySelectorAll('[data-auth-tab]').forEach(tab=>tab.addEventListener('click',()=>{const reg=tab.dataset.authTab==='register';document.getElementById('loginForm').hidden=reg;document.getElementById('registerForm').hidden=!reg;document.querySelectorAll('[data-auth-tab]').forEach(t=>t.classList.toggle('active',t===tab))}));
 async function copyText(text){try{await navigator.clipboard.writeText(text);alert('Copied to clipboard.')}catch{prompt('Copy this value:',text)}}
