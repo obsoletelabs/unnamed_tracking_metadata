@@ -89,6 +89,7 @@ function loadEditorIntoBuilder(){
  try{const parsed=JSON.parse(editor.value);if(!Array.isArray(parsed))throw new Error('Schema fields must be a JSON array');builder.replaceChildren();parsed.forEach(addField)}
  catch(error){console.warn('Visual builder could not parse the schema JSON',error)}
 }
+editor.addEventListener('change',loadEditorIntoBuilder);
 document.getElementById('addField').addEventListener('click',()=>{addField();syncJson()});
 document.getElementById('formatJson').addEventListener('click',()=>{try{editor.value=JSON.stringify(JSON.parse(editor.value),null,2);loadEditorIntoBuilder()}catch(e){editor.setCustomValidity('Enter valid JSON before formatting');editor.reportValidity()}});
 document.getElementById('schemaFile').addEventListener('change',async event=>{const file=event.target.files[0];if(!file)return;try{const parsed=JSON.parse(await file.text());if(Array.isArray(parsed)){editor.value=JSON.stringify(parsed,null,2)}else if(parsed&&Array.isArray(parsed.fields)){editor.value=JSON.stringify(parsed.fields,null,2);document.querySelector('[name="name"]').value=parsed.name||'game';document.querySelector('[name="display_name"]').value=parsed.display_name||parsed.name||'Game'}else{throw new Error('Expected a schema array or exported schema object')}loadEditorIntoBuilder()}catch(error){alert('Could not import schema JSON: '+error.message)}});
