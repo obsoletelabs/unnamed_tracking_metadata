@@ -107,12 +107,16 @@
       <article class="endpoint"><span class="method post">POST</span><div><b>/api/v1/games/{id}/images</b><p>Upload an image as multipart field <code>file</code> (PNG, JPEG, WebP or GIF; 5 MiB max).</p></div><span class="access private">API key</span></article>
     </div>
     <div class="code-sample"><div class="code-heading"><span>Example request</span><button class="text-button" type="button" onclick="copyExample()">Copy</button></div><pre id="exampleCode">curl "http://localhost:8000/api/v1/games?q=hollow" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Accept: application/json"
+
+curl "http://localhost:8000/api/v1/schemas" \
+  -H "Authorization: Bearer YOUR_API_KEY"
 
 curl -X POST "http://localhost:8000/api/v1/games" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"title":"Tunic","developer":"TUNIC Team","release_year":2022,"description":"An isometric adventure."}'</pre></div>
+  -d '{"title":"Tunic","developer":"TUNIC Team","release_year":2022,"description":"An isometric adventure.","tags":["indie","adventure"],"custom_fields":{},"external_ids":[]}'</pre></div>
     <p class="small-note">Catalogue reads now require a real bearer key; website search requires login. Rate limits, quotas, moderation and a formal migration system are still pending. Do not expose this prototype publicly yet.</p>
   </section>
   <footer><a class="brand small-brand" href="/"><span class="brand-mark">A</span><b>atlas</b></a><span>Prototype · Fictional sample data · Not a production API</span><a href="/openapi.json">OpenAPI schema ↗</a></footer>
@@ -132,7 +136,7 @@ function renderCard(game,index){
 let searchController=null;
 async function filterGames(){if(!search)return;if(searchController)searchController.abort();searchController=new AbortController();try{const response=await fetch('/catalogue/search?q='+encodeURIComponent(search.value.trim()),{signal:searchController.signal,headers:{'Accept':'application/json'}});if(!response.ok){if(response.status===401)document.getElementById('gameGrid').hidden=true;return}const result=await response.json(),grid=document.getElementById('gameGrid');grid.replaceChildren(...result.items.map(renderCard));grid.hidden=false;document.getElementById('resultCount').textContent=result.total+' record'+(result.total===1?'':'s');document.getElementById('noResults').hidden=result.items.length!==0}catch(error){if(error.name!=='AbortError')console.error('Catalogue search failed',error)}}
 if(search){search.addEventListener('input',filterGames);document.getElementById('clearSearch').addEventListener('click',()=>{search.value='';filterGames();search.focus()});filterGames()}
-function showGame(button){const d=button.dataset;document.getElementById('modalTitle').textContent=d.title;document.getElementById('modalSubtitle').textContent=[d.developer,d.year].filter(Boolean).join(' · ')||'Details not recorded';document.getElementById('modalDescription').textContent=d.description||'No description recorded.';document.getElementById('modalId').textContent=d.id;document.getElementById('apiRecordLink').href='/api/v1/games/'+encodeURIComponent(d.id);document.getElementById('gameDialog').showModal()}
+function showGame(button){const d=button.dataset;document.getElementById('modalTitle').textContent=d.title;document.getElementById('modalSubtitle').textContent=[d.developer,d.year].filter(Boolean).join(' · ')||'Details not recorded';document.getElementById('modalDescription').textContent=d.description||'No description recorded.';document.getElementById('modalId').textContent=d.id;document.getElementById('apiRecordLink').href='/docs';document.getElementById('apiRecordLink').textContent='API docs (key required) ↗';document.getElementById('gameDialog').showModal()}
 document.querySelectorAll('[data-auth-tab]').forEach(tab=>tab.addEventListener('click',()=>{const reg=tab.dataset.authTab==='register';document.getElementById('loginForm').hidden=reg;document.getElementById('registerForm').hidden=!reg;document.querySelectorAll('[data-auth-tab]').forEach(t=>t.classList.toggle('active',t===tab))}));
 async function copyText(text){try{await navigator.clipboard.writeText(text);alert('Copied to clipboard.')}catch{prompt('Copy this value:',text)}}
 function copyToken(){copyText(document.getElementById('newToken').textContent)}
