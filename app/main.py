@@ -849,7 +849,8 @@ def discover_provider_ids(db: Session, game: Game) -> dict:
                 response = httpx.post("https://api.igdb.com/v4/games",
                     headers={"Client-ID": os.getenv("IGDB_CLIENT_ID"), "Authorization": f"Bearer {access_token}",
                              "Content-Type": "text/plain"},
-                    content=f'search "{game.title.replace(chr(34), "")}"; fields id,name; limit 10;',
+                    safe_title = game.title.replace("\\", "").replace('"', "").replace(";", "")
+                content=f'search "{safe_title}"; fields id,name; limit 10;',
                     timeout=4.0)
                 response.raise_for_status()
                 candidates = [{"id": str(item.get("id", "")), "name": str(item.get("name", ""))}
