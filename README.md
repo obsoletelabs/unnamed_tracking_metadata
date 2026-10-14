@@ -1,6 +1,6 @@
-# Atlas metadata catalogue — mockup 1
+# Atlas Metadata — demo-1
 
-A small, runnable MVP of the proposed central game metadata service. This branch is for experimentation and review; it is not production-ready.
+A runnable, multi-page demonstration of the central game metadata service. Browser-submitted records enter a review queue; approvals publish canonical records with evidence provenance and an initial revision snapshot. This is a demonstration build, not a production-hardened public service.
 
 ## Run with Docker
 
@@ -49,7 +49,12 @@ The overlay configures the API to use PostgreSQL on the internal Compose network
 
 ## What works
 
-- Responsive catalogue website backed by the live database
+- Responsive, multi-page catalogue website backed by the live database
+- Browser game submissions with pending / approved / rejected review states
+- Administrator review queue with decision notes and evidence inspection
+- Evidence URLs and notes retained from submission through approval
+- Record provenance page and initial revision snapshots for reviewed browser submissions
+- Per-user submission history and status tracking
 - Login-required website search by title, developer or canonical ID
 - Dedicated sign-in, first-run administrator setup, dashboard, catalogue, game detail and achievements pages
 - Admin-created user accounts; optional self-registration only when SMTP is configured and explicitly enabled
@@ -57,7 +62,7 @@ The overlay configures the API to use PostgreSQL on the internal Compose network
 - Sign in and sign out
 - Generate API bearer tokens; the full token is displayed once
 - List owned tokens and revoke a token
-- Add games through a schema-driven form; canonical IDs are generated automatically
+- Propose games through a schema-driven form; canonical IDs are generated on approval
 - Background provider ID discovery for exact title matches, with ambiguous candidates left for review
 - Add achievements to games with descriptions, optional icons, provider IDs, and hidden/secret status
 - API-key-required JSON reads and writes; health checks remain public
@@ -96,7 +101,7 @@ curl -X POST 'http://localhost:8000/api/v1/games' \
   -d '{"title":"Tunic","developer":"TUNIC Team","release_year":2022,"description":"An isometric adventure."}'
 ```
 
-The actual canonical ID returned by the API should be used for subsequent lookups. Creating a game schedules background discovery against registered provider adapters. Exact title matches may be attached automatically; uncertain matches are not silently assigned.
+The actual canonical ID returned by the API should be used for subsequent lookups. Creating a game through the JSON API remains a direct integration write and schedules background discovery against registered provider adapters. Browser submissions are reviewed before publication. Exact title matches may be attached automatically; uncertain matches are not silently assigned.
 
 List and create achievements for a game:
 
@@ -127,7 +132,7 @@ curl -X POST 'http://localhost:8000/api/v1/games/gm_YOURID/images' \
 
 ## Important limitations
 
-This is a **local MVP/mockup, not a secure public beta**. It now has separate user/admin pages, SMTP verification, admin account provisioning, schema-driven game entry, basic achievements, provider ID discovery and image uploads, but is still early-stage. Achievement unlock/progress tracking, field-level provenance, revisions, moderation, provider refresh schedules, sync cursors, quotas, rate limits, API scopes and multi-region routing are not implemented yet.
+This is a **local MVP/mockup, not a secure public beta**. It now has separate user/admin pages, SMTP verification, admin account provisioning, schema-driven game entry, basic achievements, provider ID discovery and image uploads, but is still early-stage. Achievement unlock/progress tracking, field-level provenance for every individual attribute, edits to existing canonical records, provider refresh schedules, sync cursors, quotas, rate limits, API scopes and multi-region routing are not implemented yet. Provenance and revision snapshots currently cover reviewed browser submissions; direct API writes are treated as integration writes and do not yet generate the same review record.
 
 Before exposing this publicly, it needs security hardening, including CSRF protection for browser forms, secure deployment configuration and cookie settings behind HTTPS, abuse controls/rate limiting, password-reset/invitation workflows, scoped API keys, formal database migrations, broader automated tests, logging and backup/restore procedures. SMTP must be configured and `ALLOW_SELF_REGISTRATION=true` set explicitly to enable public self-registration. The schema JSON editor currently defines simple field contracts; it is not a general-purpose arbitrary schema execution system. The default session secret is for local development only. Do not use real passwords or production credentials in this prototype.
 
@@ -137,9 +142,10 @@ Before exposing this publicly, it needs security hardening, including CSRF prote
 - `app/templates/auth.html` and `setup.html` — sign-in, registration, first-admin setup
 - `app/templates/dashboard.html` — user dashboard and API key manager
 - `app/templates/catalogue.html`, `game_form.html`, `game_detail.html`, `achievements.html` — catalogue and game workflows
-- `app/templates/admin_home.html`, `admin.html`, `providers.html`, `users.html` — separate administration screens
+- `app/templates/admin_home.html`, `admin.html`, `providers.html`, `users.html`, `reviews.html` — separate administration screens
+- `app/templates/submissions.html`, `game_history.html` — contribution status, evidence provenance, and revision history
 - `app/static/style.css` — responsive styling
 - `Dockerfile`, `compose.yaml`, `compose.postgres.yaml` — container setup
-- `index.html` — earlier standalone visual concept retained for comparison
+- The running UI is served by FastAPI templates; there is no standalone HTML mockup serving as the application.
 
 This branch is a foundation for trying the end-to-end workflow and deciding what should become part of the real service.
