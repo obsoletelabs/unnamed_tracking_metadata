@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from jinja2 import TemplateSyntaxError
 from sqlalchemy import select
 
-from app.main import (ApiToken, Base, EmailVerification, Game, GameAchievement, MetadataProvider, SessionLocal, User, app, engine, hash_password, validate_schema_document)
+from app.main import (ApiToken, Base, EmailVerification, Game, GameAchievement, MetadataProvider, SessionLocal, User, app, engine, hash_password, validate_schema_document, discover_provider_ids, utcnow)
 
 
 @pytest.fixture(autouse=True)
@@ -142,9 +142,58 @@ def test_admin_page_and_account_creation_require_admin(client):
         assert new_user is not None and new_user.email_verified is True
 
 
+
+def test_first_run_setup_is_available_before_any_accounts_exist(client):
+    response = client.get("/setup")
+    assert response.status_code == 200
+    assert "Create administrator" in response.text
+
+
+def test_email_verification_activates_a_pending_account(client):
+    raw_token = "verify-" + uuid.uuid4().hex
+    with SessionLocal() as db:
+        user = User(email="pending@example.test", display_name="Pending",
+                    password_hash=hash_password("pending-password-123"), email_verified=False)
+        db.add(user)
+        db.flush()
+        db.add(EmailVerification(user_id=user.id, token_hash=hashlib.sha256(raw_token.encode()).hexdigest(),
+                                 expires_at=utcnow().replace(tzinfo=None) + __import__("datetime").timedelta(hours=1)))
+        db.commit()
+    response = client.get("/auth/verify", params={"token": raw_token}, follow_redirects=False)
+    assert response.status_code == 303
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.email == "pending@example.test"))
+        assert user.email_verified is True
+
+
+def test_provider_discovery_attaches_only_an_exact_title_match(client, monkeypatch):
+    from app import main as main_module
+    with TestClient(app) as test_client:
+        token = create_api_token()
+        with SessionLocal() as db:
+            provider = db.scalar(select(MetadataProvider).where(MetadataProvider.slug == "igdb"))
+            provider.adapter = "steam_store"
+            game = Game(canonical_id="gm_DISCOVERY", title="Discovery Exact Game", developer="Test",
+                        custom_fields="{}")
+            db.add(game)
+            db.commit()
+            game_id = game.id
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+            def json(self):
+                return {"items": [{"id": 98765, "name": "Discovery Exact Game"}]}
+        monkeypatch.setattr(main_module.httpx, "get", lambda *args, **kwargs: FakeResponse())
+        with SessionLocal() as db:
+            game = db.get(Game, game_id)
+            result = discover_provider_ids(db, game)
+            assert result["added"][0]["external_id"] == "98765"
+            assert not result["suggestions"]
+
+
 def test_templates_parse():
     from app.main import templates
-    for name in ("index.html", "admin.html", "auth.html", "dashboard.html", "catalogue.html", "game_detail.html", "achievements.html", "admin_home.html", "providers.html", "users.html", "game_form.html"):
+    for name in ("index.html", "admin.html", "auth.html", "dashboard.html", "catalogue.html", "game_detail.html", "achievements.html", "admin_home.html", "providers.html", "users.html", "game_form.html", "setup.html"):
         try:
             templates.env.get_template(name)
         except TemplateSyntaxError as exc:
