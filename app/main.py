@@ -252,6 +252,15 @@ def startup() -> None:
         if not db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game")):
             db.add(SchemaDefinition(name="game", display_name="Game", schema_json="[]"))
             db.commit()
+        default_providers = [
+            ("steam", "Steam Store", "https://store.steampowered.com", "steam_store"),
+            ("igdb", "IGDB", "https://www.igdb.com", "igdb"),
+            ("rawg", "RAWG", "https://rawg.io", "rawg"),
+        ]
+        for slug, name, homepage, adapter in default_providers:
+            if not db.scalar(select(MetadataProvider).where(MetadataProvider.slug == slug)):
+                db.add(MetadataProvider(slug=slug, name=name, homepage=homepage, adapter=adapter))
+        db.commit()
         if (db.scalar(select(func.count()).select_from(Game)) or 0) == 0:
             examples = [
                 ("Hollow Knight", "Team Cherry", 2017, "A hand-drawn action-adventure through a ruined insect kingdom."),
