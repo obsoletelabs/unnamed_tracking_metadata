@@ -7,7 +7,13 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from jinja2 import TemplateSyntaxError
 
-from app.main import ApiToken, MetadataProvider, SessionLocal, app, validate_schema_document
+from app.main import ApiToken, Base, MetadataProvider, SessionLocal, app, engine, validate_schema_document
+
+
+@pytest.fixture(autouse=True)
+def clean_database():
+    Base.metadata.drop_all(engine)
+    yield
 
 
 @pytest.fixture()
@@ -62,6 +68,17 @@ def test_api_reads_require_a_real_key(client):
 
 def test_browser_search_requires_login(client):
     assert client.get("/catalogue/search?q=minecraft").status_code == 401
+
+
+def test_image_reads_also_require_an_api_key(client):
+    assert client.get("/api/v1/images/unknown.png").status_code == 401
+
+
+def test_authenticated_search_returns_catalogue_records(client):
+    token = create_api_token()
+    response = client.get("/api/v1/games?q=Hollow", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    assert any(item["title"] == "Hollow Knight" for item in response.json()["items"])
 
 
 def test_authenticated_api_can_create_tagged_game_with_provider_id(client):
