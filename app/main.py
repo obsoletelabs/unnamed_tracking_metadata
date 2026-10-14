@@ -259,7 +259,8 @@ def home(request: Request, db: Db):
     return templates.TemplateResponse(request, "index.html", {
         "app_name": APP_NAME, "user": user, "games": games, "tokens": tokens,
         "notice": request.query_params.get("notice"), "error": request.query_params.get("error"),
-        "one_time_token": one_time_token,
+        "one_time_token": one_time_token, "is_admin": bool(user and user.email.lower() in ADMIN_EMAILS),
+        "schema_fields": json.loads((db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game")).schema_json) if db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game")) else "[]"),
     })
 
 
@@ -329,25 +330,64 @@ def revoke_token(token_id: int, request: Request, db: Db):
 
 
 @app.post("/games")
-def add_game_form(request: Request, db: Db, title: Annotated[str, Form()],
-                  developer: Annotated[str, Form()] = "", release_year: Annotated[str, Form()] = "",
-                  description: Annotated[str, Form()] = ""):
+async def add_game_form(request: Request, db: Db):
     user = current_user(request, db)
     if not user:
         return RedirectResponse("/?error=Sign+in+to+add+catalogue+records", status_code=303)
-    title = title.strip()
+    form = await request.form()
+    title = str(form.get("title", "")).strip()
+    developer = str(form.get("developer", "")).strip()
+    release_year = str(form.get("release_year", "")).strip()
+    description = str(form.get("description", "")).strip()
     if not title or len(title) > 200:
         return RedirectResponse("/?error=Title+is+required+and+must+be+under+200+characters", status_code=303)
     try:
-        year = int(release_year) if release_year.strip() else None
+        year = int(release_year) if release_year else None
         if year is not None and not 1950 <= year <= 2100:
             raise ValueError
     except ValueError:
         return RedirectResponse("/?error=Release+year+must+be+between+1950+and+2100", status_code=303)
-    db.add(Game(canonical_id=new_canonical_id(), title=title, developer=developer.strip()[:200],
-                release_year=year, description=description.strip()[:3000], created_by=user.id))
-    db.commit()
-    return RedirectResponse("/?notice=Game+added+to+the+mock+catalogue", status_code=303)
+    schema = db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game"))
+    definitions = validate_schema_document(schema.schema_json) if schema else []
+    values = {}
+    try:
+        for definition in definitions:
+            key = "custom__" + definition["key"]
+            raw = form.getlist(key) if definition.get("multiple") and definition.get("type") == "enum" else form.get(key)
+            if definition.get("multiple") and definition.get("type") != "enum" and isinstance(raw, str):
+                raw = [part.strip() for part in raw.split(",") if part.strip()]
+            if raw is None or raw == "":
+                continue
+            if definition.get("type") == "integer":
+                raw = [int(v) for v in raw] if isinstance(raw, list) else int(raw)
+            elif definition.get("type") == "number":
+                raw = [float(v) for v in raw] if isinstance(raw, list) else float(raw)
+            elif definition.get("type") == "boolean":
+                raw = str(raw).lower() == "true"
+            values[definition["key"]] = raw
+        custom_fields = validate_custom_fields(db, values)
+        tags = [item.strip() for item in str(form.get("tags", "")).split(",") if item.strip()]
+        external_ids_raw = str(form.get("external_ids_json", "[]")).strip() or "[]"
+        external_ids = json.loads(external_ids_raw)
+        if not isinstance(external_ids, list) or any(not isinstance(item, dict) for item in external_ids):
+            raise ValueError("External IDs must be a JSON array of objects")
+    except (ValueError, json.JSONDecodeError, HTTPException) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        from urllib.parse import quote_plus
+        return RedirectResponse("/?error=" + quote_plus(str(detail)), status_code=303)
+    game = Game(canonical_id=new_canonical_id(), title=title, developer=developer[:200],
+                release_year=year, description=description[:3000], custom_fields=json.dumps(custom_fields), created_by=user.id)
+    try:
+        db.add(game)
+        db.flush()
+        apply_tags(db, game, tags)
+        apply_external_ids(db, game, external_ids)
+        db.commit()
+    except HTTPException as exc:
+        db.rollback()
+        from urllib.parse import quote_plus
+        return RedirectResponse("/?error=" + quote_plus(str(exc.detail)), status_code=303)
+    return RedirectResponse("/?notice=Game+added+to+the+catalogue", status_code=303)
 
 
 # Extensible catalogue structures. These are deliberately relational where identity matters,
@@ -515,6 +555,14 @@ def apply_external_ids(db: Session, game: Game, external_ids: list[dict[str, str
         if db.scalar(select(GameExternalId).where(GameExternalId.provider_id == provider.id, GameExternalId.external_id == external_id)):
             raise HTTPException(status_code=409, detail=f"External ID {external_id} is already mapped for provider {slug}")
         db.add(GameExternalId(game_id=game.id, provider_id=provider.id, external_id=external_id))
+
+
+@app.get("/api/v1/schemas")
+def api_schemas(db: Db, authorization: Annotated[str | None, Header()] = None):
+    require_api_token(db, authorization)
+    schemas = db.scalars(select(SchemaDefinition).order_by(SchemaDefinition.name)).all()
+    return {"items": [{"name": item.name, "display_name": item.display_name, "fields": json.loads(item.schema_json),
+                       "updated_at": item.updated_at.isoformat() if item.updated_at else None} for item in schemas]}
 
 
 @app.get("/catalogue/search")
