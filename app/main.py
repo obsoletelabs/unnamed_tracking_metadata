@@ -4,11 +4,14 @@ import hashlib
 import hmac
 import json
 import os
+import smtplib
+import ssl
 import secrets
 import time
 import uuid
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from email.message import EmailMessage
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
@@ -16,6 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
+import httpx
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, func, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
@@ -143,6 +147,40 @@ def verify_password(password: str, stored: str) -> bool:
         return hmac.compare_digest(actual.hex(), expected)
     except (ValueError, TypeError):
         return False
+
+
+def smtp_configured() -> bool:
+    return bool(SMTP_HOST and SMTP_FROM)
+
+
+def send_email(recipient: str, subject: str, body: str) -> None:
+    if not smtp_configured():
+        raise RuntimeError("SMTP is not configured")
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = SMTP_FROM
+    message["To"] = recipient
+    message.set_content(body)
+    context = ssl.create_default_context()
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+        server.ehlo()
+        if SMTP_STARTTLS:
+            server.starttls(context=context)
+            server.ehlo()
+        if SMTP_USERNAME:
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        server.send_message(message)
+
+
+def issue_verification(db: Session, user: User) -> str:
+    raw = secrets.token_urlsafe(32)
+    db.add(EmailVerification(user_id=user.id, token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+                            expires_at=utcnow() + timedelta(hours=24)))
+    db.commit()
+    link = f"{PUBLIC_BASE_URL}/auth/verify?token={raw}"
+    send_email(user.email, f"Verify your {APP_NAME} account",
+               f"Hello {user.display_name},\n\nVerify your email address by opening this link within 24 hours:\n{link}\n\nIf you did not request this account, you can ignore this message.")
+    return raw
 
 
 def new_canonical_id() -> str:
