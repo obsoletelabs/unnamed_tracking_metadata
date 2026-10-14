@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from jinja2 import TemplateSyntaxError
 from sqlalchemy import select
 
-from app.main import (ApiToken, Base, EmailVerification, Game, GameAchievement, MetadataProvider, SchemaDefinition, SessionLocal, User, app, engine, hash_password, validate_schema_document, discover_provider_ids, utcnow)
+from app.main import (ApiToken, Base, EmailVerification, Game, GameAchievement, GameProvenance, GameRevision, GameSubmission, MetadataProvider, SchemaDefinition, SessionLocal, User, app, engine, hash_password, validate_schema_document, discover_provider_ids, utcnow)
 
 
 @pytest.fixture(autouse=True)
@@ -247,8 +247,58 @@ def test_provider_discovery_attaches_only_an_exact_title_match(client, monkeypat
 
 def test_templates_parse():
     from app.main import templates
-    for name in ("index.html", "admin.html", "auth.html", "dashboard.html", "catalogue.html", "game_detail.html", "achievements.html", "admin_home.html", "providers.html", "users.html", "game_form.html", "setup.html"):
+    for name in ("admin.html", "auth.html", "dashboard.html", "catalogue.html", "game_detail.html", "achievements.html", "admin_home.html", "providers.html", "users.html", "game_form.html", "setup.html", "submissions.html", "reviews.html", "game_history.html"):
         try:
             templates.env.get_template(name)
         except TemplateSyntaxError as exc:
             pytest.fail(f"{name} has invalid template syntax: {exc}")
+
+
+def test_root_redirects_to_first_run_setup_when_database_is_empty(client):
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/setup"
+
+
+def test_browser_game_submission_requires_review_and_records_provenance(client, monkeypatch):
+    from app import main as main_module
+    monkeypatch.setattr(main_module, "ADMIN_EMAILS", {"admin@example.test"})
+    with SessionLocal() as db:
+        db.add(User(email="contributor@example.test", display_name="Contributor",
+                    password_hash=hash_password("contributor-password-123"), email_verified=True))
+        db.add(User(email="admin@example.test", display_name="Admin",
+                    password_hash=hash_password("admin-password-123"), email_verified=True))
+        db.commit()
+    login = client.post("/auth/login", data={
+        "email": "contributor@example.test", "password": "contributor-password-123"
+    }, follow_redirects=False)
+    assert login.status_code == 303
+    submitted = client.post("/games", data={
+        "title": "Reviewed Example Game", "developer": "Example Studio", "release_year": "2024",
+        "description": "A record that must be reviewed.", "tags": "demo, adventure",
+        "external_ids_json": "[]", "evidence_url": "https://example.test/game",
+        "evidence_note": "Official publisher page",
+    }, follow_redirects=False)
+    assert submitted.status_code == 303
+    assert submitted.headers["location"].startswith("/submissions")
+    with SessionLocal() as db:
+        proposal = db.scalar(select(GameSubmission).where(GameSubmission.proposed_title == "Reviewed Example Game"))
+        assert proposal is not None and proposal.status == "pending"
+        assert db.scalar(select(Game).where(Game.title == "Reviewed Example Game")) is None
+        proposal_id = proposal.id
+    client.post("/auth/logout", follow_redirects=False)
+    client.post("/auth/login", data={
+        "email": "admin@example.test", "password": "admin-password-123"
+    }, follow_redirects=False)
+    review = client.post(f"/admin/reviews/{proposal_id}/decision", data={
+        "decision": "approve", "review_note": "Evidence checked."
+    }, follow_redirects=False)
+    assert review.status_code == 303
+    assert review.headers["location"].startswith("/games/")
+    with SessionLocal() as db:
+        game = db.scalar(select(Game).where(Game.title == "Reviewed Example Game"))
+        proposal = db.get(GameSubmission, proposal_id)
+        assert game is not None
+        assert proposal.status == "approved"
+        assert db.scalar(select(GameProvenance).where(GameProvenance.game_id == game.id)) is not None
+        assert db.scalar(select(GameRevision).where(GameRevision.game_id == game.id)) is not None
