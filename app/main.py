@@ -171,6 +171,18 @@ class GameCreate(BaseModel):
     external_ids: list[dict[str, str]] = Field(default_factory=list, max_length=30)
 
 
+class GameProposal(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    developer: str = Field(default="", max_length=200)
+    release_year: int | None = Field(default=None, ge=1950, le=2100)
+    description: str = Field(default="", max_length=3000)
+    custom_fields: dict[str, object] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list, max_length=40)
+    external_ids: list[dict[str, str]] = Field(default_factory=list, max_length=30)
+    evidence_url: str = Field(default="", max_length=1000)
+    evidence_note: str = Field(default="", max_length=3000)
+
+
 app = FastAPI(title=APP_NAME, version="0.1.0", description="Prototype catalogue API")
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=COOKIE_SECURE)
 
@@ -1386,6 +1398,88 @@ def apply_external_ids(db: Session, game: Game, external_ids: list[dict[str, str
         if db.scalar(select(GameExternalId).where(GameExternalId.provider_id == provider.id, GameExternalId.external_id == external_id)):
             raise HTTPException(status_code=409, detail=f"External ID {external_id} is already mapped for provider {slug}")
         db.add(GameExternalId(game_id=game.id, provider_id=provider.id, external_id=external_id))
+
+
+
+@app.get("/api/v1/games/{canonical_id}/history")
+def api_game_history(canonical_id: str, db: Db, limit: int = 50, offset: int = 0,
+                     authorization: Annotated[str | None, Header()] = None):
+    require_api_token(db, authorization, "read")
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    limit, offset = max(1, min(limit, 100)), max(0, offset)
+    revisions = db.scalars(select(GameRevision).where(GameRevision.game_id == game.id)
+                           .order_by(GameRevision.created_at.desc(), GameRevision.id.desc())
+                           .offset(offset).limit(limit)).all()
+    provenance = db.scalars(select(GameProvenance).where(GameProvenance.game_id == game.id)
+                            .order_by(GameProvenance.created_at.desc(), GameProvenance.id.desc())
+                            .limit(100)).all()
+    total = db.scalar(select(func.count()).select_from(GameRevision).where(GameRevision.game_id == game.id)) or 0
+    return {
+        "game_id": canonical_id, "total_revisions": total, "limit": limit, "offset": offset,
+        "revisions": [{"id": item.id, "actor_id": item.actor_id, "action": item.action,
+                       "summary": item.summary, "snapshot": json.loads(item.snapshot_json or "{}"),
+                       "created_at": item.created_at.isoformat() if item.created_at else None}
+                      for item in revisions],
+        "provenance": [{"field": item.field_name, "source_type": item.source_type,
+                        "source_label": item.source_label, "source_url": item.source_url,
+                        "evidence_note": item.evidence_note,
+                        "created_at": item.created_at.isoformat() if item.created_at else None}
+                       for item in provenance],
+    }
+
+
+@app.post("/api/v1/games/{canonical_id}/proposals", status_code=status.HTTP_202_ACCEPTED)
+def api_propose_game_edit(canonical_id: str, payload: GameProposal, db: Db,
+                          authorization: Annotated[str | None, Header()] = None):
+    _, user = require_api_token(db, authorization, "write")
+    game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Title cannot be blank")
+    if payload.evidence_url:
+        parsed = urlsplit(payload.evidence_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(status_code=422, detail="Evidence URL must be a valid HTTP or HTTPS URL")
+    tags = []
+    for raw_tag in payload.tags:
+        if not isinstance(raw_tag, str) or not raw_tag.strip() or len(raw_tag.strip()) > 80:
+            raise HTTPException(status_code=422, detail="Tags must contain 1-80 characters")
+        tag = raw_tag.strip().lower()
+        if tag not in tags:
+            tags.append(tag)
+    external_ids = []
+    providers_seen = set()
+    for item in payload.external_ids:
+        provider = item.get("provider", "").strip().lower()
+        external_id = item.get("external_id", "").strip()
+        if not provider or len(provider) > 80 or not provider.replace("-", "").replace("_", "").isalnum():
+            raise HTTPException(status_code=422, detail="External ID provider must be a valid provider slug")
+        if not external_id or len(external_id) > 200:
+            raise HTTPException(status_code=422, detail="External IDs must contain 1-200 characters")
+        if provider in providers_seen:
+            raise HTTPException(status_code=422, detail=f"Only one external ID per provider is allowed: {provider}")
+        providers_seen.add(provider)
+        external_ids.append({"provider": provider, "external_id": external_id})
+    custom_fields = validate_custom_fields(db, payload.custom_fields)
+    submission = GameSubmission(
+        proposed_by=user.id, target_game_id=game.id, proposed_title=title,
+        proposed_developer=payload.developer.strip(), proposed_release_year=payload.release_year,
+        proposed_description=payload.description.strip(), proposed_custom_fields=json.dumps(custom_fields),
+        proposed_tags=json.dumps(tags), proposed_external_ids=json.dumps(external_ids), status="pending",
+    )
+    db.add(submission)
+    db.flush()
+    if payload.evidence_url or payload.evidence_note:
+        db.add(SubmissionEvidence(submission_id=submission.id, url=payload.evidence_url,
+                                  note=payload.evidence_note.strip()))
+    db.commit()
+    return {"submission_id": submission.id, "game_id": canonical_id, "status": "pending",
+            "message": "Edit proposal submitted for administrator review",
+            "created_at": submission.created_at.isoformat() if submission.created_at else None}
 
 
 @app.get("/api/v1/games/{canonical_id}/achievements")

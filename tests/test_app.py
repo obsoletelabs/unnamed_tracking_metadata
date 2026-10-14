@@ -483,3 +483,47 @@ def test_login_rate_limit_returns_retry_after(client):
     assert limited.status_code == 429
     assert limited.headers["retry-after"] == "600"
     AUTH_ATTEMPTS.clear()
+
+
+def test_api_edit_proposal_enters_review_queue_and_history_is_readable(client):
+    raw = create_api_token()
+    with SessionLocal() as db:
+        game = Game(canonical_id="gm_APIEDIT01", title="API Editable", developer="Original Studio", release_year=2015)
+        db.add(game)
+        db.flush()
+        db.add(GameRevision(game_id=game.id, action="created", summary="Initial record",
+                           snapshot_json=json.dumps({"title": game.title})))
+        db.add(GameProvenance(game_id=game.id, field_name="title", source_type="seed", source_label="Fixture"))
+        db.commit()
+    headers = {"Authorization": f"Bearer {raw}"}
+    proposal = client.post("/api/v1/games/gm_APIEDIT01/proposals", headers=headers, json={
+        "title": "API Editable Updated", "developer": "Updated Studio", "release_year": 2016,
+        "description": "Suggested update", "tags": ["Action", "action"],
+        "evidence_url": "https://example.test/game", "evidence_note": "Official source",
+    })
+    assert proposal.status_code == 202
+    body = proposal.json()
+    assert body["status"] == "pending"
+    with SessionLocal() as db:
+        game = db.scalar(select(Game).where(Game.canonical_id == "gm_APIEDIT01"))
+        pending = db.scalar(select(GameSubmission).where(GameSubmission.id == body["submission_id"]))
+        evidence = db.scalar(select(__import__("app.main", fromlist=["SubmissionEvidence"]).SubmissionEvidence).where(
+            __import__("app.main", fromlist=["SubmissionEvidence"]).SubmissionEvidence.submission_id == pending.id))
+        assert game.title == "API Editable"
+        assert pending.proposed_title == "API Editable Updated"
+        assert json.loads(pending.proposed_tags) == ["action"]
+        assert evidence.url == "https://example.test/game"
+    history = client.get("/api/v1/games/gm_APIEDIT01/history", headers=headers)
+    assert history.status_code == 200
+    assert history.json()["total_revisions"] == 1
+    assert history.json()["provenance"][0]["source_label"] == "Fixture"
+
+
+def test_api_edit_proposal_rejects_unsafe_evidence_url(client):
+    raw = create_api_token()
+    with SessionLocal() as db:
+        db.add(Game(canonical_id="gm_APIEDIT02", title="API Editable"))
+        db.commit()
+    response = client.post("/api/v1/games/gm_APIEDIT02/proposals", headers={"Authorization": f"Bearer {raw}"},
+                          json={"title": "Changed", "evidence_url": "javascript:alert(1)"})
+    assert response.status_code == 422

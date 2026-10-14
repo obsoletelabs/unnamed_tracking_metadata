@@ -167,3 +167,8 @@ Browser mutation requests reject cross-site Fetch Metadata and mismatched Origin
 Signed-in users can update their display name and change their password after verifying their current password. The account page also summarizes their API keys and scopes. Catalogue API and browser search now support developer, tag, and release-year filters in addition to text search and pagination; invalid year ranges are rejected.
 
 Login attempts are throttled per client IP and hashed email identity, with registration and verification-resend limits per client IP. This limiter is intentionally an in-process safety net: for multi-worker or multi-replica deployments, configure equivalent limits at the reverse proxy or a shared rate-limit service. Set `COOKIE_SECURE=true` when serving the app exclusively over HTTPS.
+
+
+### API editing workflow and audit history
+
+Integrations can submit proposed edits with `POST /api/v1/games/{canonical_id}/proposals`. Proposals use the same administrator review queue as browser submissions and do not change the published game until approved. Optional evidence URLs and notes are retained for review. `GET /api/v1/games/{canonical_id}/history` returns paginated revision snapshots plus provenance sources, allowing clients to build audit views without exposing submitter email addresses. Both endpoints require a scoped API key: `write` for proposals and `read` for history.
