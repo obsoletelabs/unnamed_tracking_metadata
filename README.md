@@ -153,3 +153,10 @@ Before exposing this publicly, it needs security hardening, including CSRF prote
 - The running UI is served by FastAPI templates; there is no standalone HTML mockup serving as the application.
 
 This `demo-1` branch is intended for end-to-end workflow testing and feedback before the next iteration.
+
+
+### API key permissions and browser request protection
+
+New API keys are created with explicit least-privilege scopes. `read` permits catalogue/schema/provider reads and image retrieval; `write` permits game creation; `achievements` permits achievement creation; `discover` permits provider identifier discovery; and `images` permits image uploads. Select only the capabilities your integration uses. Existing keys are migrated with the previous full-access behavior to avoid breaking integrations; revoke and recreate them with narrower permissions when convenient. Scope enforcement is performed by the API, not just the dashboard UI.
+
+Browser mutation requests reject cross-site Fetch Metadata and mismatched Origin headers. Responses also include baseline anti-sniffing, clickjacking, referrer and permissions-policy headers. These controls are defense-in-depth, not a replacement for HTTPS, strong session secrets, deployment rate limits, or a complete CSRF token strategy.

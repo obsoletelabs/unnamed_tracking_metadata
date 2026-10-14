@@ -79,7 +79,8 @@ class ApiToken(Base):
     label: Mapped[str] = mapped_column(String(80))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     token_prefix: Mapped[str] = mapped_column(String(16))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    scopes: Mapped[str] = mapped_column(String(200), default="read,write,achievements,discover,images", nullable=False)
+    created_at = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -168,6 +169,31 @@ class GameCreate(BaseModel):
 
 app = FastAPI(title=APP_NAME, version="0.1.0", description="Prototype catalogue API")
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=COOKIE_SECURE)
+
+
+@app.middleware("http")
+async def browser_request_security(request: Request, call_next):
+    """Reject cross-site browser mutations and add baseline response hardening."""
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not request.url.path.startswith("/api/"):
+        fetch_site = request.headers.get("sec-fetch-site", "").lower()
+        origin = request.headers.get("origin")
+        if fetch_site == "cross-site":
+            return HTMLResponse("Cross-site form submission rejected.", status_code=403)
+        if origin:
+            parsed = urlsplit(origin)
+            expected_host = request.url.hostname
+            expected_port = request.url.port
+            if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                    or parsed.hostname.lower() != (expected_host or "").lower()
+                    or parsed.port != expected_port):
+                return HTMLResponse("Cross-origin form submission rejected.", status_code=403)
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    return response
+
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
@@ -271,7 +297,8 @@ def current_user(request: Request, db: Db) -> User | None:
     return db.get(User, int(user_id)) if user_id else None
 
 
-def require_api_token(db: Db, authorization: Annotated[str | None, Header()] = None) -> tuple[ApiToken, User]:
+def require_api_token(db: Db, authorization: Annotated[str | None, Header()] = None,
+                      required_scope: str | None = None) -> tuple[ApiToken, User]:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Provide a bearer API token")
     raw = authorization[7:].strip()
@@ -282,6 +309,11 @@ def require_api_token(db: Db, authorization: Annotated[str | None, Header()] = N
     user = db.get(User, token.user_id)
     if not user:
         raise HTTPException(status_code=401, detail="Token owner no longer exists")
+    # Existing tokens are migrated with full access for compatibility; unknown scopes fail closed.
+    allowed_scopes = {"read", "write", "achievements", "discover", "images"}
+    granted = {item for item in (token.scopes or "").split(",") if item in allowed_scopes}
+    if required_scope and required_scope not in granted:
+        raise HTTPException(status_code=403, detail=f"API token lacks the required '{required_scope}' scope")
     return token, user
 
 
@@ -293,6 +325,10 @@ def startup() -> None:
     if "custom_fields" not in columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE games ADD COLUMN custom_fields TEXT NOT NULL DEFAULT '{}'"))
+    token_columns = {column["name"] for column in inspect(engine).get_columns("api_tokens")}
+    if "scopes" not in token_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE api_tokens ADD COLUMN scopes VARCHAR(200) NOT NULL DEFAULT 'read,write,achievements,discover,images'"))
     user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
     if "email_verified" not in user_columns:
         with engine.begin() as connection:
@@ -341,7 +377,7 @@ def health(db: Db) -> dict:
 
 @app.get("/api/v1/games")
 def search_games(db: Db, q: str = "", limit: int = 20, offset: int = 0, authorization: Annotated[str | None, Header()] = None) -> dict:
-    require_api_token(db, authorization)
+    require_api_token(db, authorization, "read")
     limit, offset = max(1, min(limit, 100)), max(0, offset)
     statement = select(Game)
     if q.strip():
@@ -355,7 +391,7 @@ def search_games(db: Db, q: str = "", limit: int = 20, offset: int = 0, authoriz
 
 @app.get("/api/v1/games/{canonical_id}")
 def get_game(canonical_id: str, db: Db, authorization: Annotated[str | None, Header()] = None) -> dict:
-    require_api_token(db, authorization)
+    require_api_token(db, authorization, "read")
     game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -365,7 +401,7 @@ def get_game(canonical_id: str, db: Db, authorization: Annotated[str | None, Hea
 @app.post("/api/v1/games", status_code=status.HTTP_201_CREATED)
 def create_game(payload: GameCreate, db: Db, background_tasks: BackgroundTasks,
                 authorization: Annotated[str | None, Header()] = None) -> dict:
-    token, user = require_api_token(db, authorization)
+    token, user = require_api_token(db, authorization, "write")
     title = payload.title.strip()
     if not title:
         raise HTTPException(status_code=422, detail="Title cannot be blank")
@@ -624,16 +660,22 @@ def achievements_page(request: Request, db: Db):
 
 
 @app.post("/tokens")
-def create_token(request: Request, db: Db, label: Annotated[str, Form()]):
+def create_token(request: Request, db: Db, label: Annotated[str, Form()],
+                 scopes: Annotated[list[str] | None, Form()] = None):
     user = current_user(request, db)
     if not user:
         return RedirectResponse("/?error=Sign+in+before+creating+a+key", status_code=303)
     label = label.strip()[:80]
     if not label:
         return RedirectResponse("/?error=Give+your+key+a+label", status_code=303)
+    allowed_scopes = {"read", "write", "achievements", "discover", "images"}
+    selected_scopes = sorted(set(scopes or ["read"]) & allowed_scopes)
+    if not selected_scopes:
+        return RedirectResponse("/dashboard?error=Choose+at+least+one+API+permission", status_code=303)
     raw = "atlas_beta_" + secrets.token_urlsafe(32)
     db.add(ApiToken(user_id=user.id, label=label,
-                    token_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(), token_prefix=raw[:16]))
+                    token_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(), token_prefix=raw[:16],
+                    scopes=",".join(selected_scopes)))
     db.commit()
     flash_id = secrets.token_urlsafe(18)
     ONE_TIME_TOKENS[flash_id] = (user.id, raw, time.time() + 120)
@@ -1241,7 +1283,7 @@ def apply_external_ids(db: Session, game: Game, external_ids: list[dict[str, str
 
 @app.get("/api/v1/games/{canonical_id}/achievements")
 def list_game_achievements(canonical_id: str, db: Db, authorization: Annotated[str | None, Header()] = None):
-    require_api_token(db, authorization)
+    require_api_token(db, authorization, "read")
     game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -1256,7 +1298,7 @@ def list_game_achievements(canonical_id: str, db: Db, authorization: Annotated[s
 @app.post("/api/v1/games/{canonical_id}/achievements", status_code=status.HTTP_201_CREATED)
 def create_game_achievement(canonical_id: str, payload: AchievementCreate, db: Db,
                             authorization: Annotated[str | None, Header()] = None):
-    _, user = require_api_token(db, authorization)
+    _, user = require_api_token(db, authorization, "achievements")
     game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -1279,7 +1321,7 @@ def create_game_achievement(canonical_id: str, payload: AchievementCreate, db: D
 
 @app.post("/api/v1/games/{canonical_id}/discover-identifiers")
 def api_discover_identifiers(canonical_id: str, db: Db, authorization: Annotated[str | None, Header()] = None):
-    require_api_token(db, authorization)
+    require_api_token(db, authorization, "discover")
     game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -1389,7 +1431,7 @@ def browser_add_achievement(canonical_id: str, request: Request, db: Db,
 
 @app.get("/api/v1/schemas")
 def api_schemas(db: Db, authorization: Annotated[str | None, Header()] = None):
-    require_api_token(db, authorization)
+    require_api_token(db, authorization, "read")
     schemas = db.scalars(select(SchemaDefinition).order_by(SchemaDefinition.name)).all()
     return {"items": [{"name": item.name, "display_name": item.display_name, "fields": json.loads(item.schema_json),
                        "updated_at": item.updated_at.isoformat() if item.updated_at else None} for item in schemas]}
@@ -1397,7 +1439,7 @@ def api_schemas(db: Db, authorization: Annotated[str | None, Header()] = None):
 
 @app.get("/api/v1/providers")
 def api_providers(db: Db, authorization: Annotated[str | None, Header()] = None):
-    require_api_token(db, authorization)
+    require_api_token(db, authorization, "read")
     providers = db.scalars(select(MetadataProvider).order_by(MetadataProvider.slug)).all()
     return {"items": [{"slug": provider.slug, "name": provider.name, "homepage": provider.homepage or None,
                        "adapter": provider.adapter} for provider in providers]}
@@ -1560,7 +1602,7 @@ def get_browser_image(filename: str, request: Request, db: Db):
 
 @app.get("/api/v1/images/{filename}")
 def get_uploaded_image(filename: str, db: Db, authorization: Annotated[str | None, Header()] = None):
-    require_api_token(db, authorization)
+    require_api_token(db, authorization, "read")
     if Path(filename).name != filename or not filename.replace(".", "").isalnum():
         raise HTTPException(status_code=404, detail="Image not found")
     image_row = db.scalar(select(GameImage).where(GameImage.url == "/api/v1/images/" + filename))
@@ -1575,7 +1617,7 @@ def get_uploaded_image(filename: str, db: Db, authorization: Annotated[str | Non
 async def upload_game_image(canonical_id: str, db: Db, file: UploadFile = File(...),
                             authorization: Annotated[str | None, Header()] = None):
     try:
-        require_api_token(db, authorization)
+        require_api_token(db, authorization, "images")
         game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
         if not game:
             raise HTTPException(status_code=404, detail="Game not found")

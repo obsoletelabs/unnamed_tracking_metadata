@@ -371,3 +371,49 @@ def test_browser_game_submission_requires_review_and_records_provenance(client, 
                                 .order_by(GameRevision.created_at)).all()
         assert any(item.action == "updated" and '"before"' in item.snapshot_json and '"after"' in item.snapshot_json
                    for item in revisions)
+
+
+def test_scoped_api_key_cannot_write_with_read_only_scope(client):
+    raw = "atlas_scoped_" + uuid.uuid4().hex
+    with SessionLocal() as db:
+        user = User(email=f"{uuid.uuid4().hex}@example.test", display_name="Scoped API", password_hash="test-hash")
+        db.add(user)
+        db.flush()
+        db.add(ApiToken(user_id=user.id, label="read-only", token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+                        token_prefix=raw[:16], scopes="read"))
+        db.commit()
+    headers = {"Authorization": f"Bearer {raw}"}
+    assert client.get("/api/v1/games", headers=headers).status_code == 200
+    denied = client.post("/api/v1/games", headers=headers, json={"title": "Must not be created"})
+    assert denied.status_code == 403
+    assert denied.json()["detail"].endswith("'write' scope")
+
+
+def test_scoped_api_key_can_discover_but_not_upload_without_image_scope(client):
+    raw = "atlas_discover_" + uuid.uuid4().hex
+    with SessionLocal() as db:
+        user = User(email=f"{uuid.uuid4().hex}@example.test", display_name="Scoped API", password_hash="test-hash")
+        game = Game(canonical_id="gm_SCOPE123", title="Scoped game")
+        db.add_all([user, game])
+        db.flush()
+        db.add(ApiToken(user_id=user.id, label="discover-only", token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+                        token_prefix=raw[:16], scopes="read,discover"))
+        db.commit()
+    headers = {"Authorization": f"Bearer {raw}"}
+    assert client.post("/api/v1/games/gm_SCOPE123/discover-identifiers", headers=headers).status_code == 200
+    denied = client.post("/api/v1/games/gm_SCOPE123/images", headers=headers,
+                         files={"file": ("tiny.png", b"not-an-image", "image/png")})
+    assert denied.status_code == 403
+
+
+def test_cross_origin_browser_mutation_is_rejected(client):
+    response = client.post("/auth/logout", headers={"Origin": "https://attacker.example"})
+    assert response.status_code == 403
+    assert "cross-origin" in response.text.lower()
+
+
+def test_security_headers_are_set(client):
+    response = client.get("/health")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
