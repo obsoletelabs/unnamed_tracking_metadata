@@ -675,7 +675,7 @@ def get_uploaded_image(filename: str, db: Db, authorization: Annotated[str | Non
     target = UPLOAD_DIR / filename
     if not image_row or not target.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
-    return FileResponse(target, media_type=image_row.content_type,
+    return FileResponse(target, media_type=image_row.content_type, filename=filename, content_disposition_type="inline",
                         headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"})
 
 
