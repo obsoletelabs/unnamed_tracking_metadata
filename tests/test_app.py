@@ -168,27 +168,26 @@ def test_email_verification_activates_a_pending_account(client):
 
 def test_provider_discovery_attaches_only_an_exact_title_match(client, monkeypatch):
     from app import main as main_module
-    with TestClient(app) as test_client:
-        token = create_api_token()
-        with SessionLocal() as db:
-            provider = db.scalar(select(MetadataProvider).where(MetadataProvider.slug == "igdb"))
-            provider.adapter = "steam_store"
-            game = Game(canonical_id="gm_DISCOVERY", title="Discovery Exact Game", developer="Test",
-                        custom_fields="{}")
-            db.add(game)
-            db.commit()
-            game_id = game.id
+    token = create_api_token()
+    with SessionLocal() as db:
+        provider = db.scalar(select(MetadataProvider).where(MetadataProvider.slug == "igdb"))
+        provider.adapter = "steam_store"
+        game = Game(canonical_id="gm_DISCOVERY", title="Discovery Exact Game", developer="Test",
+                    custom_fields="{}")
+        db.add(game)
+        db.commit()
+        game_id = game.id
         class FakeResponse:
             def raise_for_status(self):
                 return None
             def json(self):
                 return {"items": [{"id": 98765, "name": "Discovery Exact Game"}]}
         monkeypatch.setattr(main_module.httpx, "get", lambda *args, **kwargs: FakeResponse())
-        with SessionLocal() as db:
-            game = db.get(Game, game_id)
-            result = discover_provider_ids(db, game)
-            assert result["added"][0]["external_id"] == "98765"
-            assert not result["suggestions"]
+    with SessionLocal() as db:
+        game = db.get(Game, game_id)
+        result = discover_provider_ids(db, game)
+        assert result["added"][0]["external_id"] == "98765"
+        assert not result["suggestions"]
 
 
 def test_templates_parse():
