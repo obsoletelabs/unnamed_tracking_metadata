@@ -527,6 +527,7 @@ def game_detail_page(canonical_id: str, request: Request, db: Db):
     return templates.TemplateResponse(request, "game_detail.html", {
         "request": request, "app_name": APP_NAME, "user": user, "providers": providers,
         "game": serialize_game(game, db), "achievements": achievements,
+        "is_admin": user.email.lower() in ADMIN_EMAILS,
         "notice": request.query_params.get("notice"), "error": request.query_params.get("error"),
     })
 
@@ -1209,6 +1210,21 @@ def add_provider(request: Request, db: Db, slug: Annotated[str, Form()],
         db.add(MetadataProvider(slug=slug, name=name, homepage=homepage, adapter=adapter))
     db.commit()
     return RedirectResponse("/admin/providers?notice=Provider+saved", status_code=303)
+
+
+@app.get("/images/{filename}")
+def get_browser_image(filename: str, request: Request, db: Db):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        raise HTTPException(status_code=401, detail="Sign in to view this image")
+    if Path(filename).name != filename or not filename.replace(".", "").isalnum():
+        raise HTTPException(status_code=404, detail="Image not found")
+    image_row = db.scalar(select(GameImage).where(GameImage.url == "/api/v1/images/" + filename))
+    target = UPLOAD_DIR / filename
+    if not image_row or not target.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(target, media_type=image_row.content_type,
+                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"})
 
 
 @app.get("/api/v1/images/{filename}")
