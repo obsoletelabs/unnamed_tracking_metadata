@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ app_name }} · Admin</title><link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/"><span class="brand-mark">A</span><span><b>atlas</b><small>metadata administration</small></span></a>
+  <nav><a href="/">Catalogue</a><a href="#schemas">Schemas</a><a href="#providers">Providers</a></nav>
+  <div class="account"><span class="signed-in">{{ user.display_name }}</span><form method="post" action="/auth/logout"><button class="button subtle" type="submit">Sign out</button></form></div>
+</header>
+<main class="container admin-container">
+  <section class="hero admin-hero"><div class="eyebrow">Control plane</div><h1>Shape the <span>catalogue.</span></h1><p>Define the data contract independently of application code. Schema changes are validated before saving and can be exported as portable JSON.</p><div class="hero-note"><span class="pulse"></span> Administrator session <span class="dot">·</span> {{ schemas|length }} schema(s) · {{ providers|length }} provider(s)</div></section>
+  {% if notice %}<div class="flash success">{{ notice.replace('+',' ') }}</div>{% endif %}
+  {% if error %}<div class="flash error">{{ error.replace('+',' ') }}</div>{% endif %}
+  <section id="schemas" class="panel admin-panel">
+    <div class="eyebrow">01 · Schema registry</div><h2>Schema editor</h2>
+    <p>Each field uses a stable machine key. The reserved <code>game</code> schema controls custom fields accepted on game records.</p>
+    <div class="schema-list">
+      {% for schema in schemas %}
+      <article class="schema-item"><div><b>{{ schema.display_name }}</b><code>{{ schema.name }}</code><small>Updated {{ schema.updated_at.strftime('%Y-%m-%d %H:%M UTC') if schema.updated_at else 'just now' }}</small></div><a class="button subtle" href="/admin/schemas/{{ schema.id }}/export.json">Export JSON ↗</a></article>
+      {% endfor %}
+    </div>
+    <form method="post" action="/admin/schemas/save" class="stack-form schema-form">
+      <div class="form-row two"><label>Schema key<input name="name" required maxlength="80" value="game" pattern="[A-Za-z][A-Za-z0-9_]*" aria-describedby="schemaKeyHelp"><small id="schemaKeyHelp" class="muted">Use <code>game</code> for game record fields.</small></label><label>Display name<input name="display_name" required maxlength="120" value="Game"></label></div>
+      <label>Field definitions (JSON)<textarea name="schema_json" id="schemaJson" required rows="14" spellcheck="false">{{ schema_json }}</textarea></label>
+      <div class="schema-help"><b>Supported field types</b><span><code>string</code> <code>integer</code> <code>number</code> <code>boolean</code> <code>date</code> <code>url</code> <code>enum</code></span><p>Each field has <code>key</code>, <code>label</code> and <code>type</code>; optional flags are <code>required</code> and <code>multiple</code>. Enum fields also need an <code>options</code> array.</p></div>
+      <div class="admin-actions"><button class="button primary" type="submit">Validate and save schema</button><button class="button" type="button" id="loadExample">Load example fields</button><button class="button subtle" type="button" id="formatJson">Format JSON</button></div>
+    </form>
+    <details class="schema-example"><summary>Example schema</summary><pre>[
+  {"key":"genres","label":"Genres","type":"string","multiple":true},
+  {"key":"edition","label":"Edition","type":"enum","options":["standard","deluxe","complete"]},
+  {"key":"player_count","label":"Maximum players","type":"integer"},
+  {"key":"is_remake","label":"Is a remake","type":"boolean"}
+]</pre></details>
+  </section>
+  <section id="providers" class="panel admin-panel">
+    <div class="eyebrow">02 · Identifier registry</div><h2>Metadata providers</h2><p>Each provider has a stable slug. A game may have one external ID per provider; an external ID cannot be assigned to two games for the same provider.</p>
+    {% if providers %}<div class="provider-grid">{% for provider in providers %}<article class="provider-card"><b>{{ provider.name }}</b><code>{{ provider.slug }}</code>{% if provider.homepage %}<a href="{{ provider.homepage }}" target="_blank" rel="noreferrer">{{ provider.homepage }}</a>{% else %}<small class="muted">No homepage</small>{% endif %}</article>{% endfor %}</div>{% else %}<p class="muted">No providers registered yet.</p>{% endif %}
+    <form method="post" action="/admin/providers" class="stack-form provider-form">
+      <div class="form-row two"><label>Provider slug<input name="slug" required maxlength="80" pattern="[A-Za-z0-9_-]+" placeholder="e.g. igdb"></label><label>Display name<input name="name" required maxlength="120" placeholder="e.g. IGDB"></label></div>
+      <label>Homepage (optional, HTTPS only)<input name="homepage" type="url" placeholder="https://example.com"></label>
+      <button class="button primary" type="submit">＋ Save provider</button>
+    </form>
+  </section>
+  <section class="panel admin-panel"><div class="eyebrow">03 · API contract</div><h2>Integration notes</h2>
+    <div class="endpoint-list">
+      <article class="endpoint"><span class="method get">GET</span><div><b>/api/v1/schemas</b><p>Retrieve the current public schema contract. Requires an API key.</p></div><span class="access private">API key</span></article>
+      <article class="endpoint"><span class="method post">POST</span><div><b>/api/v1/games/{id}/images</b><p>Upload PNG, JPEG, WebP or GIF up to 5 MiB using multipart form field <code>file</code>.</p></div><span class="access private">API key</span></article>
+      <article class="endpoint"><span class="method get">GET</span><div><b>/catalogue/search?q=...</b><p>Website search uses the signed-in browser session; anonymous requests are rejected.</p></div><span class="access private">Login</span></article>
+    </div>
+    <p class="small-note">Admin access is granted only to email addresses listed in <code>ADMIN_EMAILS</code> in the server environment. Schema edits do not silently delete values already stored on existing records.</p>
+  </section>
+  <footer><a class="brand small-brand" href="/"><span class="brand-mark">A</span><b>atlas</b></a><span>Admin control plane · Changes are saved to the configured database</span><a href="/docs">API docs ↗</a></footer>
+</main>
+<script>
+const editor=document.getElementById('schemaJson');
+document.getElementById('formatJson').addEventListener('click',()=>{try{editor.value=JSON.stringify(JSON.parse(editor.value),null,2);editor.setCustomValidity('')}catch(e){editor.setCustomValidity('Enter valid JSON before formatting');editor.reportValidity()}});
+document.getElementById('loadExample').addEventListener('click',()=>{editor.value=JSON.stringify([
+ {key:'genres',label:'Genres',type:'string',multiple:true},
+ {key:'edition',label:'Edition',type:'enum',options:['standard','deluxe','complete']},
+ {key:'player_count',label:'Maximum players',type:'integer'},
+ {key:'is_remake',label:'Is a remake',type:'boolean'}
+],null,2)});
+</script>
+</body></html>
