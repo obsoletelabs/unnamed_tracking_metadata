@@ -26,6 +26,14 @@ SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-only-change-this-session-secre
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
 APP_NAME = os.getenv("APP_NAME", "Atlas Metadata")
 ADMIN_EMAILS = {value.strip().lower() for value in os.getenv("ADMIN_EMAILS", "").split(",") if value.strip()}
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("SMTP_FROM", "").strip()
+SMTP_STARTTLS = os.getenv("SMTP_STARTTLS", "true").lower() == "true"
+ALLOW_SELF_REGISTRATION = os.getenv("ALLOW_SELF_REGISTRATION", "false").lower() == "true"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "uploads")))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
@@ -44,7 +52,17 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(254), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(80))
     password_hash: Mapped[str] = mapped_column(String(256))
+    email_verified: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class EmailVerification(Base):
+    __tablename__ = "email_verifications"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ApiToken(Base):
@@ -69,6 +87,14 @@ class Game(Base):
     custom_fields: Mapped[str] = mapped_column(Text, default="{}")
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class AchievementCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=3000)
+    icon_url: str = Field(default="", max_length=1000)
+    external_id: str = Field(default="", max_length=200)
+    hidden: bool = False
 
 
 class GameCreate(BaseModel):
@@ -174,6 +200,14 @@ def startup() -> None:
     if "custom_fields" not in columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE games ADD COLUMN custom_fields TEXT NOT NULL DEFAULT '{}'"))
+    user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+    if "email_verified" not in user_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT 1"))
+    provider_columns = {column["name"] for column in inspect(engine).get_columns("metadata_providers")}
+    if "adapter" not in provider_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE metadata_providers ADD COLUMN adapter VARCHAR(40) NOT NULL DEFAULT 'manual'"))
     with SessionLocal() as db:
         if not db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game")):
             db.add(SchemaDefinition(name="game", display_name="Game", schema_json="[]"))
@@ -406,6 +440,7 @@ class MetadataProvider(Base):
     slug: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(120))
     homepage: Mapped[str] = mapped_column(String(500), default="")
+    adapter: Mapped[str] = mapped_column(String(40), default="manual", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -431,6 +466,20 @@ class GameTag(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     game_id: Mapped[int] = mapped_column(ForeignKey("games.id", ondelete="CASCADE"), index=True)
     tag_id: Mapped[int] = mapped_column(ForeignKey("tags.id", ondelete="CASCADE"), index=True)
+
+
+class GameAchievement(Base):
+    __tablename__ = "game_achievements"
+    __table_args__ = (UniqueConstraint("game_id", "name", name="uq_game_achievement_name"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    icon_url: Mapped[str] = mapped_column(String(1000), default="")
+    external_id: Mapped[str] = mapped_column(String(200), default="")
+    hidden: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class GameImage(Base):
