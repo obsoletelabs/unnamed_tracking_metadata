@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -297,7 +297,8 @@ def get_game(canonical_id: str, db: Db, authorization: Annotated[str | None, Hea
 
 
 @app.post("/api/v1/games", status_code=status.HTTP_201_CREATED)
-def create_game(payload: GameCreate, db: Db, authorization: Annotated[str | None, Header()] = None) -> dict:
+def create_game(payload: GameCreate, db: Db, background_tasks: BackgroundTasks,
+                authorization: Annotated[str | None, Header()] = None) -> dict:
     _, user = require_api_token(db, authorization)
     title = payload.title.strip()
     if not title:
@@ -312,6 +313,7 @@ def create_game(payload: GameCreate, db: Db, authorization: Annotated[str | None
     apply_external_ids(db, game, payload.external_ids)
     db.commit()
     db.refresh(game)
+    background_tasks.add_task(discover_game_ids_background, game.id)
     return serialize_game(game, db)
 
 
@@ -462,6 +464,20 @@ def catalogue_page(request: Request, db: Db):
     })
 
 
+@app.get("/games/new", response_class=HTMLResponse)
+def new_game_page(request: Request, db: Db):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login", status_code=303)
+    schema = db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game"))
+    return templates.TemplateResponse(request, "game_form.html", {
+        "request": request, "app_name": APP_NAME, "user": user,
+        "schema_fields": validate_schema_document(schema.schema_json) if schema else [],
+        "is_admin": user.email.lower() in ADMIN_EMAILS,
+        "error": request.query_params.get("error"),
+    })
+
+
 @app.get("/games/{canonical_id}", response_class=HTMLResponse)
 def game_detail_page(canonical_id: str, request: Request, db: Db):
     user = current_user(request, db)
@@ -525,7 +541,7 @@ def revoke_token(token_id: int, request: Request, db: Db):
 
 
 @app.post("/games")
-async def add_game_form(request: Request, db: Db):
+async def add_game_form(request: Request, db: Db, background_tasks: BackgroundTasks):
     user = current_user(request, db)
     if not user:
         return RedirectResponse("/?error=Sign+in+to+add+catalogue+records", status_code=303)
@@ -578,11 +594,13 @@ async def add_game_form(request: Request, db: Db):
         apply_tags(db, game, tags)
         apply_external_ids(db, game, external_ids)
         db.commit()
+        db.refresh(game)
+        background_tasks.add_task(discover_game_ids_background, game.id)
     except HTTPException as exc:
         db.rollback()
         from urllib.parse import quote_plus
         return RedirectResponse("/?error=" + quote_plus(str(exc.detail)), status_code=303)
-    return RedirectResponse("/?notice=Game+added+to+the+catalogue", status_code=303)
+    return RedirectResponse(f"/games/{game.canonical_id}?notice=Game+added+to+the+catalogue.+Provider+discovery+started", status_code=303)
 
 
 # Extensible catalogue structures. These are deliberately relational where identity matters,
@@ -821,6 +839,17 @@ def discover_provider_ids(db: Session, game: Game) -> dict:
                                 "candidates": candidates[:5]})
     db.commit()
     return {"added": added, "suggestions": suggestions, "skipped": skipped}
+
+
+def discover_game_ids_background(game_id: int) -> None:
+    with SessionLocal() as db:
+        game = db.get(Game, game_id)
+        if game:
+            try:
+                discover_provider_ids(db, game)
+            except Exception as exc:
+                db.rollback()
+                logger.warning("Background identifier discovery failed: %s", type(exc).__name__)
 
 
 def apply_external_ids(db: Session, game: Game, external_ids: list[dict[str, str]]) -> None:
