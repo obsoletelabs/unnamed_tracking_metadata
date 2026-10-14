@@ -796,7 +796,7 @@ def validate_custom_fields(db: Session, values: dict[str, object]) -> dict[str, 
                 raise HTTPException(status_code=422, detail=f"Invalid value for custom field: {key}")
             if isinstance(item, str) and len(item) > 4000:
                 raise HTTPException(status_code=422, detail=f"Value for {key} is too long")
-        cleaned[key] = values_to_check if definition.get("multiple") else values
+        cleaned[key] = values_to_check if definition.get("multiple") else value
     return cleaned
 
 
