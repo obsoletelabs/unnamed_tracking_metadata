@@ -742,18 +742,34 @@ def submissions_page(request: Request, db: Db):
 
 
 @app.get("/admin/reviews", response_class=HTMLResponse)
-def admin_reviews_page(request: Request, db: Db):
+def admin_reviews_page(request: Request, db: Db, state: str = "pending", q: str = ""):
     user = require_admin(request, db)
-    submissions = db.scalars(select(GameSubmission).order_by(
-        GameSubmission.status != "pending", GameSubmission.created_at.desc())).all()
+    allowed_states = {"pending", "approved", "rejected", "all"}
+    state = state if state in allowed_states else "pending"
+    query = select(GameSubmission)
+    if state != "all":
+        query = query.where(GameSubmission.status == state)
+    search = q.strip()[:120]
+    if search:
+        pattern = f"%{search}%"
+        query = query.where(GameSubmission.proposed_title.ilike(pattern) |
+                            GameSubmission.proposed_developer.ilike(pattern))
+    submissions = db.scalars(query.order_by(
+        GameSubmission.status != "pending", GameSubmission.created_at.desc()).limit(200)).all()
+    pending_count = db.scalar(select(func.count()).select_from(GameSubmission).where(
+        GameSubmission.status == "pending")) or 0
     submitters = {item.id: db.get(User, item.proposed_by) if item.proposed_by else None for item in submissions}
-    evidence_rows = db.scalars(select(SubmissionEvidence).order_by(SubmissionEvidence.created_at)).all()
+    target_games = {item.id: db.get(Game, item.target_game_id) if item.target_game_id else None for item in submissions}
+    evidence_rows = db.scalars(select(SubmissionEvidence).where(
+        SubmissionEvidence.submission_id.in_([item.id for item in submissions] or [-1])
+    ).order_by(SubmissionEvidence.created_at)).all()
     evidence_by_submission = {}
     for evidence in evidence_rows:
         evidence_by_submission.setdefault(evidence.submission_id, []).append(evidence)
     return templates.TemplateResponse(request, "reviews.html", {
         "request": request, "app_name": APP_NAME, "user": user, "submissions": submissions,
-        "submitters": submitters, "evidence_by_submission": evidence_by_submission,
+        "submitters": submitters, "target_games": target_games, "evidence_by_submission": evidence_by_submission,
+        "pending_count": pending_count, "state": state, "q": search,
         "notice": request.query_params.get("notice"), "error": request.query_params.get("error"),
         "is_admin": True,
     })
@@ -1415,6 +1431,8 @@ def admin_home(request: Request, db: Db):
         "game_count": db.scalar(select(func.count()).select_from(Game)) or 0,
         "provider_count": db.scalar(select(func.count()).select_from(MetadataProvider)) or 0,
         "schema_count": db.scalar(select(func.count()).select_from(SchemaDefinition)) or 0,
+        "pending_count": db.scalar(select(func.count()).select_from(GameSubmission).where(
+            GameSubmission.status == "pending")) or 0,
     })
 
 

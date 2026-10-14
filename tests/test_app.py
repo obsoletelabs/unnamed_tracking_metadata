@@ -250,6 +250,35 @@ def test_provider_discovery_attaches_only_an_exact_title_match(client, monkeypat
         assert not result["suggestions"]
 
 
+
+def test_review_queue_filters_by_state_and_search(client):
+    with SessionLocal() as db:
+        admin = User(email="admin@example.test", display_name="Admin",
+                     password_hash=hash_password("admin-password-123"), email_verified=True)
+        db.add(admin)
+        db.flush()
+        db.add(GameSubmission(proposed_by=admin.id, proposed_title="Pending Space Game",
+                              proposed_developer="North Studio", proposed_release_year=2024,
+                              proposed_description="", proposed_custom_fields="{}", proposed_tags="[]",
+                              proposed_external_ids="[]", status="pending"))
+        db.add(GameSubmission(proposed_by=admin.id, proposed_title="Approved Puzzle",
+                              proposed_developer="South Studio", proposed_release_year=2023,
+                              proposed_description="", proposed_custom_fields="{}", proposed_tags="[]",
+                              proposed_external_ids="[]", status="approved"))
+        db.commit()
+    login = client.post("/auth/login", data={
+        "email": "admin@example.test", "password": "admin-password-123"
+    }, follow_redirects=False)
+    assert login.status_code == 303
+    pending = client.get("/admin/reviews?state=pending&q=Space")
+    assert pending.status_code == 200
+    assert "Pending Space Game" in pending.text
+    assert "Approved Puzzle" not in pending.text
+    approved = client.get("/admin/reviews?state=approved")
+    assert approved.status_code == 200
+    assert "Approved Puzzle" in approved.text
+    assert "Pending Space Game" not in approved.text
+
 def test_templates_parse():
     from app.main import templates
     for name in ("admin.html", "auth.html", "dashboard.html", "catalogue.html", "game_detail.html", "achievements.html", "admin_home.html", "providers.html", "users.html", "game_form.html", "setup.html", "submissions.html", "reviews.html", "game_history.html", "game_edit.html"):

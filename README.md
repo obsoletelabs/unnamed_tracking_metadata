@@ -134,6 +134,8 @@ curl -X POST 'http://localhost:8000/api/v1/games/gm_YOURID/images' \
 
 This is a **local demo-1 build, not a secure public beta**. It now has separate user/admin pages, SMTP verification, admin account provisioning, schema-driven game entry, basic achievements, provider ID discovery and image uploads, but is still early-stage. Achievement unlock/progress tracking, field-level provenance for every individual attribute, provider refresh schedules, sync cursors, quotas, rate limits, API scopes and multi-region routing are not implemented yet. Browser submissions and authenticated API creates now receive provenance and an initial revision snapshot. Browser edits are reviewed and store before/after snapshots; API writes remain trusted integration writes and bypass the human review queue.
 
+Container images are published to GitHub Container Registry (`ghcr.io/obsoletelabs/unnamed_tracking_metadata`) from pushes to `demo-1` and version tags (`v*`). Pull requests and other branches do not publish images. GitHub Actions requires package-write permission for the publishing workflow.
+
 Before exposing this publicly, it needs security hardening, including CSRF protection for browser forms, secure deployment configuration and cookie settings behind HTTPS, abuse controls/rate limiting, password-reset/invitation workflows, scoped API keys, formal database migrations, broader automated tests, logging and backup/restore procedures. SMTP must be configured and `ALLOW_SELF_REGISTRATION=true` set explicitly to enable public self-registration. The schema JSON editor currently defines simple field contracts; it is not a general-purpose arbitrary schema execution system. The default session secret is for local development only. Do not use real passwords or production credentials in this prototype.
 
 ## Files
@@ -146,6 +148,8 @@ Before exposing this publicly, it needs security hardening, including CSRF prote
 - `app/templates/submissions.html`, `game_edit.html`, `game_history.html` — contribution status, reviewed edits, evidence provenance, and revision history
 - `app/static/style.css` — responsive styling
 - `Dockerfile`, `compose.yaml`, `compose.postgres.yaml` — container setup
+- `.github/workflows/tests.yml` — tests and container smoke checks
+- `.github/workflows/publish-container.yml` — multi-architecture GHCR image publishing on `demo-1` pushes and version tags
 - The running UI is served by FastAPI templates; there is no standalone HTML mockup serving as the application.
 
 This `demo-1` branch is intended for end-to-end workflow testing and feedback before the next iteration.
