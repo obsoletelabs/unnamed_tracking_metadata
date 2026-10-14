@@ -143,9 +143,9 @@ Before exposing this publicly, it needs security hardening, including CSRF prote
 - `app/templates/dashboard.html` — user dashboard and API key manager
 - `app/templates/catalogue.html`, `game_form.html`, `game_detail.html`, `achievements.html` — catalogue and game workflows
 - `app/templates/admin_home.html`, `admin.html`, `providers.html`, `users.html`, `reviews.html` — separate administration screens
-- `app/templates/submissions.html`, `game_history.html` — contribution status, evidence provenance, and revision history
+- `app/templates/submissions.html`, `game_edit.html`, `game_history.html` — contribution status, reviewed edits, evidence provenance, and revision history
 - `app/static/style.css` — responsive styling
 - `Dockerfile`, `compose.yaml`, `compose.postgres.yaml` — container setup
 - The running UI is served by FastAPI templates; there is no standalone HTML mockup serving as the application.
 
-This branch is a foundation for trying the end-to-end workflow and deciding what should become part of the real service.
+This `demo-1` branch is intended for end-to-end workflow testing and feedback before the next iteration.
