@@ -191,3 +191,6 @@ These endpoints use the same canonical ID mappings and tag associations as the b
 - \`GET /api/v1/games/{canonical_id}/related\` ranks records by shared tags, with stable title/ID tie-breaking and a bounded result count.
 
 All three endpoints require an API key with the \`read\` scope. Export pages are capped at 100 games to avoid unexpectedly large responses.
+
+
+- \`POST /api/v1/lookup/batch\` resolves up to 100 provider/external-ID pairs in one request. Each result independently reports \`found\` and either the canonical game or \`null\`, so one unmapped ID does not fail the whole batch.

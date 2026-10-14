@@ -621,3 +621,36 @@ def test_related_games_rank_by_shared_tags_and_require_read_scope(client):
     assert items[0]["shared_tags"] == 2
     assert items[1]["game"]["id"] == third.json()["id"]
     assert items[1]["shared_tags"] == 1
+
+
+def test_batch_identifier_lookup_returns_mapped_and_unmapped_items(client):
+    token = create_api_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    created = client.post("/api/v1/games", headers=headers, json={
+        "title": "Batch Lookup Game",
+        "external_ids": [{"provider": "igdb", "external_id": "batch-123"}],
+    })
+    assert created.status_code == 201, created.text
+    response = client.post("/api/v1/lookup/batch", headers=headers, json={"items": [
+        {"provider": "igdb", "external_id": "batch-123"},
+        {"provider": "steam", "external_id": "not-mapped"},
+    ]})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["count"] == 2
+    assert payload["items"][0]["found"] is True
+    assert payload["items"][0]["game"]["id"] == created.json()["id"]
+    assert payload["items"][1]["found"] is False
+    assert payload["items"][1]["game"] is None
+
+
+def test_batch_identifier_lookup_is_bounded_and_requires_read_scope(client):
+    token = create_api_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.post("/api/v1/lookup/batch", json={"items": [
+        {"provider": "igdb", "external_id": "123"}
+    ]}).status_code == 401
+    oversized = client.post("/api/v1/lookup/batch", headers=headers, json={"items": [
+        {"provider": "igdb", "external_id": str(index)} for index in range(101)
+    ]})
+    assert oversized.status_code == 422

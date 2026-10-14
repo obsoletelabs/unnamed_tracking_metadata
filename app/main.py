@@ -183,6 +183,15 @@ class GameProposal(BaseModel):
     evidence_note: str = Field(default="", max_length=3000)
 
 
+class BatchLookupItem(BaseModel):
+    provider: str = Field(min_length=1, max_length=80)
+    external_id: str = Field(min_length=1, max_length=200)
+
+
+class BatchLookupRequest(BaseModel):
+    items: list[BatchLookupItem] = Field(min_length=1, max_length=100)
+
+
 app = FastAPI(title=APP_NAME, version="0.1.0", description="Prototype catalogue API")
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=COOKIE_SECURE)
 
@@ -1737,6 +1746,33 @@ def api_lookup_external_id(provider: str, external_id: str, db: Db,
         raise HTTPException(status_code=404, detail="No canonical game is mapped to that provider ID")
     game, slug, resolved_id = result
     return {"provider": slug, "external_id": resolved_id, "game": serialize_game(game, db)}
+
+
+@app.post("/api/v1/lookup/batch")
+def api_batch_lookup(payload: BatchLookupRequest, db: Db,
+                     authorization: Annotated[str | None, Header()] = None) -> dict:
+    """Resolve up to 100 provider IDs in one request without failing the whole batch on misses."""
+    require_api_token(db, authorization, "read")
+    results = []
+    for item in payload.items:
+        provider_slug = item.provider.strip().lower()
+        external_id = item.external_id.strip()
+        if not provider_slug or not external_id:
+            raise HTTPException(status_code=422, detail="Provider and external_id cannot be blank")
+        result = db.execute(
+            select(Game, MetadataProvider.slug, GameExternalId.external_id)
+            .join(GameExternalId, GameExternalId.game_id == Game.id)
+            .join(MetadataProvider, MetadataProvider.id == GameExternalId.provider_id)
+            .where(MetadataProvider.slug == provider_slug, GameExternalId.external_id == external_id)
+        ).first()
+        if result:
+            game, slug, resolved_id = result
+            results.append({"provider": slug, "external_id": resolved_id, "found": True,
+                            "game": serialize_game(game, db)})
+        else:
+            results.append({"provider": provider_slug, "external_id": external_id, "found": False,
+                            "game": None})
+    return {"count": len(results), "items": results}
 
 
 @app.get("/api/v1/tags")
