@@ -47,16 +47,20 @@ The overlay configures the API to use PostgreSQL on the internal Compose network
 
 ### API examples
 
-Search without a key:
+The first two examples below require an `Authorization: Bearer YOUR_API_KEY` header. The only intentionally public API endpoint is `/health`.
+
+Search with a key generated from the website:
 
 ```sh
-curl 'http://localhost:8000/api/v1/games?q=hollow'
+curl 'http://localhost:8000/api/v1/games?q=hollow' \
+  -H 'Authorization: Bearer YOUR_API_KEY'
 ```
 
 Fetch a canonical record:
 
 ```sh
-curl 'http://localhost:8000/api/v1/games/gm_YOURID'
+curl 'http://localhost:8000/api/v1/games/gm_YOURID' \
+  -H 'Authorization: Bearer YOUR_API_KEY'
 ```
 
 Create a record with a key generated from the website:
@@ -80,6 +84,7 @@ Before exposing this publicly, it needs security hardening, including CSRF prote
 
 - `app/main.py` — FastAPI application, database models, web routes and JSON API
 - `app/templates/index.html` — website and account dashboard
+- `app/templates/admin.html` — schema and provider administration
 - `app/static/style.css` — responsive styling
 - `Dockerfile`, `compose.yaml`, `compose.postgres.yaml` — container setup
 - `index.html` — earlier standalone visual concept retained for comparison
