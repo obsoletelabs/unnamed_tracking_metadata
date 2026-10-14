@@ -24,7 +24,7 @@
     </div>
     <form method="post" action="/admin/schemas/save" class="stack-form schema-form">
       <div class="form-row two"><label>Schema key<input name="name" required maxlength="80" value="game" pattern="[A-Za-z][A-Za-z0-9_]*" aria-describedby="schemaKeyHelp"><small id="schemaKeyHelp" class="muted">Use <code>game</code> for game record fields.</small></label><label>Display name<input name="display_name" required maxlength="120" value="Game"></label></div>
-      <label>Field definitions (JSON)<textarea name="schema_json" id="schemaJson" required rows="14" spellcheck="false">{{ schema_json }}</textarea></label>
+      <label>Import a previously exported schema <input id="schemaFile" type="file" accept="application/json,.json"></label><label>Field definitions (JSON)<textarea name="schema_json" id="schemaJson" required rows="14" spellcheck="false">{{ schema_json }}</textarea></label>
       <div class="schema-help"><b>Supported field types</b><span><code>string</code> <code>integer</code> <code>number</code> <code>boolean</code> <code>date</code> <code>url</code> <code>enum</code></span><p>Each field has <code>key</code>, <code>label</code> and <code>type</code>; optional flags are <code>required</code> and <code>multiple</code>. Enum fields also need an <code>options</code> array.</p></div>
       <div class="admin-actions"><button class="button primary" type="submit">Validate and save schema</button><button class="button" type="button" id="loadExample">Load example fields</button><button class="button subtle" type="button" id="formatJson">Format JSON</button></div>
     </form>
@@ -57,6 +57,7 @@
 <script>
 const editor=document.getElementById('schemaJson');
 document.getElementById('formatJson').addEventListener('click',()=>{try{editor.value=JSON.stringify(JSON.parse(editor.value),null,2);editor.setCustomValidity('')}catch(e){editor.setCustomValidity('Enter valid JSON before formatting');editor.reportValidity()}});
+document.getElementById('schemaFile').addEventListener('change',async event=>{const file=event.target.files[0];if(!file)return;try{const parsed=JSON.parse(await file.text());if(Array.isArray(parsed)){editor.value=JSON.stringify(parsed,null,2)}else if(parsed&&Array.isArray(parsed.fields)){editor.value=JSON.stringify(parsed.fields,null,2);document.querySelector('[name="name"]').value=parsed.name||'game';document.querySelector('[name="display_name"]').value=parsed.display_name||parsed.name||'Game'}else{throw new Error('Expected a schema array or exported schema object')}}catch(error){alert('Could not import schema JSON: '+error.message)}});
 document.getElementById('loadExample').addEventListener('click',()=>{editor.value=JSON.stringify([
  {key:'genres',label:'Genres',type:'string',multiple:true},
  {key:'edition',label:'Edition',type:'enum',options:['standard','deluxe','complete']},
