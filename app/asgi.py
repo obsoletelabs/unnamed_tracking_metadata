@@ -1,11 +1,12 @@
 from .main import app
 from .tag_registry import router as tag_registry_router
-from . import community, community_browser, curation
+from . import community, community_admin, community_browser, curation
 
 app.include_router(tag_registry_router)
 app.include_router(community.router)
 app.include_router(curation.router)
 app.include_router(community_browser.router)
+app.include_router(community_admin.router)
 
 # The main app already owns the browser-only /api/v1/games/{id}/images POST shape in older builds.
 # Remove the duplicate community POST route and expose its JSON integration endpoint at /images/add.
