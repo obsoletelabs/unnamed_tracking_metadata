@@ -27,11 +27,11 @@ def test_multiple_image_ratios_vote_and_preferred_selection():
         h2 = {"Authorization": f"Bearer {second}"}
         game = client.get("/api/v1/games?q=Hollow%20Knight", headers=h1).json()["items"][0]
         game_id = game["id"]
-        cover = client.post("/api/v1/games/%s/images" % game_id, headers=h1, json={
+        cover = client.post("/api/v1/games/%s/images/add" % game_id, headers=h1, json={
             "url": "https://example.com/cover.jpg", "content_type": "image/jpeg", "role": "cover",
             "width": 1600, "height": 900, "alt_text": "Cover art",
         })
-        banner = client.post("/api/v1/games/%s/images" % game_id, headers=h1, json={
+        banner = client.post("/api/v1/games/%s/images/add" % game_id, headers=h1, json={
             "url": "https://example.com/banner.jpg", "content_type": "image/jpeg", "role": "banner",
             "aspect_ratio": "21:9",
         })
@@ -72,4 +72,3 @@ def test_metadata_candidates_are_ranked_by_community_votes_and_exposed_on_game()
         assert next(item for item in options["items"] if item["id"] == a["id"])["preferred"] is True
         game = client.get(f"/api/v1/games/{game_id}", headers=h1).json()
         assert game["preferred_metadata"]["developer"] == "Team Cherry Pty Ltd"
-        assert len(game["images"]) >= 0
