@@ -95,6 +95,13 @@ class MetadataCandidateCreate(BaseModel):
     confidence: float = Field(default=0.5, ge=0, le=1)
 
 
+def require_verified_api_token(db: Db, authorization: str | None, scope: str):
+    token, user = require_api_token(db, authorization, scope)
+    if not user.email_verified:
+        raise HTTPException(403, "Email verification is required for community mutations")
+    return token, user
+
+
 def normalize_ratio(value: str | None, width: int | None, height: int | None) -> str:
     if width and height:
         a, b = width, height
@@ -194,14 +201,15 @@ def community_game_data(db, game: Game, user_id: int | None = None) -> dict:
     return {"images": images, "preferred_images": preferred_images, "metadata_options": options, "preferred_metadata": preferred_metadata}
 
 
-# Extend the existing game representation without changing its stable core schema.
 _original_serialize_game = main.serialize_game
+
 
 def serialize_game_with_community(game, db=None):
     result = _original_serialize_game(game, db)
     if db is not None:
         result.update(community_game_data(db, game))
     return result
+
 
 main.serialize_game = serialize_game_with_community
 
@@ -223,7 +231,7 @@ def list_images(canonical_id: str, db: Db, role: str = "", authorization: str | 
 
 @router.post("/api/v1/games/{canonical_id}/images", status_code=201)
 def add_image(canonical_id: str, payload: ImageCreate, db: Db, authorization: str | None = Header(default=None)):
-    _, user = require_api_token(db, authorization, "images")
+    _, user = require_verified_api_token(db, authorization, "images")
     game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
     if not game: raise HTTPException(404, "Game not found")
     role = payload.role.strip().lower()
@@ -242,7 +250,7 @@ def add_image(canonical_id: str, payload: ImageCreate, db: Db, authorization: st
 
 @router.post("/api/v1/images/{image_id}/vote")
 def vote_image(image_id: int, payload: VoteCreate, db: Db, authorization: str | None = Header(default=None)):
-    _, user = require_api_token(db, authorization, "write")
+    _, user = require_verified_api_token(db, authorization, "write")
     image = db.get(GameImage, image_id)
     if not image: raise HTTPException(404, "Image not found")
     existing = db.scalar(select(ImageVote).where(ImageVote.image_id == image.id, ImageVote.user_id == user.id))
@@ -273,7 +281,7 @@ def list_metadata_options(canonical_id: str, db: Db, field: str = "", authorizat
 
 @router.post("/api/v1/games/{canonical_id}/metadata-options", status_code=201)
 def add_metadata_option(canonical_id: str, payload: MetadataCandidateCreate, db: Db, authorization: str | None = Header(default=None)):
-    _, user = require_api_token(db, authorization, "write")
+    _, user = require_verified_api_token(db, authorization, "write")
     game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
     if not game: raise HTTPException(404, "Game not found")
     field = payload.field_name.strip().lower()
@@ -297,7 +305,7 @@ def add_metadata_option(canonical_id: str, payload: MetadataCandidateCreate, db:
 
 @router.post("/api/v1/metadata-options/{candidate_id}/vote")
 def vote_metadata(candidate_id: int, payload: VoteCreate, db: Db, authorization: str | None = Header(default=None)):
-    _, user = require_api_token(db, authorization, "write")
+    _, user = require_verified_api_token(db, authorization, "write")
     candidate = db.get(MetadataCandidate, candidate_id)
     if not candidate or candidate.status != "active": raise HTTPException(404, "Metadata option not found")
     existing = db.scalar(select(MetadataVote).where(MetadataVote.candidate_id == candidate.id, MetadataVote.user_id == user.id))
