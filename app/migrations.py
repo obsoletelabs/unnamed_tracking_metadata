@@ -4,7 +4,7 @@ from sqlalchemy import inspect, text
 
 from .main import Base, engine
 
-CURRENT_REVISION = 4
+CURRENT_REVISION = 5
 
 
 def _ensure_column(connection, table: str, column: str, definition: str) -> None:
@@ -14,9 +14,6 @@ def _ensure_column(connection, table: str, column: str, definition: str) -> None
 
 
 def _revision_one(connection) -> None:
-    # The first migration establishes the complete model schema. create_all is
-    # intentionally confined to this versioned migration and is never used as
-    # an application-startup schema mutator.
     Base.metadata.create_all(bind=connection)
     _ensure_column(connection, "games", "custom_fields", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(connection, "api_tokens", "scopes", "VARCHAR(200) NOT NULL DEFAULT 'read,write,achievements,discover,images'")
@@ -25,62 +22,39 @@ def _revision_one(connection) -> None:
 
 
 def _revision_two(connection) -> None:
-    # Reserved as the first explicit no-op compatibility revision. Keeping
-    # revisions immutable lets future schema changes be appended without
-    # rewriting history or requiring startup heuristics.
     return
 
 
 def _revision_three(connection) -> None:
     connection.execute(text(
         "CREATE TABLE IF NOT EXISTS api_idempotency_keys ("
-        "scope_key VARCHAR(64) PRIMARY KEY, "
-        "request_hash VARCHAR(64) NOT NULL, "
-        "status_code INTEGER NOT NULL, "
-        "content_type VARCHAR(255) NOT NULL, "
-        "response_body TEXT NOT NULL, "
-        "created_at TIMESTAMP NOT NULL, "
-        "expires_at TIMESTAMP NOT NULL"
-        ")"
+        "scope_key VARCHAR(64) PRIMARY KEY, request_hash VARCHAR(64) NOT NULL, status_code INTEGER NOT NULL, "
+        "content_type VARCHAR(255) NOT NULL, response_body TEXT NOT NULL, created_at TIMESTAMP NOT NULL, expires_at TIMESTAMP NOT NULL)"
     ))
-    connection.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_api_idempotency_expires "
-        "ON api_idempotency_keys (expires_at)"
-    ))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_api_idempotency_expires ON api_idempotency_keys (expires_at)"))
 
 
 def _revision_four(connection) -> None:
-    # Identity/provenance tables are deliberately created explicitly so an
-    # existing installation can upgrade without relying on create_all for
-    # unrelated tables.
-    for table_name in (
-        "provider_mappings",
-        "game_aliases",
-        "metadata_observations",
-        "canonical_fields",
-        "game_relationships",
-        "game_identity_redirects",
-    ):
+    for table_name in ("provider_mappings", "game_aliases", "metadata_observations", "canonical_fields", "game_relationships", "game_identity_redirects"):
         table = Base.metadata.tables.get(table_name)
         if table is None:
             raise RuntimeError(f"Identity migration table is not registered: {table_name}")
         table.create(bind=connection, checkfirst=True)
 
 
-MIGRATIONS = {
-    1: _revision_one,
-    2: _revision_two,
-    3: _revision_three,
-    4: _revision_four,
-}
+def _revision_five(connection) -> None:
+    table = Base.metadata.tables.get("image_assets")
+    if table is None:
+        raise RuntimeError("Image asset migration table is not registered")
+    table.create(bind=connection, checkfirst=True)
+
+
+MIGRATIONS = {1: _revision_one, 2: _revision_two, 3: _revision_three, 4: _revision_four, 5: _revision_five}
 
 
 def _configure_sqlite() -> None:
     if engine.dialect.name != "sqlite":
         return
-    # journal_mode changes are connection-level and must happen outside the
-    # migration transaction. Foreign-key enforcement and busy timeout are safe
-    # to configure on the migration connection below.
     with engine.connect() as connection:
         connection.exec_driver_sql("PRAGMA journal_mode=WAL")
 
@@ -91,15 +65,8 @@ def run_migrations() -> None:
         if connection.dialect.name == "sqlite":
             connection.exec_driver_sql("PRAGMA foreign_keys=ON")
             connection.exec_driver_sql("PRAGMA busy_timeout=5000")
-        connection.execute(text(
-            "CREATE TABLE IF NOT EXISTS schema_migrations "
-            "(revision INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL)"
-        ))
-        applied = {
-            row[0] for row in connection.execute(
-                text("SELECT revision FROM schema_migrations ORDER BY revision")
-            )
-        }
+        connection.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations (revision INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL)"))
+        applied = {row[0] for row in connection.execute(text("SELECT revision FROM schema_migrations ORDER BY revision"))}
         for revision in sorted(MIGRATIONS):
             if revision in applied:
                 continue
@@ -108,6 +75,5 @@ def run_migrations() -> None:
                 text("INSERT INTO schema_migrations (revision, applied_at) VALUES (:revision, CURRENT_TIMESTAMP)"),
                 {"revision": revision},
             )
-
         if CURRENT_REVISION != max(MIGRATIONS):
             raise RuntimeError("Migration registry is inconsistent")
