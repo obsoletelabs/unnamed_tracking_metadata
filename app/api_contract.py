@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import time
+import uuid
 from collections import defaultdict, deque
 from threading import Lock
 from typing import Awaitable, Callable
@@ -31,13 +31,7 @@ def _request_id(request: Request) -> str:
 def _error_response(request: Request, status_code: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
-        content={
-            "error": {
-                "code": code,
-                "message": message,
-                "request_id": _request_id(request),
-            }
-        },
+        content={"error": {"code": code, "message": message, "request_id": _request_id(request)}},
         headers={"Cache-Control": "no-store"},
     )
 
@@ -83,7 +77,7 @@ def _load_idempotency(engine, scope: str):
     from sqlalchemy import text
 
     with engine.begin() as connection:
-        row = connection.execute(
+        return connection.execute(
             text(
                 "SELECT request_hash, status_code, content_type, response_body "
                 "FROM api_idempotency_keys "
@@ -91,7 +85,6 @@ def _load_idempotency(engine, scope: str):
             ),
             {"scope": scope},
         ).mappings().first()
-    return row
 
 
 def _store_idempotency(engine, scope: str, request_hash: str, response: Response, body: bytes) -> bool:
@@ -133,11 +126,13 @@ async def _capture_response(response: Response) -> tuple[Response, bytes]:
     if not hasattr(response, "body_iterator"):
         return response, getattr(response, "body", b"") or b""
     chunks: list[bytes] = []
+    total = 0
     async for chunk in response.body_iterator:
-        chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
-        if sum(map(len, chunks)) > IDEMPOTENCY_MAX_RESPONSE:
-            break
+        data = chunk if isinstance(chunk, bytes) else chunk.encode("utf-8")
+        chunks.append(data)
+        total += len(data)
     body = b"".join(chunks)
+    # Rebuild the response so enabling idempotency never truncates the original response.
     response = Response(content=body, status_code=response.status_code, headers=dict(response.headers), media_type=None)
     return response, body
 
@@ -145,30 +140,35 @@ async def _capture_response(response: Response) -> tuple[Response, bytes]:
 def install_api_contract(app: FastAPI, engine) -> None:
     @app.middleware("http")
     async def api_contract_middleware(request: Request, call_next: Callable[[Request], Awaitable[Response]]):
-        request.state.request_id = request.headers.get("X-Request-ID") or __import__("uuid").uuid4().hex
+        request.state.request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
         is_api = request.url.path.startswith("/api/")
         if is_api:
             limited, count, retry_after = _rate_limited(_rate_key(request))
             if limited:
-                return _error_response(request, 429, "rate_limited", "Too many API requests.")
+                response = _error_response(request, 429, "rate_limited", "Too many API requests.")
+                response.headers["Retry-After"] = str(retry_after)
+                return response
             request.state.rate_count = count
 
+        mutating = request.method in {"POST", "PUT", "PATCH", "DELETE"}
         idempotency_key = request.headers.get("Idempotency-Key", "").strip()
-        body = await request.body() if is_api and request.method in {"POST", "PUT", "PATCH", "DELETE"} else b""
-        request_hash = _body_hash(body) if body else ""
-        scope = _idempotency_scope(request, idempotency_key) if idempotency_key and is_api and request.method in {"POST", "PUT", "PATCH", "DELETE"} else ""
+        body = await request.body() if is_api and mutating else b""
+        request_hash = _body_hash(body)
+        scope = _idempotency_scope(request, idempotency_key) if idempotency_key and is_api and mutating else ""
 
         if scope:
             existing = _load_idempotency(engine, scope)
             if existing:
                 if existing["request_hash"] != request_hash:
                     return _error_response(request, 409, "idempotency_key_reused", "Idempotency-Key was already used with a different request body.")
-                return Response(
+                replay = Response(
                     content=existing["response_body"],
                     status_code=existing["status_code"],
                     media_type=existing["content_type"],
                     headers={"X-Request-ID": request.state.request_id, "X-Idempotent-Replay": "true", "Cache-Control": "no-store"},
                 )
+                replay.headers["X-API-Version"] = API_VERSION
+                return replay
 
         response = await call_next(request)
         if scope:
