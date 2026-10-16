@@ -4,7 +4,7 @@ from sqlalchemy import inspect, text
 
 from .main import Base, engine
 
-CURRENT_REVISION = 3
+CURRENT_REVISION = 4
 
 
 def _ensure_column(connection, table: str, column: str, definition: str) -> None:
@@ -49,10 +49,29 @@ def _revision_three(connection) -> None:
     ))
 
 
+def _revision_four(connection) -> None:
+    # Identity/provenance tables are deliberately created explicitly so an
+    # existing installation can upgrade without relying on create_all for
+    # unrelated tables.
+    for table_name in (
+        "provider_mappings",
+        "game_aliases",
+        "metadata_observations",
+        "canonical_fields",
+        "game_relationships",
+        "game_identity_redirects",
+    ):
+        table = Base.metadata.tables.get(table_name)
+        if table is None:
+            raise RuntimeError(f"Identity migration table is not registered: {table_name}")
+        table.create(bind=connection, checkfirst=True)
+
+
 MIGRATIONS = {
     1: _revision_one,
     2: _revision_two,
     3: _revision_three,
+    4: _revision_four,
 }
 
 
