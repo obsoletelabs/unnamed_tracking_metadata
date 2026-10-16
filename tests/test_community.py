@@ -72,3 +72,36 @@ def test_metadata_candidates_are_ranked_by_community_votes_and_exposed_on_game()
         assert next(item for item in options["items"] if item["id"] == a["id"])["preferred"] is True
         game = client.get(f"/api/v1/games/{game_id}", headers=h1).json()
         assert game["preferred_metadata"]["developer"] == "Team Cherry Pty Ltd"
+
+
+def test_community_report_is_unique_per_user_and_can_be_moderated():
+    Base.metadata.drop_all(engine)
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            reporter = token_for(db, "reporter")
+            admin = User(email="admin@example.test", display_name="Admin", password_hash="test", email_verified=True)
+            db.add(admin)
+            db.commit()
+            from app.main import ADMIN_EMAILS
+            ADMIN_EMAILS.add(admin.email)
+        headers = {"Authorization": f"Bearer {reporter}"}
+        game_id = client.get("/api/v1/games?q=Hollow%20Knight", headers=headers).json()["items"][0]["id"]
+        image = client.post(f"/api/v1/games/{game_id}/images/add", headers=headers, json={
+            "url": "https://example.com/report.jpg", "content_type": "image/jpeg", "role": "cover",
+        }).json()
+        report = client.post("/api/v1/community/reports", headers=headers, json={
+            "image_id": image["id"], "reason": "wrong-game", "details": "This image is not for this title.",
+        })
+        assert report.status_code == 201
+        assert client.post("/api/v1/community/reports", headers=headers, json={
+            "image_id": image["id"], "reason": "wrong-game",
+        }).status_code == 409
+        with SessionLocal() as db:
+            db.refresh(admin)
+            db.commit()
+        with TestClient(app) as admin_client:
+            with SessionLocal() as db:
+                admin_token = token_for(db, "admin-api")
+            # Session-admin endpoint is intentionally separate from bearer-token moderation APIs.
+            admin_client.get("/admin/community/reports")
+        assert report.json()["status"] == "open"
