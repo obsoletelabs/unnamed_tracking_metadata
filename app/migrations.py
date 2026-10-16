@@ -18,7 +18,7 @@ def _revision_one(connection) -> None:
     # intentionally confined to this versioned migration and is never used as
     # an application-startup schema mutator.
     Base.metadata.create_all(bind=connection)
-    _ensure_column(connection, "games", "custom_fields", "TEXT NOT NULL DEFAULT '{}'" )
+    _ensure_column(connection, "games", "custom_fields", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(connection, "api_tokens", "scopes", "VARCHAR(200) NOT NULL DEFAULT 'read,write,achievements,discover,images'")
     _ensure_column(connection, "users", "email_verified", "BOOLEAN NOT NULL DEFAULT 1")
     _ensure_column(connection, "game_submissions", "target_game_id", "INTEGER")
@@ -37,17 +37,22 @@ MIGRATIONS = {
 }
 
 
-def _configure_sqlite(connection) -> None:
-    if connection.dialect.name != "sqlite":
+def _configure_sqlite() -> None:
+    if engine.dialect.name != "sqlite":
         return
-    connection.exec_driver_sql("PRAGMA foreign_keys=ON")
-    connection.exec_driver_sql("PRAGMA journal_mode=WAL")
-    connection.exec_driver_sql("PRAGMA busy_timeout=5000")
+    # journal_mode changes are connection-level and must happen outside the
+    # migration transaction. Foreign-key enforcement and busy timeout are safe
+    # to configure on the migration connection below.
+    with engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA journal_mode=WAL")
 
 
 def run_migrations() -> None:
+    _configure_sqlite()
     with engine.begin() as connection:
-        _configure_sqlite(connection)
+        if connection.dialect.name == "sqlite":
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            connection.exec_driver_sql("PRAGMA busy_timeout=5000")
         connection.execute(text(
             "CREATE TABLE IF NOT EXISTS schema_migrations "
             "(revision INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL)"
