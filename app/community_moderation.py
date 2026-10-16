@@ -103,6 +103,8 @@ def serialize_report(db, report: CommunityReport) -> dict:
 @router.post("/api/v1/community/reports", status_code=201)
 def create_report(payload: ReportCreate, db: Db, authorization: str | None = Header(default=None)):
     _, user = require_api_token(db, authorization, "write")
+    if not user.email_verified:
+        raise HTTPException(403, "Email verification is required for community reports")
     image, candidate = report_target(db, payload)
     existing_statement = select(CommunityReport).where(
         CommunityReport.reporter_id == user.id,
@@ -128,9 +130,8 @@ def create_report(payload: ReportCreate, db: Db, authorization: str | None = Hea
 
 
 @router.get("/api/v1/community/reports")
-def list_reports(request: Request, db: Db, status: str = "open", authorization: str | None = Header(default=None)):
-    # Reports intentionally use session-admin access: they contain moderation details and reporter-owned state.
-    user = admin_user(request, db)
+def list_reports(request: Request, db: Db, status: str = "open"):
+    admin_user(request, db)
     if status not in REPORT_STATUSES:
         raise HTTPException(422, "Unsupported report status")
     reports = db.scalars(
