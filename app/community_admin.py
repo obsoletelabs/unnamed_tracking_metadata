@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from . import community, community_moderation, main
 from .main import Db, Game
@@ -50,17 +50,15 @@ def community_admin_page(request: Request, db: Db):
             "upvotes": up, "downvotes": down, "score": up - down,
         })
     metadata_items.sort(key=lambda item: (-item["score"], -item["upvotes"], item["id"]))
-    open_report_count = db.scalar(select(community_moderation.CommunityReport.id)
-                                   .where(community_moderation.CommunityReport.status == "open")
-                                   .count()) if False else len(db.scalars(
-                                       select(community_moderation.CommunityReport.id)
-                                       .where(community_moderation.CommunityReport.status == "open")
-                                   ).all())
+    open_report_count = db.scalar(
+        select(func.count()).select_from(community_moderation.CommunityReport)
+        .where(community_moderation.CommunityReport.status == "open")
+    ) or 0
     return main.templates.TemplateResponse(request, "community_admin.html", {
         "request": request, "app_name": main.APP_NAME, "user": user,
         "images": image_items[:100], "metadata": metadata_items[:100],
         "image_count": len(image_items), "metadata_count": len(metadata_items),
-        "open_report_count": open_report_count,
+        "open_report_count": int(open_report_count),
     })
 
 
