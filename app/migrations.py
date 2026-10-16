@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+from sqlalchemy import inspect, text
+
+from .main import Base, engine
+
+CURRENT_REVISION = 2
+
+
+def _ensure_column(connection, table: str, column: str, definition: str) -> None:
+    columns = {item["name"] for item in inspect(connection).get_columns(table)}
+    if column not in columns:
+        connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
+
+
+def _revision_one(connection) -> None:
+    # The first migration establishes the complete model schema. create_all is
+    # intentionally confined to this versioned migration and is never used as
+    # an application-startup schema mutator.
+    Base.metadata.create_all(bind=connection)
+    _ensure_column(connection, "games", "custom_fields", "TEXT NOT NULL DEFAULT '{}'" )
+    _ensure_column(connection, "api_tokens", "scopes", "VARCHAR(200) NOT NULL DEFAULT 'read,write,achievements,discover,images'")
+    _ensure_column(connection, "users", "email_verified", "BOOLEAN NOT NULL DEFAULT 1")
+    _ensure_column(connection, "game_submissions", "target_game_id", "INTEGER")
+
+
+def _revision_two(connection) -> None:
+    # Reserved as the first explicit no-op compatibility revision. Keeping
+    # revisions immutable lets future schema changes be appended without
+    # rewriting history or requiring startup heuristics.
+    return
+
+
+MIGRATIONS = {
+    1: _revision_one,
+    2: _revision_two,
+}
+
+
+def _configure_sqlite(connection) -> None:
+    if connection.dialect.name != "sqlite":
+        return
+    connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+    connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+    connection.exec_driver_sql("PRAGMA busy_timeout=5000")
+
+
+def run_migrations() -> None:
+    with engine.begin() as connection:
+        _configure_sqlite(connection)
+        connection.execute(text(
+            "CREATE TABLE IF NOT EXISTS schema_migrations "
+            "(revision INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL)"
+        ))
+        applied = {
+            row[0] for row in connection.execute(
+                text("SELECT revision FROM schema_migrations ORDER BY revision")
+            )
+        }
+        for revision in sorted(MIGRATIONS):
+            if revision in applied:
+                continue
+            MIGRATIONS[revision](connection)
+            connection.execute(
+                text("INSERT INTO schema_migrations (revision, applied_at) VALUES (:revision, CURRENT_TIMESTAMP)"),
+                {"revision": revision},
+            )
+
+        if CURRENT_REVISION != max(MIGRATIONS):
+            raise RuntimeError("Migration registry is inconsistent")
