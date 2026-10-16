@@ -1,7 +1,8 @@
 from .main import app, engine
 from .api_contract import install_api_contract
-from . import identity  # noqa: F401 - register identity/provenance models before migrations
-from . import media  # noqa: F401 - register durable media provenance model
+from . import identity  # noqa: F401
+from . import media  # noqa: F401
+from . import federation  # noqa: F401
 from .migrations import run_migrations
 from .tag_registry import router as tag_registry_router
 from .identity_api import router as identity_router

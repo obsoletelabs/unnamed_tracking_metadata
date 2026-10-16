@@ -4,7 +4,7 @@ from sqlalchemy import inspect, text
 
 from .main import Base, engine
 
-CURRENT_REVISION = 5
+CURRENT_REVISION = 6
 
 
 def _ensure_column(connection, table: str, column: str, definition: str) -> None:
@@ -26,11 +26,7 @@ def _revision_two(connection) -> None:
 
 
 def _revision_three(connection) -> None:
-    connection.execute(text(
-        "CREATE TABLE IF NOT EXISTS api_idempotency_keys ("
-        "scope_key VARCHAR(64) PRIMARY KEY, request_hash VARCHAR(64) NOT NULL, status_code INTEGER NOT NULL, "
-        "content_type VARCHAR(255) NOT NULL, response_body TEXT NOT NULL, created_at TIMESTAMP NOT NULL, expires_at TIMESTAMP NOT NULL)"
-    ))
+    connection.execute(text("CREATE TABLE IF NOT EXISTS api_idempotency_keys (scope_key VARCHAR(64) PRIMARY KEY, request_hash VARCHAR(64) NOT NULL, status_code INTEGER NOT NULL, content_type VARCHAR(255) NOT NULL, response_body TEXT NOT NULL, created_at TIMESTAMP NOT NULL, expires_at TIMESTAMP NOT NULL)"))
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_api_idempotency_expires ON api_idempotency_keys (expires_at)"))
 
 
@@ -49,7 +45,14 @@ def _revision_five(connection) -> None:
     table.create(bind=connection, checkfirst=True)
 
 
-MIGRATIONS = {1: _revision_one, 2: _revision_two, 3: _revision_three, 4: _revision_four, 5: _revision_five}
+def _revision_six(connection) -> None:
+    table = Base.metadata.tables.get("authority_mappings")
+    if table is None:
+        raise RuntimeError("Authority mapping migration table is not registered")
+    table.create(bind=connection, checkfirst=True)
+
+
+MIGRATIONS = {1: _revision_one, 2: _revision_two, 3: _revision_three, 4: _revision_four, 5: _revision_five, 6: _revision_six}
 
 
 def _configure_sqlite() -> None:
@@ -71,9 +74,6 @@ def run_migrations() -> None:
             if revision in applied:
                 continue
             MIGRATIONS[revision](connection)
-            connection.execute(
-                text("INSERT INTO schema_migrations (revision, applied_at) VALUES (:revision, CURRENT_TIMESTAMP)"),
-                {"revision": revision},
-            )
+            connection.execute(text("INSERT INTO schema_migrations (revision, applied_at) VALUES (:revision, CURRENT_TIMESTAMP)"), {"revision": revision})
         if CURRENT_REVISION != max(MIGRATIONS):
             raise RuntimeError("Migration registry is inconsistent")
