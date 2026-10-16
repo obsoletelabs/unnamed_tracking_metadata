@@ -4,7 +4,7 @@ from sqlalchemy import inspect, text
 
 from .main import Base, engine
 
-CURRENT_REVISION = 2
+CURRENT_REVISION = 3
 
 
 def _ensure_column(connection, table: str, column: str, definition: str) -> None:
@@ -31,9 +31,28 @@ def _revision_two(connection) -> None:
     return
 
 
+def _revision_three(connection) -> None:
+    connection.execute(text(
+        "CREATE TABLE IF NOT EXISTS api_idempotency_keys ("
+        "scope_key VARCHAR(64) PRIMARY KEY, "
+        "request_hash VARCHAR(64) NOT NULL, "
+        "status_code INTEGER NOT NULL, "
+        "content_type VARCHAR(255) NOT NULL, "
+        "response_body TEXT NOT NULL, "
+        "created_at TIMESTAMP NOT NULL, "
+        "expires_at TIMESTAMP NOT NULL"
+        ")"
+    ))
+    connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_api_idempotency_expires "
+        "ON api_idempotency_keys (expires_at)"
+    ))
+
+
 MIGRATIONS = {
     1: _revision_one,
     2: _revision_two,
+    3: _revision_three,
 }
 
 
