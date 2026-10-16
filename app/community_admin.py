@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
-from sqlalchemy import func, select
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import select
 
-from . import community, main
+from . import community, community_moderation, main
 from .main import Db, Game
 
 router = APIRouter()
@@ -50,8 +50,46 @@ def community_admin_page(request: Request, db: Db):
             "upvotes": up, "downvotes": down, "score": up - down,
         })
     metadata_items.sort(key=lambda item: (-item["score"], -item["upvotes"], item["id"]))
+    open_report_count = db.scalar(select(community_moderation.CommunityReport.id)
+                                   .where(community_moderation.CommunityReport.status == "open")
+                                   .count()) if False else len(db.scalars(
+                                       select(community_moderation.CommunityReport.id)
+                                       .where(community_moderation.CommunityReport.status == "open")
+                                   ).all())
     return main.templates.TemplateResponse(request, "community_admin.html", {
         "request": request, "app_name": main.APP_NAME, "user": user,
         "images": image_items[:100], "metadata": metadata_items[:100],
         "image_count": len(image_items), "metadata_count": len(metadata_items),
+        "open_report_count": open_report_count,
     })
+
+
+@router.get("/admin/community/reports", response_class=HTMLResponse)
+def community_reports_page(request: Request, db: Db):
+    user = admin_user(request, db)
+    reports = db.scalars(
+        select(community_moderation.CommunityReport)
+        .where(community_moderation.CommunityReport.status == "open")
+        .order_by(community_moderation.CommunityReport.created_at.asc(), community_moderation.CommunityReport.id.asc())
+        .limit(250)
+    ).all()
+    items = [community_moderation.serialize_report(db, report) for report in reports]
+    return main.templates.TemplateResponse(request, "community_reports.html", {
+        "request": request, "app_name": main.APP_NAME, "user": user, "reports": items,
+    })
+
+
+@router.post("/admin/community/reports/{report_id}/resolve")
+def resolve_community_report(request: Request, report_id: int, db: Db, status: str = "resolved", note: str = ""):
+    user = admin_user(request, db)
+    if status not in {"resolved", "dismissed"}:
+        raise HTTPException(422, "Invalid moderation status")
+    report = db.get(community_moderation.CommunityReport, report_id)
+    if not report:
+        raise HTTPException(404, "Report not found")
+    report.status = status
+    report.reviewed_by = user.id
+    report.review_note = note.strip()[:2000]
+    report.reviewed_at = main.utcnow()
+    db.commit()
+    return RedirectResponse("/admin/community/reports", status_code=303)
