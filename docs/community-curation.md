@@ -39,11 +39,13 @@ This lets clients request a 16:9 cover, 21:9 banner, portrait asset, or another 
 
 ## Voting
 
-A user has at most one vote per image. `1` upvotes, `-1` downvotes, and `0` removes the user's vote:
+A verified user has at most one vote per image. `1` upvotes, `-1` downvotes, and `0` removes the user's vote:
 
 `POST /api/v1/images/{image_id}/vote`
 
 Preferred selection is deterministic: the highest community score wins within its image role, with upvotes and then creation order used as stable tie-breakers. A candidate must have a positive score before it can become the preferred image, so an unvoted image never silently wins a community choice.
+
+API community mutations require an email-verified account; browser community actions already require the same verification state.
 
 ## Metadata alternatives
 
@@ -81,8 +83,8 @@ using exactly one of `image_id` or `candidate_id`, plus one of these reasons:
 - `unsafe`
 - `other`
 
-Each user can keep at most one open report against a particular item. Administrators can review the open queue at `/admin/community/reports` and resolve or dismiss reports with an audit note. Report status and moderation state are deliberately separate from community voting, so reporting creates a review signal rather than silently manipulating the ranking.
+Each verified user can keep at most one open report against a particular item. Administrators can review the open queue at `/admin/community/reports` and resolve or dismiss reports with an audit note. Report status and moderation state are deliberately separate from community voting, so reporting creates a review signal rather than silently manipulating the ranking.
 
 ## API permissions
 
-Reading candidates uses `read`. Adding image candidates uses `images`; proposing metadata alternatives, voting, and reporting use `write`. Moderation reports contain private moderation state and therefore use the signed-in administrator session rather than bearer-token access for the admin queue. Health checks remain public. API tokens are stored as hashes and votes cannot be duplicated for the same user/candidate pair because the database enforces unique constraints.
+Reading candidates uses `read`. Adding image candidates uses `images`; proposing metadata alternatives, voting, and reporting use `write` and require email verification. Moderation reports contain private moderation state and therefore use the signed-in administrator session rather than bearer-token access for the admin queue. Health checks remain public. API tokens are stored as hashes and votes cannot be duplicated for the same user/candidate pair because the database enforces unique constraints.
