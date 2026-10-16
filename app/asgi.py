@@ -3,6 +3,7 @@ from .api_contract import install_api_contract
 from . import identity  # noqa: F401 - register identity/provenance models before migrations
 from .migrations import run_migrations
 from .tag_registry import router as tag_registry_router
+from .identity_api import router as identity_router
 from . import community, community_admin, community_browser, community_moderation, curation
 
 # main.py historically registered a startup schema mutator. Replace that
@@ -15,6 +16,7 @@ app.router.on_startup.append(run_migrations)
 install_api_contract(app, engine)
 
 app.include_router(tag_registry_router)
+app.include_router(identity_router)
 app.include_router(community.router)
 app.include_router(curation.router)
 app.include_router(community_browser.router)
