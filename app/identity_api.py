@@ -5,7 +5,7 @@ import re
 import unicodedata
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -47,7 +47,7 @@ class AliasCreate(BaseModel):
 
 
 @router.get("/games/{canonical_id}/identity")
-def game_identity(canonical_id: str, db: Db, authorization: str | None = None):
+def game_identity(canonical_id: str, db: Db, authorization: str | None = Header(default=None)):
     require_api_token(db, authorization, "read")
     game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
     if not game:
