@@ -9,7 +9,7 @@ from . import jobs  # noqa: F401
 from . import search_api  # noqa: F401
 from . import security_audit  # noqa: F401
 from . import observability  # noqa: F401
-from .observability import router as observability_router
+from .observability import install_request_metrics, router as observability_router
 from .search_api import router as search_router
 from .migrations import run_migrations
 from .tag_registry import router as tag_registry_router
@@ -19,6 +19,7 @@ from . import community, community_admin, community_browser, community_moderatio
 app.router.on_startup = [handler for handler in app.router.on_startup if getattr(handler, "__name__", "") != "startup"]
 app.router.on_startup.append(run_migrations)
 install_api_contract(app, engine)
+install_request_metrics(app)
 
 app.include_router(observability_router)
 app.include_router(tag_registry_router)
