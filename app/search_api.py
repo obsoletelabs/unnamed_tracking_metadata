@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 from fastapi import APIRouter, Header, HTTPException
 from sqlalchemy import select
 
+from .cache import cache
 from .identity import GameAlias
 from .main import Db, Game, require_api_token
 
@@ -13,6 +14,7 @@ router = APIRouter()
 MAX_CANDIDATES = 500
 MAX_RESULTS = 100
 MIN_PROVIDER_QUERY_LENGTH = 5
+SEARCH_CACHE_TTL = 30
 
 
 def normalize_query(value: str) -> str:
@@ -73,12 +75,19 @@ def search(db: Db, query: str = "", limit: int = 20,
     require_api_token(db, authorization, "read")
     if limit < 1 or limit > MAX_RESULTS:
         raise HTTPException(422, f"limit must be between 1 and {MAX_RESULTS}")
+    normalized = normalize_query(query)
+    cache_key = f"metadata:search:v1:{normalized}:{limit}"
+    items = cache.get_json(cache_key)
+    if items is None:
+        items = local_search(db, query, limit)
+        cache.set_json(cache_key, items, SEARCH_CACHE_TTL)
     return {
         "query": query,
-        "normalized_query": normalize_query(query),
-        "items": local_search(db, query, limit),
+        "normalized_query": normalized,
+        "items": items,
         "search_only": True,
         "provider_enrichment": "not performed",
+        "cache": "redis" if cache.distributed else "local",
     }
 
 
@@ -91,4 +100,6 @@ def search_budget(db: Db, authorization: str | None = Header(default=None)):
         "provider_query_minimum": MIN_PROVIDER_QUERY_LENGTH,
         "enrichment_top_n": 3,
         "provider_fanout": "bounded by provider registry quotas",
+        "cache_ttl_seconds": SEARCH_CACHE_TTL,
+        "cache_backend": "redis or local fallback",
     }
