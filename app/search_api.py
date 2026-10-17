@@ -68,7 +68,7 @@ def local_search(db: Db, query: str, limit: int) -> list[dict]:
 
 
 @router.get("/api/v1/search")
-def search(query: str = "", limit: int = 20, db: Db = None,
+def search(db: Db, query: str = "", limit: int = 20,
            authorization: str | None = Header(default=None)):
     require_api_token(db, authorization, "read")
     if limit < 1 or limit > MAX_RESULTS:
@@ -83,7 +83,7 @@ def search(query: str = "", limit: int = 20, db: Db = None,
 
 
 @router.get("/api/v1/search/budget")
-def search_budget(authorization: str | None = Header(default=None), db: Db = None):
+def search_budget(db: Db, authorization: str | None = Header(default=None)):
     require_api_token(db, authorization, "read")
     return {
         "max_candidates": MAX_CANDIDATES,
