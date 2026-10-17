@@ -126,15 +126,30 @@ async def _capture_response(response: Response) -> tuple[Response, bytes]:
     if not hasattr(response, "body_iterator"):
         return response, getattr(response, "body", b"") or b""
     chunks: list[bytes] = []
-    total = 0
     async for chunk in response.body_iterator:
         data = chunk if isinstance(chunk, bytes) else chunk.encode("utf-8")
         chunks.append(data)
-        total += len(data)
     body = b"".join(chunks)
-    # Rebuild the response so enabling idempotency never truncates the original response.
     response = Response(content=body, status_code=response.status_code, headers=dict(response.headers), media_type=None)
     return response, body
+
+
+def _audit_mutation(engine, request: Request, response: Response) -> None:
+    try:
+        from .security_audit import record_api_mutation
+
+        record_api_mutation(
+            engine,
+            request_id=_request_id(request),
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            authorization=request.headers.get("authorization", ""),
+            client_address=request.client.host if request.client else "unknown",
+        )
+    except Exception:
+        # Auditing must never turn a successful user mutation into a 500 response.
+        pass
 
 
 def install_api_contract(app: FastAPI, engine) -> None:
@@ -147,6 +162,7 @@ def install_api_contract(app: FastAPI, engine) -> None:
             if limited:
                 response = _error_response(request, 429, "rate_limited", "Too many API requests.")
                 response.headers["Retry-After"] = str(retry_after)
+                _audit_mutation(engine, request, response) if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None
                 return response
             request.state.rate_count = count
 
@@ -160,7 +176,9 @@ def install_api_contract(app: FastAPI, engine) -> None:
             existing = _load_idempotency(engine, scope)
             if existing:
                 if existing["request_hash"] != request_hash:
-                    return _error_response(request, 409, "idempotency_key_reused", "Idempotency-Key was already used with a different request body.")
+                    response = _error_response(request, 409, "idempotency_key_reused", "Idempotency-Key was already used with a different request body.")
+                    _audit_mutation(engine, request, response)
+                    return response
                 replay = Response(
                     content=existing["response_body"],
                     status_code=existing["status_code"],
@@ -168,6 +186,7 @@ def install_api_contract(app: FastAPI, engine) -> None:
                     headers={"X-Request-ID": request.state.request_id, "X-Idempotent-Replay": "true", "Cache-Control": "no-store"},
                 )
                 replay.headers["X-API-Version"] = API_VERSION
+                _audit_mutation(engine, request, replay)
                 return replay
 
         response = await call_next(request)
@@ -181,6 +200,8 @@ def install_api_contract(app: FastAPI, engine) -> None:
         if is_api:
             response.headers["X-RateLimit-Limit"] = str(API_RATE_LIMIT)
             response.headers["X-RateLimit-Remaining"] = str(max(0, API_RATE_LIMIT - getattr(request.state, "rate_count", 0)))
+        if is_api and mutating:
+            _audit_mutation(engine, request, response)
         return response
 
     @app.exception_handler(RequestValidationError)
