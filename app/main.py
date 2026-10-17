@@ -694,6 +694,7 @@ def dashboard(request: Request, db: Db):
         "one_time_token": one_time_token, "notice": request.query_params.get("notice"),
         "error": request.query_params.get("error"), "game_count": game_count,
         "achievement_count": achievement_count, "is_admin": user.email.lower() in ADMIN_EMAILS,
+        "now_utc": datetime.now(timezone.utc),
     })
 
 
