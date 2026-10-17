@@ -88,7 +88,7 @@ def _load_idempotency(engine, scope: str):
     from sqlalchemy import text
 
     with engine.begin() as connection:
-        return connection.execute(
+        row = connection.execute(
             text(
                 "SELECT request_hash, status_code, content_type, response_body "
                 "FROM api_idempotency_keys "
@@ -102,7 +102,6 @@ def _load_idempotency(engine, scope: str):
                 {"scope": scope},
             )
         return row
-
 
 def _store_idempotency(engine, scope: str, request_hash: str, response: Response, body: bytes) -> bool:
     from sqlalchemy import text
