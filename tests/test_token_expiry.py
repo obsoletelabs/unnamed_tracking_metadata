@@ -33,16 +33,16 @@ def _token(*, scopes: str, expires_at=None) -> str:
 
 
 def test_expired_api_token_is_rejected():
-    raw = _token(scopes="read", expires_at=datetime.now(timezone.utc) - timedelta(days=1))
     with TestClient(app) as client:
+        raw = _token(scopes="read", expires_at=datetime.now(timezone.utc) - timedelta(days=1))
         response = client.get("/api/v1/games", headers={"Authorization": f"Bearer {raw}"})
     assert response.status_code == 401
     assert "expired" in response.json()["detail"].lower()
 
 
 def test_read_only_token_cannot_create_game():
-    raw = _token(scopes="read")
     with TestClient(app) as client:
+        raw = _token(scopes="read")
         response = client.post(
             "/api/v1/games",
             headers={"Authorization": f"Bearer {raw}"},
@@ -52,8 +52,8 @@ def test_read_only_token_cannot_create_game():
 
 
 def test_api_token_last_used_is_recorded():
-    raw = _token(scopes="read")
     with TestClient(app) as client:
+        raw = _token(scopes="read")
         response = client.get("/api/v1/games", headers={"Authorization": f"Bearer {raw}"})
     assert response.status_code == 200
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
