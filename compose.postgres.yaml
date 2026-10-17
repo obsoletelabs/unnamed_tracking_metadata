@@ -1,6 +1,7 @@
 services:
   atlas:
     environment:
+      AUTHORITY_MODE: ${AUTHORITY_MODE:-central}
       DATABASE_URL: postgresql+psycopg://atlas:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your environment}@postgres:5432/atlas
     depends_on:
       postgres:
