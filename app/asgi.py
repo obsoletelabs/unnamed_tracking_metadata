@@ -7,6 +7,7 @@ from .media import router as media_router
 from . import federation  # noqa: F401
 from . import jobs  # noqa: F401
 from . import search_api  # noqa: F401
+from . import security_audit  # noqa: F401
 from .search_api import router as search_router
 from .migrations import run_migrations
 from .tag_registry import router as tag_registry_router
