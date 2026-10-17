@@ -47,7 +47,8 @@ class AliasCreate(BaseModel):
 
 
 @router.get("/games/{canonical_id}/identity")
-def game_identity(canonical_id: str, db: Db):
+def game_identity(canonical_id: str, db: Db, authorization: str | None = None):
+    require_api_token(db, authorization, "read")
     game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
     if not game:
         redirect = db.scalar(select(GameIdentityRedirect).where(GameIdentityRedirect.old_canonical_id == canonical_id))
@@ -92,7 +93,8 @@ def game_identity(canonical_id: str, db: Db):
 
 
 @router.get("/identities/{provider}/{external_id}")
-def resolve_provider_identity(provider: str, external_id: str, db: Db):
+def resolve_provider_identity(provider: str, external_id: str, db: Db, authorization: str | None = None):
+    require_api_token(db, authorization, "read")
     mapping = db.scalar(
         select(ProviderMapping).where(
             ProviderMapping.provider == provider,
