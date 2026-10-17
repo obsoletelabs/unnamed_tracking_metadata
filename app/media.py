@@ -45,6 +45,8 @@ class ImageAsset(Base):
 @dataclass(frozen=True, slots=True)
 class RemoteFetchPolicy:
     max_bytes: int = 5 * 1024 * 1024
+    max_dimension: int = 10000
+    max_pixels: int = 40_000_000
     allowed_content_types: frozenset[str] = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
 
 
@@ -87,9 +89,16 @@ def validate_image_bytes(data: bytes, content_type: str, policy: RemoteFetchPoli
         raise ValueError("unsupported image content type")
     try:
         with Image.open(io.BytesIO(data)) as image:
+            width, height = image.size
+            if width < 1 or height < 1 or width > policy.max_dimension or height > policy.max_dimension:
+                raise ValueError("image dimensions exceed the configured limit")
+            if width * height > policy.max_pixels:
+                raise ValueError("image pixel count exceeds the configured limit")
             image.verify()
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
-        raise ValueError("image data is malformed or unreadable") from exc
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        if isinstance(exc, ValueError) and str(exc).endswith("configured limit"):
+            raise
+        raise ValueError("image data is malformed or exceeds safe decode limits") from exc
     signatures = {
         "image/jpeg": (b"\xff\xd8\xff",),
         "image/png": (b"\x89PNG\r\n\x1a\n",),
@@ -183,7 +192,7 @@ def _derivative(data: bytes, max_dimension: int) -> bytes:
 def ingest_image(data: bytes, content_type: str, store: ObjectStore | None = None) -> StoredImage:
     digest, normalized_type = validate_image_bytes(data, content_type)
     width, height = image_dimensions(data)
-    if width > 50000 or height > 50000:
+    if width > 10000 or height > 10000 or width * height > 40_000_000:
         raise ValueError("image dimensions exceed the configured limit")
     store = store or object_store()
     original_key = storage_key(digest, normalized_type)
