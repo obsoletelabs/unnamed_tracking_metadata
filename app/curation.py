@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Header, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from . import community
 from .main import Db, Game, require_api_token
@@ -32,19 +32,36 @@ def ratio_distance(actual: str, requested: str | None) -> tuple[int, float]:
         return 0, 0.0
     want_value = want[0] / want[1]
     got_value = got[0] / got[1]
-    # Prefer the same orientation before choosing a merely numerically closer ratio.
     orientation_penalty = 0 if (want_value >= 1) == (got_value >= 1) else 1
     return 1 + orientation_penalty, abs(want_value - got_value)
 
 
+def community_confidence(upvotes: int, downvotes: int) -> float:
+    """Conservative, explainable confidence: agreement × sample-size confidence."""
+    votes = upvotes + downvotes
+    if votes == 0:
+        return 0.0
+    agreement = max(0.0, min(1.0, upvotes / votes))
+    sample_confidence = votes / (votes + 5.0)
+    return round(agreement * sample_confidence, 4)
+
+
+def add_confidence(item: dict) -> dict:
+    item = dict(item)
+    item["confidence"] = community_confidence(item["upvotes"], item["downvotes"])
+    item["confidence_explanation"] = "agreement weighted by vote sample size"
+    return item
+
+
 def presentation_images(db, game_id: int, role: str, requested_ratio: str | None, user_id: int | None) -> list[dict]:
     rows = community.ranked_images(db, game_id, role)
-    serialized = [community.serialize_image(db, row, user_id) for row in rows]
+    serialized = [add_confidence(community.serialize_image(db, row, user_id)) for row in rows]
     return sorted(
         serialized,
         key=lambda item: (
             ratio_distance(item["aspect_ratio"], requested_ratio),
             -(item["score"]),
+            -(item["confidence"]),
             -(item["upvotes"]),
             item["created_at"] or "",
             item["id"],
@@ -71,7 +88,8 @@ def presentation(canonical_id: str, db: Db, role: str = "cover", aspect_ratio: s
         "requested_aspect_ratio": aspect_ratio,
         "preferred": preferred,
         "alternatives": candidates,
-        "selection": "community_score_then_aspect_ratio" if preferred else "none",
+        "selection": "community_score_then_confidence_then_aspect_ratio" if preferred else "none",
+        "authority": "community_preference_only",
     }
 
 
@@ -93,6 +111,7 @@ def community_summary(canonical_id: str, db: Db, authorization: str | None = Hea
         "preferred_images": data["preferred_images"],
         "preferred_metadata": data["preferred_metadata"],
         "roles": data["images"] and sorted({item["role"] for item in data["images"]}) or [],
+        "authority": "community_preference_only",
     }
 
 
@@ -107,19 +126,20 @@ def community_leaderboard(canonical_id: str, db: Db, field: str = "", role: str 
         raise HTTPException(422, "Invalid image role")
     if field and field not in community.METADATA_FIELDS:
         raise HTTPException(422, "Unsupported metadata field")
-    images = [community.serialize_image(db, image, user.id) for image in community.ranked_images(db, game.id, role)] if role or not field else []
+    images = [add_confidence(community.serialize_image(db, image, user.id)) for image in community.ranked_images(db, game.id, role)] if role or not field else []
     metadata = []
     if field or not role:
         rows = db.scalars(select(community.MetadataCandidate).where(
             community.MetadataCandidate.game_id == game.id,
             community.MetadataCandidate.status == "active",
-            *( [community.MetadataCandidate.field_name == field] if field else [] ),
+            *([community.MetadataCandidate.field_name == field] if field else []),
         )).all()
         preferred = community.preferred_candidates(db, game.id)
-        metadata = [community.serialize_candidate(db, row, user.id, preferred.get(row.field_name) is row) for row in rows]
-        metadata.sort(key=lambda item: (-item["score"], -item["upvotes"], item["id"]))
+        metadata = [add_confidence(community.serialize_candidate(db, row, user.id, preferred.get(row.field_name) is row)) for row in rows]
+        metadata.sort(key=lambda item: (-item["score"], -item["confidence"], -item["upvotes"], item["id"]))
     return {
         "game_id": canonical_id,
         "images": images,
         "metadata": metadata,
+        "authority": "community_preference_only",
     }
