@@ -2,6 +2,7 @@ from .main import app, engine
 from .api_contract import install_api_contract
 from . import identity  # noqa: F401
 from . import media  # noqa: F401
+from .media import router as media_router
 from . import federation  # noqa: F401
 from .migrations import run_migrations
 from .tag_registry import router as tag_registry_router
@@ -14,6 +15,7 @@ install_api_contract(app, engine)
 
 app.include_router(tag_registry_router)
 app.include_router(identity_router)
+app.include_router(media_router)
 app.include_router(community.router)
 app.include_router(curation.router)
 app.include_router(community_browser.router)
@@ -39,5 +41,6 @@ priority = {
     "/api/v1/games/{canonical_id}/community-leaderboard": 0,
     "/api/v1/community/reports": 0,
     "/api/v1/community/reports/{report_id}/resolve": 0,
+    "/api/v1/media/{sha256}": 0,
 }
 app.router.routes.sort(key=lambda route: priority.get(getattr(route, "path", ""), 3))
