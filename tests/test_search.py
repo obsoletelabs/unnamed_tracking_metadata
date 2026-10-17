@@ -2,10 +2,11 @@ import hashlib
 import uuid
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.asgi import app
 from app.identity import GameAlias
-from app.main import ApiToken, Base, SessionLocal, User, engine
+from app.main import ApiToken, Base, Game, SessionLocal, User, engine
 
 
 def token_for(db):
@@ -23,7 +24,7 @@ def test_search_normalizes_punctuation_and_uses_aliases():
     with TestClient(app) as client:
         with SessionLocal() as db:
             token = token_for(db)
-            game = db.scalar(__import__("sqlalchemy").select(__import__("app.main", fromlist=["Game"]).Game).where(__import__("app.main", fromlist=["Game"]).Game.title == "Hollow Knight"))
+            game = db.scalar(select(Game).where(Game.title == "Hollow Knight"))
             db.add(GameAlias(game_id=game.id, alias="Hollow-Knight", normalized_alias="hollow knight", alias_type="alternate", source="test"))
             db.commit()
         headers = {"Authorization": f"Bearer {token}"}
