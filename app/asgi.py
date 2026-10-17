@@ -4,6 +4,7 @@ from . import identity  # noqa: F401
 from . import media  # noqa: F401
 from .media import router as media_router
 from . import federation  # noqa: F401
+from . import jobs  # noqa: F401
 from . import search_api  # noqa: F401
 from .search_api import router as search_router
 from .migrations import run_migrations
