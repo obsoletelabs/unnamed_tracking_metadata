@@ -10,7 +10,6 @@ from app.security_audit import SecurityAuditEvent
 
 
 def test_api_mutations_create_audit_events():
-    Base.metadata.drop_all(engine)
     with TestClient(app) as client:
         with SessionLocal() as db:
             raw = "atlas_audit_test_" + uuid.uuid4().hex
