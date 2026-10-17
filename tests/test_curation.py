@@ -4,6 +4,7 @@ import uuid
 from fastapi.testclient import TestClient
 
 from app.asgi import app
+from app.curation import community_confidence
 from app.main import ApiToken, Base, SessionLocal, User, engine
 
 
@@ -15,6 +16,12 @@ def token_for(db, label):
     db.add(ApiToken(user_id=user.id, label=label, token_hash=hashlib.sha256(raw.encode()).hexdigest(), token_prefix=raw[:16]))
     db.commit()
     return raw
+
+
+def test_confidence_is_conservative_and_explainable():
+    assert community_confidence(0, 0) == 0.0
+    assert community_confidence(1, 0) < community_confidence(20, 0)
+    assert community_confidence(10, 10) < community_confidence(10, 0)
 
 
 def test_presentation_selects_best_positive_image_for_requested_ratio():
@@ -35,6 +42,8 @@ def test_presentation_selects_best_positive_image_for_requested_ratio():
         result = client.get(f"/api/v1/games/{game_id}/presentation?role=cover&aspect_ratio=16:9", headers=headers).json()
         assert result["preferred"]["id"] == landscape["id"]
         assert result["preferred"]["aspect_ratio"] == "16:9"
+        assert result["preferred"]["confidence"] > 0
+        assert result["authority"] == "community_preference_only"
 
 
 def test_presentation_requires_positive_community_consensus():
