@@ -30,5 +30,5 @@ def test_access_logs_are_structured_and_omit_query_strings(caplog):
     event = events[-1]
     assert event["event"] == "http_request"
     assert event["path"] == "/healthz"
-    assert "private-search-term" not in record.message
+    assert "private-search-term" not in json.dumps(event)
     assert event["status_code"] == 200
