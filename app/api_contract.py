@@ -148,7 +148,13 @@ async def _capture_response(response: Response) -> tuple[Response, bytes]:
         data = chunk if isinstance(chunk, bytes) else chunk.encode("utf-8")
         chunks.append(data)
     body = b"".join(chunks)
-    response = Response(content=body, status_code=response.status_code, headers=dict(response.headers), media_type=None)
+    response = Response(
+        content=body,
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=None,
+        background=response.background,
+    )
     return response, body
 
 
