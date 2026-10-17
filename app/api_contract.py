@@ -96,11 +96,19 @@ def _load_idempotency(engine, scope: str):
             ),
             {"scope": scope},
         ).mappings().first()
+        if row is None:
+            connection.execute(
+                text("DELETE FROM api_idempotency_keys WHERE scope_key = :scope AND expires_at <= CURRENT_TIMESTAMP"),
+                {"scope": scope},
+            )
+        return row
 
 
 def _store_idempotency(engine, scope: str, request_hash: str, response: Response, body: bytes) -> bool:
     from sqlalchemy import text
 
+    if response.status_code < 200 or response.status_code >= 300:
+        return False
     if len(body) > IDEMPOTENCY_MAX_RESPONSE:
         return False
     content_type = response.headers.get("content-type", "")
