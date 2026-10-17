@@ -4,7 +4,7 @@ from sqlalchemy import inspect, text
 
 from .main import Base, engine
 
-CURRENT_REVISION = 8
+CURRENT_REVISION = 9
 
 
 def _ensure_column(connection, table: str, column: str, definition: str) -> None:
@@ -67,7 +67,13 @@ def _revision_eight(connection) -> None:
     table.create(bind=connection, checkfirst=True)
 
 
-MIGRATIONS = {1: _revision_one, 2: _revision_two, 3: _revision_three, 4: _revision_four, 5: _revision_five, 6: _revision_six, 7: _revision_seven, 8: _revision_eight}
+def _revision_nine(connection) -> None:
+    _ensure_column(connection, "api_tokens", "expires_at", "TIMESTAMP NULL")
+    _ensure_column(connection, "api_tokens", "last_used_at", "TIMESTAMP NULL")
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_api_tokens_expires_at ON api_tokens (expires_at)"))
+
+
+MIGRATIONS = {1: _revision_one, 2: _revision_two, 3: _revision_three, 4: _revision_four, 5: _revision_five, 6: _revision_six, 7: _revision_seven, 8: _revision_eight, 9: _revision_nine}
 
 
 def _configure_sqlite() -> None:
