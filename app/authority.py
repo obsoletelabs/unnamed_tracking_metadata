@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import hashlib
 import os
-import secrets
 from dataclasses import dataclass
 
 
@@ -33,9 +33,17 @@ def load_authority_config() -> AuthorityConfig:
     mode = os.getenv("AUTHORITY_MODE", "local").strip().lower()
     if mode not in VALID_MODES:
         raise RuntimeError(f"AUTHORITY_MODE must be one of: {', '.join(sorted(VALID_MODES))}")
-    instance_id = os.getenv("AUTHORITY_INSTANCE_ID", "").strip() or secrets.token_hex(12)
+    explicit_instance_id = os.getenv("AUTHORITY_INSTANCE_ID", "").strip()
+    if explicit_instance_id:
+        instance_id = explicit_instance_id
+    else:
+        seed = os.getenv("SESSION_SECRET", "").strip() or "local-authority-instance"
+        instance_id = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
     central_url = os.getenv("CENTRAL_AUTHORITY_URL", "").strip().rstrip("/")
-    sync_interval = int(os.getenv("AUTHORITY_SYNC_INTERVAL_SECONDS", "900"))
+    try:
+        sync_interval = int(os.getenv("AUTHORITY_SYNC_INTERVAL_SECONDS", "900"))
+    except ValueError as exc:
+        raise RuntimeError("AUTHORITY_SYNC_INTERVAL_SECONDS must be an integer") from exc
     if sync_interval < 60 or sync_interval > 86400:
         raise RuntimeError("AUTHORITY_SYNC_INTERVAL_SECONDS must be between 60 and 86400")
     publish = os.getenv("PUBLISH_CONTRIBUTIONS", "false").strip().lower() == "true"
