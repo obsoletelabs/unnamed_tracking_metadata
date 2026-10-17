@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 import time
 from threading import Lock
 
@@ -10,6 +12,7 @@ from .authority import config
 from .main import engine
 
 router = APIRouter()
+_access_logger = logging.getLogger("atlas.http")
 _started_at = time.monotonic()
 _counter_lock = Lock()
 _request_count = 0
@@ -27,9 +30,25 @@ def record_request(status_code: int) -> None:
 def install_request_metrics(app) -> None:
     @app.middleware("http")
     async def metrics_middleware(request: Request, call_next):
-        response = await call_next(request)
-        record_request(response.status_code)
-        return response
+        started = time.monotonic()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            duration_ms = (time.monotonic() - started) * 1000
+            record_request(status_code)
+            event = {
+                "event": "http_request",
+                "request_id": getattr(request.state, "request_id", ""),
+                "method": request.method,
+                # Never log query strings: they may contain search terms or user-supplied values.
+                "path": request.url.path[:500],
+                "status_code": status_code,
+                "duration_ms": round(duration_ms, 3),
+            }
+            _access_logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))
 
 
 def database_ready() -> bool:
