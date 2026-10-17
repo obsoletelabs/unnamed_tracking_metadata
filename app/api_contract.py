@@ -57,6 +57,18 @@ def _rate_key(request: Request) -> str:
 def _rate_limited(key: str) -> tuple[bool, int, int]:
     now = time.monotonic()
     with _RATE_LOCK:
+        if key not in _RATE_EVENTS and len(_RATE_EVENTS) >= 10000:
+            global_cutoff = now - API_RATE_WINDOW * 2
+            for old_key in list(_RATE_EVENTS):
+                old_events = _RATE_EVENTS[old_key]
+                while old_events and old_events[0] <= global_cutoff:
+                    old_events.popleft()
+                if not old_events:
+                    _RATE_EVENTS.pop(old_key, None)
+            # Fail closed for new identities when the local limiter is saturated.
+            # Existing identities can still age out normally.
+            if len(_RATE_EVENTS) >= 10000:
+                return True, 0, API_RATE_WINDOW
         events = _RATE_EVENTS[key]
         cutoff = now - API_RATE_WINDOW
         while events and events[0] <= cutoff:
@@ -66,12 +78,7 @@ def _rate_limited(key: str) -> tuple[bool, int, int]:
             retry_after = max(1, int(events[0] + API_RATE_WINDOW - now))
             return True, count, retry_after
         events.append(now)
-        if len(_RATE_EVENTS) > 10000:
-            for old_key in list(_RATE_EVENTS):
-                if not _RATE_EVENTS[old_key] or _RATE_EVENTS[old_key][-1] <= now - API_RATE_WINDOW * 2:
-                    _RATE_EVENTS.pop(old_key, None)
         return False, count + 1, 0
-
 
 def _body_hash(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
