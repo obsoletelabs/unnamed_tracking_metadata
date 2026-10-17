@@ -7,8 +7,7 @@ def test_mutating_api_rejects_oversized_declared_body():
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/games",
-            headers={"Content-Length": str(1024 * 1024 + 1)},
-            content=b"",
+            content=b"x" * (1024 * 1024 + 1),
         )
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "body_too_large"
