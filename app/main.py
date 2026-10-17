@@ -85,6 +85,8 @@ class ApiToken(Base):
     token_prefix: Mapped[str] = mapped_column(String(16))
     scopes: Mapped[str] = mapped_column(String(200), default="read,write,achievements,discover,images", nullable=False)
     created_at = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -357,6 +359,23 @@ def require_api_token(db: Db, authorization: Annotated[str | None, Header()] = N
     token = db.scalar(select(ApiToken).where(ApiToken.token_hash == digest, ApiToken.revoked_at.is_(None)))
     if not token:
         raise HTTPException(status_code=401, detail="Invalid or revoked API token")
+    now = datetime.now(timezone.utc)
+    if token.expires_at is not None:
+        expires_at = token.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= now:
+            raise HTTPException(status_code=401, detail="API token has expired")
+    if token.last_used_at is None:
+        token.last_used_at = now
+        db.commit()
+    else:
+        last_used = token.last_used_at
+        if last_used.tzinfo is None:
+            last_used = last_used.replace(tzinfo=timezone.utc)
+        if (now - last_used).total_seconds() >= 300:
+            token.last_used_at = now
+            db.commit()
     user = db.get(User, token.user_id)
     if not user:
         raise HTTPException(status_code=401, detail="Token owner no longer exists")
@@ -789,7 +808,8 @@ def achievements_page(request: Request, db: Db):
 
 @app.post("/tokens")
 def create_token(request: Request, db: Db, label: Annotated[str, Form()],
-                 scopes: Annotated[list[str] | None, Form()] = None):
+                 scopes: Annotated[list[str] | None, Form()] = None,
+                 expires_in_days: Annotated[int, Form()] = 0):
     user = current_user(request, db)
     if not user:
         return RedirectResponse("/?error=Sign+in+before+creating+a+key", status_code=303)
@@ -800,10 +820,13 @@ def create_token(request: Request, db: Db, label: Annotated[str, Form()],
     selected_scopes = sorted(set(scopes or ["read"]) & allowed_scopes)
     if not selected_scopes:
         return RedirectResponse("/dashboard?error=Choose+at+least+one+API+permission", status_code=303)
+    if expires_in_days not in {0, 1, 7, 30, 90, 365}:
+        return RedirectResponse("/dashboard?error=Choose+a+supported+key+expiry", status_code=303)
     raw = "atlas_beta_" + secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=expires_in_days) if expires_in_days else None
     db.add(ApiToken(user_id=user.id, label=label,
                     token_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(), token_prefix=raw[:16],
-                    scopes=",".join(selected_scopes)))
+                    scopes=",".join(selected_scopes), expires_at=expires_at))
     db.commit()
     flash_id = secrets.token_urlsafe(18)
     ONE_TIME_TOKENS[flash_id] = (user.id, raw, time.time() + 120)
