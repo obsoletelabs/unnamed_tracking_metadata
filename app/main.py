@@ -847,6 +847,38 @@ def revoke_token(token_id: int, request: Request, db: Db):
     return RedirectResponse("/?notice=API+key+revoked", status_code=303)
 
 
+@app.post("/tokens/{token_id}/rotate")
+def rotate_token(token_id: int, request: Request, db: Db):
+    user = current_user(request, db)
+    if not user or not user.email_verified:
+        return RedirectResponse("/login?error=Verified+sign-in+required", status_code=303)
+    token = db.scalar(select(ApiToken).where(ApiToken.id == token_id, ApiToken.user_id == user.id))
+    if not token or token.revoked_at is not None:
+        return RedirectResponse("/dashboard?error=Active+key+not+found", status_code=303)
+    now = datetime.now(timezone.utc)
+    if token.expires_at is not None:
+        expires_at = token.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= now:
+            return RedirectResponse("/dashboard?error=Expired+keys+cannot+be+rotated", status_code=303)
+    raw = "atlas_beta_" + secrets.token_urlsafe(32)
+    rotated = ApiToken(
+        user_id=user.id,
+        label=token.label,
+        token_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        token_prefix=raw[:16],
+        scopes=token.scopes,
+        expires_at=token.expires_at,
+    )
+    token.revoked_at = now
+    db.add(rotated)
+    db.commit()
+    flash_id = secrets.token_urlsafe(18)
+    ONE_TIME_TOKENS[flash_id] = (user.id, raw, time.time() + 120)
+    return RedirectResponse("/dashboard?notice=API+key+rotated&token_notice=" + flash_id, status_code=303)
+
+
 @app.post("/games")
 async def add_game_form(request: Request, db: Db, background_tasks: BackgroundTasks):
     user = current_user(request, db)
