@@ -202,11 +202,9 @@ def get_media(sha256: str):
     if len(sha256) != 64 or any(char not in "0123456789abcdef" for char in sha256.lower()):
         raise HTTPException(404, "Media not found")
     from sqlalchemy import select
-    from .main import Db
+    from .main import SessionLocal
 
-    # The endpoint is intentionally content-addressed. Only assets registered in the
-    # database can be served, preventing arbitrary object-store path probing.
-    with Db() as db:
+    with SessionLocal() as db:
         asset = db.scalar(select(ImageAsset).where(ImageAsset.sha256 == sha256.lower()))
         if not asset:
             raise HTTPException(404, "Media not found")
