@@ -15,9 +15,8 @@ def test_provider_identity_lookup_requires_read_token():
         assert response.status_code == 401
 
 
-def test_identity_lookup_rejects_write_only_token():
-    # Scope checks are performed by the shared token validator; an invalid bearer
-    # credential must never fall through to an unauthenticated identity response.
+def test_identity_lookup_rejects_invalid_bearer_token():
+    # Invalid bearer credentials must never fall through to an unauthenticated response.
     with TestClient(app) as client:
         response = client.get(
             "/api/v1/identities/steam/12345",
