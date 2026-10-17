@@ -15,10 +15,21 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 API_VERSION = "v1"
+MAX_BODY_BYTES = int(os.getenv("API_MAX_BODY_BYTES", "1048576"))
 IDEMPOTENCY_TTL = int(os.getenv("IDEMPOTENCY_TTL_SECONDS", "86400"))
 IDEMPOTENCY_MAX_RESPONSE = int(os.getenv("IDEMPOTENCY_MAX_RESPONSE_BYTES", "1048576"))
 API_RATE_LIMIT = int(os.getenv("API_RATE_LIMIT", "120"))
 API_RATE_WINDOW = int(os.getenv("API_RATE_WINDOW_SECONDS", "60"))
+if MAX_BODY_BYTES < 1024 or MAX_BODY_BYTES > 20 * 1024 * 1024:
+    raise RuntimeError("API_MAX_BODY_BYTES must be between 1024 and 20971520")
+if IDEMPOTENCY_TTL < 60 or IDEMPOTENCY_TTL > 30 * 86400:
+    raise RuntimeError("IDEMPOTENCY_TTL_SECONDS must be between 60 and 2592000")
+if IDEMPOTENCY_MAX_RESPONSE < 1024 or IDEMPOTENCY_MAX_RESPONSE > 20 * 1024 * 1024:
+    raise RuntimeError("IDEMPOTENCY_MAX_RESPONSE_BYTES must be between 1024 and 20971520")
+if API_RATE_LIMIT < 1 or API_RATE_LIMIT > 100000:
+    raise RuntimeError("API_RATE_LIMIT must be between 1 and 100000")
+if API_RATE_WINDOW < 1 or API_RATE_WINDOW > 86400:
+    raise RuntimeError("API_RATE_WINDOW_SECONDS must be between 1 and 86400")
 
 _RATE_EVENTS: dict[str, deque[float]] = defaultdict(deque)
 _RATE_LOCK = Lock()
@@ -155,8 +166,25 @@ def _audit_mutation(engine, request: Request, response: Response) -> None:
 def install_api_contract(app: FastAPI, engine) -> None:
     @app.middleware("http")
     async def api_contract_middleware(request: Request, call_next: Callable[[Request], Awaitable[Response]]):
-        request.state.request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+        supplied_request_id = request.headers.get("X-Request-ID", "").strip()
+        if supplied_request_id and len(supplied_request_id) <= 100 and all(char.isalnum() or char in "-_." for char in supplied_request_id):
+            request.state.request_id = supplied_request_id
+        else:
+            request.state.request_id = uuid.uuid4().hex
         is_api = request.url.path.startswith("/api/")
+        mutating = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        if is_api and mutating:
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > MAX_BODY_BYTES:
+                        response = _error_response(request, 413, "body_too_large", "Request body exceeds the configured limit.")
+                        response.headers["X-Request-ID"] = request.state.request_id
+                        return response
+                except ValueError:
+                    response = _error_response(request, 400, "invalid_content_length", "Invalid Content-Length header.")
+                    response.headers["X-Request-ID"] = request.state.request_id
+                    return response
         if is_api:
             limited, count, retry_after = _rate_limited(_rate_key(request))
             if limited:
@@ -166,9 +194,16 @@ def install_api_contract(app: FastAPI, engine) -> None:
                 return response
             request.state.rate_count = count
 
-        mutating = request.method in {"POST", "PUT", "PATCH", "DELETE"}
         idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+        if idempotency_key and (len(idempotency_key) > 128 or any(ord(char) < 33 or ord(char) > 126 for char in idempotency_key)):
+            response = _error_response(request, 400, "invalid_idempotency_key", "Invalid Idempotency-Key header.")
+            response.headers["X-Request-ID"] = request.state.request_id
+            return response
         body = await request.body() if is_api and mutating else b""
+        if len(body) > MAX_BODY_BYTES:
+            response = _error_response(request, 413, "body_too_large", "Request body exceeds the configured limit.")
+            response.headers["X-Request-ID"] = request.state.request_id
+            return response
         request_hash = _body_hash(body)
         scope = _idempotency_scope(request, idempotency_key) if idempotency_key and is_api and mutating else ""
 
