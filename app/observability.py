@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from threading import Lock
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from sqlalchemy import text
 
 from .authority import config
@@ -22,6 +22,14 @@ def record_request(status_code: int) -> None:
         _request_count += 1
         if status_code >= 500:
             _error_count += 1
+
+
+def install_request_metrics(app) -> None:
+    @app.middleware("http")
+    async def metrics_middleware(request: Request, call_next):
+        response = await call_next(request)
+        record_request(response.status_code)
+        return response
 
 
 def database_ready() -> bool:
