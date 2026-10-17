@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.asgi import app
-from app.main import ApiToken, Base, SessionLocal, User, engine
+from app.main import ApiToken, SessionLocal, User
 from app.security_audit import SecurityAuditEvent
 
 
