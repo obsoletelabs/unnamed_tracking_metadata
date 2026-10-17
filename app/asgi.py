@@ -1,5 +1,6 @@
 from .main import app, engine
 from .api_contract import install_api_contract
+from . import authority  # noqa: F401
 from . import identity  # noqa: F401
 from . import media  # noqa: F401
 from .media import router as media_router
