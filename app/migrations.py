@@ -4,7 +4,7 @@ from sqlalchemy import inspect, text
 
 from .main import Base, engine
 
-CURRENT_REVISION = 7
+CURRENT_REVISION = 8
 
 
 def _ensure_column(connection, table: str, column: str, definition: str) -> None:
@@ -60,7 +60,14 @@ def _revision_seven(connection) -> None:
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_async_jobs_ready ON async_jobs (status, available_at, id)"))
 
 
-MIGRATIONS = {1: _revision_one, 2: _revision_two, 3: _revision_three, 4: _revision_four, 5: _revision_five, 6: _revision_six, 7: _revision_seven}
+def _revision_eight(connection) -> None:
+    table = Base.metadata.tables.get("security_audit_events")
+    if table is None:
+        raise RuntimeError("Security audit migration table is not registered")
+    table.create(bind=connection, checkfirst=True)
+
+
+MIGRATIONS = {1: _revision_one, 2: _revision_two, 3: _revision_three, 4: _revision_four, 5: _revision_five, 6: _revision_six, 7: _revision_seven, 8: _revision_eight}
 
 
 def _configure_sqlite() -> None:
