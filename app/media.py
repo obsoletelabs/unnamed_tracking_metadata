@@ -10,11 +10,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .main import Base
+
+router = APIRouter()
 
 
 class ImageAsset(Base):
@@ -123,12 +127,12 @@ class ObjectStore:
 
 class LocalObjectStore(ObjectStore):
     def __init__(self, root: str | Path):
-        self.root = Path(root)
+        self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _path(self, key: str) -> Path:
         path = (self.root / key).resolve()
-        if self.root.resolve() not in path.parents:
+        if self.root != path and self.root not in path.parents:
             raise ValueError("invalid storage key")
         return path
 
@@ -191,3 +195,23 @@ def ingest_image(data: bytes, content_type: str, store: ObjectStore | None = Non
         store.put(key, derivative, "image/jpeg")
         derivatives[name] = key
     return StoredImage(digest, normalized_type, len(data), width, height, original_key, derivatives)
+
+
+@router.get("/api/v1/media/{sha256}")
+def get_media(sha256: str):
+    if len(sha256) != 64 or any(char not in "0123456789abcdef" for char in sha256.lower()):
+        raise HTTPException(404, "Media not found")
+    from sqlalchemy import select
+    from .main import Db
+
+    # The endpoint is intentionally content-addressed. Only assets registered in the
+    # database can be served, preventing arbitrary object-store path probing.
+    with Db() as db:
+        asset = db.scalar(select(ImageAsset).where(ImageAsset.sha256 == sha256.lower()))
+        if not asset:
+            raise HTTPException(404, "Media not found")
+        try:
+            data = object_store().get(asset.storage_key)
+        except OSError:
+            raise HTTPException(404, "Media not found") from None
+    return Response(content=data, media_type=asset.content_type, headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{asset.sha256}"'})
