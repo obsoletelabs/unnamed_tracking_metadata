@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [demo-1, main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Compile Python
+        run: python -m compileall -q app tests
+      - name: Run tests
+        env:
+          DATABASE_URL: sqlite:///./ci.db
+          SESSION_SECRET: ci-only-session-secret
+          AUTHORITY_MODE: local
+        run: pytest -q
