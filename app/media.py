@@ -6,6 +6,7 @@ import ipaddress
 import os
 import socket
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -34,7 +35,7 @@ class ImageAsset(Base):
     attribution: Mapped[str] = mapped_column(String(500), default="")
     source_url: Mapped[str] = mapped_column(String(1000), default="")
     source_type: Mapped[str] = mapped_column(String(40), default="community")
-    created_at: Mapped[object] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 @dataclass(frozen=True, slots=True)
