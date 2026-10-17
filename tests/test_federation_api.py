@@ -10,7 +10,7 @@ from app.federation import AuthorityMapping
 from app.main import ApiToken, Game, SessionLocal, User
 
 
-def _write_token() -> str:
+def _write_token() -> tuple[str, str]:
     raw = "atlas_federation_test_" + uuid.uuid4().hex
     with SessionLocal() as db:
         user = User(
@@ -48,8 +48,8 @@ def test_authority_status_does_not_expose_central_url_or_secrets():
 def test_mapping_proposal_preserves_local_canonical_identity():
     if config.is_central:
         return
-    raw, local_id = _write_token()
     with TestClient(app) as client:
+        raw, local_id = _write_token()
         response = client.post(
             "/api/v1/authority/mappings",
             headers={"Authorization": f"Bearer {raw}"},
