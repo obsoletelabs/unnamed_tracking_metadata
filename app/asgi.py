@@ -4,6 +4,8 @@ from . import identity  # noqa: F401
 from . import media  # noqa: F401
 from .media import router as media_router
 from . import federation  # noqa: F401
+from . import search_api  # noqa: F401
+from .search_api import router as search_router
 from .migrations import run_migrations
 from .tag_registry import router as tag_registry_router
 from .identity_api import router as identity_router
@@ -16,6 +18,7 @@ install_api_contract(app, engine)
 app.include_router(tag_registry_router)
 app.include_router(identity_router)
 app.include_router(media_router)
+app.include_router(search_router)
 app.include_router(community.router)
 app.include_router(curation.router)
 app.include_router(community_browser.router)
@@ -33,6 +36,8 @@ priority = {
     "/api/v1/tag-registry/suggest": 0,
     "/api/v1/tag-registry/resolve": 1,
     "/api/v1/tag-registry/mappings": 2,
+    "/api/v1/search": 0,
+    "/api/v1/search/budget": 0,
     "/api/v1/games/{canonical_id}/images": 0,
     "/api/v1/games/{canonical_id}/metadata-options": 1,
     "/api/v1/games/{canonical_id}/images/add": 0,
