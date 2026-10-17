@@ -53,3 +53,13 @@ while retaining provider identities such as `steam:730`, `igdb:98765`, and a Pla
 Provider observations, user-local overrides, community observations and curated canonical values are separate layers. Automated or LLM-assisted reconciliation may propose a match or canonical tag, but proposals must retain confidence and provenance and must not silently become authoritative.
 
 This permits the central authority and user-hosted authorities to reconcile the same underlying game without requiring identical provider availability, credentials, or network access.
+
+
+## Current API support
+
+- `GET /api/v1/authority/status` reports the selected mode and whether central sync is configured, without returning the central URL or credentials.
+- `GET /api/v1/authority/mappings` lists local-to-central mappings for a read-scoped API token.
+- `POST /api/v1/authority/mappings` proposes a mapping using a write-scoped token. Proposals remain in `proposed` state and never merge, rename, or replace a local canonical identity.
+- A verified mapping cannot be overwritten through the ordinary proposal endpoint.
+
+**Important:** hybrid sync scheduling, remote authentication, change-feed exchange, and conflict resolution are not yet implemented. The current mapping endpoints establish a safe identity boundary; they do not imply that two authorities are already synchronizing automatically.
