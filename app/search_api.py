@@ -41,10 +41,12 @@ def local_search(db: Db, query: str, limit: int) -> list[dict]:
     tokens = normalized.split()
     broad = "%" + "%".join(tokens[:8]) + "%"
     games = db.scalars(
-        select(Game).where(Game.title.ilike(broad) | Game.developer.ilike(broad)).order_by(Game.title, Game.canonical_id).limit(MAX_CANDIDATES)
+        select(Game).where(Game.title.ilike(broad) | Game.developer.ilike(broad))
+        .order_by(Game.title, Game.canonical_id).limit(MAX_CANDIDATES)
     ).all()
     aliases = db.scalars(
-        select(GameAlias).where(GameAlias.normalized_alias.ilike(broad)).order_by(GameAlias.id).limit(MAX_CANDIDATES)
+        select(GameAlias).where(GameAlias.normalized_alias.ilike(broad))
+        .order_by(GameAlias.id).limit(MAX_CANDIDATES)
     ).all()
     by_game: dict[int, dict] = {}
     for game in games:
@@ -81,7 +83,8 @@ def search(query: str = "", limit: int = 20, db: Db = None,
 
 
 @router.get("/api/v1/search/budget")
-def search_budget():
+def search_budget(authorization: str | None = Header(default=None), db: Db = None):
+    require_api_token(db, authorization, "read")
     return {
         "max_candidates": MAX_CANDIDATES,
         "max_results": MAX_RESULTS,
