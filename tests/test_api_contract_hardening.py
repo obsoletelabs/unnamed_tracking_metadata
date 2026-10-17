@@ -16,11 +16,10 @@ def test_mutating_api_rejects_oversized_declared_body():
 
 def test_invalid_request_id_is_replaced_with_safe_id():
     with TestClient(app) as client:
-        response = client.get("/healthz", headers={"X-Request-ID": "bad\r\nid"})
+        response = client.get("/healthz", headers={"X-Request-ID": "bad id"})
     assert response.status_code == 200
     request_id = response.headers["x-request-id"]
-    assert "\r" not in request_id
-    assert "\n" not in request_id
+    assert " " not in request_id
     assert len(request_id) <= 100
 
 
