@@ -5,6 +5,7 @@ from . import identity  # noqa: F401
 from . import media  # noqa: F401
 from .media import router as media_router
 from . import federation  # noqa: F401
+from .federation_api import router as federation_router
 from . import jobs  # noqa: F401
 from . import search_api  # noqa: F401
 from . import security_audit  # noqa: F401
@@ -22,6 +23,7 @@ install_api_contract(app, engine)
 install_request_metrics(app)
 
 app.include_router(observability_router)
+app.include_router(federation_router)
 app.include_router(tag_registry_router)
 app.include_router(identity_router)
 app.include_router(media_router)
@@ -43,6 +45,8 @@ priority = {
     "/healthz": 0,
     "/readyz": 0,
     "/metrics": 0,
+    "/api/v1/authority/status": 0,
+    "/api/v1/authority/mappings": 1,
     "/api/v1/tag-registry/suggest": 0,
     "/api/v1/tag-registry/resolve": 1,
     "/api/v1/tag-registry/mappings": 2,
