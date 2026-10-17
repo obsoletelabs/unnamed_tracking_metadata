@@ -1,6 +1,7 @@
 from .main import app, engine
 from .api_contract import install_api_contract
 from . import authority  # noqa: F401
+from .authority_api import router as authority_router
 from . import identity  # noqa: F401
 from . import media  # noqa: F401
 from .media import router as media_router
@@ -23,6 +24,7 @@ install_api_contract(app, engine)
 install_request_metrics(app)
 
 app.include_router(observability_router)
+app.include_router(authority_router)
 app.include_router(federation_router)
 app.include_router(tag_registry_router)
 app.include_router(identity_router)
@@ -45,8 +47,9 @@ priority = {
     "/healthz": 0,
     "/readyz": 0,
     "/metrics": 0,
-    "/api/v1/authority/status": 0,
+    "/api/v1/authority": 0,
     "/api/v1/authority/mappings": 1,
+    "/api/v1/authority/status": 0,
     "/api/v1/tag-registry/suggest": 0,
     "/api/v1/tag-registry/resolve": 1,
     "/api/v1/tag-registry/mappings": 2,
