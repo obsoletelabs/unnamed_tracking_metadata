@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from sqlalchemy import select
 
 from .authority import config
-from .federation import AuthorityMapping
-from .main import Db
 
 router = APIRouter()
 
@@ -27,26 +24,4 @@ def authority_info():
             "content_addressed_media": True,
             "local_overrides": config.mode in {"local", "hybrid"},
         },
-    }
-
-
-@router.get("/api/v1/authority/mappings")
-def authority_mappings(db: Db, limit: int = 100):
-    """Return local-to-central mappings for sync clients without exposing private fields."""
-    limit = max(1, min(limit, 500))
-    rows = db.scalars(select(AuthorityMapping).order_by(AuthorityMapping.id).limit(limit)).all()
-    return {
-        "items": [
-            {
-                "local_canonical_id": row.local_canonical_id,
-                "central_canonical_id": row.central_canonical_id,
-                "status": row.status,
-                "confidence": row.confidence,
-                "source": row.source,
-                "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
-                "etag": row.etag,
-            }
-            for row in rows
-        ],
-        "mode": config.mode,
     }
