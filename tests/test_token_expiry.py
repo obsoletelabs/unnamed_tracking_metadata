@@ -37,7 +37,7 @@ def test_expired_api_token_is_rejected():
         raw = _token(scopes="read", expires_at=datetime.now(timezone.utc) - timedelta(days=1))
         response = client.get("/api/v1/games", headers={"Authorization": f"Bearer {raw}"})
     assert response.status_code == 401
-    assert "expired" in response.json()["detail"].lower()
+    assert "expired" in response.json()["error"]["message"].lower()
 
 
 def test_read_only_token_cannot_create_game():
