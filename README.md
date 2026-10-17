@@ -47,6 +47,22 @@ docker compose -f compose.yaml -f compose.postgres.yaml up --build -d
 
 The overlay configures the API to use PostgreSQL on the internal Compose network. Do not publish the PostgreSQL port to the internet. To switch an existing SQLite instance to PostgreSQL, export/import the data first; changing `DATABASE_URL` does not migrate records automatically.
 
+For a shared central deployment, set `AUTHORITY_MODE=central` in `.env`. For a standalone/offline installation, keep `AUTHORITY_MODE=local` and SQLite. Hybrid mode requires `AUTHORITY_MODE=hybrid` and `CENTRAL_AUTHORITY_URL=https://...`; local data remains usable if the central endpoint is down. Hybrid synchronization is still being implemented, so configure this mode for identity planning/testing rather than relying on automatic data exchange today.
+
+To add a disposable shared Redis cache, run:
+
+```sh
+docker compose -f compose.yaml -f compose.redis.yaml up --build -d
+```
+
+For a central PostgreSQL deployment with Redis, combine all three files:
+
+```sh
+docker compose -f compose.yaml -f compose.postgres.yaml -f compose.redis.yaml up --build -d
+```
+
+Redis stores derived cache entries only; it is intentionally configured without persistence. Canonical data remains in PostgreSQL.
+
 ## What works
 
 - Responsive, multi-page catalogue website backed by the live database
@@ -60,7 +76,7 @@ The overlay configures the API to use PostgreSQL on the internal Compose network
 - Admin-created user accounts; optional self-registration only when SMTP is configured and explicitly enabled
 - SMTP email verification is required before self-registered users can sign in
 - Sign in and sign out
-- Generate API bearer tokens; the full token is displayed once
+- Generate scoped API bearer tokens with optional expiry (1 day to 1 year, or no expiry); the full token is displayed once, last-use time is tracked, and tokens can be revoked
 - List owned tokens and revoke a token
 - Propose games and edits through schema-driven forms; canonical IDs are generated on approval, and edits preserve the existing canonical ID
 - Background provider ID discovery for exact title matches, with ambiguous candidates left for review
@@ -147,7 +163,7 @@ Before exposing this publicly, it needs security hardening, including CSRF prote
 - `app/templates/admin_home.html`, `admin.html`, `providers.html`, `users.html`, `reviews.html` — separate administration screens
 - `app/templates/submissions.html`, `game_edit.html`, `game_history.html` — contribution status, reviewed edits, evidence provenance, and revision history
 - `app/static/style.css` — responsive styling
-- `Dockerfile`, `compose.yaml`, `compose.postgres.yaml` — container setup
+- `Dockerfile`, `compose.yaml`, `compose.postgres.yaml`, `compose.redis.yaml` — local, PostgreSQL, and optional Redis container profiles
 - `.github/workflows/tests.yml` — tests and container smoke checks
 - `.github/workflows/publish-container.yml` — multi-architecture GHCR image publishing on `demo-1` pushes and version tags
 - The running UI is served by FastAPI templates; there is no standalone HTML mockup serving as the application.
