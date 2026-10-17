@@ -26,15 +26,22 @@ Clients should branch on the HTTP status and stable `error.code`, not on human-r
 
 Mutating `/api/` requests may send `Idempotency-Key`. The key is scoped to the caller, HTTP method, path and request body. Reusing a key with a different body returns `409 idempotency_key_reused`.
 
-Successful JSON responses up to the configured storage limit are retained for replay. The database-backed store means replay can work across API processes; cleanup and operational retention are covered by the database lifecycle tooling.
+Successful JSON responses up to the configured storage limit are retained for replay. The database-backed store means completed replays can work across API processes.
 
-Clients should use a fresh random key for each logical mutation and retry the same key after connection failures.
+**Important limitation:** request execution and idempotency persistence are not yet one atomic operation. Two concurrent identical requests can race before either response is stored. Mutation handlers must still enforce database uniqueness/business idempotency; this layer does not yet guarantee exactly-once execution. Clients should use a fresh random key for each logical mutation and retry the same key after connection failures.
 
 ## Rate limiting
 
 API responses expose `X-RateLimit-Limit` and `X-RateLimit-Remaining`. A rejected request returns `429`, `Retry-After`, and the normal error envelope.
 
-The initial limiter is deliberately conservative and process-local. It is a first safety boundary, not the final distributed quota system. The caching/distribution and authentication issues replace this with shared Redis-backed/token-aware limits while retaining the same response contract.
+The current limiter is process-local and keyed by client address plus a hash of the bearer token. It is a first safety boundary, not a global quota: multi-node deployments must also enforce shared ingress-level limits. Redis currently distributes cache entries but does not yet back the rate limiter.
+
+## Request budgets
+
+- Default maximum mutation request body: 1 MiB (`API_MAX_BODY_BYTES`).
+- Default in-process limit: 120 API requests per identity per 60 seconds (`API_RATE_LIMIT`, `API_RATE_WINDOW_SECONDS`).
+- `Idempotency-Key` accepts at most 128 printable ASCII characters.
+- Search and list endpoints must bound their result counts and provider fan-out.
 
 ## Pagination
 
