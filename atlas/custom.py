@@ -16,8 +16,8 @@ from .service import AtlasError, Ctx, write_lock
 
 KINDS = ("text", "longtext", "number", "date", "bool", "choice", "list", "url")
 CORE_LABELS = ("developer", "publisher", "series", "release_date", "tags", "features", "platforms")
-_KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
-_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}\Z")
+_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,31}\Z")
 MAX_FIELDS_PER_TYPE = 40
 RESERVED = {"title", "description", "id", "sources", "provider_ids", "media_type", "custom", "version", "artwork",
             "achievements", "updated_at", "redirected_from", *CORE_LABELS}
@@ -47,54 +47,111 @@ def publish(session: Session, ctx: Ctx) -> None:
 
 
 def apply_snapshot(session: Session, snap: dict[str, Any]) -> None:
-    """Mirror side: make the upstream-origin definitions equal to the snapshot; local ones always win."""
-    keep_t = set()
-    for t in snap.get("types", []):
-        existing = session.get(MediaType, t["key"])
+    """Mirror side: make the upstream-origin definitions equal to the snapshot; local ones always win.
+
+    Every definition goes through the same validation as one typed into the admin UI; a bad entry is skipped (a
+    misbehaving upstream must not be able to stall replication or plant markup in labels)."""
+    keep_t: set[str] = set()
+    for t in snap.get("types", []) if isinstance(snap.get("types"), list) else []:
+        try:
+            key, label, enabled, position, labels = check_type(t.get("key"), t.get("label"), t.get("enabled", True),
+                                                               t.get("position", 100), t.get("labels"))
+        except (AtlasError, AttributeError):
+            continue
+        existing = session.get(MediaType, key)
         if existing is not None and existing.origin == "local":
             continue
         if existing is None:
-            existing = MediaType(key=t["key"], origin="upstream")
+            existing = MediaType(key=key, origin="upstream")
             session.add(existing)
-        existing.label, existing.enabled = t["label"], bool(t.get("enabled", True))
-        existing.position, existing.labels = int(t.get("position", 100)), t.get("labels") or {}
-        keep_t.add(t["key"])
+        existing.label, existing.enabled, existing.position, existing.labels = label, enabled, position, labels
+        keep_t.add(key)
     session.flush()
     for t in session.scalars(select(MediaType).where(MediaType.origin == "upstream")).all():
-        if t.key not in keep_t:
-            session.delete(t)
-    keep_f = set()
-    for f in snap.get("fields", []):
-        if session.get(MediaType, f["media_type"]) is None:
+        if t.key in keep_t:
             continue
-        row = session.scalars(select(FieldDef).where(FieldDef.media_type == f["media_type"],
-                                                     FieldDef.key == f["key"])).first()
+        if session.scalars(select(Canonical.id).where(Canonical.media_type == t.key).limit(1)).first():
+            t.enabled = False  # records still use it: keep the type, just stop offering it
+        else:
+            session.delete(t)
+    keep_f: set[tuple[str, str]] = set()
+    for f in snap.get("fields", []) if isinstance(snap.get("fields"), list) else []:
+        try:
+            c = check_field(f.get("media_type"), f.get("key"), f.get("label"), f.get("kind"), f.get("choices"),
+                            f.get("help"), f.get("public", True), f.get("editable", True), f.get("position", 100))
+        except (AtlasError, AttributeError):
+            continue
+        if session.get(MediaType, c["media_type"]) is None:
+            continue
+        row = session.scalars(select(FieldDef).where(FieldDef.media_type == c["media_type"],
+                                                     FieldDef.key == c["key"])).first()
         if row is not None and row.origin == "local":
             continue
         if row is None:
-            row = FieldDef(media_type=f["media_type"], key=f["key"], origin="upstream", kind="text", label="")
+            row = FieldDef(media_type=c["media_type"], key=c["key"], origin="upstream", kind=c["kind"], label="")
             session.add(row)
-        row.label, row.kind, row.choices = f["label"], f["kind"], f.get("choices") or []
-        row.help, row.public, row.editable = f.get("help", ""), bool(f.get("public", True)), bool(f.get("editable", True))
-        row.position = int(f.get("position", 100))
-        keep_f.add((f["media_type"], f["key"]))
+        row.label, row.kind, row.choices, row.help = c["label"], c["kind"], c["choices"], c["help"]
+        row.public, row.editable, row.position = c["public"], c["editable"], c["position"]
+        keep_f.add((c["media_type"], c["key"]))
     for row in session.scalars(select(FieldDef).where(FieldDef.origin == "upstream")).all():
         if (row.media_type, row.key) not in keep_f:
             session.delete(row)
     session.flush()
 
 
-def save_type(session: Session, ctx: Ctx, key: str, label: str, *, enabled: bool = True, position: int = 100,
-              labels: dict[str, str] | None = None) -> MediaType:
-    key = key.strip().lower()
+def _line(text: Any, limit: int) -> str:
+    if not isinstance(text, str):
+        raise AtlasError("text expected")
+    cleaned = " ".join("".join(c if c.isprintable() else " " for c in text).split())
+    if len(cleaned) > limit:
+        raise AtlasError(f"at most {limit} characters")
+    return cleaned
+
+
+def check_type(key: Any, label: Any, enabled: Any, position: Any, labels: Any) -> tuple[str, str, bool, int, dict[str, str]]:
+    """The one set of rules for a media type, used by the admin UI and by replicated definitions alike."""
+    key = _line(key, 32).lower()
     if not _TYPE.match(key):
         raise AtlasError("media type keys use a-z, 0-9 and '_' and start with a letter (max 32)")
-    label = label.strip()
-    if not label or len(label) > 60:
+    label = _line(label, 60)
+    if not label:
         raise AtlasError("a label of up to 60 characters is required")
-    labels = {k: v.strip() for k, v in (labels or {}).items() if k in CORE_LABELS and v.strip()}
-    if any(len(v) > 40 for v in labels.values()):
-        raise AtlasError("field labels are at most 40 characters")
+    clean_labels = {}
+    for k, v in (labels if isinstance(labels, dict) else {}).items():
+        if k in CORE_LABELS and isinstance(v, str) and v.strip():
+            clean_labels[k] = _line(v, 40)
+    try:
+        pos = max(0, min(int(position), 10000))
+    except (TypeError, ValueError):
+        pos = 100
+    return key, label, bool(enabled), pos, clean_labels
+
+
+def check_field(media_type: Any, key: Any, label: Any, kind: Any, choices: Any, help: Any, public: Any, editable: Any,
+                position: Any) -> dict[str, Any]:
+    key = _line(key, 40).lower()
+    if not _KEY.match(key) or key in RESERVED:
+        raise AtlasError("field keys use a-z, 0-9 and '_', start with a letter and may not reuse a built-in name")
+    if kind not in KINDS:
+        raise AtlasError(f"kind must be one of {', '.join(KINDS)}")
+    label = _line(label, 80)
+    if not label:
+        raise AtlasError("a label of up to 80 characters is required")
+    options = clean_choices(choices)
+    if kind == "choice" and len(options) < 2:
+        raise AtlasError("a choice field needs at least two options")
+    try:
+        pos = max(0, min(int(position), 10000))
+    except (TypeError, ValueError):
+        pos = 100
+    return {"media_type": media_type, "key": key, "label": label, "kind": kind,
+            "choices": options if kind == "choice" else [], "help": _line(help or "", 300), "public": bool(public),
+            "editable": bool(editable), "position": pos}
+
+
+def save_type(session: Session, ctx: Ctx, key: str, label: str, *, enabled: bool = True, position: int = 100,
+              labels: dict[str, str] | None = None) -> MediaType:
+    key, label, enabled, position, labels = check_type(key, label, enabled, position, labels)
     if key == "game":
         enabled = True  # the built-in type is always available
     write_lock(session)
@@ -139,17 +196,9 @@ def clean_choices(raw: Any) -> list[str]:
 
 def save_field(session: Session, ctx: Ctx, media_type: str, key: str, label: str, kind: str, *, choices: Any = None,
                help: str = "", public: bool = True, editable: bool = True, position: int = 100) -> FieldDef:
-    key = key.strip().lower()
-    if not _KEY.match(key) or key in RESERVED:
-        raise AtlasError("field keys use a-z, 0-9 and '_', start with a letter and may not reuse a built-in name")
-    if kind not in KINDS:
-        raise AtlasError(f"kind must be one of {', '.join(KINDS)}")
-    label = label.strip()
-    if not label or len(label) > 80:
-        raise AtlasError("a label of up to 80 characters is required")
-    options = clean_choices(choices)
-    if kind == "choice" and len(options) < 2:
-        raise AtlasError("a choice field needs at least two options")
+    c = check_field(media_type, key, label, kind, choices, help, public, editable, position)
+    key, label, options, help, public, editable, position = (
+        c["key"], c["label"], c["choices"], c["help"], c["public"], c["editable"], c["position"])
     write_lock(session)
     mt = session.get(MediaType, media_type)
     if mt is None:
@@ -165,7 +214,7 @@ def save_field(session: Session, ctx: Ctx, media_type: str, key: str, label: str
         session.add(row)
     elif row.kind != kind:
         raise AtlasError("a field's kind cannot change; create a new field instead", "conflict")
-    row.label, row.choices, row.help = label, options if kind == "choice" else [], help.strip()[:300]
+    row.label, row.choices, row.help = label, options, help
     row.public, row.editable, row.position = public, editable, position
     session.flush()
     publish(session, ctx)

@@ -26,8 +26,12 @@ def _hash(secret: str) -> str:
     return hashlib.sha256(secret.encode()).hexdigest()
 
 
+def _line(text: str, limit: int) -> str:
+    return " ".join("".join(c if c.isprintable() else " " for c in text).split())[:limit]
+
+
 def queue(session: Session, to: str, subject: str, body: str) -> Outbox:
-    row = Outbox(to_address=to[:254], subject=subject[:200], body=body, next_attempt_at=now())
+    row = Outbox(to_address=_line(to, 254), subject=_line(subject, 200), body=body, next_attempt_at=now())
     session.add(row)
     session.flush()
     return row
@@ -35,8 +39,14 @@ def queue(session: Session, to: str, subject: str, body: str) -> Outbox:
 
 def issue_token(session: Session, user: User, purpose: str, email: str) -> str:
     """Create a one-time secret for `purpose`, invalidating older unused ones of the same kind."""
-    session.execute(delete(EmailToken).where(EmailToken.user_id == user.id, EmailToken.purpose == purpose,
-                                             EmailToken.used_at.is_(None)))
+    live = session.scalars(select(EmailToken).where(
+        EmailToken.user_id == user.id, EmailToken.purpose == purpose, EmailToken.used_at.is_(None)
+    ).order_by(EmailToken.created_at.desc())).all()
+    # Verification links replace each other. Reset links stack (newest three stay valid), so a stranger repeatedly
+    # requesting a reset cannot keep invalidating the link already sitting in the owner's inbox.
+    keep = 2 if purpose == "reset" else 0
+    for old in live[keep:]:
+        session.delete(old)
     secret = secrets.token_urlsafe(32)
     ttl = VERIFY_TTL if purpose == "verify" else RESET_TTL
     session.add(EmailToken(id=_hash(secret), user_id=user.id, purpose=purpose, email=email, expires_at=now() + ttl))
@@ -137,7 +147,7 @@ def deliver_pending(maker: sessionmaker[Session], settings: Settings, limit: int
             session.refresh(row)
             try:
                 _send_smtp(settings, row)
-            except (OSError, smtplib.SMTPException) as exc:
+            except (OSError, ValueError, smtplib.SMTPException) as exc:
                 row.error = f"{type(exc).__name__}: {exc}"[:300]
                 row.next_attempt_at = now() + timedelta(minutes=min(60, 2 ** row.attempts))
             else:

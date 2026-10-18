@@ -211,7 +211,7 @@ def on_proposal_applied(session: Session, ctx: Ctx, p: Proposal, actor: User | N
     for uid in followers(session, "game", p.canonical_id):
         notify(session, ctx, uid, "game_changed", f"{title} was updated", f"/game/{p.canonical_id}",
                key=f"g:{p.canonical_id}", actor_id=p.proposer_id)
-    if who is not None:
+    if who is not None and who.profile_public:
         for uid in followers(session, "user", who.id):
             notify(session, ctx, uid, "followed_user", f"{who.username} contributed to {title}",
                    f"/game/{p.canonical_id}", key=f"u:{who.id}", actor_id=who.id)
@@ -343,9 +343,12 @@ def edit_comment(session: Session, user: User, cid: str, body: str) -> Comment:
 
 def delete_comment(session: Session, user: User, cid: str) -> None:
     row = session.get(Comment, cid)
-    if row is None or row.user_id != user.id:
+    if row is None or row.user_id != user.id or row.status == "deleted":
         raise AtlasError("no such comment", "not_found")
+    if row.status == "hidden":  # a moderator decides first; deleting would hide it from review
+        raise AtlasError("this comment is waiting for a moderator and cannot be deleted right now", "conflict")
     row.status, row.body = "deleted", ""
+    session.execute(update(Report).where(Report.comment_id == cid, Report.status == "open").values(status="dismissed"))
 
 
 def moderate(session: Session, ctx: Ctx, moderator: User, cid: str, action: str) -> Comment:
@@ -468,8 +471,22 @@ def delete_account(session: Session, user: User) -> None:
             User.role == "admin", User.id != user.id, User.deleted_at.is_(None), User.status == "active")) or 0
         if not others:
             raise AtlasError("you are the only administrator; promote someone else first", "conflict")
+    from .models import OidcAccess, OidcCode, OidcLink, Outbox
+
+    old_name, old_email = user.username, user.email
     accounts.end_all_sessions(session, user.id)
     session.execute(delete(Token).where(Token.user_id == user.id))
+    session.execute(delete(OidcLink).where(OidcLink.user_id == user.id))
+    session.execute(delete(OidcAccess).where(OidcAccess.user_id == user.id))
+    session.execute(delete(OidcCode).where(OidcCode.user_id == user.id))
+    session.execute(update(Report).where(Report.reporter_id == user.id).values(reason=""))
+    if old_email:
+        session.execute(delete(Outbox).where(Outbox.to_address == old_email))
+    # Other people's notifications and sent subjects may carry the old username: neutralise them.
+    for n in session.scalars(select(Notification).where(Notification.title.contains(old_name))).all():
+        n.title = n.title.replace(old_name, "a former member")
+    for m in session.scalars(select(Outbox).where(Outbox.subject.contains(old_name))).all():
+        m.subject = m.subject.replace(old_name, "a former member")
     session.execute(delete(UserSession).where(UserSession.user_id == user.id))
     for lst in session.scalars(select(UserList).where(UserList.user_id == user.id)).all():
         session.execute(delete(ListItem).where(ListItem.list_id == lst.id))

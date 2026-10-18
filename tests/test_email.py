@@ -161,21 +161,27 @@ def test_reset_gives_the_same_answer_for_unknown_accounts_and_is_throttled(centr
     assert 429 in codes
 
 
-def test_expired_and_replaced_tokens_are_refused(central):
+def test_expired_tokens_are_refused_and_reset_links_stack_to_three(central):
     register(central, "alice", "alice@example.org")
     c = fresh(central)
-    c.post("/forgot", data={"csrf": token(c, "/forgot"), "who": "alice"})
-    first = link_in(central, "reset")
-    c.post("/forgot", data={"csrf": token(c, "/forgot"), "who": "alice"})
-    second = link_in(central, "reset")
-    assert first != second
-    assert "invalid" in c.get(first).text  # a newer request invalidates the older link
-    with central.st.maker() as s:
-        row = s.scalars(select(EmailToken).where(EmailToken.purpose == "reset")).one()
-        row.expires_at = now() - timedelta(minutes=1)
+    links = []
+    for _ in range(3):  # the throttle allows three requests an hour per account
+        c.post("/forgot", data={"csrf": token(c, "/forgot"), "who": "alice"})
+        links.append(link_in(central, "reset"))
+    assert len(set(links)) == 3
+    assert all("Choose a new password" in c.get(link).text for link in links)  # requests do not cancel each other
+    with central.st.maker() as s:  # a fourth issue (past the throttle, e.g. an hour later) retires the oldest
+        alice = s.scalars(select(User).where(User.username == "alice")).one()
+        mail.send_reset(s, central.st.ctx.settings, alice)
         s.commit()
-    assert "invalid, already used, or has expired" in c.get(second).text
-    assert c.post(second, data={"csrf": token(c, "/forgot"), "password": "a brand new password"}).status_code == 400
+    assert "invalid, already used, or has expired" in c.get(links[0]).text
+    assert "Choose a new password" in c.get(links[2]).text
+    with central.st.maker() as s:
+        for row in s.scalars(select(EmailToken).where(EmailToken.purpose == "reset")):
+            row.expires_at = now() - timedelta(minutes=1)
+        s.commit()
+    assert "invalid, already used, or has expired" in c.get(links[2]).text
+    assert c.post(links[2], data={"csrf": token(c, "/forgot"), "password": "a brand new password"}).status_code == 400
 
 
 def test_changing_email_resets_verification_and_warns_the_old_address(central):

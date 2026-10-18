@@ -15,7 +15,7 @@
   <details><summary>{{ 'Change' if p.user.email else 'Add' }} email address</summary>
   <form method="post" action="/me/email">{{ csrf(p.csrf) }}
     <label for="email">New address</label><input id="email" type="email" name="email" required maxlength="254">
-    <label for="ecur">Current password</label><input id="ecur" type="password" name="current" autocomplete="current-password" required maxlength="200">
+    <label for="ecur">Current password</label><input id="ecur" type="password" name="current" autocomplete="current-password" {{ 'required' if has_password }} maxlength="200">
     <p><button type="submit">Save address</button></p></form></details>
 </div>
 <h2>My proposals</h2>
@@ -40,7 +40,7 @@
 
 <h2>Password</h2>
 <form class="card" method="post" action="/me/password">{{ csrf(p.csrf) }}
-  <label for="cur">Current password</label><input id="cur" type="password" name="current" autocomplete="current-password" required maxlength="200">
+  <label for="cur">Current password</label><input id="cur" type="password" name="current" autocomplete="current-password" {{ 'required' if has_password }} maxlength="200">
   <label for="new">New password</label><input id="new" type="password" name="new" autocomplete="new-password" required minlength="{{ min_len }}" maxlength="200">
   <p><button type="submit">Change password</button></p>
 </form>

@@ -16,8 +16,8 @@ from sqlalchemy.orm import Session
 from .models import AuditEntry, Setting, now
 from .settings import Settings
 
-_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
-_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+_COLOR = re.compile(r"^#[0-9a-fA-F]{6}\Z")
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}\Z")
 
 
 class SettingError(ValueError):

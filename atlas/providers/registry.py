@@ -20,7 +20,7 @@ from .igdb import Igdb
 from .rawg import Rawg
 from .steam import Steam
 
-_SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,64}\Z")
 
 
 def build_registry(settings: Settings) -> dict[str, Provider]:

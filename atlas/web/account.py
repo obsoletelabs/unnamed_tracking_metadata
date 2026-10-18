@@ -70,11 +70,11 @@ def resend(p: Annotated[Ctx, Depends(user_form)]):
 
 @router.post("/me/email")
 def change_email(p: Annotated[Ctx, Depends(user_form)], email: Annotated[str, Form(max_length=254)],
-                 current: Annotated[str, Form(max_length=256)]):
+                 current: Annotated[str, Form(max_length=256)] = ""):
     throttle(p, f"email:user:{p.me.id}", 5, 3600, "Too many attempts")
     s = p.st.ctx.settings
-    if not accounts.verify_password(current, p.me.password_hash):
-        raise HTTPException(400, "Your current password is wrong.")
+    if not accounts.reauthenticated(p.me, current, p.login):
+        raise HTTPException(400, "Your current password is wrong (or sign in again first).")
     new = email.strip().lower()
     if not accounts.EMAIL.match(new):
         raise HTTPException(400, "That does not look like an email address.")

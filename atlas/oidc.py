@@ -82,6 +82,8 @@ def verify_jwt(token: str, *, public_key_b64: str, kid: str, issuer: str, audien
         sig = b64u_dec(sig_b)
     except (ValueError, TypeError) as exc:
         raise TokenError("malformed token") from exc
+    if not isinstance(header, dict) or not isinstance(claims, dict):
+        raise TokenError("malformed token")
     if header.get("alg") != "EdDSA" or header.get("kid") != kid:
         raise TokenError("unexpected algorithm or key id")
     try:
@@ -265,6 +267,9 @@ def userinfo(session: Session, access_token: str) -> dict[str, Any] | None:
     row = session.get(OidcAccess, sha(access_token or ""))
     if row is None:
         return None
+    client = session.get(OidcClient, row.client_id)
+    if client is None or not client.enabled:  # disabling an application ends its access immediately
+        return None
     exp = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=now().tzinfo)
     user = session.get(User, row.user_id)
     if exp <= now() or user is None or user.status != "active" or user.deleted_at is not None:
@@ -286,43 +291,55 @@ def probe_issuer(http: Any, issuer_url: str) -> dict[str, Any]:
     base = issuer_url.rstrip("/")
     try:
         disc = http.get(f"{base}/.well-known/openid-configuration").json()
+        if not isinstance(disc, dict):
+            raise AtlasError("that address did not return an OpenID configuration")
         if disc.get("issuer") != base:
             raise AtlasError("the provider's issuer does not match the address you entered")
         for k in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
             if not str(disc.get(k, "")).startswith(base + "/"):
                 raise AtlasError(f"{k} must live under the issuer address")
-        keys = http.get(disc["jwks_uri"]).json().get("keys", [])
-        key = next(k for k in keys if k.get("kty") == "OKP" and k.get("crv") == "Ed25519")
+        doc = http.get(disc["jwks_uri"]).json()
+        keys = doc.get("keys", []) if isinstance(doc, dict) else []
+        key = next(k for k in keys if isinstance(k, dict) and k.get("kty") == "OKP" and k.get("crv") == "Ed25519")
         raw = b64u_dec(key["x"])
         pub = base64.b64encode(raw).decode()
         if key_id_for(raw) != key.get("kid"):
             raise AtlasError("the key id does not match the key")
-    except (httpx.HTTPError, ValueError, KeyError, StopIteration, TypeError) as exc:
+    except (httpx.HTTPError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as exc:
         raise AtlasError(f"could not read that provider: {type(exc).__name__}") from exc
     return {"issuer_url": base, "node_id": key["kid"], "public_key": pub,
             "authorization_endpoint": disc["authorization_endpoint"], "token_endpoint": disc["token_endpoint"]}
 
 
-def start_login(session: Session, ctx: Ctx, issuer: OidcIssuer, next_url: str, link_user: User | None) -> str:
+def start_login(session: Session, ctx: Ctx, issuer: OidcIssuer, next_url: str, link_user: User | None
+                ) -> tuple[str, str]:
+    """Returns (authorization URL, browser binding). The binding goes in a cookie and is required at the callback, so
+    a callback URL carried to a different browser (login CSRF) is useless."""
     state, nonce, verifier = secrets.token_urlsafe(24), secrets.token_urlsafe(24), secrets.token_urlsafe(48)
+    binding = secrets.token_urlsafe(24)
     session.add(OidcState(id=sha(state), issuer_id=issuer.id, nonce=nonce, verifier=verifier, next_url=next_url,
-                          link_user_id=link_user.id if link_user else None, expires_at=now() + STATE_TTL))
+                          link_user_id=link_user.id if link_user else None, binding=sha(binding),
+                          expires_at=now() + STATE_TTL))
     session.flush()
     redirect = f"{ctx.settings.public_url}/oidc/callback/{issuer.id}"
     return issuer.authorization_endpoint + "?" + urlencode({
         "response_type": "code", "client_id": issuer.client_id, "redirect_uri": redirect,
         "scope": "openid profile email", "state": state, "nonce": nonce, "code_challenge": pkce_challenge(verifier),
-        "code_challenge_method": "S256"})
+        "code_challenge_method": "S256"}), binding
 
 
-def finish_login(session: Session, ctx: Ctx, http: Any, issuer: OidcIssuer, code: str, state: str
-                 ) -> tuple[User, str, bool]:
+def finish_login(session: Session, ctx: Ctx, http: Any, issuer: OidcIssuer, code: str, state: str,
+                 binding: str = "", current_user_id: str | None = None) -> tuple[User, str, bool]:
     """Complete the callback. Returns (user, next_url, linked_now). Raises AtlasError with a user-safe message."""
     row = session.get(OidcState, sha(state or ""))
     if row is None or row.issuer_id != issuer.id:
         raise AtlasError("This sign-in attempt is unknown or was already used. Start again.")
     session.delete(row)  # single use, even if the rest fails
     session.commit()
+    if not row.binding or not hmac.compare_digest(row.binding, sha(binding or "")):
+        raise AtlasError("This sign-in was started in a different browser. Start again here.")
+    if row.link_user_id and current_user_id != row.link_user_id:
+        raise AtlasError("This link request belongs to another signed-in user. Start again.")
     exp = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=now().tzinfo)
     if exp <= now():
         raise AtlasError("This sign-in attempt expired. Start again.")
@@ -342,7 +359,7 @@ def finish_login(session: Session, ctx: Ctx, http: Any, issuer: OidcIssuer, code
     link = session.get(OidcLink, (issuer.id, subject))
     if row.link_user_id:  # an explicit "link this to my account" flow
         user = session.get(User, row.link_user_id)
-        if user is None or user.status != "active":
+        if user is None or user.status != "active" or user.deleted_at is not None:
             raise AtlasError("Your session ended. Sign in and try again.")
         if link is not None and link.user_id != user.id:
             raise AtlasError("That external account is already linked to someone else.")

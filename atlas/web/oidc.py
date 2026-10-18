@@ -112,14 +112,17 @@ async def token(request: Request, st: St, session: Sess):
     if not st.ctx.settings.oidc_provider_enabled:
         return JSONResponse({"error": "unsupported"}, status_code=404, headers=headers)
     ip = request.client.host if request.client else "?"
-    ok, retry = ratelimit.hit(st.maker, f"oidc:token:{ip}", 60, 60)
-    if not ok:
-        return JSONResponse({"error": "slow_down"}, status_code=429, headers={**headers, "Retry-After": str(retry)})
     form = await request.form()
     cid, secret = _client_credentials(request, form)
     client = oidc.authenticate_client(session, cid, secret)
-    if client is None:
-        return JSONResponse({"error": "invalid_client"}, status_code=401, headers=headers)
+    if client is None:  # only failed authentications count against the address
+        ok, retry = ratelimit.hit(st.maker, f"oidc:token-fail:{ip}", 30, 60)
+        status = 401 if ok else 429
+        return JSONResponse({"error": "invalid_client" if ok else "slow_down"}, status_code=status,
+                            headers={**headers, **({} if ok else {"Retry-After": str(retry)})})
+    ok, retry = ratelimit.hit(st.maker, f"oidc:token:{client.client_id}", 600, 60)
+    if not ok:
+        return JSONResponse({"error": "slow_down"}, status_code=429, headers={**headers, "Retry-After": str(retry)})
     if form.get("grant_type") != "authorization_code":
         return JSONResponse({"error": "unsupported_grant_type"}, status_code=400, headers=headers)
     try:
@@ -141,12 +144,22 @@ def userinfo(request: Request, st: St, session: Sess):
 
 # ---- relying party ------------------------------------------------------------------------------------
 
+BINDING_COOKIE = "atlas_oidc"
+
+
+def _bound(resp, binding: str, p: Ctx):
+    resp.set_cookie(BINDING_COOKIE, binding, httponly=True, samesite="lax", secure=secure_cookies(p),
+                    path="/oidc/callback", max_age=600)
+    return resp
+
+
 @router.get("/oidc/start/{iid}")
 def start(iid: str, p: Annotated[Ctx, Depends(page)], next: str = "/"):
     issuer = p.session.get(OidcIssuer, iid)
     if issuer is None or not issuer.enabled:
         raise HTTPException(404, "No such sign-in provider.")
-    return RedirectResponse(oidc.start_login(p.session, p.st.ctx, issuer, safe_next(next), None), status_code=303)
+    url, binding = oidc.start_login(p.session, p.st.ctx, issuer, safe_next(next), None)
+    return _bound(RedirectResponse(url, status_code=303), binding, p)
 
 
 @router.post("/me/oidc/{iid}/link")
@@ -156,7 +169,8 @@ def link_start(iid: str, p: Annotated[Ctx, Depends(user_form)]):
         raise HTTPException(404, "No such sign-in provider.")
     if not (issuer.allow_all_users or p.me.oidc_allowed):
         raise HTTPException(403, "External sign-in is not enabled for your account. Ask an administrator.")
-    return RedirectResponse(oidc.start_login(p.session, p.st.ctx, issuer, "/me/settings", p.me), status_code=303)
+    url, binding = oidc.start_login(p.session, p.st.ctx, issuer, "/me/settings", p.me)
+    return _bound(RedirectResponse(url, status_code=303), binding, p)
 
 
 @router.post("/me/oidc/{iid}/unlink")
@@ -186,13 +200,16 @@ def callback(iid: str, request: Request, p: Annotated[Ctx, Depends(page)]):
     try:
         user, next_url, linked = oidc.finish_login(p.session, p.st.ctx, p.st.http, issuer,
                                                    request.query_params.get("code", ""),
-                                                   request.query_params.get("state", ""))
+                                                   request.query_params.get("state", ""),
+                                                   request.cookies.get(BINDING_COOKIE, ""),
+                                                   p.user.id if p.user else None)
     except AtlasError as exc:
         p.session.rollback()
         raise HTTPException(400, str(exc)) from exc
     secret, _row = accounts.create_session(p.session, p.st.ctx.settings, user)
     accounts.audit(p.session, user.id, "login_oidc", issuer.id)
     resp = go(next_url, "saved" if linked else None)
+    resp.delete_cookie(BINDING_COOKIE, path="/oidc/callback")
     resp.set_cookie(SESSION_COOKIE, secret, httponly=True, samesite="lax", secure=secure_cookies(p), path="/",
                     max_age=p.st.ctx.settings.session_ttl_days * 86400)
     return resp

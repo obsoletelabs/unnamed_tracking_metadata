@@ -551,6 +551,7 @@ class OidcState(Base):
     verifier: Mapped[str] = mapped_column(String(100))
     next_url: Mapped[str] = mapped_column(String(300), default="/")
     link_user_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    binding: Mapped[str] = mapped_column(String(64), default="", server_default="")  # hash of the browser cookie
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 

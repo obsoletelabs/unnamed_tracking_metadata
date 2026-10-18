@@ -417,6 +417,10 @@ def test_comment_flow_with_moderation(site):  # noqa: F811
     assert site.post(f"/comments/{cid}/moderate", data=hide).status_code == 303
     assert "hidden by a moderator" in fresh(site).get(f"/game/{gid}").text
     assert "Great" not in fresh(site).get(f"/game/{gid}").text
+    # the author cannot delete it while it waits for a moderator
+    assert bob.post(f"/comments/{cid}/delete", data={"csrf": tb, "to": f"/game/{gid}"}).status_code == 409
+    restore = {"csrf": ta, "action": "restore", "to": f"/game/{gid}"}
+    assert site.post(f"/comments/{cid}/moderate", data=restore).status_code == 303
     assert bob.post(f"/comments/{cid}/delete", data={"csrf": tb, "to": f"/game/{gid}"}).status_code == 303
     assert carol.post(f"/comments/{cid}/edit", data={"csrf": tc, "body": "hijack"}).status_code == 404
 

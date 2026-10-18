@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from . import service
+from .contract import SourceObservationV1
 from .models import Canonical, Crosswalk, Lock, Observation, SyncCursor
 from .service import AtlasError, Ctx, keys_of
 from .signing import key_id_for, verify
@@ -37,10 +41,45 @@ def _ensure_canonical(session: Session, cid: str, media_type: str | None = None)
         session.flush()
 
 
+_OBS_FIELDS = ("title", "platform", "platforms", "edition", "release_date", "provider_ids", "facts", "source_updated_at",
+               "available")
+_ID = re.compile(r"[0-9A-Za-z]{26}\Z")
+
+
+def _valid_observation(o: Any) -> bool:
+    """What an upstream may send: the same shape and limits as an observation submitted through the API."""
+    try:
+        if not isinstance(o, dict) or not _ID.match(str(o.get("id", ""))) or len(json.dumps(o.get("payload"))) > 100_000:
+            return False
+        for key, limit in (("source", 128), ("source_scope", 512), ("external_id", 256)):
+            if not isinstance(o.get(key), str) or not 0 < len(o[key]) <= limit:
+                return False
+        if o.get("source_kind") not in ("host", "plugin", "manual", "metadata"):
+            return False
+        payload = o["payload"]
+        if not isinstance(payload, dict) or set(payload) - set(_OBS_FIELDS):
+            return False
+        SourceObservationV1.model_validate({"external_id": o["external_id"], **payload})
+        datetime.fromisoformat(o["observed_at"])
+        return True
+    except (ValidationError, ValueError, TypeError, KeyError):
+        return False
+
+
 def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: dict[str, Any]) -> None:
+    try:
+        _apply(session, ctx, node_id, seq, kind, body)
+    except (AtlasError, KeyError, TypeError, ValueError, AttributeError) as exc:
+        # One malformed entry from a trusted upstream must not stall replication forever: skip it, keep going.
+        log.warning("skipping feed entry %s (%s) from %s: %s", seq, kind, node_id, exc)
+
+
+def _apply(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: dict[str, Any]) -> None:
     if kind == "obs":
         cid = body["canonical_id"]
         o = body["observation"]
+        if not isinstance(cid, str) or not cid.startswith("atlas:") or len(cid) > 40 or not _valid_observation(o):
+            return
         _ensure_canonical(session, cid, body.get("media_type"))
         if session.get(Observation, o["id"]) is not None:
             return  # idempotent replay
@@ -93,11 +132,13 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
     elif kind == "custom":
         from . import custom
 
-        try:
-            custom.set_values(session, ctx, body["canonical_id"], body["source"], body.get("values") or {},
-                              redistributable=True, log=False, clear=tuple(body.get("clear") or ()))
-        except AtlasError:
+        game = session.get(Canonical, body["canonical_id"])
+        if game is None:
             return
+        values = custom.clean_values(session, game.media_type, body.get("values") or {}, editable_only=False)
+        clear = tuple(str(k)[:40] for k in (body.get("clear") or [])[:60])
+        custom.set_values(session, ctx, body["canonical_id"], str(body["source"])[:128], values,
+                          redistributable=True, log=False, clear=clear)
     elif kind == "merge":
         src, dst = body["src"], body["dst"]
         s, d = session.get(Canonical, src), session.get(Canonical, dst)

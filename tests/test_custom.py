@@ -322,9 +322,10 @@ def test_schema_and_values_replicate_and_local_definitions_win(pair):  # noqa: F
         custom.save_field(s, a_ctx, "movie", "rating", "Rating", "choice", choices="G\nPG")
         custom.save_field(s, a_ctx, "movie", "runtime_min", "Runtime", "number")
         s.commit()
-    [r] = curate(a_maker, a_ctx, "curator", [{"external_id": "c1", "title": "Alien", "release_date": "1979-05-25"}])
-    with a_maker() as s:
-        s.get(Canonical, r.canonical_id).media_type = "movie"
+    with a_maker() as s:  # a record created as a movie (the type travels with the first observation)
+        [r] = service.ingest(s, a_ctx, batch("curator", [{"external_id": "c1", "title": "Alien",
+                                                          "release_date": "1979-05-25"}], kind="metadata"),
+                             curator=True, media_type="movie")
         custom.set_values(s, a_ctx, r.canonical_id, "curator", {"runtime_min": 117}, redistributable=True)
         s.commit()
     sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)

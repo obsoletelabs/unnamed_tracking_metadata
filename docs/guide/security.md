@@ -9,8 +9,8 @@
 | API | tokens stored only as hashes, scoped, expiring, revocable, fail-closed; personal tokens are read-only and die with the account; rate limits; body size caps; bounded batches |
 | Trust model | reserved source names need `curate`; uncurated claims can match but cannot register identifiers in someone else's namespace; far-future timestamps ignored; personal facts discarded on arrival |
 | Artwork | downloads only from public addresses (pinned address, every redirect re-checked, tunnelled IPv6 refused, environment proxies ignored), size and pixel limits, full image decode, content-hash storage, served with `nosniff` and a restrictive CSP |
-| Federation | Ed25519-signed feed (sequence, kind, content), pinned trust, gap/rewind/tamper rejection, provider data never republished |
-| OIDC | exact redirect match, consent, PKCE, single-use burned codes, pinned issuer keys, algorithm never negotiated, email never used to take over an account |
+| Federation | Ed25519-signed feed (sequence, kind, content), pinned trust, gap/rewind/tamper rejection, provider data never republished; even from a trusted peer, observations, schema and values are validated like local input and a malformed entry is skipped instead of stalling replication |
+| OIDC | the sign-in is bound to the browser that started it (login-CSRF safe), exact redirect match, consent, PKCE, single-use burned codes, pinned issuer keys, algorithm never negotiated, email never used to take over an account |
 | Secrets at rest | peer tokens and client secrets encrypted with `ATLAS_SECRET_KEY`; SMTP password only in the environment; sent email bodies deleted from the outbox |
 | Concurrency | writers serialised; reviews, reverts and withdrawals cannot double-apply; responses are sent only after commit |
 | Audit | admin and moderation actions are logged with the actor |
@@ -25,6 +25,7 @@ Two independent code reviews were carried out during development; every confirme
 * Observability (structured logs, metrics, alerting) is minimal.
 * The SMTP server and the reverse proxy are yours to harden.
 * Admin-supplied URLs (peers, OIDC providers) are fetched by the server; only administrators can set them, and private addresses are allowed on purpose (LAN mirrors).
+* **Change-email** answers "already used" for taken addresses (rate-limited), so a signed-in user can test whether an address is registered.
 * Account **deletion** removes personal data but keeps accepted (CC0) contributions, detached from the person.
 
 ## Reporting a problem

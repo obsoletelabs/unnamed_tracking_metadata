@@ -87,6 +87,17 @@ class SourceObservationV1(BaseModel):
             raise ValueError("Use a nonblank external identity")
         return value
 
+    @field_validator("title", "platform", "edition", mode="after")
+    @classmethod
+    def one_line(cls, value: str | None) -> str | None:
+        """Titles are shown in pages and emails: no control characters or line breaks."""
+        if value is None:
+            return None
+        cleaned = " ".join("".join(c if c.isprintable() or c == " " else " " for c in value).split())
+        if not cleaned:
+            raise ValueError("Use printable text")
+        return cleaned
+
     def reported(self, *, strip_personal: bool = True) -> dict[str, Any]:
         """Only what the source reported, JSON-ready; personal facts removed by default."""
         out: dict[str, Any] = {}

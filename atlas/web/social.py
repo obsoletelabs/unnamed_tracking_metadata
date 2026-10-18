@@ -77,6 +77,8 @@ def settings_save(p: Annotated[Ctx, Depends(user_form)], bio: Annotated[str, For
         raise HTTPException(400, "The bio contains characters that are not allowed.")
     u = p.me
     u.bio, u.profile_public = bio.strip(), profile_public == "on"
+    if not u.profile_public:  # a private profile has no followers and sends no activity to anyone
+        p.session.execute(Follow.__table__.delete().where(Follow.target_type == "user", Follow.target_id == u.id))
     u.email_notifications = email_notifications == "on"
     return go("/me/settings", "saved")
 
@@ -90,10 +92,10 @@ def export(p: Annotated[Ctx, Depends(user_page)]):
 
 
 @router.post("/me/delete")
-def delete_account(p: Annotated[Ctx, Depends(user_form)], password: Annotated[str, Form(max_length=256)],
-                   confirm: Annotated[str, Form(max_length=64)]):
+def delete_account(p: Annotated[Ctx, Depends(user_form)], confirm: Annotated[str, Form(max_length=64)],
+                   password: Annotated[str, Form(max_length=256)] = ""):
     throttle(p, f"delete:user:{p.me.id}", 5, 3600, "Too many attempts")
-    if confirm.strip().lower() != p.me.username or not accounts.verify_password(password, p.me.password_hash):
+    if confirm.strip().lower() != p.me.username or not accounts.reauthenticated(p.me, password, p.login):
         raise HTTPException(400, "Type your username and your current password to confirm.")
     try:
         social.delete_account(p.session, p.me)

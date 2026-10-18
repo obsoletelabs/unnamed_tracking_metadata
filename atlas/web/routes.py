@@ -468,7 +468,8 @@ def _me_ctx(p: Page, **extra: Any) -> dict[str, Any]:
             for t in s.scalars(select(Token).where(Token.user_id == p.me.id, Token.revoked_at.is_(None)))]
     st = p.st.ctx.settings
     return {"mine": mine, "tokens": toks, "min_len": st.password_min_length,
-            "auto_threshold": st.auto_approve_reputation, "verification": st.verification_mode(), **extra}
+            "has_password": p.me.password_hash != "!", "auto_threshold": st.auto_approve_reputation,
+            "verification": st.verification_mode(), **extra}
 
 
 @router.get("/me", response_class=HTMLResponse)
@@ -500,13 +501,13 @@ def token_revoke(tid: str, p: Annotated[Page, Depends(user_form)]):
 
 
 @router.post("/me/password")
-def password(p: Annotated[Page, Depends(user_form)], current: Annotated[str, Form(max_length=256)],
-             new: Annotated[str, Form(max_length=256)]):
+def password(p: Annotated[Page, Depends(user_form)], new: Annotated[str, Form(max_length=256)],
+             current: Annotated[str, Form(max_length=256)] = ""):
     throttle(p, f"pw:user:{p.me.id}", 5, 900, "Too many attempts")
-    u = p.user
+    u = p.me
     s = p.st.ctx.settings
-    if not accounts.verify_password(current, u.password_hash):
-        raise HTTPException(400, "Your current password is wrong.")
+    if not accounts.reauthenticated(u, current, p.login):
+        raise HTTPException(400, "Your current password is wrong (or sign in again first).")
     if not s.password_min_length <= len(new) <= 200:
         raise HTTPException(400, f"The new password must be {s.password_min_length}-200 characters.")
     u.password_hash = accounts.hash_password(new)

@@ -25,7 +25,7 @@
     <p class="small muted">Removes your profile, lists, follows, notifications and tokens, and signs you out everywhere. Your accepted contributions are public-domain (CC0) and stay, detached from your name. This cannot be undone.</p>
     <form method="post" action="/me/delete">{{ csrf(p.csrf) }}
       <label for="cf">Type your username to confirm</label><input id="cf" type="text" name="confirm" required maxlength="64" autocomplete="off">
-      <label for="dp">Current password</label><input id="dp" type="password" name="password" required maxlength="200" autocomplete="current-password">
+      <label for="dp">Current password{% if not has_password %} <span class="hint">(not needed right after signing in with another provider)</span>{% endif %}</label><input id="dp" type="password" name="password" {{ '' if not has_password else 'required' }} maxlength="200" autocomplete="current-password">
       <p><button class="danger" data-confirm="Permanently delete your account?" type="submit">Delete account</button></p></form></details>
 </div>
 {% endblock %}

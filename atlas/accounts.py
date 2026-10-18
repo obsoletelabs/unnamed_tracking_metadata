@@ -15,8 +15,8 @@ from .models import AuditEntry, Token, User, UserSession, now
 from .service import AtlasError, write_lock
 from .settings import Settings
 
-USERNAME = re.compile(r"^[a-z0-9][a-z0-9_-]{2,31}$")
-EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}\.[^@\s]{2,}$")
+USERNAME = re.compile(r"^[a-z0-9][a-z0-9_-]{2,31}\Z")
+EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}\.[^@\s]{2,}\Z")
 _N, _R, _P = 2**15, 8, 1
 _DUMMY = None
 
@@ -123,6 +123,20 @@ def end_all_sessions(session: Session, user_id: str) -> None:
 
 def check_csrf(row: UserSession, token: str | None) -> bool:
     return bool(token) and hmac.compare_digest(row.csrf, token or "")
+
+
+REAUTH_WINDOW = timedelta(minutes=15)
+
+
+def reauthenticated(user: User, password: str, login: UserSession | None) -> bool:
+    """Confirm a sensitive action. Accounts that sign in only through another provider have no password; for them a
+    sign-in within the last 15 minutes counts."""
+    if user.password_hash == "!":
+        if login is None:
+            return False
+        created = login.created_at if login.created_at.tzinfo else login.created_at.replace(tzinfo=now().tzinfo)
+        return now() - created <= REAUTH_WINDOW
+    return verify_password(password, user.password_hash)
 
 
 def can_review(settings: Settings, user: User) -> bool:

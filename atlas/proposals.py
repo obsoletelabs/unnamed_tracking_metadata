@@ -22,7 +22,7 @@ REJECT_PENALTY = -2
 REVERT_PENALTY = -10
 SCALAR = {"title": 500, "description": 20000, "developer": 200, "publisher": 200, "series": 200}
 LISTS = ("tags", "features", "platforms")
-_STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
 
 
 def adjust_reputation(session: Session, user: User, delta: int, reason: str, proposal_id: str | None = None) -> None:
