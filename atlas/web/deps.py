@@ -17,12 +17,14 @@ SESSION_COOKIE = "atlas_session"
 ANON_CSRF_COOKIE = "atlas_csrf"
 
 FLASH = {
-    "saved": "Saved.", "proposed": "Thanks. Your proposal is waiting for review.",
+    "saved": "Saved.", "nochange": "Nothing changed.", "proposed": "Thanks. Your proposal is waiting for review.",
     "applied": "Your change was applied immediately.", "approved": "Approved.", "rejected": "Rejected.",
     "reverted": "Reverted.", "merged": "Merged.", "locked": "Field locked.", "unlocked": "Lock removed.",
     "withdrawn": "Proposal withdrawn.", "dismissed": "Dismissed.", "detached": "Split into its own record.",
     "token": "Token created. Copy it now; it will not be shown again.", "revoked": "Token revoked.",
-    "nochange": "Nothing changed.", "password": "Password changed. Other sessions were signed out.", "bye": "Signed out.",
+    "password": "Password changed. Other sessions were signed out.", "bye": "Signed out.",
+    "verified": "Your email address is confirmed.", "mailsent": "We sent you an email. Check your inbox.",
+    "reset": "Your password was changed. Sign in with the new one.",
 }
 
 

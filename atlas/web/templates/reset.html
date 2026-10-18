@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Choose a new password · {{ app_name }}{% endblock %}
+{% block content %}
+<div class="narrow card">
+<h1>Choose a new password</h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% if valid %}
+<form method="post" action="/reset/{{ secret }}">{{ csrf(p.csrf) }}
+  <label for="password">New password <span class="hint">at least {{ min_len }} characters</span></label>
+  <input id="password" type="password" name="password" autocomplete="new-password" required minlength="{{ min_len }}" maxlength="200" autofocus>
+  <p><button type="submit">Change password</button></p>
+</form>
+{% else %}<p>This reset link is invalid, already used, or has expired. <a href="/forgot">Request a new one</a>.</p>{% endif %}
+</div>
+{% endblock %}

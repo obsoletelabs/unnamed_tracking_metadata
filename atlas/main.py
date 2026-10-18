@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 
@@ -11,7 +12,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import __version__, auth, media, ratelimit, sync
+from . import __version__, auth, mail, media, ratelimit, sync
 from .api.deps import AppState
 from .api.routes import router
 from .db import make_engine, make_sessionmaker, upgrade
@@ -21,6 +22,7 @@ from .service import AtlasError, Ctx
 from .settings import Settings, get_settings
 from .signing import load_identity
 from .web import STATIC_DIR, templates
+from .web.account import router as account_router
 from .web.admin import router as admin_router
 from .web.deps import LoginRequired
 from .web.routes import router as web_router
@@ -93,6 +95,21 @@ def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event)
         stop.wait(60)
 
 
+def _mailer(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
+    last_purge = 0.0
+    while not stop.is_set():
+        try:
+            mail.deliver_pending(maker, ctx.settings)
+            if time.monotonic() - last_purge > 3600:
+                last_purge = time.monotonic()
+                with maker() as s:
+                    mail.purge_old(s)
+                    s.commit()
+        except Exception as exc:
+            log.warning("mail worker failed: %s", exc)
+        stop.wait(3)
+
+
 def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
     delay = ctx.settings.sync_interval_seconds
     with httpx.Client() as client:
@@ -125,6 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         threading.Thread(target=_housekeeping, args=(maker, ctx, stop), daemon=True,
                          name="atlas-housekeeping").start()
+        threading.Thread(target=_mailer, args=(maker, ctx, stop), daemon=True, name="atlas-mail").start()
         if settings.upstream_url:
             threading.Thread(target=_sync_loop, args=(maker, ctx, stop), daemon=True, name="atlas-sync").start()
         yield
@@ -137,6 +155,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(router)
     app.include_router(web_router)
     app.include_router(admin_router)
+    app.include_router(account_router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.middleware("http")

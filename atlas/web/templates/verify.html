@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Confirm email · {{ app_name }}{% endblock %}
+{% block content %}
+<div class="narrow card">
+<h1>Confirm your email</h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% if valid %}
+<p>Press the button to confirm this address for your account.</p>
+<form method="post" action="/verify/{{ secret }}">{{ csrf(p.csrf) }}<button type="submit">Confirm email</button></form>
+{% else %}<p>This confirmation link is invalid or has expired.{% if p.user %} You can <a href="/me">request a new one from your profile</a>.{% else %} Sign in and request a new one from your profile.{% endif %}</p>{% endif %}
+</div>
+{% endblock %}

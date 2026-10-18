@@ -54,6 +54,8 @@ def register(session: Session, settings: Settings, username: str, password: str,
     email = (email or "").strip().lower() or None
     if email and not EMAIL.match(email):
         raise AtlasError("invalid email address")
+    if settings.verification_mode() == "required" and not email:
+        raise AtlasError("an email address is required to create an account on this server")
     taken = session.scalars(select(User.id).where(
         (User.username == username) | ((User.email == email) if email else False))).first()
     if taken:

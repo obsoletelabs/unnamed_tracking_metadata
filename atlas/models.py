@@ -229,6 +229,7 @@ class User(Base):
     reputation: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class UserSession(Base):
@@ -308,3 +309,33 @@ class Page(Base):
     position: Mapped[int] = mapped_column(Integer, default=100)
     updated_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class EmailToken(Base):
+    """One-time link secrets (stored hashed): address verification and password reset."""
+
+    __tablename__ = "email_token"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256 of the secret
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    purpose: Mapped[str] = mapped_column(String(16))  # verify | reset
+    email: Mapped[str] = mapped_column(String(254))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Outbox(Base):
+    """Every email Atlas sends, queued here so requests never wait on (or leak the timing of) SMTP."""
+
+    __tablename__ = "outbox"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    to_address: Mapped[str] = mapped_column(String(254))
+    subject: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)  # cleared after delivery when really sent
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)

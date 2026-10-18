@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Forgot password · {{ app_name }}{% endblock %}
+{% block content %}
+<div class="narrow card">
+<h1>Forgot your password?</h1>
+{% if sent %}<p role="status">If an account with that username or address exists, we have sent it a message with a link to choose a new password. The link works for one hour.</p>
+{% else %}
+<form method="post" action="/forgot">{{ csrf(p.csrf) }}
+  <label for="who">Username or email address</label><input id="who" type="text" name="who" required maxlength="254" autofocus>
+  <p><button type="submit">Send reset link</button></p>
+</form>
+<p class="small muted">Only accounts with an email address can be reset this way. Otherwise ask an administrator.</p>{% endif %}
+</div>
+{% endblock %}

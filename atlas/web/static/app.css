@@ -81,3 +81,4 @@ legend { font-weight: 700; padding: 0 8px; }
 input[type=color] { width: 56px; height: 36px; padding: 2px; }
 input[type=checkbox] { width: auto; }
 .logo-preview { max-height: 64px; }
+pre.mail { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 0; font-size: .85rem; }

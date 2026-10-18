@@ -10,7 +10,7 @@
   <input type="hidden" name="next" value="{{ next }}">
   <label for="username">Username</label><input id="username" type="text" name="username" autocomplete="username" required maxlength="32" autofocus>
   <label for="password">Password</label><input id="password" type="password" name="password" autocomplete="current-password" required maxlength="200">
-  <p><button type="submit">Sign in</button></p>
+  <p><button type="submit">Sign in</button> <a class="small" href="/forgot">Forgot password?</a></p>
 </form>
 {% if registration_open %}<p class="small muted">No account? <a href="/register">Create one</a>.</p>{% endif %}
 </div>

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 
-from .. import accounts, auth, facets, feed, proposals, service
+from .. import accounts, auth, facets, feed, mail, proposals, service
 from ..api.routes import _guard_upstream, media_response
 from ..merge import SCALAR_FIELDS, UNION_FIELDS
 from ..models import (
@@ -238,8 +238,10 @@ def register(p: Annotated[Page, Depends(csrf_form)], username: Annotated[str, Fo
         p.session.rollback()
         return render(p, "register.html", status=400, anon_csrf=True, error=str(exc), min_len=s.password_min_length,
                       username=username, email=email)
+    if user.email and s.verification_mode() != "off":
+        mail.send_verification(p.session, s, user)
     secret, _row = accounts.create_session(p.session, s, user)
-    resp = go("/", "saved")
+    resp = go("/", "mailsent" if user.email and s.verification_mode() != "off" else "saved")
     resp.set_cookie(SESSION_COOKIE, secret, httponly=True, samesite="lax", secure=secure_cookies(p), path="/",
                     max_age=s.session_ttl_days * 86400)
     return resp
@@ -380,7 +382,7 @@ def _me_ctx(p: Page, **extra: Any) -> dict[str, Any]:
             for t in s.scalars(select(Token).where(Token.user_id == p.me.id, Token.revoked_at.is_(None)))]
     st = p.st.ctx.settings
     return {"mine": mine, "tokens": toks, "min_len": st.password_min_length,
-            "auto_threshold": st.auto_approve_reputation, **extra}
+            "auto_threshold": st.auto_approve_reputation, "verification": st.verification_mode(), **extra}
 
 
 @router.get("/me", response_class=HTMLResponse)

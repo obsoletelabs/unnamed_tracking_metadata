@@ -209,6 +209,6 @@ def test_draft_pages_are_hidden_and_slugs_validated(site):  # noqa: F811
 
 
 def test_email_verification_default_depends_on_role():
-    assert build_settings(role="authority").verification_mode() == "required"
-    assert build_settings(role="local").verification_mode() == "optional"
+    assert build_settings(role="authority", email_verification=None).verification_mode() == "required"
+    assert build_settings(role="local", email_verification=None).verification_mode() == "optional"
     assert build_settings(role="authority", email_verification="off").verification_mode() == "off"

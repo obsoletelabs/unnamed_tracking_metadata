@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import accounts, facets
+from . import accounts, facets, mail
 from .contract import ObservationBatchV1
 from .models import Achievement, Artwork, Canonical, Observation, Proposal, ReputationEvent, User, now
 from .service import AtlasError, Ctx, ingest, write_lock
@@ -220,6 +220,8 @@ def create(session: Session, ctx: Ctx, user: User, kind: str, canonical_id: str 
     session.flush()
     if user.status != "active":
         raise AtlasError("account suspended", "forbidden")
+    if not mail.is_verified(s, user):
+        raise AtlasError("confirm your email address before contributing (see your profile)", "forbidden")
     payload = _validate(kind, canonical_id, payload)
     if kind != "new_game":
         row = session.get(Canonical, canonical_id) if canonical_id else None

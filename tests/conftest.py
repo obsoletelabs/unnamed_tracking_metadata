@@ -11,7 +11,8 @@ from atlas.signing import load_identity
 
 
 def build_settings(**kw) -> Settings:
-    base = dict(role="authority", database_url="sqlite://", environment="dev")
+    # Most tests are not about email; the policy tests ask for "required" or None (by role) explicitly.
+    base = dict(role="authority", database_url="sqlite://", environment="dev", email_verification="optional")
     base.update(kw)
     return Settings(_env_file=None, **base)
 

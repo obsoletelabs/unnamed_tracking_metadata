@@ -15,8 +15,8 @@
   {% for c in cursors %}<p>{{ c.upstream }}: position {{ c.last_seq }} <span class="muted small">({{ c.updated }})</span></p>{% else %}<p class="muted">Not replicating.</p>{% endfor %}
 </div></div>
 <h2>Users</h2>
-<table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Rep</th><th></th></tr></thead><tbody>
-{% for u in users %}<tr><td>{{ u.username }}</td><td>{{ u.role }}</td><td>{{ u.status }}</td><td>{{ u.reputation }}</td>
+<table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Email</th><th>Rep</th><th></th></tr></thead><tbody>
+{% for u in users %}<tr><td>{{ u.username }}</td><td>{{ u.role }}</td><td>{{ u.status }}</td><td>{% if u.email %}{{ 'confirmed' if u.email_verified_at else 'unconfirmed' }}{% else %}none{% endif %}{% if u.email and not u.email_verified_at %} <form class="inline" method="post" action="/admin/users/{{ u.id }}/verify">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Mark confirmed</button></form>{% endif %}</td><td>{{ u.reputation }}</td>
 <td>{% if u.id != p.user.id %}<form class="inline" method="post" action="/admin/users/{{ u.id }}">{{ csrf(p.csrf) }}
   <select name="role" aria-label="role">{% for r in ['user', 'curator', 'admin'] %}<option {{ 'selected' if r == u.role }}>{{ r }}</option>{% endfor %}</select>
   <select name="status" aria-label="status">{% for s in ['active', 'suspended'] %}<option {{ 'selected' if s == u.status }}>{{ s }}</option>{% endfor %}</select>
