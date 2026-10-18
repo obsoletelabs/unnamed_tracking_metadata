@@ -60,7 +60,9 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
-      - uses: actions/attest-build-provenance@v2
+      - name: Attest build provenance (public repositories)
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
