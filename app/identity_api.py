@@ -93,7 +93,8 @@ def game_identity(canonical_id: str, db: Db, authorization: str | None = Header(
 
 
 @router.get("/identities/{provider}/{external_id}")
-def resolve_provider_identity(provider: str, external_id: str, db: Db, authorization: str | None = None):
+def resolve_provider_identity(provider: str, external_id: str, db: Db, authorization: str | None = Header(default=None)):
+    # The token comes from the Authorization header only, never from the URL.
     require_api_token(db, authorization, "read")
     mapping = db.scalar(
         select(ProviderMapping).where(
@@ -109,6 +110,51 @@ def resolve_provider_identity(provider: str, external_id: str, db: Db, authoriza
         raise HTTPException(status_code=404, detail="Mapped game no longer exists")
     return {"canonical_id": game.canonical_id, "provider": provider, "external_id": external_id,
             "confidence": mapping.confidence, "status": mapping.status}
+
+
+class IdentityReference(BaseModel):
+    provider: str = Field(min_length=1, max_length=80)
+    external_id: str = Field(min_length=1, max_length=200)
+
+
+class IdentityResolveRequest(BaseModel):
+    items: list[IdentityReference] = Field(min_length=1, max_length=200)
+
+
+@router.post("/identities/resolve")
+def resolve_provider_identities(payload: IdentityResolveRequest, db: Db, authorization: str | None = Header(default=None)):
+    """Resolve a client's provider IDs to canonical games in one bounded call.
+
+    A client library holding the same game from several stores (a Steam and an Epic copy)
+    can see that both IDs resolve to one canonical game and suggest grouping them. The
+    answer is evidence only: it never asks the client to merge anything by itself."""
+    require_api_token(db, authorization, "read")
+    wanted = {(item.provider, item.external_id) for item in payload.items}
+    rows = db.execute(
+        select(ProviderMapping, Game.canonical_id)
+        .join(Game, Game.id == ProviderMapping.game_id)
+        .where(
+            ProviderMapping.provider.in_({provider for provider, _ in wanted}),
+            ProviderMapping.external_id.in_({external_id for _, external_id in wanted}),
+            ProviderMapping.status.in_(["active", "verified"]),
+        )
+    ).all()
+    found = {
+        (mapping.provider, mapping.external_id): (canonical_id, mapping)
+        for mapping, canonical_id in rows
+        if (mapping.provider, mapping.external_id) in wanted
+    }
+    items = []
+    for item in payload.items:
+        match = found.get((item.provider, item.external_id))
+        items.append({
+            "provider": item.provider,
+            "external_id": item.external_id,
+            "canonical_id": match[0] if match else None,
+            "confidence": match[1].confidence if match else None,
+            "status": match[1].status if match else "unmapped",
+        })
+    return {"items": items}
 
 
 @router.post("/games/{canonical_id}/identity/mappings", status_code=202)

@@ -14,6 +14,12 @@ The client stores the metadata authority's canonical ID separately from provider
 
 A self-hosted authority may return a local canonical ID. The client must accept that ID without requiring a central account. Hybrid instances may later expose a central mapping without requiring a destructive client-side merge.
 
+### Resolving a library and grouping copies
+
+A client library often holds one game several times: a Steam and an Epic copy, a PC and a Switch copy. `POST /api/v1/identities/resolve` (`read` scope) takes up to 200 `{provider, external_id}` pairs and returns, in order, each pair's `canonical_id` (or `null` with `status: "unmapped"`), `confidence` and mapping `status`. Clients should batch their provider IDs through it instead of calling `GET /api/v1/identities/{provider}/{external_id}` once per game.
+
+Two of a user's records that resolve to the same `canonical_id` are strong evidence that they are copies of one game. In `unnamed_tracking_app` that is a *suggestion* in the user's review queue ("Another copy of X?"); the client never merges, splits or re-parents a user's records because of an authority answer, and a user's explicit "keep separate" decision always wins. An edition, remake or port that the authority models as a separate canonical game is not a copy: the client keeps it as its own game and may show the relationship.
+
 ## Images
 
 Images are selected through role and aspect-ratio-aware presentation endpoints. The client should prefer the authority's content-addressed media URL and may cache it indefinitely because the URL contains the source SHA-256.
@@ -38,7 +44,7 @@ Achievement identities remain attached to their game/provider mapping. A provide
 
 ## Authentication
 
-Client credentials use scoped API tokens. Read-only client operations should use `read`; mutation or contribution features require additional explicit scopes. Tokens must never be embedded in image URLs or logged in plaintext.
+Client credentials use scoped API tokens, sent only in the `Authorization: Bearer` header. Read-only client operations should use `read`; mutation or contribution features require additional explicit scopes. Tokens must never be embedded in URLs (including query parameters) or logged in plaintext.
 
 ## Caching
 
