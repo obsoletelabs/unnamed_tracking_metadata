@@ -25,6 +25,7 @@ from .web import STATIC_DIR, templates
 from .web.account import router as account_router
 from .web.admin import router as admin_router
 from .web.deps import LoginRequired
+from .web.federation import router as federation_router
 from .web.routes import router as web_router
 from .web.routes import web_headers
 from .web.schema import router as schema_router
@@ -118,7 +119,9 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) ->
         while not stop.is_set():
             wait = delay
             try:
-                sync.pull_all(maker, ctx, client, ctx.settings.upstream_url, ctx.settings.upstream_token)  # type: ignore[arg-type]
+                results = sync.sync_peers(maker, ctx, client)
+                if any(not v.startswith("ok") for v in results.values()):
+                    wait = min(delay * 4, 900)
             except Exception as exc:  # keep serving local data through any upstream failure
                 log.warning("sync failed: %s", exc)
                 wait = min(delay * 4, 900)
@@ -146,14 +149,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         threading.Thread(target=_housekeeping, args=(maker, ctx, stop), daemon=True,
                          name="atlas-housekeeping").start()
         threading.Thread(target=_mailer, args=(maker, ctx, stop), daemon=True, name="atlas-mail").start()
-        if settings.upstream_url:
+        if True:  # peers can be added at runtime, so the loop always runs
             threading.Thread(target=_sync_loop, args=(maker, ctx, stop), daemon=True, name="atlas-sync").start()
         yield
         stop.set()
 
     app = FastAPI(title="Atlas Metadata", version=__version__, lifespan=lifespan,
                   docs_url="/docs" if settings.environment == "dev" else None, redoc_url=None)
-    app.state.atlas = AppState(ctx=ctx, maker=maker, providers=Fetcher(settings, build_registry(settings)), base=settings)
+    app.state.atlas = AppState(ctx=ctx, maker=maker, providers=Fetcher(settings, build_registry(settings)), base=settings,
+                                 http=httpx.Client(timeout=15, trust_env=False))
     app.add_middleware(BodyLimit, limit=settings.max_body_bytes)
     app.include_router(router)
     app.include_router(web_router)
@@ -161,6 +165,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(account_router)
     app.include_router(schema_router)
     app.include_router(social_router)
+    app.include_router(federation_router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.middleware("http")

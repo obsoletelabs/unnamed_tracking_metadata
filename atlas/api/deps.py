@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session, sessionmaker
@@ -20,6 +20,7 @@ class AppState:
     maker: sessionmaker[Session]
     providers: Fetcher
     base: Settings | None = None  # environment settings; admin overrides are layered on top
+    http: Any = None  # outbound HTTP for admin-driven calls (peer probes, OIDC); replaceable in tests
     _stamp: str = "\0"
     _checked: float = 0.0
 

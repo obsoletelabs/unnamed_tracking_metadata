@@ -54,6 +54,13 @@ def cmd_node(_) -> int:
     return 0
 
 
+def cmd_secret_key(_) -> int:
+    import secrets
+
+    print(secrets.token_urlsafe(32))
+    return 0
+
+
 def cmd_sync(_) -> int:
     settings, maker = _maker()
     if not settings.upstream_url:
@@ -123,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--days", type=int)
     t.set_defaults(fn=cmd_token)
     sub.add_parser("node").set_defaults(fn=cmd_node)
+    sub.add_parser("secret-key").set_defaults(fn=cmd_secret_key)
     sub.add_parser("sync").set_defaults(fn=cmd_sync)
     a = sub.add_parser("make-admin")
     a.add_argument("username")

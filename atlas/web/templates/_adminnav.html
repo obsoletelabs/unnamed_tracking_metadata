@@ -1,4 +1,4 @@
 <ul class="tabs" aria-label="Administration">
-  {% for href, label in [('/admin', 'Overview'), ('/admin/settings', 'Settings'), ('/admin/schema', 'Fields'), ('/admin/pages', 'Pages'), ('/admin/outbox', 'Email')] %}
+  {% for href, label in [('/admin', 'Overview'), ('/admin/settings', 'Settings'), ('/admin/schema', 'Fields'), ('/admin/pages', 'Pages'), ('/admin/outbox', 'Email'), ('/admin/peers', 'Peers'), ('/admin/tokens', 'Tokens')] %}
   <li><a href="{{ href }}"{% if p.request.url.path == href %} aria-current="page"{% endif %}>{{ label }}</a></li>{% endfor %}
 </ul>

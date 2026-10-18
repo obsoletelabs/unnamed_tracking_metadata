@@ -157,6 +157,6 @@ def test_untrusted_upstream_key_is_refused(pair):
     a_maker, a_ctx, m_maker, m_ctx, client = pair
     m_ctx.settings.trusted_keys.clear()
     m_ctx.settings.trusted_keys["deadbeef"] = "AAAA"
-    with pytest.raises(sync.SyncError, match="not in ATLAS_TRUSTED_KEYS"):
+    with pytest.raises(sync.SyncError, match="is not trusted"):
         sync.pull_once(m_maker, m_ctx, client, "http://upstream", None)
 

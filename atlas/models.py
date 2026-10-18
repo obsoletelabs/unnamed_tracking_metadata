@@ -460,3 +460,20 @@ class Report(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     __table_args__ = (UniqueConstraint("comment_id", "reporter_id", name="uq_report"),)
+
+
+class Peer(Base):
+    """An upstream node this node replicates from, with its identity pinned by the administrator."""
+
+    __tablename__ = "peer"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    name: Mapped[str] = mapped_column(String(80))
+    url: Mapped[str] = mapped_column(String(300))
+    node_id: Mapped[str] = mapped_column(String(64))
+    public_key: Mapped[str] = mapped_column(String(100))
+    token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

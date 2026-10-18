@@ -405,7 +405,7 @@ def get_media(digest: str, st: St, _: Annotated[auth.Principal, Depends(require(
 @router.get("/sync/info", tags=["federation"])
 def sync_info(st: St, _: Annotated[auth.Principal, Depends(require("read"))]):
     return {"node_id": st.ctx.identity.node_id, "public_key": st.ctx.identity.public_b64,
-            "role": st.ctx.settings.role, "contract": 1}
+            "role": st.ctx.settings.role, "contract": 1, "name": st.ctx.settings.app_name}
 
 
 @router.get("/sync/changes", tags=["federation"])

@@ -130,16 +130,17 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
 
 
 def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upstream_url: str,
-              token: str | None) -> int:
-    """Fetch and apply one page. Returns the number of entries applied."""
+              token: str | None, trusted: dict[str, str] | None = None) -> int:
+    """Fetch and apply one page. Returns the number of entries applied. `trusted` maps node id -> public key."""
+    keys = ctx.settings.trusted_keys if trusted is None else trusted
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     info = client.get(f"{upstream_url}/api/v2/sync/info", headers=headers, timeout=15)
     info.raise_for_status()
     meta = info.json()
     node_id = meta["node_id"]
-    pub = ctx.settings.trusted_keys.get(node_id)
+    pub = keys.get(node_id)
     if pub is None:
-        raise SyncError(f"upstream key {node_id} is not in ATLAS_TRUSTED_KEYS")
+        raise SyncError(f"upstream key {node_id} is not trusted (pin it under Admin → Peers or in ATLAS_TRUSTED_KEYS)")
 
     import base64
     if key_id_for(base64.b64decode(pub)) != node_id:
@@ -184,11 +185,51 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
 
 
 def pull_all(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upstream_url: str,
-             token: str | None, max_pages: int = 1000) -> int:
+             token: str | None, max_pages: int = 1000, trusted: dict[str, str] | None = None) -> int:
     total = 0
     for _ in range(max_pages):
-        n = pull_once(maker, ctx, client, upstream_url, token)
+        n = pull_once(maker, ctx, client, upstream_url, token, trusted)
         total += n
         if n < ctx.settings.sync_batch_size:
             break
     return total
+
+
+def sync_peers(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client) -> dict[str, str]:
+    """Replicate from every enabled peer (plus the environment-configured upstream). Failures are per peer."""
+    from . import secrets_box
+    from .models import Peer, now
+
+    results: dict[str, str] = {}
+    s = ctx.settings
+    jobs: list[tuple[str, str, str | None, dict[str, str], str | None]] = []
+    if s.upstream_url:
+        jobs.append(("env", s.upstream_url, s.upstream_token, s.trusted_keys, None))
+    with maker() as session:
+        for peer in session.scalars(select(Peer).where(Peer.enabled.is_(True))):
+            try:
+                token = secrets_box.decrypt(s, peer.token_enc) if peer.token_enc else None
+            except secrets_box.SecretsError as exc:
+                peer.last_error = str(exc)[:300]
+                results[peer.name] = peer.last_error
+                continue
+            jobs.append((peer.name, peer.url, token, {peer.node_id: peer.public_key}, peer.id))
+        session.commit()
+    for name, url, token, trusted, peer_id in jobs:
+        try:
+            n = pull_all(maker, ctx, client, url, token, trusted=trusted)
+            results[name] = f"ok, {n} entries"
+            error = None
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:300]
+            results[name] = error
+            log.warning("sync with %s failed: %s", name, error)
+        if peer_id:
+            with maker() as session:
+                row = session.get(Peer, peer_id)
+                if row is not None:
+                    row.last_error = error
+                    if error is None:
+                        row.last_ok_at = now()
+                session.commit()
+    return results

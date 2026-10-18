@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     initial_admin: str | None = None  # username that becomes administrator; unset = first account
 
     bootstrap_admin_token: str | None = None
+    # Encrypts secrets stored in the database (peer tokens, OIDC client secrets). Generate: `atlas secret-key`.
+    secret_key: str | None = None
     # None = migrate automatically on SQLite only; set false on multi-replica Postgres and run `atlas migrate`.
     auto_migrate: bool | None = None
 
