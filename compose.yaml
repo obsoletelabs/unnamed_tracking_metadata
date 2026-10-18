@@ -1,6 +1,7 @@
 # Local node: SQLite in a named volume, no upstream. `docker compose up -d`
 services:
   atlas:
+    image: ghcr.io/obsoletelabs/unnamed_tracking_metadata:${ATLAS_TAG:-v2}
     build: .
     ports: ["127.0.0.1:8000:8000"]
     env_file: [.env]
