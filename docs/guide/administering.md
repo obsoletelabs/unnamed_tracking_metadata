@@ -57,6 +57,8 @@ Set **Email → Delivery** to `smtp` and fill host, port, user and from; put the
 
 **Admin → Tokens** creates **service tokens** (for apps, mirrors, scripts) with scopes and optional expiry, shows the secret once, lists last use, and revokes. Scopes: `read`, `contribute`, `curate`, `sync` (replication), `admin`. People's own personal tokens appear here too (read-only, with their owner).
 
+![Admin → Tokens](img/14-admin-tokens.png)
+
 ## Peers and sign-in sharing
 
 * **Admin → Peers:** nodes this one replicates from. See [Federation](federation.md).

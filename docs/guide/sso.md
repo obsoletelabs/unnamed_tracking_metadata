@@ -33,6 +33,8 @@ Not offered: refresh tokens, dynamic client registration, RP-initiated or back-c
 * **Token signature:** leave **RS256** unless the application is another Atlas node.
 * **Require PKCE:** leave ticked if the application sends PKCE. Untick for confidential clients that cannot (the Tracking App's Authlib client is one).
 
+![Admin → Sign-in sharing](img/12-admin-sign-in-sharing.png)
+
 You are shown a **client id** and **client secret** once. Atlas stores only a hash of the secret; if it is lost, delete the application and register it again.
 
 ## 3. Configure the application
@@ -54,6 +56,10 @@ print(disc["issuer"], disc["id_token_signing_alg_values_supported"])
 ```
 
 Atlas's repository contains a complete end-to-end check that drives the real Authlib client stack used by the Tracking App through a login against a live node: `tools/compat/tracking_app_oidc.py`.
+
+People then see a consent screen the first time each sign-in happens:
+
+![Consent screen](img/13-consent.png)
 
 ## Accepting sign-ins from another Atlas node
 
