@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     provider_ttl_seconds: int = Field(default=7 * 86400, ge=60)
     provider_negative_ttl_seconds: int = Field(default=86400, ge=60)
 
+    # Artwork cache
+    media_dir: str = "./media"
+    media_cache_enabled: bool = True
+    media_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
+    media_max_pixels: int = Field(default=40_000_000, ge=1)
+    media_cache_batch: int = Field(default=10, ge=1, le=200)
+    media_allowed_hosts: set[str] = Field(default_factory=set)  # empty = any public host
+    steam_api_key: str | None = None
+
     bootstrap_admin_token: str | None = None
     # None = migrate automatically on SQLite only; set false on multi-replica Postgres and run `atlas migrate`.
     auto_migrate: bool | None = None

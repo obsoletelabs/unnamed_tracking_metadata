@@ -8,9 +8,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import __version__, auth, feed, service
+from .. import __version__, auth, facets, feed, media, service
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
-from ..models import Canonical, Lock, Observation, ReviewItem, SyncCursor, Token
+from ..models import Artwork, Canonical, Lock, Observation, ReviewItem, SyncCursor, Token
 from ..normalize import norm_namespace
 from ..providers import ProviderError
 from ..resolve import find
@@ -33,7 +33,7 @@ def _iso(dt: datetime | None) -> str | None:
 def game_out(row: Canonical, redirected_from: str | None = None) -> dict[str, Any]:
     return {
         "id": row.id, "version": row.version, "redirected_from": redirected_from,
-        "updated_at": _iso(row.updated_at), **row.view,
+        "media_type": row.media_type, "updated_at": _iso(row.updated_at), **row.view,
     }
 
 
@@ -269,7 +269,84 @@ def provider_fetch(name: str, body: FetchBody, st: St, session: Sess,
         raise AtlasError("provider has no such record", "not_found")
     res = service.ingest(session, st.ctx, batch, system=True)[0]
     row, _r = service.get_canonical(session, res.canonical_id)  # type: ignore[arg-type]
+    if row.id == res.canonical_id and not res.review:  # an uncertain match must not attach media to a guess
+        got = results[0]
+        if got.artwork:
+            facets.set_artwork(session, st.ctx, row.id, name, got.artwork)
+        try:
+            ach = st.providers.achievements(session, name, body.external_id)
+        except ProviderError:
+            ach = []
+        if ach:
+            facets.set_achievements(session, st.ctx, row.id, name, ach)
     return {"match": res.method, "confidence": res.confidence, "review": res.review, "game": game_out(row)}
+
+
+# ---- artwork, achievements, media --------------------------------------------------------------------
+
+class ArtworkBody(BaseModel):
+    items: list[dict[str, Any]] = Field(max_length=200)
+
+
+class AchievementsBody(BaseModel):
+    items: list[dict[str, Any]] = Field(max_length=2000)
+
+
+def _art_out(a: Artwork) -> dict[str, Any]:
+    return {"id": a.id, "kind": a.kind, "url": a.url, "width": a.width, "height": a.height, "source": a.source,
+            "cached": a.blob_hash is not None,
+            "media_url": f"/api/v2/media/{a.blob_hash}" if a.blob_hash else None}
+
+
+@router.get("/games/{cid}/artwork", tags=["read"])
+def get_artwork(cid: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+    row, redirected = service.get_canonical(session, cid)
+    items = [_art_out(a) for a in facets.merged_artwork(session, st.ctx, row.id)]
+    primary: dict[str, Any] = {}
+    for it in items:
+        primary.setdefault(it["kind"], it)
+    return {"id": row.id, "redirected_from": redirected, "primary": primary, "results": items}
+
+
+@router.put("/games/{cid}/artwork", tags=["curate"])
+def put_artwork(cid: str, body: ArtworkBody, st: St, session: Sess,
+                _: Annotated[auth.Principal, Depends(require("curate"))]):
+    _guard_upstream(session, st, cid)
+    n = facets.set_artwork(session, st.ctx, cid, "curator", body.items,
+                           redistributable=st.ctx.settings.role == "authority")
+    return {"count": n}
+
+
+@router.get("/games/{cid}/achievements", tags=["read"])
+def get_achievements(cid: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+    row, redirected = service.get_canonical(session, cid)
+    return {"id": row.id, "redirected_from": redirected, "results": facets.merged_achievements(session, st.ctx, row.id)}
+
+
+@router.put("/games/{cid}/achievements", tags=["curate"])
+def put_achievements(cid: str, body: AchievementsBody, st: St, session: Sess,
+                     _: Annotated[auth.Principal, Depends(require("curate"))]):
+    _guard_upstream(session, st, cid)
+    n = facets.set_achievements(session, st.ctx, cid, "curator", body.items,
+                                redistributable=st.ctx.settings.role == "authority")
+    return {"count": n}
+
+
+def media_response(st: AppState, digest: str):
+    from fastapi.responses import FileResponse
+
+    found = media.find_blob(st.ctx.settings, digest)
+    if found is None:
+        raise HTTPException(404, "no such image")
+    path, ctype = found
+    return FileResponse(path, media_type=ctype, headers={
+        "Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox"})
+
+
+@router.get("/media/{digest}", tags=["read"])
+def get_media(digest: str, st: St, _: Annotated[auth.Principal, Depends(require("read"))]):
+    return media_response(st, digest)
 
 
 # ---- federation ---------------------------------------------------------------------------------------

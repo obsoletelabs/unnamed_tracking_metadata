@@ -38,6 +38,7 @@ class Canonical(Base):
     __tablename__ = "canonical"
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    media_type: Mapped[str] = mapped_column(String(16), default="game", server_default="game", index=True)
     norm_title: Mapped[str] = mapped_column(String(500), default="", index=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     view: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -170,3 +171,46 @@ class ProviderCache(Base):
     negative: Mapped[bool] = mapped_column(Boolean, default=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class Artwork(Base):
+    """An image reference. Provider URLs are cached as bytes on demand; only curated art federates."""
+
+    __tablename__ = "artwork"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), index=True)
+    source: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16))
+    url: Mapped[str] = mapped_column(String(1000))
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    redistributable: Mapped[bool] = mapped_column(Boolean, default=False)
+    blob_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    content_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_try_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    __table_args__ = (UniqueConstraint("canonical_id", "kind", "url", name="uq_artwork"),)
+
+
+class Achievement(Base):
+    __tablename__ = "achievement"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), index=True)
+    source: Mapped[str] = mapped_column(String(128))
+    external_id: Mapped[str] = mapped_column(String(200), default="")
+    name: Mapped[str] = mapped_column(String(200))
+    norm_name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    icon_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False)
+    global_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    redistributable: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (UniqueConstraint("canonical_id", "source", "norm_name", name="uq_achievement"),)

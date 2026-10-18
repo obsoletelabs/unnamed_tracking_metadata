@@ -9,7 +9,7 @@ from .base import ProviderResult, epoch_to_date, get_json
 # external_games.category values documented by IGDB
 _EXTERNAL = {1: "steam", 5: "gog", 26: "epic", 11: "microsoft"}
 _FIELDS = (
-    "name,first_release_date,summary,genres.name,themes.name,platforms.name,"
+    "cover.image_id,screenshots.image_id,artworks.image_id,name,first_release_date,summary,genres.name,themes.name,platforms.name,"
     "involved_companies.developer,involved_companies.publisher,involved_companies.company.name,"
     "external_games.category,external_games.uid"
 )
@@ -60,4 +60,21 @@ class Igdb:
                 "description": g.get("summary"), "developer": pick("developer"), "publisher": pick("publisher"),
                 "tags": [x["name"] for x in g.get("genres", []) + g.get("themes", [])][:50],
             },
+            artwork=_artwork(g),
         )
+
+
+def _img(image_id, size):
+    return f"https://images.igdb.com/igdb/image/upload/t_{size}/{image_id}.jpg"
+
+
+def _artwork(g):
+    art = []
+    cover = (g.get("cover") or {}).get("image_id")
+    if cover:
+        art.append({"kind": "key_art", "url": _img(cover, "cover_big"), "priority": 20})
+    art += [{"kind": "hero", "url": _img(a["image_id"], "1080p"), "priority": 20 + i}
+            for i, a in enumerate((g.get("artworks") or [])[:3]) if a.get("image_id")]
+    art += [{"kind": "screenshot", "url": _img(s["image_id"], "screenshot_big"), "priority": 30 + i}
+            for i, s in enumerate((g.get("screenshots") or [])[:12]) if s.get("image_id")]
+    return art

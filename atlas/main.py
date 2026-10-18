@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import __version__, auth, ratelimit, sync
+from . import __version__, auth, media, ratelimit, sync
 from .api.deps import AppState
 from .api.routes import router
 from .db import make_engine, make_sessionmaker, upgrade
@@ -74,10 +74,12 @@ class _TooLarge(Exception):
     pass
 
 
-def _housekeeping(maker: sessionmaker[Session], stop: threading.Event) -> None:
+def _housekeeping(maker: sessionmaker[Session], settings: Settings, stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             ratelimit.purge(maker)
+            if settings.media_cache_enabled:
+                media.cache_pending(maker, settings)
         except Exception as exc:
             log.warning("housekeeping failed: %s", exc)
         stop.wait(60)
@@ -112,7 +114,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        threading.Thread(target=_housekeeping, args=(maker, stop), daemon=True, name="atlas-housekeeping").start()
+        threading.Thread(target=_housekeeping, args=(maker, settings, stop), daemon=True,
+                         name="atlas-housekeeping").start()
         if settings.upstream_url:
             threading.Thread(target=_sync_loop, args=(maker, ctx, stop), daemon=True, name="atlas-sync").start()
         yield

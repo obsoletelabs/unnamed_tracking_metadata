@@ -68,6 +68,17 @@ def cmd_sync(_) -> int:
     return 0
 
 
+def cmd_cache_media(_) -> int:
+    from . import media
+
+    settings, maker = _maker()
+    total = 0
+    while (n := media.cache_pending(maker, settings)):
+        total += n
+    print(f"cached {total} images")
+    return 0
+
+
 def cmd_import_legacy(args) -> int:
     from .legacy_import import import_legacy
 
@@ -96,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     t.set_defaults(fn=cmd_token)
     sub.add_parser("node").set_defaults(fn=cmd_node)
     sub.add_parser("sync").set_defaults(fn=cmd_sync)
+    sub.add_parser("cache-media").set_defaults(fn=cmd_cache_media)
     i = sub.add_parser("import-legacy")
     i.add_argument("path", help="path to the demo-1 SQLite database")
     i.set_defaults(fn=cmd_import_legacy)

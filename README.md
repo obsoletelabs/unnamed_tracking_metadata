@@ -48,6 +48,6 @@ Trust model: source names that carry weight in the merge (`steam`, `igdb`, `cura
 
 ## Status and limits
 
-Tested: merge/resolution, signed replication, API, auth, rate limits, migrations, concurrent writes on real PostgreSQL. **Not yet verified in this repo:** the Dockerfile/compose files, live calls to Steam/RAWG/IGDB (adapters are tested against recorded response shapes only), and the tracking-app plugin (see [`docs/v2/app-integration.md`](docs/v2/app-integration.md)). Writes are serialised by a global lock, which is fine for a metadata service and the first thing to revisit under heavy ingest.
+Tested: merge/resolution, signed replication, API, auth, rate limits, migrations, concurrent writes on real PostgreSQL. **Not yet verified in this repo:** live calls to Steam/RAWG/IGDB (adapters are tested against recorded response shapes only), and the tracking-app plugin (see [`docs/v2/app-integration.md`](docs/v2/app-integration.md)). Writes are serialised by a global lock, which is fine for a metadata service and the first thing to revisit under heavy ingest.
 
 Code: MIT. Contributed metadata: CC0 ([DATA-LICENSE.md](DATA-LICENSE.md)).

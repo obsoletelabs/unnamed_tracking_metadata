@@ -74,6 +74,14 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         for t in touched:
             if session.get(Canonical, t) and session.get(Canonical, t).merged_into is None:  # type: ignore[union-attr]
                 service.rebuild(session, ctx, t)
+    elif kind in ("artwork", "achievements"):
+        from . import facets
+
+        try:
+            fn = facets.set_artwork if kind == "artwork" else facets.set_achievements
+            fn(session, ctx, body["canonical_id"], body["source"], body["items"], redistributable=True, log=False)
+        except AtlasError:
+            return
     elif kind == "merge":
         src, dst = body["src"], body["dst"]
         s, d = session.get(Canonical, src), session.get(Canonical, dst)

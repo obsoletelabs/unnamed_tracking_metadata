@@ -36,4 +36,46 @@ class Steam:
                 "tags": [g["description"] for g in d.get("genres", [])][:50],
                 "features": [c["description"] for c in d.get("categories", [])][:50],
             },
+            artwork=_artwork(external_id, d),
         )
+
+    def achievements(self, client, external_id, api_key=None):
+        """Names/descriptions need a Steam Web API key; global percentages do not."""
+        pct = {}
+        data = get_json(client, "GET", "https://api.steampowered.com/ISteamUserStats/"
+                        "GetGlobalAchievementPercentagesForApp/v2/", params={"gameid": external_id})
+        for a in (data.get("achievementpercentages") or {}).get("achievements", []):
+            try:
+                pct[a["name"]] = float(a["percent"])
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not api_key:
+            return []
+        schema = get_json(client, "GET", "https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/",
+                          params={"key": api_key, "appid": external_id, "l": "english"})
+        out = []
+        for a in ((schema.get("game") or {}).get("availableGameStats") or {}).get("achievements", []):
+            if not a.get("displayName"):
+                continue
+            row = {"name": a["displayName"], "external_id": a.get("name", ""), "hidden": bool(a.get("hidden")),
+                   "description": a.get("description", "")}
+            if a.get("icon"):
+                row["icon_url"] = a["icon"]
+            if a.get("name") in pct:
+                row["global_percent"] = min(100.0, max(0.0, pct[a["name"]]))
+            out.append(row)
+        return out
+
+
+def _artwork(app_id, d):
+    base = f"https://cdn.akamai.steamstatic.com/steam/apps/{app_id}"
+    art = []
+    if str(d.get("header_image", "")).startswith("https://"):
+        art.append({"kind": "banner", "url": d["header_image"], "priority": 10})
+    art.append({"kind": "key_art", "url": f"{base}/library_600x900.jpg", "priority": 10, "width": 600, "height": 900})
+    art.append({"kind": "hero", "url": f"{base}/library_hero.jpg", "priority": 10})
+    art.append({"kind": "logo", "url": f"{base}/logo.png", "priority": 10})
+    for i, s in enumerate((d.get("screenshots") or [])[:12]):
+        if str(s.get("path_full", "")).startswith("https://"):
+            art.append({"kind": "screenshot", "url": s["path_full"], "priority": 20 + i})
+    return art

@@ -249,6 +249,9 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
             item.status, item.decided_by = "merged", actor
         elif item.canonical_id == src:
             item.canonical_id = dst
+    from .facets import move_facets
+
+    move_facets(session, src, dst)
     s.merged_into = dst
     s.view, s.explain = {}, {}
     session.flush()
@@ -288,6 +291,12 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
             row.canonical_id = cid
         elif row is None:
             session.add(Crosswalk(namespace=key[0], external_id=key[1], canonical_id=cid))
+    if not any(s.is_current and s.source == obs.source for s in siblings):
+        from .models import Achievement, Artwork
+
+        for model in (Artwork, Achievement):
+            for row in session.scalars(select(model).where(model.canonical_id == old, model.source == obs.source)):
+                row.canonical_id = cid
     session.flush()
     rebuild(session, ctx, old)
     new = rebuild(session, ctx, cid)

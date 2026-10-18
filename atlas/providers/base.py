@@ -23,6 +23,8 @@ class ProviderResult:
     release_date: str | None = None
     provider_ids: dict[str, str] = field(default_factory=dict)
     facts: dict[str, Any] = field(default_factory=dict)
+    artwork: list[dict[str, Any]] = field(default_factory=list)
+    achievements: list[dict[str, Any]] = field(default_factory=list)
 
     def to_item(self) -> dict[str, Any]:
         item: dict[str, Any] = {"external_id": self.external_id, "title": self.title}

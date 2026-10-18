@@ -34,4 +34,6 @@ class Rawg:
                 "tags": [x["name"] for x in g.get("genres", [])][:50],
                 "features": [x["name"] for x in g.get("tags", [])][:30],
             },
+            artwork=[{"kind": "hero", "url": g["background_image"], "priority": 30}]
+            if str(g.get("background_image") or "").startswith("https://") else [],
         )

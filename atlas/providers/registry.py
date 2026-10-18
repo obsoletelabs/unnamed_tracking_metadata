@@ -127,6 +127,36 @@ class Fetcher:
             return self._call(session, p, "search", query.strip()[:200]) or []
         return self._call(session, p, "fetch", str(external_id)[:128]) or []
 
+    def achievements(self, session: Session, provider: str, external_id: str) -> list[dict[str, Any]]:
+        """Achievement list for providers that offer one (cached like any other lookup)."""
+        p = self.providers.get(provider)
+        fn = getattr(p, "achievements", None)
+        if p is None or fn is None or not _SAFE_ID.match(str(external_id)):
+            return []
+        key = f"ach:{external_id}"
+        row = self._cached(session, p.name, key)
+        if row is not None and row.expires_at.replace(tzinfo=now().tzinfo) > now():
+            return [] if row.negative else row.payload
+        b = self._budget(p, "fetch")
+        if self._clock() < b.open_until or not b.take():
+            return [] if row is None or row.negative else row.payload
+        try:
+            data = fn(self.client, str(external_id), self.settings.steam_api_key) if provider == "steam" \
+                else fn(self.client, str(external_id))
+        except ProviderError:
+            b.failures += 1
+            return [] if row is None or row.negative else row.payload
+        b.failures = 0
+        ttl = self.settings.provider_ttl_seconds if data else self.settings.provider_negative_ttl_seconds
+        if row is None:
+            session.add(ProviderCache(provider=p.name, key=key, payload=data, negative=not data,
+                                      expires_at=now() + timedelta(seconds=ttl)))
+        else:
+            row.payload, row.negative, row.fetched_at = data, not data, now()
+            row.expires_at = now() + timedelta(seconds=ttl)
+        session.flush()
+        return data
+
     def as_batch(self, provider: str, results: list[ProviderResult]) -> ObservationBatchV1 | None:
         if not results:
             return None
