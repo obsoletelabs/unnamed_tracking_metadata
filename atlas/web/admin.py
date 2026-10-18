@@ -57,9 +57,9 @@ def _groups(p: Ctx) -> list[tuple[str, list[dict[str, Any]]]]:
     overridden = {r.key for r in p.session.scalars(select(Setting))}
     groups: dict[str, list[dict[str, Any]]] = {}
     for spec in runtime.REGISTRY:
-        value = runtime.from_attr(spec, runtime.current_value(spec, s))
-        groups.setdefault(spec.group, []).append({"spec": spec, "value": runtime.display(spec, value),
-                                                  "raw": value, "overridden": spec.key in overridden})
+        attr = runtime.current_value(spec, s)
+        groups.setdefault(spec.group, []).append({"spec": spec, "value": runtime.display(spec, attr),
+                                                  "raw": runtime.from_attr(spec, attr), "overridden": spec.key in overridden})  # noqa: E501
     return list(groups.items())
 
 

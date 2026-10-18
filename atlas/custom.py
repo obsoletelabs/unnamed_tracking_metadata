@@ -15,7 +15,8 @@ from .models import Canonical, CustomValue, FieldDef, MediaType
 from .service import AtlasError, Ctx, write_lock
 
 KINDS = ("text", "longtext", "number", "date", "bool", "choice", "list", "url")
-CORE_LABELS = ("developer", "publisher", "series", "release_date", "tags", "features", "platforms")
+CORE_LABELS = ("developer", "publisher", "series", "release_date", "genres", "themes", "tags", "features", "platforms", "languages",  # noqa: E501
+               "aliases", "age_rating", "website", "critic_score", "user_score")
 _KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}\Z")
 _TYPE = re.compile(r"^[a-z][a-z0-9_]{0,31}\Z")
 MAX_FIELDS_PER_TYPE = 40

@@ -56,6 +56,10 @@ class Settings(BaseSettings):
 
     # Artwork cache
     media_dir: str = "./media"
+    # Scheduled backups: set backup_dir to write a verified archive every backup_interval_hours, keeping backup_keep.
+    backup_dir: str | None = None
+    backup_interval_hours: int = Field(default=24, ge=1, le=24 * 30)
+    backup_keep: int = Field(default=14, ge=1, le=1000)
     media_cache_enabled: bool = True
     media_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
     media_max_pixels: int = Field(default=40_000_000, ge=1)
@@ -64,6 +68,10 @@ class Settings(BaseSettings):
     steam_api_key: str | None = None
 
     app_name: str = "Atlas"
+    # What kind of node this is, shown to visitors and peers. "auto" follows the role (authority = community).
+    # "official" is a claim: it means something only to people who pin this node's key from your published list.
+    node_kind: Literal["auto", "official", "community", "mirror", "local"] = "auto"
+    node_operator: str = ""
     tagline: str = "Game metadata, merged and sourced"
     footer_text: str = "Community metadata. Contributions are CC0."
     accent_color: str = "#6aa8ff"  # dark theme accent
@@ -131,6 +139,11 @@ class Settings(BaseSettings):
             if self.bootstrap_admin_token and len(self.bootstrap_admin_token) < 32:
                 raise ValueError("ATLAS_BOOTSTRAP_ADMIN_TOKEN must be at least 32 characters")
         return self
+
+    def kind(self) -> str:
+        if self.node_kind != "auto":
+            return self.node_kind
+        return "community" if self.role == "authority" else self.role
 
     def verification_mode(self) -> str:
         return self.email_verification or ("required" if self.role == "authority" else "optional")

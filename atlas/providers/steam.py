@@ -33,8 +33,11 @@ class Steam:
                 "description": strip_html(d.get("short_description")),
                 "developer": (d.get("developers") or [None])[0],
                 "publisher": (d.get("publishers") or [None])[0],
-                "tags": [g["description"] for g in d.get("genres", [])][:50],
+                "genres": [g["description"] for g in d.get("genres", [])][:50],
                 "features": [c["description"] for c in d.get("categories", [])][:50],
+                "languages": _languages(d.get("supported_languages")),
+                "critic_score": _score((d.get("metacritic") or {}).get("score")),
+                "website": _https(d.get("website")),
             },
             artwork=_artwork(external_id, d),
         )
@@ -65,6 +68,21 @@ class Steam:
                 row["global_percent"] = min(100.0, max(0.0, pct[a["name"]]))
             out.append(row)
         return out
+
+
+def _languages(raw) -> list[str]:
+    """Steam sends an HTML string such as 'English<strong>*</strong>, French'."""
+    text = strip_html(raw) or ""
+    return [x.strip().rstrip("*").strip() for x in text.replace("languages with full audio support", "").split(",")
+            if x.strip().rstrip("*").strip()][:60]
+
+
+def _score(value):
+    return int(value) if isinstance(value, (int, float)) and 0 <= value <= 100 else None
+
+
+def _https(value):
+    return value if isinstance(value, str) and value.startswith("https://") and len(value) <= 500 else None
 
 
 def _artwork(app_id, d):

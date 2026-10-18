@@ -10,6 +10,16 @@ You can review if an administrator made you a **curator**, or your reputation re
 
 Good review habits: check the cited source; approve improvements even if imperfect; reject unsupported or promotional changes; leave a short note either way.
 
+## Importing from a provider
+
+Curators and administrators have an **Import** page (`/import`). Choose a provider (Steam, RAWG, IGDB — whichever the node has
+configured), search by title, and press *Import* on the right result. Atlas fetches the full record, merges it into the game with
+the other sources, keeps the **artwork** and **achievement list** the provider offers, and shows you what it brought in. An
+uncertain match (could be a different game) is queued under *Possible duplicates* instead of being merged, and artwork and
+achievements are attached only once you resolve it.
+
+Provider data stays on the node that fetched it and is not redistributed to followers; they can fetch their own.
+
 ## Possible duplicates
 
 **Review → Possible duplicates** lists records Atlas was not sure about (`possible_duplicate`) or whose identifiers disagree (`id_conflict`), with a confidence. *Merge into this* folds the record into the other (a redirect remains); *Not duplicates* dismisses it.

@@ -3,6 +3,7 @@
 {% block title %}{{ v.get('title') }} · {{ app_name }}{% endblock %}
 {% block content %}
 {% if redirected_from %}<div class="flash">This record was merged; you were redirected from <code>{{ redirected_from }}</code>.</div>{% endif %}
+<div class="game-page">
 <div class="hero">
   <div class="cover">{% if key_art %}<img src="/media/{{ key_art }}" alt="Cover art for {{ v.get('title') }}">{% endif %}</div>
   <div>
@@ -13,25 +14,36 @@
       {% if v.get('developer') %}<dt>{{ lbl.developer }}</dt><dd>{{ v.developer }}</dd>{% endif %}
       {% if v.get('publisher') %}<dt>{{ lbl.publisher }}</dt><dd>{{ v.publisher }}</dd>{% endif %}
       {% if v.get('series') %}<dt>{{ lbl.series }}</dt><dd>{{ v.series }}</dd>{% endif %}
+      {% if v.get('genres') %}<dt>{{ lbl.genres }}</dt><dd>{{ chips(v.genres) }}</dd>{% endif %}
+      {% if v.get('themes') %}<dt>{{ lbl.themes }}</dt><dd>{{ chips(v.themes) }}</dd>{% endif %}
       {% if v.get('tags') %}<dt>{{ lbl.tags }}</dt><dd>{{ chips(v.tags) }}</dd>{% endif %}
       {% if v.get('features') %}<dt>{{ lbl.features }}</dt><dd>{{ chips(v.features) }}</dd>{% endif %}
+      {% if v.get('languages') %}<dt>{{ lbl.languages }}</dt><dd>{{ chips(v.languages) }}</dd>{% endif %}
+      {% if v.get('age_rating') %}<dt>{{ lbl.age_rating }}</dt><dd>{{ v.age_rating }}</dd>{% endif %}
+      {% if v.get('critic_score') is not none %}<dt>{{ lbl.critic_score }}</dt><dd>{{ v.critic_score }}/100</dd>{% endif %}
+      {% if v.get('user_score') is not none %}<dt>{{ lbl.user_score }}</dt><dd>{{ v.user_score }}/100</dd>{% endif %}
+      {% if v.get('website') %}<dt>{{ lbl.website }}</dt><dd><a href="{{ v.website }}" rel="noopener noreferrer nofollow">{{ v.website }}</a></dd>{% endif %}
+      {% if v.get('aliases') %}<dt>{{ lbl.aliases }}</dt><dd>{{ v.aliases|join(', ') }}</dd>{% endif %}
       {% for d in details %}<dt>{{ d.f.label }}</dt><dd>{% if d.f.kind == 'list' %}{{ chips(d.value) }}{% elif d.f.kind == 'url' %}<a href="{{ d.value }}" rel="noopener noreferrer nofollow">{{ d.value }}</a>{% elif d.f.kind == 'bool' %}{{ 'Yes' if d.value else 'No' }}{% else %}{{ d.value }}{% endif %}</dd>{% endfor %}
       {% if mtype_label and g.media_type != 'game' %}<dt>Type</dt><dd>{{ mtype_label }}</dd>{% endif %}
       <dt>Identifiers</dt><dd><code>{{ g.id }}</code>{% for ns, ident in (v.get('provider_ids') or {}).items() %}<br>{{ ns }}: {% if ns == 'steam' and ident.isdigit() %}<a href="https://store.steampowered.com/app/{{ ident }}" rel="noopener noreferrer nofollow">{{ ident }}</a>{% else %}{{ ident }}{% endif %}{% endfor %}</dd>
     </dl>
     {% if v.get('description') %}<p>{{ v.description }}</p>{% endif %}
-    <p>{% if p.user %}<a class="btn" href="/game/{{ g.id }}/edit">Suggest an edit</a>{% else %}<a href="/login?next=/game/{{ g.id }}/edit">Sign in to suggest an edit</a>{% endif %}
+    <div class="actions-bar">
+    {% if p.user %}<a class="btn" href="/game/{{ g.id }}/edit">Suggest an edit</a>{% else %}<a class="btn" href="/login?next=/game/{{ g.id }}/edit">Sign in to suggest an edit</a>{% endif %}
     {% if p.user and lists_on %}
-      <form class="inline" method="post" action="/{{ 'unfollow' if following else 'follow' }}">{{ csrf(p.csrf) }}<input type="hidden" name="type" value="game"><input type="hidden" name="target" value="{{ g.id }}"><input type="hidden" name="to" value="/game/{{ g.id }}"><button class="secondary" type="submit">{{ 'Following' if following else 'Follow' }}</button></form>
-      {% if my_lists %}<details class="inline"><summary class="small">Add to list</summary><div class="card">
-        {% for l in my_lists %}{% if l.id in in_lists %}<form class="inline" method="post" action="/list/{{ l.id }}/remove">{{ csrf(p.csrf) }}<input type="hidden" name="game" value="{{ g.id }}"><button class="secondary small" type="submit">Remove from {{ l.name }}</button></form>
-        {% else %}<form class="inline" method="post" action="/list/{{ l.id }}/add">{{ csrf(p.csrf) }}<input type="hidden" name="game" value="{{ g.id }}"><input type="hidden" name="to" value="/game/{{ g.id }}"><button class="secondary small" type="submit">Add to {{ l.name }}</button></form>{% endif %}<br>{% endfor %}
-        <a class="small" href="/me/lists">Manage lists</a></div></details>
-      {% else %}<a class="small" href="/me/lists">Create a list</a>{% endif %}
-    {% endif %}</p>
+      <form method="post" action="/{{ 'unfollow' if following else 'follow' }}">{{ csrf(p.csrf) }}<input type="hidden" name="type" value="game"><input type="hidden" name="target" value="{{ g.id }}"><input type="hidden" name="to" value="/game/{{ g.id }}"><button class="secondary" type="submit">{{ 'Following' if following else 'Follow' }}</button></form>
+      <details class="menu"><summary>Add to list ▾</summary><div class="menu-body">
+        {% for l in my_lists %}{% if l.id in in_lists %}<form method="post" action="/list/{{ l.id }}/remove">{{ csrf(p.csrf) }}<input type="hidden" name="game" value="{{ g.id }}"><button class="secondary small" type="submit">Remove from {{ l.name }}</button></form>
+        {% else %}<form method="post" action="/list/{{ l.id }}/add">{{ csrf(p.csrf) }}<input type="hidden" name="game" value="{{ g.id }}"><input type="hidden" name="to" value="/game/{{ g.id }}"><button class="secondary small" type="submit">Add to {{ l.name }}</button></form>{% endif %}
+        {% else %}<span class="small muted">You have no lists yet.</span>{% endfor %}
+        <a class="btn ghost small" href="/me/lists">{{ 'Manage lists' if my_lists else 'Create a list' }}</a></div></details>
+    {% endif %}
+    </div>
   </div>
 </div>
 
+<div class="main-col">
 <h2>Artwork</h2>
 {% if shots %}<div class="shots">{% for a in shots %}<a href="/media/{{ a.blob_hash }}"><img src="/media/{{ a.blob_hash }}" alt="{{ a.kind|replace('_', ' ') }}" loading="lazy"></a>{% endfor %}</div>{% endif %}
 <p class="muted small">{{ art_total }} image{{ '' if art_total == 1 else 's' }} known, {{ art_cached }} cached here. Images are shown only after this server has downloaded and checked them.</p>
@@ -48,7 +60,7 @@
 <h2>Achievements</h2>
 {% if achievements %}
 <table><thead><tr><th>Name</th><th>Description</th><th>Global %</th></tr></thead><tbody>
-{% for a in achievements %}<tr><td>{{ a.name }}{% if a.hidden %} <span class="badge">hidden</span>{% endif %}</td><td>{{ a.description }}</td><td>{{ '%.1f'|format(a.global_percent) if a.global_percent is not none else '' }}</td></tr>{% endfor %}
+{% for a in achievements %}<tr><td>{{ a.name }}{% if a.hidden %} <span class="badge">hidden</span>{% endif %}</td><td>{{ a.description }}</td><td>{% if a.global_percent is not none %}{{ '%.1f'|format(a.global_percent) }}% {% if a.global_percent < 5 %}<span class="badge bad">ultra rare</span>{% elif a.global_percent < 15 %}<span class="badge warn">rare</span>{% elif a.global_percent >= 50 %}<span class="badge ok">common</span>{% endif %}{% endif %}</td></tr>{% endfor %}
 </tbody></table>
 {% else %}<p class="muted">No achievements recorded.</p>{% endif %}
 {% if p.user %}
@@ -60,6 +72,8 @@
 </form></details>
 {% endif %}
 
+</div>
+<aside class="side-col">
 <h2>Where this came from</h2>
 <table><thead><tr><th>Field</th><th>Chosen from</th><th>How</th></tr></thead><tbody>
 {% for field, e in explain.items() %}<tr><td>{{ field }}</td><td>{% if e.get('source') %}{{ e.source }}{% elif e.get('sources') %}{{ e.sources|join(', ') }}{% else %}curator lock{% endif %}</td><td>{{ e.strategy }}</td></tr>{% endfor %}
@@ -68,6 +82,8 @@
 {% if activity %}<h2>Recent changes</h2>
 <ul>{% for a in activity %}<li><strong>{{ a.user }}</strong> {{ a.kind|replace('_', ' ') }} <span class="muted small">{{ a.when }}</span>{% if a.note %} — {{ a.note }}{% endif %}</li>{% endfor %}</ul>{% endif %}
 
+</aside>
+<div class="wide">
 {% if comments_on %}
 <h2>Discussion</h2>
 {% set thread = comments %}{% set action = "/game/" ~ g.id ~ "/comments" %}{% set where = "/game/" ~ g.id %}{% set can_comment = can_comment|default(false) %}
@@ -98,4 +114,6 @@
 {% if revertable %}<h3>Revert a change</h3><ul>{% for r in revertable %}<li>{{ r.user }} · {{ r.kind }} · {{ r.when }}
 <form class="inline" method="post" action="/review/{{ r.id }}/revert">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Revert this change?" type="submit">Revert</button></form></li>{% endfor %}</ul>{% endif %}
 {% endif %}
+</div>
+</div>
 {% endblock %}

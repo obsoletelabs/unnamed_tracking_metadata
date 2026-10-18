@@ -3,7 +3,7 @@
 {% block title %}{{ p.user.username }} · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>{{ p.user.username }}</h1>
-<p class="small"><a href="/u/{{ p.user.username }}">Public profile</a> · <a href="/me/settings">Profile settings</a> · <a href="/me/lists">My lists</a> · <a href="/me/following">Following</a></p>
+<p class="small"><a href="/u/{{ p.user.username }}">Public profile</a> · <a href="/me/settings">Profile settings</a> · <a href="/me/lists">My lists</a> · <a href="/me/following">Following</a>{% if s.oidc_provider_enabled %} · <a href="/me/apps">Connected apps</a>{% endif %}</p>
 <p><span class="badge">{{ p.user.role }}</span> · reputation <strong>{{ p.user.reputation }}</strong>
 {% if auto_threshold %}<span class="muted small"> · changes apply immediately from {{ auto_threshold }}</span>{% endif %}</p>
 <h2>Email</h2>

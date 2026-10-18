@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 import httpx
@@ -12,7 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import __version__, auth, custom, mail, media, oidc, ratelimit, sync
+from . import __version__, auth, backup, custom, mail, media, oidc, ratelimit, sync
 from .api.deps import AppState
 from .api.routes import router
 from .db import make_engine, make_sessionmaker, upgrade
@@ -24,8 +25,10 @@ from .signing import load_identity
 from .web import STATIC_DIR, templates
 from .web.account import router as account_router
 from .web.admin import router as admin_router
+from .web.backups import router as backups_router
 from .web.deps import LoginRequired
 from .web.federation import router as federation_router
+from .web.importing import router as import_router
 from .web.oidc import router as oidc_router
 from .web.routes import router as web_router
 from .web.routes import web_headers
@@ -102,6 +105,22 @@ def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event)
         stop.wait(60)
 
 
+def _backups(engine, ctx: Ctx, stop: threading.Event) -> None:
+    interval = ctx.settings.backup_interval_hours * 3600
+    stop.wait(60)  # let startup finish first
+    while not stop.is_set():
+        try:
+            latest = backup.latest(ctx.settings)
+            due = not latest or (datetime.now(UTC) - latest[0]["when"]).total_seconds() >= interval
+            if due:
+                out = backup.scheduled(ctx.settings, engine)
+                backup.verify(out)
+                log.info("backup written and verified: %s", out)
+        except Exception as exc:
+            log.error("scheduled backup failed: %s", exc)
+        stop.wait(min(interval, 900))
+
+
 def _mailer(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
     last_purge = 0.0
     while not stop.is_set():
@@ -153,6 +172,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         threading.Thread(target=_housekeeping, args=(maker, ctx, stop), daemon=True,
                          name="atlas-housekeeping").start()
         threading.Thread(target=_mailer, args=(maker, ctx, stop), daemon=True, name="atlas-mail").start()
+        if ctx.settings.backup_dir:
+            threading.Thread(target=_backups, args=(engine, ctx, stop), daemon=True, name="atlas-backup").start()
         if True:  # peers can be added at runtime, so the loop always runs
             threading.Thread(target=_sync_loop, args=(maker, ctx, stop), daemon=True, name="atlas-sync").start()
         yield
@@ -170,6 +191,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(schema_router)
     app.include_router(social_router)
     app.include_router(federation_router)
+    app.include_router(import_router)
+    app.include_router(backups_router)
     app.include_router(oidc_router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

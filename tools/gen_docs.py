@@ -72,6 +72,12 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "media_max_pixels": ("Artwork", "Largest image by pixel count (decompression-bomb guard)."),
     "media_cache_batch": ("Artwork", "Images processed per background pass."),
     "media_allowed_hosts": ("Artwork", "If non-empty, only these hostnames may be downloaded from. Always public addresses only."),
+    "backup_dir": ("Backups", "Folder for scheduled backups (use a persistent volume). Unset = no scheduled backups."),
+    "backup_interval_hours": ("Backups", "Hours between scheduled backups (default 24)."),
+    "backup_keep": ("Backups", "How many scheduled backups to keep (default 14)."),
+    "node_kind": ("Node", "Badge shown to visitors and peers: `auto` (follows the role), `official`, `community`, `mirror` or `local`. "
+                  "`official` is only a claim; people trust it by pinning your key. Editable in Admin → Settings."),
+    "node_operator": ("Node", "Who runs this node. Editable in Admin → Settings."),
     "app_name": ("Branding", "Site name. Editable in Admin → Settings."),
     "tagline": ("Branding", "Home page line. Editable in Admin → Settings."),
     "footer_text": ("Branding", "Footer text. Editable in Admin → Settings."),
@@ -178,7 +184,7 @@ def reference_env() -> str:
         row = (f"| `{env_name(name)}` | {fmt_default(default)} | {md_escape(text)}"
                f"{' **live**' if name in live else ''} |")
         groups.setdefault(group, []).append(row)
-    for group in ("Node", "Federation", "Matching", "Limits", "Providers", "Artwork", "Branding", "Email", "Community"):
+    for group in ("Node", "Backups", "Federation", "Matching", "Limits", "Providers", "Artwork", "Branding", "Email", "Community"):
         lines += [f"## {group}", "", "| Variable | Default | Meaning |", "| --- | --- | --- |", *groups.get(group, []), ""]
     return "\n".join(lines)
 

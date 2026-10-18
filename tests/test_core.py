@@ -145,3 +145,34 @@ def test_search_ranks_exact_first(session, ctx):
     ])
     names = [r.view["title"] for r in service.search(session, "hades")]
     assert names[0] == "Hades" and len(names) == 3
+
+
+def test_source_listing_its_own_namespace_in_provider_ids_registers_once(session, ctx):
+    [r] = ingest(session, ctx, "steam", [
+        {"external_id": "620", "title": "Portal 2", "provider_ids": {"steam": "620", "gog": "1207658930"}},
+    ])
+    assert session.get(Crosswalk, ("steam", "620")).canonical_id == r.canonical_id
+    assert session.get(Crosswalk, ("gog", "1207658930")).canonical_id == r.canonical_id
+
+
+def test_rich_metadata_merges_across_sources_and_is_validated(session, ctx):
+    import pytest
+    from pydantic import ValidationError
+
+    [a] = ingest(session, ctx, "steam", [{"external_id": "620", "title": "Portal 2", "facts": {
+        "genres": ["Puzzle"], "languages": ["English", "French"], "critic_score": 95, "age_rating": "PEGI 12",
+        "website": "https://www.thinkwithportals.com", "aliases": ["Portal Two"]}}])
+    ingest(session, ctx, "igdb", [{"external_id": "72", "title": "Portal 2", "provider_ids": {"steam": "620"}, "facts": {
+        "genres": ["Puzzle", "Platform"], "themes": ["Science fiction"], "languages": ["french", "German"], "critic_score": 90,  # noqa: E501
+        "user_score": 92}}])
+    v = session.get(Canonical, a.canonical_id).view
+    assert v["genres"] == ["Puzzle", "Platform"] and v["themes"] == ["Science fiction"]
+    assert sorted(x.casefold() for x in v["languages"]) == ["english", "french", "german"]  # union, case-insensitive
+    assert v["critic_score"] == 90 and v["user_score"] == 92 and v["age_rating"] == "PEGI 12"  # higher trust wins per field
+    assert v["website"] == "https://www.thinkwithportals.com" and v["aliases"] == ["Portal Two"]
+    from atlas.contract import ObservedFacts
+
+    for bad in ({"website": "http://insecure.example"}, {"website": "javascript:alert(1)"}, {"critic_score": 101},
+                {"user_score": -1}):
+        with pytest.raises(ValidationError):
+            ObservedFacts(**bad)

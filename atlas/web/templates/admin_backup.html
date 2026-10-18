@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Backups · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+<div class="card">
+  <h2 style="margin-top:0">Backups</h2>
+  {% if enabled %}
+  <p>A verified archive of the whole database and cached artwork is written to <code>{{ directory }}</code> every {{ interval }} hours, keeping the newest {{ keep }}.
+  Copy that folder somewhere else: a backup on the same disk does not survive the disk.</p>
+  <form method="post" action="/admin/backup">{{ csrf(p.csrf) }}<button type="submit">Back up now</button></form>
+  {% else %}
+  <p>Scheduled backups are off. Set <code>ATLAS_BACKUP_DIR</code> to a folder on a persistent volume (and optionally <code>ATLAS_BACKUP_INTERVAL_HOURS</code>, <code>ATLAS_BACKUP_KEEP</code>) and restart.</p>
+  {% endif %}
+  <p class="small muted">Archives contain password hashes and this node's signing key, so they are never offered for download here. Fetch them from the folder, encrypt them off-site, and rehearse a restore: <code>atlas backup verify FILE</code>, then <code>atlas backup restore FILE</code> into a fresh database.</p>
+</div>
+{% if backups %}
+<table><thead><tr><th>File</th><th>Size</th><th>Written (UTC)</th></tr></thead><tbody>
+{% for b in backups %}<tr><td><code>{{ b.name }}</code></td><td>{{ (b.size / 1048576)|round(1) }} MB</td><td>{{ b.when.strftime('%Y-%m-%d %H:%M') }}</td></tr>{% endfor %}
+</tbody></table>
+{% endif %}
+{% endblock %}

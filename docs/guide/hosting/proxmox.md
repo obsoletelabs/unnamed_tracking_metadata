@@ -8,8 +8,12 @@ Three ways, from the newest to the most conventional. All give you a small, self
 | **B. Debian/Ubuntu LXC + Python package** | any Proxmox VE with a Debian 13 / Ubuntu 24.04 template | the most conventional; systemd service |
 | **C. LXC with Docker + the compose files** | any Proxmox VE | familiar, a little heavier |
 
-!!! warning "What has and has not been tested"
-    The Atlas side of each method has been tested (the image runs and passes its health check; the Python package installs into a clean environment and serves the site). **I could not run Proxmox itself while writing this**, so the Proxmox steps below follow Proxmox's documented behaviour and are marked where I am less certain. Proxmox's OCI feature is labelled a **technology preview** and changes between releases: if a menu or option differs from what is written here, trust your Proxmox version's documentation and tell us so we can fix this page.
+!!! success "What has been tested"
+    Method A was run end to end on **Proxmox VE 9.2**: the image uploaded as a template, created an unprivileged application
+    container with a 4 GB `/data` volume, started, answered `/api/v2/health`, accepted the first sign-up as administrator and kept
+    its data across a restart. Methods B and C use only the Python package and the compose files, which are tested separately.
+    Proxmox labels the OCI feature a **technology preview** and changes it between releases, so if a menu differs from what is
+    written here, trust your version's documentation and tell us.
 
 ## Common preparation
 
@@ -29,8 +33,19 @@ In the web UI: **Datacenter → your storage (one that allows *Container templat
 * **Reference:** `ghcr.io/obsoletelabs/unnamed_tracking_metadata:2.0.0` (pin a release; `v2` follows development)
 * **File name:** `atlas-2.0.0` (anything you like)
 
-!!! note "Private registry"
-    While the package is private, anonymous pulls fail. Either make the package public, or create the template another way (for example `skopeo copy docker://ghcr.io/…:2.0.0 oci-archive:/var/lib/vz/template/cache/atlas-2.0.0.tar` after `skopeo login ghcr.io`), whichever your Proxmox version accepts as a container template. Confirm against your version's documentation.
+!!! note "Private registry, or no internet on the Proxmox host: upload the image instead"
+    Proxmox's registry pull has no login option, so a **private** package cannot be pulled. Export the image on any Docker
+    machine and upload the file. **Export one platform only**: a multi-platform archive makes Proxmox fail with
+    *"Unsupported CPU architecture"*.
+
+    ```sh
+    docker pull ghcr.io/obsoletelabs/unnamed_tracking_metadata:2.0.0      # or: docker build -t atlas:local <repo url>
+    docker save --platform linux/amd64 ghcr.io/obsoletelabs/unnamed_tracking_metadata:2.0.0 -o atlas-amd64.tar
+    ```
+
+    Then in Proxmox: **storage → CT Templates → Upload**, pick `atlas-amd64.tar`. From a shell the equivalent is
+    `pvesm`/the web upload, or the API: `POST /nodes/<node>/storage/<storage>/upload` with `content=vztmpl`. Use
+    `linux/arm64` instead on an ARM host.
 
 ### 2. Create the container
 
@@ -58,7 +73,13 @@ ATLAS_INITIAL_ADMIN=alice
 ATLAS_BOOTSTRAP_ADMIN_TOKEN=<openssl rand -hex 24>
 ```
 
-Leave the **entry point/command** at the image default (`atlas serve --host 0.0.0.0 --port 8000`).
+The image's own settings (`PATH`, `ATLAS_DATABASE_URL=sqlite:////data/atlas.db`) are already in the list Proxmox imported; **keep them** and
+add yours. Leave the **entry point** at the image default (`atlas serve --host 0.0.0.0 --port 8000`).
+
+!!! tip "Setting it from a shell or the API"
+    `env` is one NUL-separated string, so a shell is awkward. Through the API send it URL-encoded (NUL is `%00`), for example in
+    Python: `urllib.parse.urlencode({"env": old_env + "\0ATLAS_ROLE=local\0ATLAS_PUBLIC_URL=http://192.168.1.50:8000"})`. Read the
+    current value first (`GET .../lxc/<id>/config`) and append, because setting `env` replaces the whole list.
 
 ### 4. Fix data permissions, then start
 
@@ -69,7 +90,7 @@ mkdir -p /srv/atlas-data && chown -R 110001:110001 /srv/atlas-data
 pct set <ctid> -mp0 /srv/atlas-data,mp=/data
 ```
 
-(For a storage-backed volume Proxmox sets ownership for you; if Atlas cannot write `/data`, this is the first thing to check. If your Proxmox runs the entry point as root, no change is needed.)
+(For a storage-backed volume Proxmox sets ownership for you; this was verified on an LVM-thin volume, where no `chown` was needed; if Atlas cannot write `/data`, this is the first thing to check. If your Proxmox runs the entry point as root, no change is needed.)
 
 Start the container and open `http://<container-ip>:8000`. Register `alice`: she is the administrator.
 

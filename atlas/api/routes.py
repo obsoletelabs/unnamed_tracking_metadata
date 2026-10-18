@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import __version__, auth, custom, facets, feed, media, service
+from .. import __version__, auth, custom, facets, feed, importer, media, service
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
 from ..models import Artwork, Canonical, Lock, Observation, ReviewItem, SyncCursor, Token
 from ..normalize import norm_namespace
@@ -76,7 +76,7 @@ def status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("
 def site(st: St, session: Sess) -> dict[str, Any]:
     """Public, non-sensitive description of this node: what a client or mirror needs to present it."""
     s = st.ctx.settings
-    return {"name": s.app_name, "tagline": s.tagline, "role": s.role, "node_id": st.ctx.identity.node_id,
+    return {"name": s.app_name, "tagline": s.tagline, "role": s.role, "kind": s.kind(), "operator": s.node_operator, "node_id": st.ctx.identity.node_id,  # noqa: E501
             "theme": {"default": s.default_theme, "accent": s.accent_color, "accent_light": s.accent_color_light,
                       "logo": f"/media/{s.logo_hash}" if s.logo_hash else None},
             "nav_links": s.nav_links, "media_types": [t.key for t in custom.types(session, enabled_only=True)],
@@ -280,26 +280,11 @@ def provider_fetch(name: str, body: FetchBody, st: St, session: Sess,
                    _: Annotated[auth.Principal, Depends(require("contribute"))]):
     """Fetch full details (cached), merge into the canonical record, return it."""
     try:
-        results = st.providers.lookup(session, name, external_id=body.external_id)
+        got = importer.import_from_provider(st, session, name, body.external_id)
     except ProviderError as exc:
         raise HTTPException(502, str(exc)) from exc
-    batch = st.providers.as_batch(name, results)
-    if batch is None:
-        raise AtlasError("provider has no such record", "not_found")
-    res = service.ingest(session, st.ctx, batch, system=True)[0]
-    row, _r = service.get_canonical(session, res.canonical_id)  # type: ignore[arg-type]
-    if row.id == res.canonical_id and not res.review:  # an uncertain match must not attach media to a guess
-        got = results[0]
-        if got.artwork:
-            facets.set_artwork(session, st.ctx, row.id, name, got.artwork)
-        try:
-            ach = st.providers.achievements(session, name, body.external_id)
-        except ProviderError:
-            ach = []
-        if ach:
-            facets.set_achievements(session, st.ctx, row.id, name, ach)
-    return {"match": res.method, "confidence": res.confidence, "review": res.review,
-            "game": game_out(row, None, session, st.ctx)}
+    return {"match": got.method, "confidence": got.confidence, "review": got.review,
+            "game": game_out(got.row, None, session, st.ctx)}
 
 
 # ---- schema and custom values -------------------------------------------------------------------------
@@ -405,7 +390,8 @@ def get_media(digest: str, st: St, _: Annotated[auth.Principal, Depends(require(
 @router.get("/sync/info", tags=["federation"])
 def sync_info(st: St, _: Annotated[auth.Principal, Depends(require("read"))]):
     return {"node_id": st.ctx.identity.node_id, "public_key": st.ctx.identity.public_b64,
-            "role": st.ctx.settings.role, "contract": 1, "name": st.ctx.settings.app_name}
+            "role": st.ctx.settings.role, "kind": st.ctx.settings.kind(), "operator": st.ctx.settings.node_operator,
+            "contract": 1, "name": st.ctx.settings.app_name}
 
 
 @router.get("/sync/changes", tags=["federation"])

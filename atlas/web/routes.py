@@ -113,7 +113,9 @@ def primary_art(p: Page, ids: list[str]) -> dict[str, str]:
 
 
 DEFAULT_LABELS = {"developer": "Developer", "publisher": "Publisher", "series": "Series", "release_date": "Released",
-                  "tags": "Genres", "features": "Features", "platforms": "Platforms"}
+                  "genres": "Genres", "themes": "Themes", "tags": "Tags", "features": "Features", "platforms": "Platforms",
+                  "languages": "Languages", "aliases": "Also known as", "age_rating": "Age rating", "website": "Website",
+                  "critic_score": "Critic score", "user_score": "Player score"}
 
 
 def labels_for(p: Page, media_type: str) -> dict[str, str]:
@@ -327,6 +329,16 @@ def _form_values(title, release_date, developer, publisher, series, description,
     return out
 
 
+EXTRA_TEXT = ("age_rating", "website")
+EXTRA_LISTS = ("genres", "themes", "languages", "aliases")
+
+
+def _extra_values(f: dict[str, str]) -> dict[str, Any]:
+    out: dict[str, Any] = {k: f.get(k, "").strip() for k in EXTRA_TEXT}
+    out.update({k: lines(f.get(k, "")) for k in EXTRA_LISTS})
+    return out
+
+
 def _changed(current: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     diff: dict[str, Any] = {}
     for k, v in new.items():
@@ -356,6 +368,7 @@ def edit_submit(cid: str, p: Annotated[Page, Depends(user_form)], f: Annotated[d
     new = _form_values(f.get("title", "").strip(), f.get("release_date", "").strip(), f.get("developer", "").strip(),
                        f.get("publisher", "").strip(), f.get("series", "").strip(), f.get("description", "").strip(),
                        f.get("platforms", ""), f.get("tags", ""), f.get("features", ""))
+    new.update(_extra_values(f))
     cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False)
     payload = _changed(g.view, new)
     extra = custom_from_form(p, g.media_type, f, cur)
@@ -392,6 +405,7 @@ def new_submit(p: Annotated[Page, Depends(user_form)], f: Annotated[dict[str, st
     new = _form_values(f.get("title", "").strip(), f.get("release_date", "").strip(), f.get("developer", "").strip(),
                        f.get("publisher", "").strip(), f.get("series", "").strip(), f.get("description", "").strip(),
                        f.get("platforms", ""), f.get("tags", ""), f.get("features", ""))
+    new.update(_extra_values(f))
     payload: dict[str, Any] = {k: v for k, v in new.items() if v not in ("", [])}
     payload["media_type"] = mtype
     ids = {}
@@ -523,8 +537,9 @@ def password(p: Annotated[Page, Depends(user_form)], new: Annotated[str, Form(ma
 # ---- review -------------------------------------------------------------------------------------------
 
 FIELD_LABELS = {"title": "Title", "release_date": "Release date", "developer": "Developer", "publisher": "Publisher",
-                "series": "Series", "description": "Description", "tags": "Genres / tags", "features": "Features",
-                "platforms": "Platforms", "provider_ids": "Store IDs"}
+                "series": "Series", "description": "Description", "tags": "Tags", "features": "Features",
+                "platforms": "Platforms", "provider_ids": "Store IDs", "genres": "Genres", "themes": "Themes",
+                "languages": "Languages", "aliases": "Also known as", "age_rating": "Age rating", "website": "Website"}
 
 
 def _show(v: Any) -> str:

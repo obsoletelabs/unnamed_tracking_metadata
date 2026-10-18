@@ -354,3 +354,39 @@ def test_changes_are_committed_before_the_response_is_sent(tmp_path):
 
     asyncio.run(run())
     assert seen == [1], "the new user must be visible to other connections when the response starts"
+
+
+class _FakeProvider:
+    name = "fakeprov"
+    redistributable = False
+    requests_per_minute = 600
+
+    def search(self, client, query):
+        from atlas.providers.base import ProviderResult
+        return [ProviderResult(external_id="77", title="Celeste", platform="pc", release_date="2018-01-25")]
+
+    def fetch(self, client, external_id):
+        from atlas.providers.base import ProviderResult
+        return ProviderResult(external_id="77", title="Celeste", platform="pc", release_date="2018-01-25",
+                              provider_ids={"fakeprov": "77"},
+                              artwork=[{"kind": "key_art", "url": "https://img.example/celeste.jpg"}])
+
+    def achievements(self, client, external_id):
+        return [{"name": "Chapter 1 Cleared", "description": "Reach the summit."}]
+
+
+def test_curators_can_import_from_a_provider_with_media_and_achievements(site):
+    site.st.providers.providers["fakeprov"] = _FakeProvider()
+    assert site.get("/import").status_code in (303, 401, 403)  # sign-in required
+    signup(site, "alice")
+    page = site.get("/import?provider=fakeprov&q=celeste")
+    assert page.status_code == 200 and "Celeste" in page.text and 'value="77"' in page.text
+    t = token(site, "/import")
+    r = site.post("/import", data={"csrf": t, "provider": "fakeprov", "external_id": "77"})
+    assert r.status_code == 200, r.text
+    assert "Imported" in r.text and "1 artwork, 1 achievements" in r.text, re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", r.text))[:600]  # noqa: E501
+    cid = re.search(r'href="/game/(atlas:[^"]+)"', r.text).group(1)
+    game = site.get(f"/game/{cid}").text
+    assert "Celeste" in game and "Chapter 1 Cleared" in game
+    plain = fresh(site)
+    assert plain.post("/import", data={"csrf": "x", "provider": "fakeprov", "external_id": "77"}).status_code in (303, 403)

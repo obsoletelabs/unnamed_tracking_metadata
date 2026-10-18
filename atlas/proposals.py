@@ -20,8 +20,9 @@ KINDS = ("edit", "new_game", "artwork", "achievements")
 REWARD = {"edit": 5, "new_game": 10, "artwork": 3, "achievements": 5}
 REJECT_PENALTY = -2
 REVERT_PENALTY = -10
-SCALAR = {"title": 500, "description": 20000, "developer": 200, "publisher": 200, "series": 200}
-LISTS = ("tags", "features", "platforms")
+SCALAR = {"title": 500, "description": 20000, "developer": 200, "publisher": 200, "series": 200, "age_rating": 50,
+          "website": 500}
+LISTS = ("genres", "themes", "tags", "features", "platforms", "languages", "aliases")
 _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
 
 
@@ -44,6 +45,8 @@ def clean_edit(payload: dict[str, Any]) -> dict[str, Any]:
             value = payload[key]
             if not isinstance(value, str) or len(value.strip()) > limit:
                 raise AtlasError(f"{key} must be text up to {limit} characters")
+            if key == "website" and (not value.startswith("https://") or any(c.isspace() for c in value)):
+                raise AtlasError("website must be an https:// address")
             out[key] = value.strip()
     if payload.get("release_date") not in (None, ""):
         value = payload["release_date"]

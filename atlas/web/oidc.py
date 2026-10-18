@@ -9,13 +9,13 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .. import accounts, oidc, ratelimit, secrets_box
 from ..api.deps import AppState, get_session, state
 from ..ids import ulid
-from ..models import OidcClient, OidcIssuer, OidcLink, User
+from ..models import OidcAccess, OidcClient, OidcIssuer, OidcLink, User
 from ..service import AtlasError
 from .deps import (
     SESSION_COOKIE,
@@ -95,6 +95,26 @@ async def authorize_decide(request: Request, p: Annotated[Ctx, Depends(user_form
     if params["state"]:
         q["state"] = params["state"]
     return RedirectResponse(params["redirect_uri"] + sep + urlencode(q), status_code=303)
+
+
+@router.get("/me/apps", response_class=HTMLResponse)
+def my_apps(p: Annotated[Ctx, Depends(user_page)]):
+    """Apps currently signed in with this account through Atlas, with a way to end them."""
+    _provider_on(p)
+    rows = p.session.execute(
+        select(OidcClient.client_id, OidcClient.name, func.count(OidcAccess.id), func.max(OidcAccess.expires_at))
+        .join(OidcAccess, OidcAccess.client_id == OidcClient.client_id)
+        .where(OidcAccess.user_id == p.me.id, OidcAccess.expires_at > func.now())
+        .group_by(OidcClient.client_id, OidcClient.name)).all()
+    return render(p, "me_apps.html", apps=[{"id": r[0], "name": r[1], "sessions": r[2], "until": r[3]} for r in rows])
+
+
+@router.post("/me/apps/{client_id}/revoke")
+def revoke_app(client_id: str, p: Annotated[Ctx, Depends(user_form)]):
+    _provider_on(p)
+    p.session.execute(delete(OidcAccess).where(OidcAccess.user_id == p.me.id, OidcAccess.client_id == client_id))
+    accounts.audit(p.session, p.me.id, "oidc_revoke", client_id)
+    return go("/me/apps", "revoked", p)
 
 
 def _client_credentials(request: Request, form) -> tuple[str, str]:

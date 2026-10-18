@@ -85,7 +85,7 @@ def post_settings(site, **values):  # noqa: F811
 def all_defaults(site):  # noqa: F811
     html = site.get("/admin/settings").text
     vals = {}
-    for m in re.finditer(r'<input id="s_(\w+)" type="(?:text|color)" name="\1" value="([^"]*)"', html):
+    for m in re.finditer(r'<input id="s_(\w+)" type="(?:text|color)"(?: inputmode="numeric")? name="\1" value="([^"]*)"', html):  # noqa: E501
         vals[m.group(1)] = m.group(2)
     for m in re.finditer(r'<textarea id="s_(\w+)" name="\1" rows="3">([^<]*)</textarea>', html):
         vals[m.group(1)] = m.group(2)
@@ -212,3 +212,19 @@ def test_email_verification_default_depends_on_role():
     assert build_settings(role="authority", email_verification=None).verification_mode() == "required"
     assert build_settings(role="local", email_verification=None).verification_mode() == "optional"
     assert build_settings(role="authority", email_verification="off").verification_mode() == "off"
+
+
+
+def test_saving_the_form_unchanged_does_not_drift_percent_settings(site):  # noqa: F811
+    """Regression: the form once displayed 85 as 8500 after a save, so each save rewrote the thresholds."""
+    login_admin(site)
+    vals = all_defaults(site)
+    assert vals["auto_match_threshold"] == "85" and vals["review_threshold"] == "60"
+    vals.update(auto_match_threshold="90", registration="open", mail_backend="outbox", smtp_starttls="on",
+                email_verification="")
+    assert post_settings(site, **vals).status_code == 303
+    again = all_defaults(site)
+    assert again["auto_match_threshold"] == "90" and again["review_threshold"] == "60"
+    again.update(registration="open", mail_backend="outbox", smtp_starttls="on", email_verification="")
+    assert post_settings(site, **again).status_code == 303
+    assert all_defaults(site)["auto_match_threshold"] == "90"

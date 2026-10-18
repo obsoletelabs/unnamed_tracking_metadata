@@ -608,3 +608,35 @@ def test_rsa_key_survives_a_restart(tmp_path):
         with TestClient(app, base_url=PROVIDER) as c:
             kids.append(sorted(k["kid"] for k in c.get("/oidc/jwks").json()["keys"]))
     assert kids[0] == kids[1]
+
+
+def test_an_ordinary_member_signs_in_to_an_app_and_can_end_it_from_their_account(world):
+    """Not just administrators: any member can use their account to sign in elsewhere, and see and end those sign-ins."""
+    from urllib.parse import parse_qs, urlparse
+
+    with world.p_app.state.atlas.maker() as s:
+        client, secret = oidc.create_client(s, "Jellyfin", ["https://app.test/cb"])
+        s.commit()
+        cid = client.client_id
+    erin = TestClient(world.p_app, base_url=PROVIDER, follow_redirects=False)
+    with erin:
+        signup(erin, "erin")
+        with world.p_app.state.atlas.maker() as s:
+            assert s.scalars(select(User.role).where(User.username == "erin")).one() == "user"
+        params = {"response_type": "code", "client_id": cid, "redirect_uri": "https://app.test/cb", "scope": "openid profile",  # noqa: E501
+                  "state": "st", "nonce": "n", "code_challenge": oidc.pkce_challenge("v" * 50), "code_challenge_method": "S256"}  # noqa: E501
+        page = erin.get("/oidc/authorize", params=params)
+        assert page.status_code == 200 and "Jellyfin" in page.text
+        decision = erin.post("/oidc/authorize", data={**params, "decision": "allow", "csrf": token(erin, "/oidc/authorize?" + "&".join(  # noqa: E501
+            f"{k}={v}" for k, v in params.items()))})
+        assert decision.status_code == 303
+        code = parse_qs(urlparse(decision.headers["location"]).query)["code"][0]
+        body = exchange(world, cid, secret, code, "https://app.test/cb", "v" * 50).json()
+        auth = {"Authorization": "Bearer " + body["access_token"]}
+        assert erin.get("/oidc/userinfo", headers=auth).json()["preferred_username"] == "erin"
+
+        apps = erin.get("/me/apps")
+        assert apps.status_code == 200 and "Jellyfin" in apps.text
+        assert erin.post(f"/me/apps/{cid}/revoke", data={"csrf": token(erin, "/me/apps")}).status_code == 303
+        assert erin.get("/oidc/userinfo", headers=auth).status_code == 401
+        assert "No app is signed in" in erin.get("/me/apps").text

@@ -42,6 +42,22 @@ class ObservedFacts(BaseModel):
     series: str | None = Field(default=None, max_length=200)
     tags: list[ShortText] | None = Field(default=None, max_length=50)
     features: list[ShortText] | None = Field(default=None, max_length=50)
+    # Atlas extensions (additive: the tracking app need not send them)
+    genres: list[ShortText] | None = Field(default=None, max_length=50)
+    themes: list[ShortText] | None = Field(default=None, max_length=50)
+    languages: list[ShortText] | None = Field(default=None, max_length=60)
+    aliases: list[ShortText] | None = Field(default=None, max_length=30)  # other names the game is known by
+    age_rating: str | None = Field(default=None, max_length=50)
+    website: str | None = Field(default=None, max_length=500)
+    critic_score: int | None = Field(default=None, ge=0, le=100)
+    user_score: int | None = Field(default=None, ge=0, le=100)
+
+    @field_validator("website")
+    @classmethod
+    def https_only(cls, value: str | None) -> str | None:
+        if value is not None and (not value.startswith("https://") or any(c.isspace() for c in value)):
+            raise ValueError("website must be an https:// address")
+        return value
 
 
 class SourceConnectionRef(BaseModel):

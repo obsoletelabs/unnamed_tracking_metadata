@@ -24,7 +24,7 @@
 <h2>Confirm this node</h2>
 <form class="card" method="post" action="/admin/peers">{{ csrf(p.csrf) }}
   <p>The node at <strong>{{ probe.url }}</strong> identifies as:</p>
-  <dl class="facts"><dt>Name</dt><dd>{{ probe.name or '(none)' }}</dd><dt>Role</dt><dd>{{ probe.role }}</dd><dt>Node ID</dt><dd><code>{{ probe.fp }}</code></dd></dl>
+  <dl class="facts"><dt>Name</dt><dd>{{ probe.name or '(none)' }}</dd><dt>Role</dt><dd>{{ probe.role }}</dd><dt>Kind</dt><dd><span class="node-badge {{ probe.kind }}">{{ probe.kind }}</span></dd><dt>Node ID</dt><dd><code>{{ probe.fp }}</code></dd></dl>
   <p><strong>Check that this node ID matches the one its administrator gave you.</strong> Atlas will only accept data signed by this key.</p>
   <input type="hidden" name="url" value="{{ probe.url }}"><input type="hidden" name="token" value="{{ probe.token }}">
   <input type="hidden" name="node_id" value="{{ probe.node_id }}"><input type="hidden" name="public_key" value="{{ probe.public_key }}">

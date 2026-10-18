@@ -31,8 +31,13 @@ class Rawg:
                 "description": g.get("description_raw"),
                 "developer": ((g.get("developers") or [{}])[0]).get("name"),
                 "publisher": ((g.get("publishers") or [{}])[0]).get("name"),
-                "tags": [x["name"] for x in g.get("genres", [])][:50],
-                "features": [x["name"] for x in g.get("tags", [])][:30],
+                "genres": [x["name"] for x in g.get("genres", [])][:50],
+                "tags": [x["name"] for x in g.get("tags", [])][:50],
+                "aliases": [a for a in (g.get("alternative_names") or []) if isinstance(a, str)][:30],
+                "age_rating": ((g.get("esrb_rating") or {}).get("name")),
+                "critic_score": g.get("metacritic") if isinstance(g.get("metacritic"), int) else None,
+                "user_score": round(g["rating"] * 20) if isinstance(g.get("rating"), (int, float)) and g["rating"] > 0 else None,  # noqa: E501
+                "website": g["website"] if str(g.get("website") or "").startswith("https://") else None,
             },
             artwork=[{"kind": "hero", "url": g["background_image"], "priority": 30}]
             if str(g.get("background_image") or "").startswith("https://") else [],

@@ -26,9 +26,38 @@ def cmd_serve(args) -> int:
     return 0
 
 
-def cmd_migrate(_) -> int:
-    upgrade(get_settings().database_url)
-    print("database is up to date")
+def cmd_migrate(args) -> int:
+    upgrade(get_settings().database_url, args.revision)
+    print("database is up to date" if args.revision == "head" else f"database is at revision {args.revision}")
+    return 0
+
+
+def cmd_backup(args) -> int:
+    from pathlib import Path
+
+    from . import backup
+
+    settings = get_settings()
+    if args.action != "create" and not args.file:
+        print(f"backup {args.action}: give the archive path", file=sys.stderr)
+        return 2
+    try:
+        if args.action == "create":
+            out = Path(args.file or f"atlas-{__import__('datetime').datetime.now().strftime('%Y%m%d-%H%M%S')}.tar.gz")
+            m = backup.create(settings, make_engine(settings.database_url), out, include_media=not args.no_media)
+            rows = sum(m["tables"].values())
+            print(f"wrote {out} ({rows} rows, {sum(1 for f in m['files'] if f.startswith('media/'))} media files, "
+                  f"revision {m['revision']}). It contains secrets: keep it private and encrypted off-site.")
+        elif args.action == "verify":
+            m = backup.verify(Path(args.file))
+            print(f"ok: {sum(m['tables'].values())} rows, revision {m['revision']}, made {m['created_at']} by Atlas {m['atlas']}")  # noqa: E501
+        else:
+            loaded = backup.restore(settings, make_engine(settings.database_url), Path(args.file), force=args.force,
+                                    include_media=not args.no_media)
+            print(f"restored {sum(loaded.values())} rows; now run `atlas migrate` if this backup is older than the software")
+    except backup.BackupError as exc:
+        print(f"backup: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -123,7 +152,15 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--port", type=int, default=8000)
     s.add_argument("--forwarded-allow-ips", default="127.0.0.1")
     s.set_defaults(fn=cmd_serve)
-    sub.add_parser("migrate").set_defaults(fn=cmd_migrate)
+    mg = sub.add_parser("migrate")
+    mg.add_argument("--revision", default="head", help="migrate to this revision instead of the latest (used before a restore)")  # noqa: E501
+    mg.set_defaults(fn=cmd_migrate)
+    b = sub.add_parser("backup", help="create, verify or restore a full backup archive")
+    b.add_argument("action", choices=["create", "verify", "restore"])
+    b.add_argument("file", nargs="?", help="archive path (create defaults to atlas-<timestamp>.tar.gz here)")
+    b.add_argument("--no-media", action="store_true", help="leave cached artwork out (it can be downloaded again)")
+    b.add_argument("--force", action="store_true", help="restore: replace any data already in the database")
+    b.set_defaults(fn=cmd_backup)
     t = sub.add_parser("token")
     t.add_argument("--name", required=True)
     t.add_argument("--scopes", required=True, help="comma separated: read,contribute,curate,sync,admin")

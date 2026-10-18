@@ -34,8 +34,12 @@ SCALAR_FIELDS = {
     "developer": "priority",
     "publisher": "priority",
     "series": "priority",
+    "age_rating": "priority",
+    "website": "priority",
+    "critic_score": "priority",
+    "user_score": "priority",
 }
-UNION_FIELDS = ("platforms", "tags", "features")
+UNION_FIELDS = ("platforms", "genres", "themes", "tags", "features", "languages", "aliases")
 
 
 def _value(obs: Obs, field: str) -> Any:

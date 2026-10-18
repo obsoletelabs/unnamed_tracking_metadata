@@ -61,6 +61,30 @@ People then see a consent screen the first time each sign-in happens:
 
 ![Consent screen](img/13-consent.png)
 
+## For members: using your Atlas account to sign in to other apps
+
+Once the administrator has registered an application (step 2), **every member** of the node can use their Atlas account to
+sign in to it. Nothing special is needed on your side: click the app's "Sign in with Atlas" button, check the consent page, and
+allow. The app learns your username, display name and (only if you allow the `email` permission) email address, never your
+password.
+
+Open **My account → Connected apps** (`/me/apps`) to see which apps hold a sign-in for you and to **sign out of any of them**.
+Suspending a member on the node ends their app sign-ins as well.
+
+### Settings most apps ask for
+
+| Field | Value |
+| --- | --- |
+| Issuer / discovery URL | `https://your-node/.well-known/openid-configuration` |
+| Client ID / secret | from **Admin → Sign-in sharing** when the application was registered |
+| Scopes | `openid profile email` |
+| PKCE | on (S256) unless the admin allowed a confidential client to skip it |
+| Redirect URI | whatever the app shows, registered **exactly** on the node |
+| ID token signature | RS256 (the default for applications) |
+
+Jellyfin (SSO plugin), Immich, Nextcloud (OpenID Connect Login), Grafana, Gitea/Forgejo, Paperless-ngx, Audiobookshelf and most
+other self-hosted apps accept exactly these fields under a heading such as *OpenID Connect*, *OAuth* or *SSO*.
+
 ## Accepting sign-ins from another Atlas node
 
 On the node that should *accept* sign-ins (for example a household node signing in with the central one):

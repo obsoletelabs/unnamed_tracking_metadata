@@ -16,6 +16,13 @@ These can be changed live in **Admin → Settings** without restarting. Each cha
 | **Theme** (`default_theme`) | auto / dark / light | `auto` | 'auto' follows each visitor's system setting. |
 | **Navigation links** (`nav_links`) | list of links | — | One per line: Label \| address. Addresses may be /paths or https:// links. |
 
+## Node
+
+| Setting | Type | Default | Notes |
+| --- | --- | --- | --- |
+| **Kind of node** (`node_kind`) | auto / official / community / mirror / local | `auto` | Shown as a badge. 'official' is only a claim; people trust an official node by pinning its key from your published list. 'auto' follows the role. |
+| **Operator** (`node_operator`) | text | — | Who runs this node (shown to visitors and to nodes that follow you). |
+
 ## Community
 
 | Setting | Type | Default | Notes |

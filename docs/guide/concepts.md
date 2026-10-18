@@ -12,14 +12,24 @@ Each field has a rule, and Atlas records which observation won (see **Where this
 
 | Field | Rule |
 | --- | --- |
-| title, description, developer, publisher, series | highest **trust** wins; ties go to the newest |
+| title, description, developer, publisher, series, age rating, website | highest **trust** wins; ties go to the newest |
+| critic score, player score (0–100) | highest trust wins |
 | release date | trust-weighted vote across sources |
-| platforms, genres/tags, features | union (case-insensitive, up to 100) |
+| platforms, genres, themes, tags, features, languages, also-known-as names | union (case-insensitive, up to 100) |
 | identifiers | each source's own id plus the ids it cross-references; the most trusted claim wins a namespace |
 | custom fields | the most trusted source's value |
 | anything | a curator can **pin** a value; a pin beats everything |
 
 Trust is a number per source (`curator` 100, `manual` 90, `community` 85, `igdb` 70, `steam` 65, `gog` 60, `rawg` 50, others 40). Names that carry weight are **reserved**: only a token with the `curate` scope (or the node itself) may submit under them, so nobody can impersonate a trusted source.
+
+### What a record can hold out of the box
+
+Every game can carry: **title, release date, description, developer, publisher, series, platforms, genres, themes, tags,
+features** (single-player, co-op…), **languages, also-known-as names, age rating, website, critic score and player score**,
+plus **artwork** (cover, banner, hero, logo, icon, screenshots, poster), an **achievement list** (name, description, hidden
+flag, icon, global unlock percentage — a list only, never anyone's progress) and any **custom fields** the administrator adds.
+The Tracking App sends the ones it knows; Atlas providers (Steam, RAWG, IGDB) fill in the rest, and people can edit them from
+the site. Personal state such as playtime, ownership or favourites is never stored.
 
 ## Matching: which record does a claim belong to?
 

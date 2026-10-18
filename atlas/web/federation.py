@@ -65,7 +65,7 @@ def probe(p: Annotated[Ctx, Depends(admin_form)], url: Annotated[str, Form(max_l
     if p.session.scalars(select(Peer.id).where(Peer.node_id == node_id)).first():
         return peers(p, error="That node is already a peer.")  # type: ignore[arg-type]
     return peers(p, probe={"url": target, "token": token.strip(), "node_id": node_id, "fp": fingerprint(node_id),
-                           "public_key": key, "role": info.get("role", "?"), "name": name.strip() or info.get("name", "")})  # type: ignore[arg-type]
+                           "public_key": key, "role": info.get("role", "?"), "kind": (k if (k := str(info.get("kind", info.get("role", "")))) in ("official", "community", "mirror", "local") else "community"), "name": name.strip() or info.get("name", "")})  # type: ignore[arg-type]  # noqa: E501
 
 
 @router.post("/admin/peers")

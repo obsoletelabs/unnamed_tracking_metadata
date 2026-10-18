@@ -10,6 +10,7 @@ from .base import ProviderResult, epoch_to_date, get_json
 _EXTERNAL = {1: "steam", 5: "gog", 26: "epic", 11: "microsoft"}
 _FIELDS = (
     "cover.image_id,screenshots.image_id,artworks.image_id,name,first_release_date,summary,genres.name,themes.name,platforms.name,"
+    "game_modes.name,alternative_names.name,aggregated_rating,rating,"
     "involved_companies.developer,involved_companies.publisher,involved_companies.company.name,"
     "external_games.category,external_games.uid"
 )
@@ -58,7 +59,12 @@ class Igdb:
             provider_ids=ids,
             facts={
                 "description": g.get("summary"), "developer": pick("developer"), "publisher": pick("publisher"),
-                "tags": [x["name"] for x in g.get("genres", []) + g.get("themes", [])][:50],
+                "genres": [x["name"] for x in g.get("genres", [])][:50],
+                "themes": [x["name"] for x in g.get("themes", [])][:50],
+                "features": [x["name"] for x in g.get("game_modes", [])][:50],
+                "aliases": [x["name"] for x in g.get("alternative_names", []) if x.get("name")][:30],
+                "critic_score": round(g["aggregated_rating"]) if isinstance(g.get("aggregated_rating"), (int, float)) else None,  # noqa: E501
+                "user_score": round(g["rating"]) if isinstance(g.get("rating"), (int, float)) else None,
             },
             artwork=_artwork(g),
         )

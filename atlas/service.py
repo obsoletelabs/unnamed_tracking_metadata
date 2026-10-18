@@ -71,7 +71,7 @@ def _valid_type(session: Session, media_type: str | None) -> str:
 def keys_of(obs: Observation) -> list[tuple[str, str]]:
     keys = [(norm_namespace(obs.source), obs.external_id)]
     keys += [(k, v) for k, v in (obs.payload.get("provider_ids") or {}).items()]
-    return keys
+    return list(dict.fromkeys(keys))  # a source may list its own namespace in provider_ids; register each key once
 
 
 def rebuild(session: Session, ctx: Ctx, cid: str) -> Canonical:

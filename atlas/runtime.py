@@ -44,6 +44,10 @@ def S(key, label, group, kind, help="", **kw) -> Spec:
 
 REGISTRY: tuple[Spec, ...] = (
     S("app_name", "Site name", "Branding", "str", "Shown in the header, page titles and emails.", max_len=60),
+    S("node_kind", "Kind of node", "Node", "choice", "Shown as a badge. 'official' is only a claim; people trust an official node "  # noqa: E501
+      "by pinning its key from your published list. 'auto' follows the role.",
+      choices=("auto", "official", "community", "mirror", "local")),
+    S("node_operator", "Operator", "Node", "str", "Who runs this node (shown to visitors and to nodes that follow you).", max_len=80),  # noqa: E501
     S("tagline", "Tagline", "Branding", "str", "One line under the title on the home page.", max_len=200),
     S("footer_text", "Footer text", "Branding", "str", "Plain text shown in the footer.", max_len=300),
     S("accent_color", "Accent colour (dark theme)", "Branding", "color"),

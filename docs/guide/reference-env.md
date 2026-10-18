@@ -12,10 +12,20 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_DATABASE_URL` | `sqlite:///./atlas.db` | SQLAlchemy URL. `sqlite:///./atlas.db` for local nodes; `postgresql+psycopg://user:pw@host/db` for authorities (required in production). |
 | `ATLAS_PUBLIC_URL` | `http://localhost:8000` | The address people use to reach this node. Used in emails, OIDC and links. Must be `https://` in production. |
 | `ATLAS_ENVIRONMENT` | `dev` | `dev` shows API docs at `/docs` and relaxes production checks; `production` enforces HTTPS, PostgreSQL for authorities and an explicit initial administrator. |
+| `ATLAS_NODE_KIND` | `auto` | Badge shown to visitors and peers: `auto` (follows the role), `official`, `community`, `mirror` or `local`. `official` is only a claim; people trust it by pinning your key. Editable in Admin → Settings. **live** |
+| `ATLAS_NODE_OPERATOR` | — | Who runs this node. Editable in Admin → Settings. **live** |
 | `ATLAS_INITIAL_ADMIN` | — | Username that becomes the website administrator when it registers. If unset, the first account to register is the administrator (production with open registration refuses to start without it). |
 | `ATLAS_BOOTSTRAP_ADMIN_TOKEN` | — | 32+ random characters. Becomes an admin API token while set; removing it revokes it. Use it to create the first real tokens. |
 | `ATLAS_SECRET_KEY` | — | Encrypts secrets stored in the database (peer tokens, OIDC client secrets). Generate one with `atlas secret-key`. Losing it makes those secrets unreadable. |
 | `ATLAS_AUTO_MIGRATE` | — | Run database migrations on start. Default: on for SQLite, off otherwise. With several replicas set `false` and run `atlas migrate` as a job. |
+
+## Backups
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ATLAS_BACKUP_DIR` | — | Folder for scheduled backups (use a persistent volume). Unset = no scheduled backups. |
+| `ATLAS_BACKUP_INTERVAL_HOURS` | `24` | Hours between scheduled backups (default 24). |
+| `ATLAS_BACKUP_KEEP` | `14` | How many scheduled backups to keep (default 14). |
 
 ## Federation
 

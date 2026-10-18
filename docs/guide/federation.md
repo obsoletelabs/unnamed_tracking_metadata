@@ -10,6 +10,41 @@ Atlas nodes can follow each other. There is **no central server in the code**: a
 | `mirror` | provider cache and local-only overlays | an authority | can't rewrite records the upstream owns |
 | `local` | everything on its own data | optionally an authority | SQLite; private overlays win locally |
 
+## Telling nodes apart
+
+Every node shows a **kind** badge next to its name, in `/api/v2/site`, and on the peer page when you add it. Set it in
+**Admin → Settings → Node** (with an optional *Operator* name shown in the footer):
+
+| Kind | Meaning |
+| --- | --- |
+| **official** | Run by the project or by an operator the project lists. Treat it as the reference copy. |
+| **community** | An authority run by someone else. Fine to follow if you trust them. This is what an authority shows by default. |
+| **mirror** | A read-only copy of another node, usually run to spread load or give regional access. |
+| **local** | A private node: a household or one person, caching providers and following an upstream. Never meant to be followed. |
+
+!!! warning "The badge is a claim, not proof"
+    Anyone can type "official". What makes a node official is that **you pin its key** from a list you trust: the node id
+    printed by `atlas node` and shown under *Peers* before you confirm. Publish your official list (names, URLs, node ids) in one
+    place, and have people copy ids from there, never from the node itself.
+
+### Running several official nodes
+
+The simplest and safest layout for 3–4 official nodes is **one authority and the rest mirrors**:
+
+1. Run the authority (see [Authoritative server](hosting/authority.md)). It alone accepts curation and publishes the signed feed.
+2. Run each mirror with `ATLAS_ROLE=mirror`, `ATLAS_UPSTREAM_URL` pointing at the authority (or at another mirror, to make a tree)
+   and the authority's key pinned under **Admin → Peers**. Mirrors serve reads, so put them in different places or behind a load
+   balancer. Set their kind to *official* if you operate them.
+3. Point apps at the nearest official node. If the authority is down, mirrors keep serving everything they have; curation resumes
+   when it returns.
+4. Back up the authority (see [Backup and restore](backup.md)) and publish its **public key** so a replacement can be recognised.
+
+Several independent authorities that all accept edits are possible too (each follower can pin more than one), but then two
+copies of the same game can be curated differently; prefer one authority plus mirrors unless you have a reason.
+
+Local nodes are different: they follow one of the above, add their own overlays on top (never sent back), and are for one person
+or household. See [Local node](hosting/local.md).
+
 ## What replicates
 
 Only things that are safe to republish:

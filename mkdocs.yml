@@ -47,7 +47,8 @@ nav:
       - Local node: hosting/local.md
       - Proxmox LXC: hosting/proxmox.md
       - Try federation on one machine: hosting/lab.md
-      - Operations (backups, upgrades): deployment.md
+      - Backup and restore: backup.md
+      - Operations: deployment.md
   - Running a node:
       - Administering: administering.md
       - Federation: federation.md
