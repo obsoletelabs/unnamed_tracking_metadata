@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -23,10 +23,17 @@ Sess = Annotated[Session, Depends(get_session)]
 St = Annotated[AppState, Depends(state)]
 
 
+def _iso(dt: datetime | None) -> str | None:
+    """SQLite drops tzinfo; everything is stored as UTC."""
+    if dt is None:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).isoformat()
+
+
 def game_out(row: Canonical, redirected_from: str | None = None) -> dict[str, Any]:
     return {
         "id": row.id, "version": row.version, "redirected_from": redirected_from,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None, **row.view,
+        "updated_at": _iso(row.updated_at), **row.view,
     }
 
 
