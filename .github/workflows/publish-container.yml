@@ -71,7 +71,7 @@ jobs:
           for i in $(seq 40); do curl -fs localhost:8000/api/v2/health && exit 0; sleep 1; done
           docker logs atlas; exit 1
       - name: Scan for known vulnerabilities
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
           severity: CRITICAL,HIGH
