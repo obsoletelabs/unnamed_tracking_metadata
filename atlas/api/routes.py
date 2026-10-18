@@ -12,6 +12,7 @@ from .. import __version__, auth, feed, service
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
 from ..models import Canonical, Observation, ReviewItem, SyncCursor, Token
 from ..normalize import norm_namespace
+from ..providers import ProviderError
 from ..resolve import find
 from ..service import AtlasError
 from .deps import AppState, get_session, require, state
@@ -212,6 +213,45 @@ def review_merge(rid: str, body: MergeBody, st: St, session: Sess,
     _guard_upstream(session, st, body.into)
     row = service.merge_canonicals(session, st.ctx, item.canonical_id, body.into, actor=p.name)
     return game_out(row)
+
+
+# ---- providers ----------------------------------------------------------------------------------------
+
+class FetchBody(BaseModel):
+    external_id: str = Field(min_length=1, max_length=128)
+
+
+@router.get("/providers", tags=["providers"])
+def providers_list(st: St, _: Annotated[auth.Principal, Depends(require("read"))]):
+    return {"results": [{"name": p.name, "requests_per_minute": p.requests_per_minute}
+                        for p in st.providers.providers.values()]}
+
+
+@router.get("/providers/{name}/search", tags=["providers"])
+def provider_search(name: str, q: Annotated[str, Query(min_length=1, max_length=200)], st: St, session: Sess,
+                    _: Annotated[auth.Principal, Depends(require("read"))]):
+    """Lightweight candidate list; nothing is stored. Pick one and POST .../fetch."""
+    try:
+        results = st.providers.lookup(session, name, query=q)
+    except ProviderError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"results": [r.to_item() for r in results]}
+
+
+@router.post("/providers/{name}/fetch", tags=["providers"])
+def provider_fetch(name: str, body: FetchBody, st: St, session: Sess,
+                   _: Annotated[auth.Principal, Depends(require("contribute"))]):
+    """Fetch full details (cached), merge into the canonical record, return it."""
+    try:
+        results = st.providers.lookup(session, name, external_id=body.external_id)
+    except ProviderError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    batch = st.providers.as_batch(name, results)
+    if batch is None:
+        raise AtlasError("provider has no such record", "not_found")
+    res = service.ingest(session, st.ctx, batch)[0]
+    row, _r = service.get_canonical(session, res.canonical_id)  # type: ignore[arg-type]
+    return {"match": res.method, "confidence": res.confidence, "review": res.review, "game": game_out(row)}
 
 
 # ---- federation ---------------------------------------------------------------------------------------

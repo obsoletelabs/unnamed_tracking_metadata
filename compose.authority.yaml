@@ -1,0 +1,35 @@
+# Authority node: PostgreSQL. Put a TLS-terminating proxy in front; do not publish the database port.
+#   docker compose -f compose.authority.yaml up -d
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: atlas
+    volumes: ["pg-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    build: .
+    command: ["atlas", "migrate"]
+    environment: &env
+      ATLAS_ROLE: authority
+      ATLAS_ENVIRONMENT: production
+      ATLAS_DATABASE_URL: postgresql+psycopg://atlas:${POSTGRES_PASSWORD}@db/atlas
+      ATLAS_AUTO_MIGRATE: "false"
+    env_file: [.env]
+    depends_on: {db: {condition: service_healthy}}
+  atlas:
+    build: .
+    command: ["atlas", "serve", "--host", "0.0.0.0", "--forwarded-allow-ips", "*"]
+    environment: *env
+    env_file: [.env]
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on: {migrate: {condition: service_completed_successfully}}
+    restart: unless-stopped
+volumes:
+  pg-data:

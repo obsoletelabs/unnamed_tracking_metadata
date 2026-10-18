@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from . import __version__, auth, ratelimit, sync
 from .api.deps import AppState
 from .api.routes import router
-from .db import make_engine, make_sessionmaker
-from .models import Base
+from .db import make_engine, make_sessionmaker, upgrade
+from .providers import Fetcher, build_registry
 from .service import AtlasError, Ctx
 from .settings import Settings, get_settings
 from .signing import load_identity
@@ -92,8 +92,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     engine = make_engine(settings.database_url)
     maker = make_sessionmaker(engine)
-    if settings.database_url.startswith("sqlite"):
-        Base.metadata.create_all(engine)  # postgres deployments run `atlas migrate`
+    auto = settings.auto_migrate if settings.auto_migrate is not None else settings.database_url.startswith("sqlite")
+    if auto:
+        upgrade(settings.database_url)
     with maker() as s:
         identity = load_identity(s)
         if settings.bootstrap_admin_token:
@@ -113,7 +114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Atlas Metadata", version=__version__, lifespan=lifespan,
                   docs_url="/docs" if settings.environment == "dev" else None, redoc_url=None)
-    app.state.atlas = AppState(ctx=ctx, maker=maker, providers=None)
+    app.state.atlas = AppState(ctx=ctx, maker=maker, providers=Fetcher(settings, build_registry(settings)))
     app.add_middleware(BodyLimit, limit=settings.max_body_bytes)
     app.include_router(router)
 

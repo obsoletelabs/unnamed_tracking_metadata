@@ -132,6 +132,7 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
     applied = 0
     with maker() as session:
         try:
+            service.write_lock(session)
             expected = last
             for e in entries:
                 if e["key_id"] != node_id or e["node_id"] != node_id:

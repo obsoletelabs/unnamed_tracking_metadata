@@ -51,7 +51,8 @@ def test_missing_year_creates_new_record_and_review(session, ctx):
 
 
 def test_sequels_never_auto_match(session, ctx):
-    [a] = ingest(session, ctx, "steam", [{"external_id": "1", "title": "Resident Evil 2", "release_date": "2019-01-25"}])
+    [a] = ingest(session, ctx, "steam",
+                 [{"external_id": "1", "title": "Resident Evil 2", "release_date": "2019-01-25"}])
     [b] = ingest(session, ctx, "gog", [{"external_id": "2", "title": "Resident Evil 3", "release_date": "2020-04-03"}])
     assert a.canonical_id != b.canonical_id and not b.review
 

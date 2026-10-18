@@ -8,6 +8,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session, sessionmaker
 
 from .. import auth, ratelimit
+from ..providers import Fetcher
 from ..service import Ctx
 
 
@@ -15,7 +16,7 @@ from ..service import Ctx
 class AppState:
     ctx: Ctx
     maker: sessionmaker[Session]
-    providers: object  # providers.Registry; typed loosely to avoid an import cycle
+    providers: Fetcher
 
 
 def state(request: Request) -> AppState:

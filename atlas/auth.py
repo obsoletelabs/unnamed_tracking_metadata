@@ -30,7 +30,9 @@ class Principal:
         return "admin" in self.scopes or scope in self.scopes
 
 
-def create_token(session: Session, name: str, scopes: list[str], expires_in_days: int | None = None) -> tuple[Token, str]:
+def create_token(
+    session: Session, name: str, scopes: list[str], expires_in_days: int | None = None
+) -> tuple[Token, str]:
     bad = [s for s in scopes if s not in SCOPES]
     if bad or not scopes:
         raise ValueError(f"scopes must be a non-empty subset of {SCOPES}")

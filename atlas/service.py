@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from . import feed
@@ -48,6 +48,13 @@ class IngestResult:
 
 def _epoch(dt: datetime) -> int:
     return int(dt.timestamp())
+
+
+def write_lock(session: Session) -> None:
+    """Serialise writers on PostgreSQL (transaction-scoped). Resolution is read-then-write, so concurrent
+    writers could otherwise both create a record for the same identity. SQLite already has one writer."""
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(text("SELECT pg_advisory_xact_lock(727274)"))
 
 
 def keys_of(obs: Observation) -> list[tuple[str, str]]:
@@ -107,6 +114,7 @@ def _open_review(session: Session, kind: str, cid: str, candidates: list[tuple[s
 
 
 def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bool = False) -> list[IngestResult]:
+    write_lock(session)
     conn = batch.connection
     ns = norm_namespace(conn.source)
     results: list[IngestResult] = []
@@ -201,6 +209,7 @@ def get_canonical(session: Session, cid: str) -> tuple[Canonical, str | None]:
 
 
 def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: str = "", log: bool = True) -> Canonical:
+    write_lock(session)
     if src == dst:
         raise AtlasError("cannot merge a record into itself")
     s, d = session.get(Canonical, src), session.get(Canonical, dst)
@@ -234,6 +243,7 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
 def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_id: str | None = None,
                        log: bool = True) -> Canonical:
     """Split one observation (a wrongly merged source record) onto its own canonical."""
+    write_lock(session)
     obs = session.get(Observation, observation_id)
     if obs is None or obs.canonical_id is None:
         raise AtlasError("unknown observation", "not_found")
@@ -274,6 +284,7 @@ def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, ac
         raise AtlasError(f"{field} needs a list of strings")
     if field in SCALAR_FIELDS and not isinstance(value, str):
         raise AtlasError(f"{field} needs a string")
+    write_lock(session)
     row = session.get(Canonical, cid)
     if row is None or row.merged_into:
         raise AtlasError("unknown or merged canonical", "not_found")
@@ -290,6 +301,7 @@ def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, ac
 
 
 def clear_lock(session: Session, ctx: Ctx, cid: str, field: str, *, log: bool = True) -> Canonical:
+    write_lock(session)
     lock = session.get(Lock, (cid, field))
     if lock is None:
         raise AtlasError("no such lock", "not_found")

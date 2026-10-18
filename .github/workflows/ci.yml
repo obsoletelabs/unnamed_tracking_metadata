@@ -1,31 +1,43 @@
 name: CI
-
 on:
-  push:
-    branches: [demo-1, main]
+  push: { branches: [main, v2] }
   pull_request:
-
+permissions: { contents: read }
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: pw, POSTGRES_DB: atlas }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+    env:
+      ATLAS_TEST_PG_URL: postgresql+psycopg://postgres:pw@localhost:5432/atlas
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install dependencies
-        run: pip install -r requirements.txt pytest
-      - name: Compile Python
-        run: python -m compileall -q app tests
-      - name: Run tests
-        env:
-          DATABASE_URL: sqlite:///./ci.db
-          SESSION_SECRET: ci-only-session-secret
-          AUTHORITY_MODE: local
-        run: pytest -q
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --extra dev
+      - run: uv run ruff check atlas tests
+      - run: uv run pytest -q
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t atlas:ci .
+      - name: Smoke test
+        run: |
+          docker run -d --name atlas -p 8000:8000 -e ATLAS_ROLE=local atlas:ci
+          for i in $(seq 30); do curl -fs localhost:8000/api/v2/health && exit 0; sleep 1; done
+          docker logs atlas; exit 1
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv export --frozen --no-dev --no-emit-project -o req.txt && uvx pip-audit -r req.txt --no-deps --disable-pip

@@ -1,9 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.pool import StaticPool
 
-from atlas import auth, main
-from atlas.db import make_sessionmaker
+from atlas import main
 
 from .conftest import build_settings
 

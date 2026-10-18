@@ -33,3 +33,7 @@ def test_year_of():
     assert year_of("2020-09-17") == 2020
     assert year_of(None) is None
     assert year_of("n/a") is None
+
+
+def test_single_letter_numerals_are_not_converted():
+    assert norm_title("Mega Man X") != norm_title("Mega Man 10")

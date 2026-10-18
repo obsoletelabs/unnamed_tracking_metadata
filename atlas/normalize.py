@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
-_ROMAN = {"i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10"}
+# single letters (i, v, x) are left alone: "Mega Man X" is not "Mega Man 10"
+_ROMAN = {"ii": "2", "iii": "3", "iv": "4", "vi": "6", "vii": "7", "viii": "8", "ix": "9"}
 _EDITION_WORDS = (
     "game of the year", "goty", "definitive", "complete", "deluxe", "ultimate", "enhanced", "remastered",
     "remaster", "director's cut", "directors cut", "gold", "standard", "collector's", "anniversary",

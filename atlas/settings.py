@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     provider_negative_ttl_seconds: int = Field(default=86400, ge=60)
 
     bootstrap_admin_token: str | None = None
+    # None = migrate automatically on SQLite only; set false on multi-replica Postgres and run `atlas migrate`.
+    auto_migrate: bool | None = None
 
     @field_validator("public_url")
     @classmethod

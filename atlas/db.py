@@ -38,3 +38,20 @@ def session_scope(maker: sessionmaker[Session]) -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def alembic_config(url: str):
+    from pathlib import Path
+
+    from alembic.config import Config
+
+    cfg = Config()
+    cfg.set_main_option("script_location", str(Path(__file__).parent / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    return cfg
+
+
+def upgrade(url: str, revision: str = "head") -> None:
+    from alembic import command
+
+    command.upgrade(alembic_config(url), revision)

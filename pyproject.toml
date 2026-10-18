@@ -16,19 +16,26 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "pgserver>=0.1"]
 
 [project.scripts]
 atlas = "atlas.cli:main"
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [tool.setuptools.packages.find]
 include = ["atlas*"]
+
+[tool.setuptools.package-data]
+atlas = ["migrations/script.py.mako"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 110
+line-length = 120
 target-version = "py312"
 extend-exclude = ["legacy"]
 
