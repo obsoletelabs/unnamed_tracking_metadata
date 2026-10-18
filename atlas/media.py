@@ -31,6 +31,17 @@ class MediaError(Exception):
     pass
 
 
+_TUNNELS = [ipaddress.ip_network(n) for n in ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "2001::/32")]
+
+
+def _public(address: str) -> bool:
+    """Globally routable, and not an IPv6 form that tunnels or translates to an IPv4 address."""
+    ip = ipaddress.ip_address(address)
+    if ip.version == 6 and (ip.ipv4_mapped or any(ip in net for net in _TUNNELS)):
+        return False
+    return ip.is_global
+
+
 def check_url(url: str, settings: Settings) -> tuple[str, str, int, str]:
     """Validate a URL for fetching. Returns (scheme, host, port, ip) with the address pinned."""
     if len(url) > 1000 or any(c.isspace() or ord(c) < 32 or c == "\\" for c in url):
@@ -50,7 +61,7 @@ def check_url(url: str, settings: Settings) -> tuple[str, str, int, str]:
     except OSError as exc:
         raise MediaError("cannot resolve host") from exc
     addrs = {info[4][0] for info in infos}
-    if not addrs or not all(ipaddress.ip_address(a).is_global for a in addrs):
+    if not addrs or not all(_public(a) for a in addrs):
         raise MediaError("address is not publicly routable")
     return parts.scheme, host, port, sorted(addrs)[0]
 
@@ -154,7 +165,7 @@ def cache_one(session: Session, settings: Settings, art: Artwork, client: httpx.
 def cache_pending(maker: sessionmaker[Session], settings: Settings, client: httpx.Client | None = None) -> int:
     """Cache a bounded batch of uncached artwork; safe to call from several workers."""
     done = 0
-    own = client or httpx.Client()
+    own = client or httpx.Client(trust_env=False)  # never route through an environment proxy
     try:
         with maker() as session:
             rows = session.scalars(

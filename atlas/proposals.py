@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from . import accounts, facets
 from .contract import ObservationBatchV1
 from .models import Achievement, Artwork, Canonical, Observation, Proposal, ReputationEvent, User, now
-from .service import AtlasError, Ctx, ingest
+from .service import AtlasError, Ctx, ingest, write_lock
 
 SOURCE = "community"
 SCOPE = "atlas"
@@ -199,10 +199,25 @@ def can_auto_apply(ctx: Ctx, user: User) -> bool:
     return accounts.can_review(s, user) or trusted
 
 
+def _check_capacity(session: Session, settings, kind: str, cid: str, items: list[dict[str, Any]]) -> None:
+    """Refuse up front what could never be approved later, and bound what the server must fetch."""
+    if kind == "artwork":
+        have = session.scalar(select(func.count()).select_from(Artwork).where(
+            Artwork.canonical_id == cid, Artwork.source == SOURCE)) or 0
+        if have + len(items) > settings.community_art_cap:
+            raise AtlasError(f"community artwork for a game is limited to {settings.community_art_cap} images")
+    else:
+        have = session.scalar(select(func.count()).select_from(Achievement).where(
+            Achievement.canonical_id == cid, Achievement.source == SOURCE)) or 0
+        if have + len(items) > facets.MAX_ACH:
+            raise AtlasError("this game already has the maximum number of community achievements")
+
+
 def create(session: Session, ctx: Ctx, user: User, kind: str, canonical_id: str | None, payload: dict[str, Any],
            note: str = "") -> Proposal:
     s = ctx.settings
-    session.flush()  # the limits below are counted in SQL
+    write_lock(session)  # the limits below are counted in SQL; serialise with reviewers
+    session.flush()
     if user.status != "active":
         raise AtlasError("account suspended", "forbidden")
     payload = _validate(kind, canonical_id, payload)
@@ -213,27 +228,31 @@ def create(session: Session, ctx: Ctx, user: User, kind: str, canonical_id: str 
     else:
         canonical_id = None
     note = (note or "").strip()[:2000]
+    if kind in ("artwork", "achievements"):
+        _check_capacity(session, s, kind, canonical_id, payload["items"])  # type: ignore[arg-type]
     pending = session.scalar(select(func.count()).select_from(Proposal).where(
         Proposal.proposer_id == user.id, Proposal.status == "pending"))
     if pending >= s.max_pending_proposals:
         raise AtlasError("too many pending proposals; wait for review", "conflict")
-    if not can_auto_apply(ctx, user):
+    if not accounts.can_review(s, user):  # reviewers are bounded by the audit trail instead
         today = session.scalar(select(func.count()).select_from(Proposal).where(
             Proposal.proposer_id == user.id, Proposal.created_at >= now() - timedelta(days=1)))
-        if today >= s.new_user_daily_proposals:
+        limit = s.trusted_daily_proposals if can_auto_apply(ctx, user) else s.new_user_daily_proposals
+        if today >= limit:
             raise AtlasError("daily proposal limit reached", "conflict")
     p = Proposal(kind=kind, canonical_id=canonical_id, proposer_id=user.id, payload=payload, note=note)
     session.add(p)
     session.flush()
     if can_auto_apply(ctx, user):
         apply(session, ctx, p)
+        # No reputation for self-approved changes: it is earned when a reviewer confirms work.
         p.status, p.auto_applied, p.decided_at = "approved", True, now()
-        adjust_reputation(session, user, REWARD[kind], "approved:" + kind, p.id)
         accounts.audit(session, user.id, "proposal_auto_applied", p.id, {"kind": kind})
     return p
 
 
 def _decidable(session: Session, ctx: Ctx, reviewer: User, pid: str, *, statuses: tuple[str, ...]) -> Proposal:
+    write_lock(session)  # decisions are check-then-write; one at a time, so nothing is applied or paid twice
     session.flush()
     if not accounts.can_review(ctx.settings, reviewer):
         raise AtlasError("review rights required", "forbidden")
@@ -266,10 +285,10 @@ def review(session: Session, ctx: Ctx, reviewer: User, pid: str, *, approve: boo
 
 def revert(session: Session, ctx: Ctx, reviewer: User, pid: str, note: str = "") -> Proposal:
     p = _decidable(session, ctx, reviewer, pid, statuses=("approved",))
-    if p.canonical_id:
+    if p.canonical_id and p.decided_at is not None:
         newer = session.scalars(select(Proposal.id).where(
             Proposal.canonical_id == p.canonical_id, Proposal.kind == p.kind, Proposal.status == "approved",
-            Proposal.id != p.id, Proposal.created_at > p.created_at)).first()
+            Proposal.id != p.id, Proposal.decided_at > p.decided_at)).first()  # order of application
         if newer:  # a revert restores the state before this proposal, which would also erase newer ones
             raise AtlasError("revert the newer proposals for this game first", "conflict")
     revert_applied(session, ctx, p)
@@ -277,12 +296,16 @@ def revert(session: Session, ctx: Ctx, reviewer: User, pid: str, note: str = "")
     p.decision_note = (note or "").strip()[:2000]
     proposer = session.get(User, p.proposer_id)
     if proposer:
-        adjust_reputation(session, proposer, REVERT_PENALTY - REWARD[p.kind], "reverted:" + p.kind, p.id)
+        earned = session.scalar(select(func.coalesce(func.sum(ReputationEvent.delta), 0)).where(
+            ReputationEvent.proposal_id == p.id, ReputationEvent.delta > 0)) or 0
+        adjust_reputation(session, proposer, REVERT_PENALTY - earned, "reverted:" + p.kind, p.id)
     accounts.audit(session, reviewer.id, "proposal_reverted", p.id)
     return p
 
 
 def withdraw(session: Session, user: User, pid: str) -> Proposal:
+    write_lock(session)
+    session.flush()
     p = session.get(Proposal, pid)
     if p is None or p.proposer_id != user.id:
         raise AtlasError("unknown proposal", "not_found")

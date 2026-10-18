@@ -10,7 +10,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Token, now
+from .models import Token, User, now
 
 SCOPES = ("read", "contribute", "curate", "sync", "admin")
 PREFIX = "atl_"
@@ -75,7 +75,13 @@ def authenticate(session: Session, header: str | None) -> Principal | None:
         exp = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=current.tzinfo)
         if exp <= current:
             return None
+    scopes = frozenset(row.scopes)
+    if row.user_id:
+        owner = session.get(User, row.user_id)
+        if owner is None or owner.status != "active":
+            return None
+        scopes &= {"read"}  # personal tokens never write: contributions go through proposals and review
     last = row.last_used_at
     if last is None or (current - (last if last.tzinfo else last.replace(tzinfo=current.tzinfo))).total_seconds() > 60:
         row.last_used_at = current
-    return Principal(row.id, row.name, frozenset(row.scopes))
+    return Principal(row.id, row.name, scopes)

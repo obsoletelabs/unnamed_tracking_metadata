@@ -11,8 +11,8 @@ from datetime import timedelta
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .models import AuditEntry, User, UserSession, now
-from .service import AtlasError
+from .models import AuditEntry, Token, User, UserSession, now
+from .service import AtlasError, write_lock
 from .settings import Settings
 
 USERNAME = re.compile(r"^[a-z0-9][a-z0-9_-]{2,31}$")
@@ -58,9 +58,14 @@ def register(session: Session, settings: Settings, username: str, password: str,
         (User.username == username) | ((User.email == email) if email else False))).first()
     if taken:
         raise AtlasError("username or email already in use", "conflict")
-    first = session.scalar(select(func.count()).select_from(User)) == 0
+    write_lock(session)  # two simultaneous first registrations must not both count zero users
+    session.flush()
+    if settings.initial_admin:
+        first = username == settings.initial_admin.strip().lower()
+    else:
+        first = session.scalar(select(func.count()).select_from(User)) == 0
     user = User(username=username, email=email, password_hash=hash_password(password),
-                role="admin" if first else "user")  # the first account administers the node
+                role="admin" if first else "user")
     session.add(user)
     session.flush()
     audit(session, user.id, "register", user.id, {"first_admin": first})
@@ -142,4 +147,6 @@ def set_status(session: Session, actor: User, target: User, status: str) -> None
     target.status = status
     if status == "suspended":
         end_all_sessions(session, target.id)
+        for tok in session.scalars(select(Token).where(Token.user_id == target.id, Token.revoked_at.is_(None))):
+            tok.revoked_at = now()
     audit(session, actor.id, "set_status", target.id, {"status": status})

@@ -17,8 +17,8 @@ Built for the [unnamed tracking app](https://github.com/obsoletelabs/unnamed_tra
 
 Atlas ships its own site (server-rendered, no build step, dark/light automatic): public browsing of games, artwork, achievements and provenance; accounts and a proposal workflow; reviewer tools; admin. The tracking app only pulls metadata through the API.
 
-- **Contribute:** anyone can register (`ATLAS_REGISTRATION=open|closed`) and propose edits, new games, artwork and achievements. The first account becomes the administrator.
-- **Reputation:** approved proposals earn reputation; from `ATLAS_AUTO_APPROVE_REPUTATION` (default 50) changes apply immediately and can still be reverted; from `ATLAS_CURATOR_REPUTATION` (default 500) a user can review others. Rejections and reverts cost reputation. Per-user pending and daily limits apply.
+- **Contribute:** anyone can register (`ATLAS_REGISTRATION=open|closed`) and propose edits, new games, artwork and achievements. The administrator is the account named by `ATLAS_INITIAL_ADMIN` (if unset, the first account to register; production with open registration refuses to start without it). `atlas make-admin <username>` promotes someone later.
+- **Reputation:** proposals a reviewer approves earn reputation (self-applied changes earn none, and are capped per day); from `ATLAS_AUTO_APPROVE_REPUTATION` (default 50) changes apply immediately and can still be reverted; from `ATLAS_CURATOR_REPUTATION` (default 500) a user can review others. Rejections and reverts cost reputation. Per-user pending and daily limits apply.
 - **Review:** diff view of each proposal, a possible-duplicates queue with one-click merge, split-off of wrongly merged source records, field pinning, ordered revert.
 - **Artwork** is shown only after the server has downloaded and verified it (pinned public IP, redirect revalidation, size and pixel caps, decode check); pages never hotlink third-party images.
 - Hardened by default: CSRF on every form, HttpOnly SameSite session cookies, a strict CSP with no inline script or style, login/registration throttling.

@@ -68,6 +68,23 @@ def cmd_sync(_) -> int:
     return 0
 
 
+def cmd_make_admin(args) -> int:
+    from sqlalchemy import select
+
+    from .models import User
+
+    _, maker = _maker()
+    with maker() as session:
+        user = session.scalars(select(User).where(User.username == args.username.strip().lower())).first()
+        if user is None:
+            print("no such user", file=sys.stderr)
+            return 1
+        user.role = "admin"
+        session.commit()
+    print(f"{user.username} is now an administrator")
+    return 0
+
+
 def cmd_cache_media(_) -> int:
     from . import media
 
@@ -107,6 +124,9 @@ def main(argv: list[str] | None = None) -> int:
     t.set_defaults(fn=cmd_token)
     sub.add_parser("node").set_defaults(fn=cmd_node)
     sub.add_parser("sync").set_defaults(fn=cmd_sync)
+    a = sub.add_parser("make-admin")
+    a.add_argument("username")
+    a.set_defaults(fn=cmd_make_admin)
     sub.add_parser("cache-media").set_defaults(fn=cmd_cache_media)
     i = sub.add_parser("import-legacy")
     i.add_argument("path", help="path to the demo-1 SQLite database")

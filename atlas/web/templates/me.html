@@ -13,7 +13,7 @@
 </tbody></table>{% else %}<p class="muted">Nothing yet. Open a game and choose “Suggest an edit”.</p>{% endif %}
 
 <h2>API tokens</h2>
-<p class="muted small">Personal tokens let your own tools read Atlas. They carry only the scopes you choose and never grant review rights.</p>
+<p class="muted small">Personal tokens let your own tools read Atlas. They are read-only; suggest changes on the site so they can be reviewed.</p>
 {% if new_token %}<div class="flash"><strong>{{ new_token }}</strong><br><span class="small">Copy it now; it will not be shown again.</span></div>{% endif %}
 {% if tokens %}<table><thead><tr><th>Name</th><th>Scopes</th><th>Last used</th><th></th></tr></thead><tbody>
 {% for t in tokens %}<tr><td>{{ t.name }}</td><td>{{ t.scopes|join(', ') }}</td><td class="small">{{ t.last_used or 'never' }}</td>
@@ -21,7 +21,7 @@
 </tbody></table>{% endif %}
 <form class="card" method="post" action="/me/tokens">{{ csrf(p.csrf) }}
   <label for="tname">Name</label><input id="tname" type="text" name="name" required maxlength="128" placeholder="Tracking app">
-  <label for="tscope">Access</label><select id="tscope" name="scope"><option value="read">Read only</option><option value="read,contribute">Read and submit library observations</option></select>
+  <label for="tscope">Access</label><select id="tscope" name="scope"><option value="read">Read only</option></select>
   <p><button type="submit">Create token</button></p>
 </form>
 

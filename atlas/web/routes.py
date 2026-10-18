@@ -192,8 +192,11 @@ def login_form(p: Annotated[Page, Depends(page)], next: str = "/"):
 @router.post("/login")
 def login(p: Annotated[Page, Depends(csrf_form)], username: Annotated[str, Form(max_length=64)],
           password: Annotated[str, Form(max_length=256)], next: Annotated[str, Form()] = "/"):
-    throttle(p, f"login:ip:{client_ip(p.request)}", 30, 300, "Too many sign-in attempts")
-    throttle(p, f"login:user:{username.strip().lower()[:40]}", 10, 900, "Too many sign-in attempts for this account")
+    ip, name = client_ip(p.request), username.strip().lower()[:40]
+    throttle(p, f"login:ip:{ip}", 30, 300, "Too many sign-in attempts")
+    # keyed by address too, so a stranger cannot lock a real user out by guessing their name
+    throttle(p, f"login:pair:{ip}:{name}", 10, 900, "Too many sign-in attempts for this account")
+    throttle(p, f"login:user:{name}", 100, 3600, "This account is receiving too many sign-in attempts")
     user = accounts.authenticate(p.session, username, password)
     if user is None:
         return render(p, "login.html", status=400, anon_csrf=True, next=safe_next(next),
@@ -385,7 +388,7 @@ def me(p: Annotated[Page, Depends(user_page)]):
 @router.post("/me/tokens", response_class=HTMLResponse)
 def token_create(p: Annotated[Page, Depends(user_form)], name: Annotated[str, Form(max_length=128)],
                  scope: Annotated[str, Form()] = "read"):
-    scopes = ["read", "contribute"] if scope == "read,contribute" else ["read"]
+    scopes = ["read"]  # personal tokens are read-only; see auth.authenticate
     active = p.session.scalar(select(func.count()).select_from(Token).where(
         Token.user_id == p.me.id, Token.revoked_at.is_(None)))
     if active >= 10:

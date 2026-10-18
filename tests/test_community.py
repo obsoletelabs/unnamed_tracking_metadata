@@ -149,7 +149,7 @@ def test_trusted_edits_apply_immediately_and_can_be_reverted(session, ctx, game)
     proposals.revert(session, ctx, admin, q.id, "vandalism")
     v = view(session, game)
     assert v["title"] == "Hades" and v["developer"] == "Supergiant Games" and q.status == "reverted"
-    assert trusted.reputation == before - proposals.REWARD["edit"] + proposals.REVERT_PENALTY
+    assert trusted.reputation == before + proposals.REVERT_PENALTY  # self-approved work earned nothing to lose
     assert trusted.reputation < ctx.settings.auto_approve_reputation  # the revert cost them their fast lane
     trusted.reputation = 100
     r = proposals.create(session, ctx, trusted, "edit", game, {"series": "S"})

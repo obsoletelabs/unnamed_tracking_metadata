@@ -5,7 +5,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from atlas import db, feed, service
 from atlas.models import Canonical, ChangeLog, Crosswalk, Observation
@@ -81,3 +81,59 @@ def test_rate_limit_counts_exactly_under_concurrency(pg):
     with ThreadPoolExecutor(16) as ex:
         results = list(ex.map(lambda _: ratelimit.hit(maker, "k", 10, clock=lambda: 1000.0)[0], range(40)))
     assert results.count(True) == 10 and results.count(False) == 30
+
+
+def test_concurrent_community_races(pg):
+    """Two reviewers approving one proposal, and two simultaneous first registrations."""
+    from atlas import accounts, proposals
+    from atlas.models import Proposal, User
+
+    maker, ctx = pg
+    with maker() as s:
+        [r] = service.ingest(s, ctx, batch("igdb", [{"external_id": "1", "title": "Hades",
+                                                     "release_date": "2020-09-17"}]), system=True)
+        a = accounts.register(s, ctx.settings, "alice", "correct horse battery")
+        b = accounts.register(s, ctx.settings, "bob", "correct horse battery")
+        c = accounts.register(s, ctx.settings, "carol", "correct horse battery")
+        b.role = c.role = "curator"
+        u = accounts.register(s, ctx.settings, "dave", "correct horse battery")
+        p = proposals.create(s, ctx, u, "edit", r.canonical_id, {"developer": "Dev"})
+        s.commit()
+        pid, rid, uid = p.id, r.canonical_id, u.id
+        assert a.role == "admin"
+
+    def approve(name):
+        with maker() as s:
+            reviewer = s.scalars(select(User).where(User.username == name)).one()
+            try:
+                proposals.review(s, ctx, reviewer, pid, approve=True)
+                s.commit()
+                return "ok"
+            except Exception as exc:
+                s.rollback()
+                return type(exc).__name__
+
+    with ThreadPoolExecutor(2) as ex:
+        results = list(ex.map(approve, ["bob", "carol"]))
+    assert sorted(results) == ["AtlasError", "ok"], results
+    with maker() as s:
+        assert s.get(User, uid).reputation == proposals.REWARD["edit"]  # paid once
+        assert s.get(Proposal, pid).status == "approved"
+
+    def register(name):
+        with maker() as s:
+            try:
+                accounts.register(s, ctx.settings, name, "correct horse battery")
+                s.commit()
+            except Exception:
+                s.rollback()
+
+    with maker() as s:  # start the first-registration race from an empty user table
+        s.execute(text("TRUNCATE app_user CASCADE"))
+        s.commit()
+    with ThreadPoolExecutor(6) as ex:
+        list(ex.map(register, [f"racer{i}" for i in range(6)]))
+    with maker() as s:
+        roles = [u.role for u in s.scalars(select(User))]
+        assert roles.count("admin") == 1 and len(roles) == 6, roles
+    _ = rid

@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     max_pending_proposals: int = Field(default=20, ge=1)
     new_user_daily_proposals: int = Field(default=10, ge=1)
     password_min_length: int = Field(default=10, ge=8)
+    trusted_daily_proposals: int = Field(default=100, ge=1)  # cap for auto-applied edits per user per day
+    community_art_cap: int = Field(default=50, ge=1, le=200)  # community artwork per game
+    initial_admin: str | None = None  # username that becomes administrator; unset = first account
 
     bootstrap_admin_token: str | None = None
     # None = migrate automatically on SQLite only; set false on multi-replica Postgres and run `atlas migrate`.
@@ -99,6 +102,8 @@ class Settings(BaseSettings):
                 raise ValueError("an authority in production needs PostgreSQL")
             if not self.public_url.startswith("https://"):
                 raise ValueError("ATLAS_PUBLIC_URL must be https in production")
+            if self.registration == "open" and not self.initial_admin and not self.bootstrap_admin_token:
+                raise ValueError("production with open registration needs ATLAS_INITIAL_ADMIN so nobody else can claim it")
             if self.bootstrap_admin_token and len(self.bootstrap_admin_token) < 32:
                 raise ValueError("ATLAS_BOOTSTRAP_ADMIN_TOKEN must be at least 32 characters")
         return self
