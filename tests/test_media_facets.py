@@ -234,7 +234,9 @@ def test_provider_fetch_attaches_artwork_and_achievements(api):
         return httpx.Response(404)
 
     api.state.providers.client = client_for(handler)
-    api.state.providers.settings = api.state.providers.settings.model_copy(update={"steam_api_key": "k"})
+    api.state.base = api.state.base.model_copy(update={"steam_api_key": "k"})  # live settings derive from base
+    api.state.providers.settings = api.state.base
+    api.state.ctx.settings = api.state.base
     r = api.post("/api/v2/providers/steam/fetch", json={"external_id": "620"})
     assert r.status_code == 200, r.text
     cid = r.json()["game"]["id"]
