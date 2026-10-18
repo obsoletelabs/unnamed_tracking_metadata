@@ -36,11 +36,12 @@ class Settings(BaseSettings):
 
     # Merge: higher wins. Unlisted sources get default_trust.
     source_trust: dict[str, int] = Field(
-        default_factory=lambda: {"curator": 100, "manual": 90, "igdb": 70, "steam": 65, "gog": 60, "rawg": 50}
+        default_factory=lambda: {"curator": 100, "manual": 90, "community": 85, "igdb": 70, "steam": 65,
+                                 "gog": 60, "rawg": 50}
     )
     default_trust: int = 40
     # Sources whose observations may be published on the change feed.
-    redistributable_sources: set[str] = Field(default_factory=lambda: {"curator", "manual"})
+    redistributable_sources: set[str] = Field(default_factory=lambda: {"curator", "manual", "community"})
 
     # API safety
     max_batch: int = Field(default=1000, ge=1, le=5000)
@@ -64,6 +65,15 @@ class Settings(BaseSettings):
     media_cache_batch: int = Field(default=10, ge=1, le=200)
     media_allowed_hosts: set[str] = Field(default_factory=set)  # empty = any public host
     steam_api_key: str | None = None
+
+    # Community
+    registration: Literal["open", "closed"] = "open"
+    session_ttl_days: int = Field(default=14, ge=1, le=90)
+    auto_approve_reputation: int = Field(default=50, ge=0)  # 0 disables auto-approval
+    curator_reputation: int = Field(default=500, ge=0)  # reputation that grants review rights; 0 = manual grants only
+    max_pending_proposals: int = Field(default=20, ge=1)
+    new_user_daily_proposals: int = Field(default=10, ge=1)
+    password_min_length: int = Field(default=10, ge=8)
 
     bootstrap_admin_token: str | None = None
     # None = migrate automatically on SQLite only; set false on multi-replica Postgres and run `atlas migrate`.

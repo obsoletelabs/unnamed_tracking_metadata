@@ -152,6 +152,7 @@ class Token(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("app_user.id"), nullable=True, index=True)
 
 
 class RateCounter(Base):
@@ -214,3 +215,70 @@ class Achievement(Base):
     redistributable: Mapped[bool] = mapped_column(Boolean, default=False)
 
     __table_args__ = (UniqueConstraint("canonical_id", "source", "norm_name", name="uq_achievement"),)
+
+
+class User(Base):
+    __tablename__ = "app_user"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    username: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(254), unique=True, nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(256))
+    role: Mapped[str] = mapped_column(String(16), default="user")  # user | curator | admin
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active | suspended
+    reputation: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserSession(Base):
+    __tablename__ = "user_session"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256 of the cookie secret
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    csrf: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class Proposal(Base):
+    """A community change awaiting review (or already applied by a trusted user, and revertable)."""
+
+    __tablename__ = "proposal"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    kind: Mapped[str] = mapped_column(String(16))  # edit | new_game | artwork | achievements
+    canonical_id: Mapped[str | None] = mapped_column(ForeignKey("canonical.id"), nullable=True, index=True)
+    proposer_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    previous: Mapped[Any] = mapped_column(JSON, nullable=True)  # state before applying, for revert
+    note: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    # pending | approved | rejected | withdrawn | reverted
+    auto_applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    decided_by: Mapped[str | None] = mapped_column(ForeignKey("app_user.id"), nullable=True)
+    decision_note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReputationEvent(Base):
+    __tablename__ = "reputation_event"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    delta: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(64))
+    proposal_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AuditEntry(Base):
+    __tablename__ = "audit_entry"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    actor_id: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(48))
+    target: Mapped[str] = mapped_column(String(128), default="")
+    detail: Mapped[Any] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)

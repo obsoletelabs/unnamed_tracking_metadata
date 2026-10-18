@@ -72,6 +72,7 @@ class SourceObservationV1(BaseModel):
     external_id: str = Field(min_length=1, max_length=256)
     title: str | None = Field(default=None, min_length=1, max_length=500)
     platform: str | None = Field(default=None, max_length=50)
+    platforms: list[Annotated[str, Field(max_length=50)]] | None = Field(default=None, max_length=20)  # Atlas extension
     edition: str | None = Field(default=None, max_length=100)
     release_date: date | None = None
     provider_ids: dict[ProviderKey, ProviderIdentity] | None = Field(default=None, max_length=32)
@@ -89,6 +90,8 @@ class SourceObservationV1(BaseModel):
     def reported(self, *, strip_personal: bool = True) -> dict[str, Any]:
         """Only what the source reported, JSON-ready; personal facts removed by default."""
         out: dict[str, Any] = {}
+        if self.platforms:
+            out["platforms"] = list(self.platforms)
         for name in ("title", "platform", "edition"):
             if getattr(self, name) is not None:
                 out[name] = getattr(self, name)

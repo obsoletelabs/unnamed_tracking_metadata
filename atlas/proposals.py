@@ -1,0 +1,292 @@
+"""Community proposals, review, reputation and revert."""
+
+from __future__ import annotations
+
+import re
+from datetime import date, timedelta
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from . import accounts, facets
+from .contract import ObservationBatchV1
+from .models import Achievement, Artwork, Canonical, Observation, Proposal, ReputationEvent, User, now
+from .service import AtlasError, Ctx, ingest
+
+SOURCE = "community"
+SCOPE = "atlas"
+KINDS = ("edit", "new_game", "artwork", "achievements")
+REWARD = {"edit": 5, "new_game": 10, "artwork": 3, "achievements": 5}
+REJECT_PENALTY = -2
+REVERT_PENALTY = -10
+SCALAR = {"title": 500, "description": 20000, "developer": 200, "publisher": 200, "series": 200}
+LISTS = ("tags", "features", "platforms")
+_STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def adjust_reputation(session: Session, user: User, delta: int, reason: str, proposal_id: str | None = None) -> None:
+    if delta:
+        user.reputation += delta
+        session.add(ReputationEvent(user_id=user.id, delta=delta, reason=reason, proposal_id=proposal_id))
+
+
+# ---- validation ---------------------------------------------------------------------------------------
+
+def clean_edit(payload: dict[str, Any]) -> dict[str, Any]:
+    """Only fields with a value; an empty value cannot clear data (omission never deletes)."""
+    unknown = set(payload) - set(SCALAR) - set(LISTS) - {"release_date"}
+    if unknown:
+        raise AtlasError(f"cannot edit: {', '.join(sorted(unknown))}")
+    out: dict[str, Any] = {}
+    for key, limit in SCALAR.items():
+        if payload.get(key) not in (None, ""):
+            value = payload[key]
+            if not isinstance(value, str) or len(value.strip()) > limit:
+                raise AtlasError(f"{key} must be text up to {limit} characters")
+            out[key] = value.strip()
+    if payload.get("release_date") not in (None, ""):
+        value = payload["release_date"]
+        try:
+            if not isinstance(value, str) or not _STAMP.match(value):
+                raise ValueError
+            date.fromisoformat(value)
+        except ValueError as exc:
+            raise AtlasError("release_date must be YYYY-MM-DD") from exc
+        out["release_date"] = value
+    for key in LISTS:
+        value = payload.get(key)
+        if value:
+            valid = isinstance(value, list) and len(value) <= 50 and all(
+                isinstance(v, str) and 0 < len(v.strip()) <= 128 for v in value)
+            if not valid:
+                raise AtlasError(f"{key} must be a list of up to 50 short strings")
+            out[key] = [v.strip() for v in value]
+    if not out:
+        raise AtlasError("nothing to change")
+    return out
+
+
+def _validate(kind: str, canonical_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+    if kind == "edit":
+        return clean_edit(payload)
+    if kind == "new_game":
+        if not (payload.get("title") or "").strip():
+            raise AtlasError("a title is required")
+        body = clean_edit({k: v for k, v in payload.items() if k != "provider_ids"})
+        ids = payload.get("provider_ids") or {}
+        if not isinstance(ids, dict) or len(ids) > 16 or not all(
+                re.fullmatch(r"[a-z0-9._-]{1,50}", str(k)) and isinstance(v, str) and 0 < len(v) <= 256
+                for k, v in ids.items()):
+            raise AtlasError("provider_ids must map provider keys to ids")
+        if ids:
+            body["provider_ids"] = ids
+        return body
+    if kind == "artwork":
+        return {"items": facets.clean_artwork(payload.get("items") or [])}
+    if kind == "achievements":
+        return {"items": facets.clean_achievements(payload.get("items") or [])}
+    raise AtlasError(f"kind must be one of {KINDS}")
+
+
+# ---- applying -----------------------------------------------------------------------------------------
+
+def _community_obs(session: Session, cid: str) -> Observation | None:
+    return session.scalars(select(Observation).where(
+        Observation.source == SOURCE, Observation.external_id == cid, Observation.is_current.is_(True))).first()
+
+
+def _to_item(cid: str, reported: dict[str, Any]) -> dict[str, Any]:
+    item = {k: v for k, v in reported.items() if k in ("title", "platform", "platforms", "edition", "release_date",
+                                                       "provider_ids", "facts", "source_updated_at")}
+    item["external_id"] = cid
+    return item
+
+
+def _ingest_community(session: Session, ctx: Ctx, cid: str, reported: dict[str, Any], external_id: str | None = None,
+                      force: bool = True) -> str:
+    item = _to_item(external_id or cid, reported)
+    item.pop("source_updated_at", None)
+    batch = ObservationBatchV1.model_validate({
+        "connection": {"source_kind": "metadata", "source": SOURCE, "source_scope": SCOPE},
+        "observations": [item]})
+    res = ingest(session, ctx, batch, curator=True, force_canonical=cid if force else None)[0]
+    return res.canonical_id  # type: ignore[return-value]
+
+
+def _merge_edit(current: dict[str, Any], edit: dict[str, Any]) -> dict[str, Any]:
+    out = {k: v for k, v in current.items() if k != "source_updated_at"}
+    facts = dict(out.get("facts") or {})
+    for key, value in edit.items():
+        if key in ("title", "release_date"):
+            out[key] = value
+        elif key == "platforms":
+            out["platforms"] = value
+        else:
+            facts[key] = value
+    if facts:
+        out["facts"] = facts
+    return out
+
+
+def apply(session: Session, ctx: Ctx, p: Proposal) -> None:
+    if p.kind == "edit":
+        cid = p.canonical_id
+        if cid is None or session.get(Canonical, cid) is None:
+            raise AtlasError("the game no longer exists", "not_found")
+        cur = _community_obs(session, cid)
+        before = dict(cur.payload) if cur else None
+        p.previous = {"payload": before}
+        _ingest_community(session, ctx, cid, _merge_edit(before or {}, p.payload))
+    elif p.kind == "new_game":
+        reported = _merge_edit({}, {k: v for k, v in p.payload.items() if k != "provider_ids"})
+        if p.payload.get("provider_ids"):
+            reported["provider_ids"] = p.payload["provider_ids"]
+        p.canonical_id = _ingest_community(session, ctx, "new-" + p.id, reported, external_id="new-" + p.id,
+                                           force=False)
+        p.previous = {"created": True}
+    elif p.kind in ("artwork", "achievements"):
+        cid = p.canonical_id
+        if cid is None or session.get(Canonical, cid) is None:
+            raise AtlasError("the game no longer exists", "not_found")
+        redistribute = ctx.settings.role == "authority"
+        if p.kind == "artwork":
+            rows = session.scalars(select(Artwork).where(Artwork.canonical_id == cid, Artwork.source == SOURCE)).all()
+            old = [{"kind": a.kind, "url": a.url, "priority": a.priority, "width": a.width, "height": a.height}
+                   for a in rows]
+            old = [{k: v for k, v in i.items() if v is not None} for i in old]
+            p.previous = {"items": old}
+            facets.set_artwork(session, ctx, cid, SOURCE, old + p.payload["items"], redistributable=redistribute)
+        else:
+            rows = session.scalars(select(Achievement).where(
+                Achievement.canonical_id == cid, Achievement.source == SOURCE)).all()
+            old = [{"name": a.name, "description": a.description, "external_id": a.external_id, "hidden": a.hidden,
+                    **({"icon_url": a.icon_url} if a.icon_url else {}),
+                    **({"global_percent": a.global_percent} if a.global_percent is not None else {})} for a in rows]
+            p.previous = {"items": old}
+            facets.set_achievements(session, ctx, cid, SOURCE, old + p.payload["items"], redistributable=redistribute)
+    else:  # pragma: no cover - validated earlier
+        raise AtlasError("unknown proposal kind")
+
+
+def revert_applied(session: Session, ctx: Ctx, p: Proposal) -> None:
+    prev = p.previous or {}
+    if p.kind == "edit":
+        before = prev.get("payload")
+        if before:
+            _ingest_community(session, ctx, p.canonical_id, before)  # type: ignore[arg-type]
+        else:  # there was no community observation: neutralise it by superseding with an empty claim
+            cur = _community_obs(session, p.canonical_id)  # type: ignore[arg-type]
+            if cur:
+                cur.is_current = False
+                from .service import rebuild
+                rebuild(session, ctx, p.canonical_id)  # type: ignore[arg-type]
+    elif p.kind == "artwork":
+        facets.set_artwork(session, ctx, p.canonical_id, SOURCE, prev.get("items", []),  # type: ignore[arg-type]
+                           redistributable=ctx.settings.role == "authority")
+    elif p.kind == "achievements":
+        facets.set_achievements(session, ctx, p.canonical_id, SOURCE, prev.get("items", []),  # type: ignore[arg-type]
+                                redistributable=ctx.settings.role == "authority")
+    else:
+        raise AtlasError("this kind of proposal cannot be reverted; merge or edit the game instead", "conflict")
+
+
+# ---- workflow -----------------------------------------------------------------------------------------
+
+def can_auto_apply(ctx: Ctx, user: User) -> bool:
+    s = ctx.settings
+    trusted = s.auto_approve_reputation > 0 and user.reputation >= s.auto_approve_reputation
+    return accounts.can_review(s, user) or trusted
+
+
+def create(session: Session, ctx: Ctx, user: User, kind: str, canonical_id: str | None, payload: dict[str, Any],
+           note: str = "") -> Proposal:
+    s = ctx.settings
+    session.flush()  # the limits below are counted in SQL
+    if user.status != "active":
+        raise AtlasError("account suspended", "forbidden")
+    payload = _validate(kind, canonical_id, payload)
+    if kind != "new_game":
+        row = session.get(Canonical, canonical_id) if canonical_id else None
+        if row is None or row.merged_into:
+            raise AtlasError("unknown game", "not_found")
+    else:
+        canonical_id = None
+    note = (note or "").strip()[:2000]
+    pending = session.scalar(select(func.count()).select_from(Proposal).where(
+        Proposal.proposer_id == user.id, Proposal.status == "pending"))
+    if pending >= s.max_pending_proposals:
+        raise AtlasError("too many pending proposals; wait for review", "conflict")
+    if not can_auto_apply(ctx, user):
+        today = session.scalar(select(func.count()).select_from(Proposal).where(
+            Proposal.proposer_id == user.id, Proposal.created_at >= now() - timedelta(days=1)))
+        if today >= s.new_user_daily_proposals:
+            raise AtlasError("daily proposal limit reached", "conflict")
+    p = Proposal(kind=kind, canonical_id=canonical_id, proposer_id=user.id, payload=payload, note=note)
+    session.add(p)
+    session.flush()
+    if can_auto_apply(ctx, user):
+        apply(session, ctx, p)
+        p.status, p.auto_applied, p.decided_at = "approved", True, now()
+        adjust_reputation(session, user, REWARD[kind], "approved:" + kind, p.id)
+        accounts.audit(session, user.id, "proposal_auto_applied", p.id, {"kind": kind})
+    return p
+
+
+def _decidable(session: Session, ctx: Ctx, reviewer: User, pid: str, *, statuses: tuple[str, ...]) -> Proposal:
+    session.flush()
+    if not accounts.can_review(ctx.settings, reviewer):
+        raise AtlasError("review rights required", "forbidden")
+    p = session.get(Proposal, pid)
+    if p is None:
+        raise AtlasError("unknown proposal", "not_found")
+    if p.status not in statuses:
+        raise AtlasError(f"proposal is {p.status}", "conflict")
+    if p.proposer_id == reviewer.id and reviewer.role != "admin":
+        raise AtlasError("you cannot review your own proposal", "forbidden")
+    return p
+
+
+def review(session: Session, ctx: Ctx, reviewer: User, pid: str, *, approve: bool, note: str = "") -> Proposal:
+    p = _decidable(session, ctx, reviewer, pid, statuses=("pending",))
+    proposer = session.get(User, p.proposer_id)
+    if approve:
+        apply(session, ctx, p)
+        p.status = "approved"
+        if proposer:
+            adjust_reputation(session, proposer, REWARD[p.kind], "approved:" + p.kind, p.id)
+    else:
+        p.status = "rejected"
+        if proposer:
+            adjust_reputation(session, proposer, REJECT_PENALTY, "rejected:" + p.kind, p.id)
+    p.decided_by, p.decided_at, p.decision_note = reviewer.id, now(), (note or "").strip()[:2000]
+    accounts.audit(session, reviewer.id, "proposal_" + p.status, p.id)
+    return p
+
+
+def revert(session: Session, ctx: Ctx, reviewer: User, pid: str, note: str = "") -> Proposal:
+    p = _decidable(session, ctx, reviewer, pid, statuses=("approved",))
+    if p.canonical_id:
+        newer = session.scalars(select(Proposal.id).where(
+            Proposal.canonical_id == p.canonical_id, Proposal.kind == p.kind, Proposal.status == "approved",
+            Proposal.id != p.id, Proposal.created_at > p.created_at)).first()
+        if newer:  # a revert restores the state before this proposal, which would also erase newer ones
+            raise AtlasError("revert the newer proposals for this game first", "conflict")
+    revert_applied(session, ctx, p)
+    p.status, p.decided_by, p.decided_at = "reverted", reviewer.id, now()
+    p.decision_note = (note or "").strip()[:2000]
+    proposer = session.get(User, p.proposer_id)
+    if proposer:
+        adjust_reputation(session, proposer, REVERT_PENALTY - REWARD[p.kind], "reverted:" + p.kind, p.id)
+    accounts.audit(session, reviewer.id, "proposal_reverted", p.id)
+    return p
+
+
+def withdraw(session: Session, user: User, pid: str) -> Proposal:
+    p = session.get(Proposal, pid)
+    if p is None or p.proposer_id != user.id:
+        raise AtlasError("unknown proposal", "not_found")
+    if p.status != "pending":
+        raise AtlasError(f"proposal is {p.status}", "conflict")
+    p.status, p.decided_at = "withdrawn", now()
+    return p

@@ -43,7 +43,7 @@ def _value(obs: Obs, field: str) -> Any:
     if field in ("title", "release_date"):
         return p.get(field)
     if field == "platforms":
-        return [p["platform"]] if p.get("platform") else None
+        return ([p["platform"]] if p.get("platform") else []) + list(p.get("platforms") or []) or None
     return (p.get("facts") or {}).get(field)
 
 

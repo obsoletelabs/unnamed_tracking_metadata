@@ -64,6 +64,7 @@ def keys_of(obs: Observation) -> list[tuple[str, str]]:
 
 
 def rebuild(session: Session, ctx: Ctx, cid: str) -> Canonical:
+    session.flush()  # the merge reads observations and locks with SQL
     row = session.get(Canonical, cid)
     if row is None:
         raise AtlasError(f"unknown canonical {cid}", "not_found")
@@ -114,7 +115,7 @@ def _open_review(session: Session, kind: str, cid: str, candidates: list[tuple[s
 
 
 def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bool = False,
-           system: bool = False) -> list[IngestResult]:
+           system: bool = False, force_canonical: str | None = None) -> list[IngestResult]:
     """`curator`: token holds the curate scope. `system`: the node itself (provider fetches, imports)."""
     trusted = curator or system
     write_lock(session)
@@ -143,12 +144,18 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
             results.append(IngestResult(item.external_id, prior.canonical_id, "crosswalk", 1.0, "stale", []))
             continue
 
-        match: Match = find(
-            session, ctx.settings, namespace=ns, external_id=item.external_id,
-            provider_ids=item.provider_ids, title=item.title,
-            release_date=payload.get("release_date"), platform=item.platform,
-            developer=(payload.get("facts") or {}).get("developer"),
-        )
+        if force_canonical:
+            target = follow(session, force_canonical)
+            if session.get(Canonical, target) is None:
+                raise AtlasError(f"unknown canonical {force_canonical}", "not_found")
+            match: Match = Match(target, "forced", 1.0, [(target, 1.0)])
+        else:
+            match = find(
+                session, ctx.settings, namespace=ns, external_id=item.external_id,
+                provider_ids=item.provider_ids, title=item.title,
+                release_date=payload.get("release_date"), platform=item.platform,
+                developer=(payload.get("facts") or {}).get("developer"),
+            )
         status = "updated" if match.assigned else "created"
         if match.assigned:
             cid = match.canonical_id  # type: ignore[assignment]
