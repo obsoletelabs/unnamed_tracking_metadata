@@ -12,6 +12,7 @@
   <label for="password">Password</label><input id="password" type="password" name="password" autocomplete="current-password" required maxlength="200">
   <p><button type="submit">Sign in</button> <a class="small" href="/forgot">Forgot password?</a></p>
 </form>
+{% if issuers %}<hr><p class="small muted">Or sign in with</p>{% for i in issuers %}<p><a class="btn secondary" href="/oidc/start/{{ i.id }}?next={{ next|urlencode }}">{{ i.name }}</a></p>{% endfor %}{% endif %}
 {% if registration_open %}<p class="small muted">No account? <a href="/register">Create one</a>.</p>{% endif %}
 </div>
 {% endblock %}

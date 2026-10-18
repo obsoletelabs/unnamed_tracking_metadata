@@ -65,6 +65,8 @@ REGISTRY: tuple[Spec, ...] = (
     S("new_user_daily_proposals", "Daily proposals, new users", "Community", "int", lo=1, hi=10_000),
     S("trusted_daily_proposals", "Daily proposals, trusted users", "Community", "int", lo=1, hi=100_000),
     S("community_art_cap", "Community artwork per game", "Community", "int", lo=1, hi=200),
+    S("oidc_provider_enabled", "Act as a sign-in provider (OIDC)", "Federation", "bool",
+      "Lets other nodes you register under Admin → Sign-in sharing let your users sign in with their account here."),
     S("comments_enabled", "Comments", "Community", "bool", "Let verified users discuss games and proposals."),
     S("comment_daily_limit", "Comments per user per day", "Community", "int", lo=1, hi=10_000),
     S("comment_min_reputation", "Reputation needed to comment", "Community", "int", lo=0, hi=1_000_000),

@@ -10,6 +10,14 @@
   <label><input type="checkbox" name="email_notifications" {{ 'checked' if p.user.email_notifications }}> Email me about notifications (needs a confirmed address)</label>
   <p><button type="submit">Save</button> <a class="btn secondary" href="/u/{{ p.user.username }}">View profile</a></p>
 </form>
+{% if oidc_issuers %}<h2>Linked sign-ins</h2>
+<div class="card">
+{% for o in oidc_issuers %}<p><strong>{{ o.i.name }}</strong>
+ {% if o.linked %}<span class="badge ok">linked</span> <form class="inline" method="post" action="/me/oidc/{{ o.i.id }}/unlink">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Unlink this sign-in?" type="submit">Unlink</button></form>
+ {% elif o.can %}<form class="inline" method="post" action="/me/oidc/{{ o.i.id }}/link">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Link my account</button></form>
+ {% else %}<span class="muted small">not enabled for your account</span>{% endif %}</p>{% endfor %}
+{% if not has_password %}<p class="small muted">You have no password; to add one use "Forgot password" on the sign-in page.</p>{% endif %}
+</div>{% endif %}
 <h2>Your data</h2>
 <div class="card">
   <p><a class="btn secondary" href="/me/export.json">Download everything we hold about you (JSON)</a></p>

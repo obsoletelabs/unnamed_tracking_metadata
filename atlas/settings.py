@@ -96,6 +96,7 @@ class Settings(BaseSettings):
     password_min_length: int = Field(default=10, ge=8)
     trusted_daily_proposals: int = Field(default=100, ge=1)  # cap for auto-applied edits per user per day
     community_art_cap: int = Field(default=50, ge=1, le=200)  # community artwork per game
+    oidc_provider_enabled: bool = False  # this node lets other nodes sign its users in
     comments_enabled: bool = True
     lists_enabled: bool = True
     comment_daily_limit: int = Field(default=30, ge=1)

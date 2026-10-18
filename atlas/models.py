@@ -236,6 +236,7 @@ class User(Base):
     profile_public: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     email_notifications: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())  # opt-in
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    oidc_allowed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class UserSession(Base):
@@ -476,4 +477,85 @@ class Peer(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class OidcClient(Base):
+    """Provider side: a relying party (another node) allowed to sign users in through this node."""
+
+    __tablename__ = "oidc_client"
+
+    client_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    secret_hash: Mapped[str] = mapped_column(String(64))
+    redirect_uris: Mapped[list[str]] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Confidential clients (which authenticate with a secret) may be allowed to skip PKCE for interoperability.
+    require_pkce: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class OidcCode(Base):
+    __tablename__ = "oidc_code"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256 of the code
+    client_id: Mapped[str] = mapped_column(ForeignKey("oidc_client.client_id"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    redirect_uri: Mapped[str] = mapped_column(String(500))
+    challenge: Mapped[str] = mapped_column(String(64), default="")  # empty: the client did not use PKCE
+    nonce: Mapped[str] = mapped_column(String(200), default="")
+    scope: Mapped[str] = mapped_column(String(100), default="openid")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OidcAccess(Base):
+    __tablename__ = "oidc_access"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256 of the access token
+    client_id: Mapped[str] = mapped_column(String(40))
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    scope: Mapped[str] = mapped_column(String(100))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class OidcIssuer(Base):
+    """Relying-party side: an identity provider (another Atlas node) whose logins this node accepts."""
+
+    __tablename__ = "oidc_issuer"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    name: Mapped[str] = mapped_column(String(80))
+    issuer_url: Mapped[str] = mapped_column(String(300), unique=True)
+    client_id: Mapped[str] = mapped_column(String(40))
+    client_secret_enc: Mapped[str] = mapped_column(Text)
+    node_id: Mapped[str] = mapped_column(String(64))  # pinned signing key of the issuer
+    public_key: Mapped[str] = mapped_column(String(100))
+    authorization_endpoint: Mapped[str] = mapped_column(String(400))
+    token_endpoint: Mapped[str] = mapped_column(String(400))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_create: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_all_users: Mapped[bool] = mapped_column(Boolean, default=False)
+    trust_email: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class OidcState(Base):
+    __tablename__ = "oidc_state"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256 of the state value
+    issuer_id: Mapped[str] = mapped_column(ForeignKey("oidc_issuer.id"))
+    nonce: Mapped[str] = mapped_column(String(64))
+    verifier: Mapped[str] = mapped_column(String(100))
+    next_url: Mapped[str] = mapped_column(String(300), default="/")
+    link_user_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class OidcLink(Base):
+    __tablename__ = "oidc_link"
+
+    issuer_id: Mapped[str] = mapped_column(ForeignKey("oidc_issuer.id"), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(200), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

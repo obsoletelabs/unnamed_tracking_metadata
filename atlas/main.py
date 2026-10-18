@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import __version__, auth, custom, mail, media, ratelimit, sync
+from . import __version__, auth, custom, mail, media, oidc, ratelimit, sync
 from .api.deps import AppState
 from .api.routes import router
 from .db import make_engine, make_sessionmaker, upgrade
@@ -26,6 +26,7 @@ from .web.account import router as account_router
 from .web.admin import router as admin_router
 from .web.deps import LoginRequired
 from .web.federation import router as federation_router
+from .web.oidc import router as oidc_router
 from .web.routes import router as web_router
 from .web.routes import web_headers
 from .web.schema import router as schema_router
@@ -91,6 +92,9 @@ def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event)
     while not stop.is_set():
         try:
             ratelimit.purge(maker)
+            with maker() as s:
+                oidc.purge(s)
+                s.commit()
             if ctx.settings.media_cache_enabled:
                 media.cache_pending(maker, ctx.settings)
         except Exception as exc:
@@ -166,6 +170,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(schema_router)
     app.include_router(social_router)
     app.include_router(federation_router)
+    app.include_router(oidc_router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.middleware("http")

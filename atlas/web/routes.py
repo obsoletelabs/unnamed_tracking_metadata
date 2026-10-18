@@ -19,6 +19,8 @@ from ..models import (
     Lock,
     MediaType,
     Observation,
+    OidcIssuer,
+    OidcLink,
     Proposal,
     ReviewItem,
     SyncCursor,
@@ -63,6 +65,14 @@ def render(p: Page, name: str, status: int = 200, anon_csrf: bool = False, **ctx
         pending = p.session.scalar(select(func.count()).select_from(Proposal).where(Proposal.status == "pending")) or 0
     nav_pages = list(p.session.scalars(select(PageRow).where(PageRow.published.is_(True), PageRow.in_nav.is_(True))
                                        .order_by(PageRow.position, PageRow.slug)))
+    if name in ("login.html", "register.html"):
+        ctx["issuers"] = list(p.session.scalars(select(OidcIssuer).where(OidcIssuer.enabled.is_(True))))
+    if name == "me_settings.html" and p.user:
+        links = {link.issuer_id for link in p.session.scalars(select(OidcLink).where(OidcLink.user_id == p.user.id))}
+        ctx["oidc_issuers"] = [{"i": i, "linked": i.id in links,
+                                "can": i.allow_all_users or p.user.oidc_allowed}
+                               for i in p.session.scalars(select(OidcIssuer).where(OidcIssuer.enabled.is_(True)))]
+        ctx["has_password"] = p.user.password_hash != "!"
     unread = social.unread_count(p.session, p.user.id) if p.user else 0
     resp = templates.TemplateResponse(p.request, name, {
         "p": p, "s": s, "app_name": s.app_name, "unread": unread, "registration_open": s.registration == "open",

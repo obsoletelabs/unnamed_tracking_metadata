@@ -41,7 +41,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 125
 target-version = "py312"
-extend-exclude = ["legacy"]
+extend-exclude = ["legacy", "tools/compat"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

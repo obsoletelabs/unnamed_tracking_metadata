@@ -17,7 +17,8 @@
 <h2>Users</h2>
 <table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Email</th><th>Rep</th><th></th></tr></thead><tbody>
 {% for u in users %}<tr><td>{{ u.username }}</td><td>{{ u.role }}</td><td>{{ u.status }}</td><td>{% if u.email %}{{ 'confirmed' if u.email_verified_at else 'unconfirmed' }}{% else %}none{% endif %}{% if u.email and not u.email_verified_at %} <form class="inline" method="post" action="/admin/users/{{ u.id }}/verify">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Mark confirmed</button></form>{% endif %}</td><td>{{ u.reputation }}</td>
-<td>{% if u.id != p.user.id %}<form class="inline" method="post" action="/admin/users/{{ u.id }}">{{ csrf(p.csrf) }}
+<td>{% if u.id != p.user.id %}<form class="inline" method="post" action="/admin/users/{{ u.id }}/oidc">{{ csrf(p.csrf) }}<label class="small"><input type="checkbox" name="allowed" {{ 'checked' if u.oidc_allowed }}> external sign-in</label> <button class="secondary small" type="submit">Set</button></form><br>
+<form class="inline" method="post" action="/admin/users/{{ u.id }}">{{ csrf(p.csrf) }}
   <select name="role" aria-label="role">{% for r in ['user', 'curator', 'admin'] %}<option {{ 'selected' if r == u.role }}>{{ r }}</option>{% endfor %}</select>
   <select name="status" aria-label="status">{% for s in ['active', 'suspended'] %}<option {{ 'selected' if s == u.status }}>{{ s }}</option>{% endfor %}</select>
   <button class="secondary small" type="submit">Apply</button></form>{% endif %}</td></tr>{% endfor %}
