@@ -19,9 +19,6 @@ class Settings(BaseSettings):
     public_url: str = "http://localhost:8000"
     environment: Literal["dev", "production"] = "dev"
 
-    # Node identity. Generated and persisted in the database on first start when unset.
-    node_key_file: str | None = None
-
     # Federation
     upstream_url: str | None = None
     upstream_token: str | None = None
@@ -122,8 +119,6 @@ class Settings(BaseSettings):
     def check(self) -> Settings:
         if self.review_threshold > self.auto_match_threshold:
             raise ValueError("review_threshold must not exceed auto_match_threshold")
-        if self.role == "mirror" and not self.upstream_url:
-            raise ValueError("a mirror needs ATLAS_UPSTREAM_URL")
         if self.upstream_url and not self.trusted_keys:
             raise ValueError("ATLAS_TRUSTED_KEYS must list the upstream's key when ATLAS_UPSTREAM_URL is set")
         if self.environment == "production":

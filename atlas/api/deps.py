@@ -79,4 +79,5 @@ def require(scope: str):
             raise HTTPException(403, f"token lacks the {scope!r} scope")
         return principal
 
+    dep.required_scope = scope  # type: ignore[attr-defined]  # read by tools/gen_docs.py
     return dep

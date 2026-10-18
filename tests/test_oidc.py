@@ -57,7 +57,7 @@ class World:
         """Register a client on the provider, then look it up and add it on the node (as the node's admin)."""
         ctx = self.p_app.state.atlas
         with ctx.maker() as s:
-            client, secret = oidc.create_client(s, "My node", [f"{NODE}/oidc/callback/placeholder"])
+            client, secret = oidc.create_client(s, "My node", [f"{NODE}/oidc/callback/placeholder"], id_token_alg="EdDSA")
             s.commit()
             cid = client.client_id
         t = token(self.node, "/admin/oidc")
@@ -107,10 +107,12 @@ def world(tmp_path):
 
 def test_discovery_and_jwks_describe_the_provider(world):
     d = world.provider.get("/.well-known/openid-configuration").json()
-    assert d["issuer"] == PROVIDER and d["id_token_signing_alg_values_supported"] == ["EdDSA"]
+    assert d["issuer"] == PROVIDER and d["id_token_signing_alg_values_supported"] == ["RS256", "EdDSA"]
     assert d["code_challenge_methods_supported"] == ["S256"] and d["token_endpoint"] == PROVIDER + "/oidc/token"
-    key = world.provider.get("/oidc/jwks").json()["keys"][0]
-    assert key["kty"] == "OKP" and key["crv"] == "Ed25519" and key["kid"] == world.p_app.state.atlas.ctx.identity.node_id
+    keys = {k["kty"]: k for k in world.provider.get("/oidc/jwks").json()["keys"]}
+    key = keys["OKP"]
+    assert key["crv"] == "Ed25519" and key["kid"] == world.p_app.state.atlas.ctx.identity.node_id
+    assert keys["RSA"]["alg"] == "RS256" and keys["RSA"]["e"] == "AQAB"
     assert world.node.get("/.well-known/openid-configuration").status_code == 404  # the node is not a provider
     assert world.node.get("/oidc/jwks").status_code == 404
 
@@ -554,3 +556,60 @@ def test_confidential_clients_may_skip_pkce_when_the_admin_allows_it(world):
         secret_hash_check = strict_client.secret_hash
         s.commit()
     assert secret_hash_check and sneaky
+
+
+def rsa_verify(token_, jwk):
+    """Verify an RS256 JWT the way any third-party library would: from the published JWKS only."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+    header_b, body_b, sig_b = token_.split(".")
+    pub = rsa.RSAPublicNumbers(int.from_bytes(oidc.b64u_dec(jwk["e"]), "big"),
+                               int.from_bytes(oidc.b64u_dec(jwk["n"]), "big")).public_key()
+    pub.verify(oidc.b64u_dec(sig_b), f"{header_b}.{body_b}".encode(), padding.PKCS1v15(), hashes.SHA256())
+    return json.loads(oidc.b64u_dec(header_b)), json.loads(oidc.b64u_dec(body_b))
+
+
+def test_default_clients_get_rs256_tokens_verifiable_from_the_jwks(world):
+    cid, secret, code = issue(world)  # default signature algorithm
+    body = exchange(world, cid, secret, code, "https://app.test/cb", "v" * 50).json()
+    jwks = {k["kid"]: k for k in world.provider.get("/oidc/jwks").json()["keys"]}
+    header, claims = rsa_verify(body["id_token"], jwks[json.loads(oidc.b64u_dec(body["id_token"].split(".")[0]))["kid"]])
+    assert header["alg"] == "RS256" and header["kid"] in jwks and claims["iss"] == PROVIDER and claims["aud"] == cid
+    assert claims["preferred_username"] == "dave"
+    # tampering is detected
+    from cryptography.exceptions import InvalidSignature
+    h, b, sg = body["id_token"].split(".")
+    forged = oidc.b64u(json.dumps({**claims, "sub": "someone-else"}).encode())
+    with pytest.raises(InvalidSignature):
+        rsa_verify(f"{h}.{forged}.{sg}", jwks[header["kid"]])
+
+
+def test_eddsa_clients_still_get_eddsa_tokens_and_the_rsa_key_is_stable(world):
+    ctx = world.p_app.state.atlas
+    with ctx.maker() as s:
+        client, secret = oidc.create_client(s, "Peer", ["https://app.test/cb"], id_token_alg="EdDSA")
+        user = s.scalars(select(User).where(User.username == "dave")).one()
+        code = oidc.issue_code(s, client, user, {"redirect_uri": "https://app.test/cb",
+                                                 "code_challenge": oidc.pkce_challenge("v" * 50)}, "openid")
+        s.commit()
+        cid = client.client_id
+    body = exchange(world, cid, secret, code, "https://app.test/cb", "v" * 50).json()
+    assert json.loads(oidc.b64u_dec(body["id_token"].split(".")[0]))["alg"] == "EdDSA"
+    first = [k for k in world.provider.get("/oidc/jwks").json()["keys"] if k["kty"] == "RSA"][0]
+    again = [k for k in world.provider.get("/oidc/jwks").json()["keys"] if k["kty"] == "RSA"][0]
+    assert first == again
+    with pytest.raises(oidc.AtlasError, match="RS256 or EdDSA"):
+        with ctx.maker() as s:
+            oidc.create_client(s, "x", ["https://app.test/cb"], id_token_alg="HS256")
+
+
+def test_rsa_key_survives_a_restart(tmp_path):
+    url = f"sqlite:///{tmp_path}/r.db"
+    kids = []
+    for _ in range(2):
+        app = main.create_app(build_settings(database_url=url, public_url=PROVIDER, oidc_provider_enabled=True,
+                                             media_cache_enabled=False))
+        with TestClient(app, base_url=PROVIDER) as c:
+            kids.append(sorted(k["kid"] for k in c.get("/oidc/jwks").json()["keys"]))
+    assert kids[0] == kids[1]

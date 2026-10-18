@@ -14,12 +14,15 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from . import accounts, secrets_box
 from .models import (
+    NodeState,
     OidcAccess,
     OidcClient,
     OidcCode,
@@ -102,6 +105,38 @@ def verify_jwt(token: str, *, public_key_b64: str, kid: str, issuer: str, audien
     return claims
 
 
+# ---- RS256 key (for applications that only accept RSA) ---------------------------------------------
+
+def rsa_key(session: Session, ctx: Ctx):
+    """This node's RSA signing key, created on first use and kept (as PEM) beside the Ed25519 node key."""
+    cached = getattr(ctx, "_rsa", None)
+    if cached is not None:
+        return cached
+    row = session.get(NodeState, "oidc_rsa_key")
+    if row is None:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                serialization.NoEncryption()).decode()
+        row = NodeState(key="oidc_rsa_key", value=pem)
+        session.add(row)
+        session.flush()
+    key = serialization.load_pem_private_key(row.value.encode(), password=None)
+    numbers = key.public_key().public_numbers()
+    n = b64u(numbers.n.to_bytes((numbers.n.bit_length() + 7) // 8, "big"))
+    e = b64u(numbers.e.to_bytes((numbers.e.bit_length() + 7) // 8, "big"))
+    kid = hashlib.sha256(f"{n}.{e}".encode()).hexdigest()[:16]
+    ctx._rsa = (key, kid, {"kty": "RSA", "n": n, "e": e, "kid": kid, "use": "sig", "alg": "RS256"})  # type: ignore[attr-defined]
+    return ctx._rsa  # type: ignore[attr-defined]
+
+
+def sign_jwt_rs256(session: Session, ctx: Ctx, claims: dict[str, Any]) -> str:
+    key, kid, _ = rsa_key(session, ctx)
+    header = b64u(json.dumps({"alg": "RS256", "typ": "JWT", "kid": kid}, separators=(",", ":")).encode())
+    body = b64u(json.dumps(claims, separators=(",", ":"), default=str).encode())
+    sig = key.sign(f"{header}.{body}".encode(), padding.PKCS1v15(), hashes.SHA256())
+    return f"{header}.{body}.{b64u(sig)}"
+
+
 # ---- provider -----------------------------------------------------------------------------------------
 
 def discovery(ctx: Ctx) -> dict[str, Any]:
@@ -110,7 +145,7 @@ def discovery(ctx: Ctx) -> dict[str, Any]:
         "issuer": base, "authorization_endpoint": f"{base}/oidc/authorize", "token_endpoint": f"{base}/oidc/token",
         "userinfo_endpoint": f"{base}/oidc/userinfo", "jwks_uri": f"{base}/oidc/jwks",
         "response_types_supported": ["code"], "subject_types_supported": ["public"],
-        "id_token_signing_alg_values_supported": ["EdDSA"], "scopes_supported": sorted(SCOPES),
+        "id_token_signing_alg_values_supported": ["RS256", "EdDSA"], "scopes_supported": sorted(SCOPES),
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
         "grant_types_supported": ["authorization_code"],
@@ -118,10 +153,10 @@ def discovery(ctx: Ctx) -> dict[str, Any]:
     }
 
 
-def jwks(ctx: Ctx) -> dict[str, Any]:
+def jwks(session: Session, ctx: Ctx) -> dict[str, Any]:
     raw = base64.b64decode(ctx.identity.public_b64)
-    return {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": b64u(raw), "kid": ctx.identity.node_id, "use": "sig",
-                      "alg": "EdDSA"}]}
+    ed = {"kty": "OKP", "crv": "Ed25519", "x": b64u(raw), "kid": ctx.identity.node_id, "use": "sig", "alg": "EdDSA"}
+    return {"keys": [rsa_key(session, ctx)[2], ed]}
 
 
 def valid_redirect(uri: str) -> bool:
@@ -131,14 +166,16 @@ def valid_redirect(uri: str) -> bool:
     return p.scheme == "https" or (p.scheme == "http" and p.hostname in ("localhost", "127.0.0.1", "::1"))
 
 
-def create_client(session: Session, name: str, redirect_uris: list[str],
-                  require_pkce: bool = True) -> tuple[OidcClient, str]:
+def create_client(session: Session, name: str, redirect_uris: list[str], require_pkce: bool = True,
+                  id_token_alg: str = "RS256") -> tuple[OidcClient, str]:
     uris = [u.strip() for u in redirect_uris if u.strip()]
     if not name.strip() or not uris or len(uris) > 10 or not all(valid_redirect(u) for u in uris):
         raise AtlasError("give a name and 1-10 redirect addresses (https, or http://localhost for testing)")
+    if id_token_alg not in ("RS256", "EdDSA"):
+        raise AtlasError("id_token_alg must be RS256 or EdDSA")
     secret = secrets.token_urlsafe(32)
     row = OidcClient(client_id="atlas_" + secrets.token_hex(8), name=name.strip()[:80], secret_hash=sha(secret),
-                     redirect_uris=uris, require_pkce=require_pkce)
+                     redirect_uris=uris, require_pkce=require_pkce, id_token_alg=id_token_alg)
     session.add(row)
     session.flush()
     return row, secret
@@ -219,8 +256,9 @@ def exchange_code(session: Session, ctx: Ctx, client: OidcClient, code: str, red
               "exp": int((t + ID_TTL).timestamp()), **claims_for(user, row.scope)}
     if row.nonce:
         claims["nonce"] = row.nonce
+    id_token = sign_jwt_rs256(session, ctx, claims) if client.id_token_alg == "RS256" else sign_jwt(ctx.identity, claims)
     return {"access_token": access, "token_type": "Bearer", "expires_in": int(ACCESS_TTL.total_seconds()),
-            "scope": row.scope, "id_token": sign_jwt(ctx.identity, claims)}
+            "scope": row.scope, "id_token": id_token}
 
 
 def userinfo(session: Session, access_token: str) -> dict[str, Any] | None:

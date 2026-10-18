@@ -492,6 +492,8 @@ class OidcClient(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Confidential clients (which authenticate with a secret) may be allowed to skip PKCE for interoperability.
     require_pkce: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    # RS256 works with nearly every application; EdDSA is for other Atlas nodes (which pin the node key).
+    id_token_alg: Mapped[str] = mapped_column(String(8), default="RS256", server_default="RS256")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

@@ -12,7 +12,7 @@
 {% if new_client %}<div class="flash"><p>Give these to the other node's administrator. The secret is shown once.</p>
  <p>Client ID: <code>{{ new_client[0] }}</code><br>Client secret: <code>{{ new_client[1] }}</code></p></div>{% endif %}
 {% if clients %}<table><thead><tr><th>Application</th><th>Client ID</th><th>Redirect addresses</th><th></th></tr></thead><tbody>
-{% for c in clients %}<tr><td>{{ c.name }}{% if not c.enabled %} <span class="badge warn">disabled</span>{% endif %}{% if not c.require_pkce %} <span class="badge">no PKCE</span>{% endif %}</td><td><code>{{ c.client_id }}</code></td><td class="small">{{ c.redirect_uris|join(', ') }}</td>
+{% for c in clients %}<tr><td>{{ c.name }}{% if not c.enabled %} <span class="badge warn">disabled</span>{% endif %}{% if not c.require_pkce %} <span class="badge">no PKCE</span>{% endif %} <span class="badge">{{ c.id_token_alg }}</span></td><td><code>{{ c.client_id }}</code></td><td class="small">{{ c.redirect_uris|join(', ') }}</td>
 <td><form class="inline" method="post" action="/admin/oidc/clients/{{ c.client_id }}/toggle">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">{{ 'Disable' if c.enabled else 'Enable' }}</button></form>
 <form class="inline" method="post" action="/admin/oidc/clients/{{ c.client_id }}/delete">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Delete this application?" type="submit">Delete</button></form></td></tr>{% endfor %}
 </tbody></table>{% endif %}
@@ -20,6 +20,7 @@
   <label for="cname">Application (the other node)</label><input id="cname" type="text" name="name" required maxlength="80">
   <label for="uris">Redirect addresses <span class="hint">one per line; on the other node this is <code>https://its-address/oidc/callback/&lt;provider id&gt;</code></span></label>
   <textarea id="uris" name="redirect_uris" required></textarea>
+  <label for="alg">Token signature</label><select id="alg" name="id_token_alg"><option value="RS256" selected>RS256 — works with almost every application</option><option value="EdDSA">EdDSA — for another Atlas node</option></select>
   <label><input type="checkbox" name="require_pkce" checked> Require PKCE (recommended). Untick only for confidential clients that cannot send it, such as the Unnamed Tracking App.</label>
   <p><button type="submit">Register application</button></p></form>
 

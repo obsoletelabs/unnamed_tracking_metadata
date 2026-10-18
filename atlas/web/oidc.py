@@ -50,10 +50,10 @@ def discovery(st: St):
 
 
 @router.get("/oidc/jwks")
-def jwks(st: St):
+def jwks(st: St, session: Sess):
     if not st.ctx.settings.oidc_provider_enabled:
         raise HTTPException(404, "This server is not an OpenID provider.")
-    return JSONResponse(oidc.jwks(st.ctx), headers={"Cache-Control": "public, max-age=300"})
+    return JSONResponse(oidc.jwks(session, st.ctx), headers={"Cache-Control": "public, max-age=300"})
 
 
 AUTH_KEYS = ("response_type", "client_id", "redirect_uri", "scope", "state", "nonce", "code_challenge",
@@ -220,9 +220,10 @@ def _admin(p: Ctx, *, new_client: tuple[str, str] | None = None, probe: dict | N
 
 @router.post("/admin/oidc/clients", response_class=HTMLResponse)
 def client_create(p: Annotated[Ctx, Depends(admin_form)], name: Annotated[str, Form(max_length=80)],
-                  redirect_uris: Annotated[str, Form(max_length=2000)], require_pkce: Annotated[str, Form()] = ""):
+                  redirect_uris: Annotated[str, Form(max_length=2000)], require_pkce: Annotated[str, Form()] = "",
+                  id_token_alg: Annotated[str, Form()] = "RS256"):
     try:
-        row, secret = oidc.create_client(p.session, name, redirect_uris.splitlines(), require_pkce == "on")
+        row, secret = oidc.create_client(p.session, name, redirect_uris.splitlines(), require_pkce == "on", id_token_alg)
     except AtlasError as exc:
         return _admin(p, error=str(exc), status=400)
     accounts.audit(p.session, p.me.id, "oidc_client_create", row.client_id)
