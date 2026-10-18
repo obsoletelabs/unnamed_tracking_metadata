@@ -26,10 +26,10 @@ Status: draft (Phase 0). Source of truth for decisions before code lands.
 - Authority wins for canonical fields; local overlays never leave the local node.
 - Outage = keep last known data; never clear by omission (same semantics as the app contract).
 
-## Decisions pending (blockers for later phases)
-- Who may run authorities (single vs trust list).
-- Contribution data license (CC0 vs CC-BY-SA).
-- Fresh repo vs this branch (currently: branch `v2`, port selectively).
+## Decisions (settled)
+- **Authorities:** run by a trust list. Each node pins the Ed25519 public keys of upstreams it trusts; feed entries from unlisted keys are rejected.
+- **Licenses:** code is MIT (`LICENSE`). Contributed metadata is CC0 1.0 (`DATA-LICENSE.md`). Provider-derived data keeps its provider terms and is not relicensed.
+- **Repo:** rewrite on the `v2` branch of this repo, porting from `demo-1` selectively.
 
 ## Phases
 See the approved plan; Phase 1 starts with package layout, typed settings, Alembic and DB/Redis-backed state.
