@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ from .base import Provider, ProviderError, ProviderResult
 from .igdb import Igdb
 from .rawg import Rawg
 from .steam import Steam
+
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
 def build_registry(settings: Settings) -> dict[str, Provider]:
@@ -56,13 +59,15 @@ class Fetcher:
                  clock=time.monotonic) -> None:
         self.settings, self.providers = settings, providers
         self.client = client or httpx.Client(headers={"User-Agent": "atlas-metadata/2"})
-        self._budgets: dict[str, _Budget] = {}
+        self._budgets: dict[tuple[str, str], _Budget] = {}
         self._lock = threading.Lock()
         self._clock = clock
 
-    def _budget(self, p: Provider) -> _Budget:
+    def _budget(self, p: Provider, kind: str = "fetch") -> _Budget:
+        """Searches get a third of the budget so they cannot starve fetches."""
+        cap = max(1, p.requests_per_minute // 3) if kind == "search" else max(1, p.requests_per_minute * 2 // 3)
         with self._lock:
-            return self._budgets.setdefault(p.name, _Budget(p.requests_per_minute, p.requests_per_minute))
+            return self._budgets.setdefault((p.name, kind), _Budget(cap, cap))
 
     def _cached(self, session: Session, provider: str, key: str) -> ProviderCache | None:
         return session.get(ProviderCache, (provider, key))
@@ -73,7 +78,7 @@ class Fetcher:
         fresh = row is not None and row.expires_at.replace(tzinfo=now().tzinfo) > now()
         if fresh:
             return [] if row.negative else [ProviderResult(**r) for r in row.payload]
-        b = self._budget(p)
+        b = self._budget(p, kind)
         stale = None if row is None or row.negative else [ProviderResult(**r) for r in row.payload]
         if self._clock() < b.open_until:
             if stale is not None:
@@ -114,6 +119,8 @@ class Fetcher:
         p = self.providers.get(provider)
         if p is None:
             raise ProviderError(f"provider {provider!r} is not configured on this node")
+        if external_id is not None and not _SAFE_ID.match(str(external_id)):
+            raise ProviderError("invalid provider id")
         if bool(query) == bool(external_id):
             raise ProviderError("give exactly one of query or external_id")
         if query:

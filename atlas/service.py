@@ -113,23 +113,33 @@ def _open_review(session: Session, kind: str, cid: str, candidates: list[tuple[s
     return True
 
 
-def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bool = False) -> list[IngestResult]:
+def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bool = False,
+           system: bool = False) -> list[IngestResult]:
+    """`curator`: token holds the curate scope. `system`: the node itself (provider fetches, imports)."""
+    trusted = curator or system
     write_lock(session)
     conn = batch.connection
     ns = norm_namespace(conn.source)
+    reserved = set(ctx.settings.source_trust) | ctx.settings.redistributable_sources
+    if ns in reserved and not trusted:
+        raise AtlasError(f"source {ns!r} is reserved; it needs a token with the curate scope", "forbidden")
+    horizon = int(now().timestamp()) + 86400
     results: list[IngestResult] = []
     touched: set[str] = set()
 
     for item in batch.observations:
         payload = item.reported()
+        if payload.get("source_updated_at", 0) > horizon:  # a clock in the far future would freeze the record
+            payload.pop("source_updated_at")
+        stamp = payload.get("source_updated_at")
         prior = session.scalars(
             select(Observation).where(
-                Observation.source == conn.source, Observation.source_scope == conn.source_scope,
+                Observation.source == ns, Observation.source_scope == conn.source_scope,
                 Observation.external_id == item.external_id, Observation.is_current.is_(True),
             )
         ).first()
-        if prior and item.source_updated_at is not None and prior.source_updated_at is not None \
-                and item.source_updated_at < prior.source_updated_at:
+        if prior and stamp is not None and prior.source_updated_at is not None \
+                and stamp < prior.source_updated_at:
             results.append(IngestResult(item.external_id, prior.canonical_id, "crosswalk", 1.0, "stale", []))
             continue
 
@@ -147,12 +157,15 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
             session.add(Canonical(id=cid, view={}, explain={}))
             session.flush()
 
+        left = None
         if prior:
             prior.is_current = False
+            if prior.canonical_id != cid:
+                left = prior.canonical_id
         obs = Observation(
-            id=ulid(), canonical_id=cid, source_kind=conn.source_kind, source=conn.source,
+            id=ulid(), canonical_id=cid, source_kind=conn.source_kind, source=ns,
             source_scope=conn.source_scope, external_id=item.external_id, payload=payload,
-            source_updated_at=item.source_updated_at,
+            source_updated_at=stamp,
             redistributable=_redistributable(ctx, conn.source, curator),
         )
         session.add(obs)
@@ -162,12 +175,17 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
         for key in keys_of(obs):
             existing = session.get(Crosswalk, key)
             if existing is None:
+                if not trusted and key[0] in reserved and key[0] != ns:
+                    continue  # an uncurated claim about someone else's namespace may match, never register
                 session.add(Crosswalk(namespace=key[0], external_id=key[1], canonical_id=cid))
             elif follow(session, existing.canonical_id) != cid:
                 conflicts.append((follow(session, existing.canonical_id), 1.0))
         session.flush()
         rebuild(session, ctx, cid)
         touched.add(cid)
+        left_row = session.get(Canonical, left) if left else None
+        if left_row is not None and left_row.merged_into is None:
+            rebuild(session, ctx, left)
 
         review = False
         if conflicts:
@@ -251,13 +269,16 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
     siblings = session.scalars(
         select(Observation).where(Observation.canonical_id == old, Observation.id != obs.id)
     ).all()
-    if not siblings:
+    if not any(s.is_current for s in siblings):
         raise AtlasError("record has a single observation; nothing to split", "conflict")
     cid = new_id or new_canonical_id()
     session.add(Canonical(id=cid, view={}, explain={}))
     session.flush()
     obs.canonical_id = cid
-    still_claimed = {k for s in siblings for k in keys_of(s)}
+    for s in siblings:  # superseded history of the same source record travels with it
+        if not s.is_current and (s.source, s.source_scope, s.external_id) == (obs.source, obs.source_scope, obs.external_id):
+            s.canonical_id = cid
+    still_claimed = {k for s in siblings if s.is_current for k in keys_of(s)}
     for key in keys_of(obs):
         if key in still_claimed:
             continue

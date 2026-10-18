@@ -37,7 +37,7 @@ class AtlasClient:
         """Follows merge redirects; `redirected_from` is set when the id was merged away."""
         return self._req("GET", f"/games/{atlas_id}")
 
-    def resolve(self, items: Iterable[dict[str, Any]], batch_size: int = 500) -> Iterator[dict[str, Any]]:
+    def resolve(self, items: Iterable[dict[str, Any]], batch_size: int = 200) -> Iterator[dict[str, Any]]:
         """Resolve many library entries; yields one result per input item, in order."""
         buf: list[dict[str, Any]] = []
         for it in items:

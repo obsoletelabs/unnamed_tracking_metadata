@@ -19,7 +19,7 @@ from .settings import Settings, get_settings
 from .signing import load_identity
 
 log = logging.getLogger("atlas")
-_STATUS = {"invalid": 400, "not_found": 404, "conflict": 409}
+_STATUS = {"invalid": 400, "forbidden": 403, "not_found": 404, "conflict": 409}
 
 
 class BodyLimit:
@@ -74,6 +74,15 @@ class _TooLarge(Exception):
     pass
 
 
+def _housekeeping(maker: sessionmaker[Session], stop: threading.Event) -> None:
+    while not stop.is_set():
+        try:
+            ratelimit.purge(maker)
+        except Exception as exc:
+            log.warning("housekeeping failed: %s", exc)
+        stop.wait(60)
+
+
 def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
     delay = ctx.settings.sync_interval_seconds
     with httpx.Client() as client:
@@ -84,7 +93,6 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) ->
             except Exception as exc:  # keep serving local data through any upstream failure
                 log.warning("sync failed: %s", exc)
                 wait = min(delay * 4, 900)
-            ratelimit.purge(maker)
             stop.wait(wait)
 
 
@@ -97,18 +105,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         upgrade(settings.database_url)
     with maker() as s:
         identity = load_identity(s)
-        if settings.bootstrap_admin_token:
-            auth.install_bootstrap(s, settings.bootstrap_admin_token)
+        auth.sync_bootstrap(s, settings.bootstrap_admin_token)
         s.commit()
     ctx = Ctx(settings, identity)
     stop = threading.Event()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        thread = None
+        threading.Thread(target=_housekeeping, args=(maker, stop), daemon=True, name="atlas-housekeeping").start()
         if settings.upstream_url:
-            thread = threading.Thread(target=_sync_loop, args=(maker, ctx, stop), daemon=True, name="atlas-sync")
-            thread.start()
+            threading.Thread(target=_sync_loop, args=(maker, ctx, stop), daemon=True, name="atlas-sync").start()
         yield
         stop.set()
 

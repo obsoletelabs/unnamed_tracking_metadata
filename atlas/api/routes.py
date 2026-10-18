@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .. import __version__, auth, feed, service
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
-from ..models import Canonical, Observation, ReviewItem, SyncCursor, Token
+from ..models import Canonical, Lock, Observation, ReviewItem, SyncCursor, Token
 from ..normalize import norm_namespace
 from ..providers import ProviderError
 from ..resolve import find
@@ -56,10 +56,15 @@ def health() -> dict[str, str]:
 
 
 @router.get("/ready", tags=["ops"])
-def ready(st: St, session: Sess) -> dict[str, Any]:
+def ready(session: Sess) -> dict[str, str]:
     session.execute(select(1))
+    return {"status": "ready"}
+
+
+@router.get("/status", tags=["admin"])
+def status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]) -> dict[str, Any]:
     cursors = {c.upstream: c.last_seq for c in session.scalars(select(SyncCursor))}
-    return {"status": "ready", "role": st.ctx.settings.role, "feed_head": feed.head_seq(session),
+    return {"role": st.ctx.settings.role, "feed_head": feed.head_seq(session),
             "upstream_cursors": cursors}
 
 
@@ -82,8 +87,8 @@ class ResolveRequest(BaseModel):
 
 @router.post("/resolve", tags=["read"])
 def resolve(body: ResolveRequest, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
-    if len(body.items) > st.ctx.settings.max_batch:
-        raise HTTPException(413, f"at most {st.ctx.settings.max_batch} items per request")
+    if len(body.items) > st.ctx.settings.max_resolve:
+        raise HTTPException(413, f"at most {st.ctx.settings.max_resolve} items per request")
     out = []
     for it in body.items:
         m = find(
@@ -146,7 +151,10 @@ class MergeBody(BaseModel):
 
 
 class LockBody(BaseModel):
-    value: str | list[str]
+    value: (
+        Annotated[str, Field(max_length=20000)]
+        | Annotated[list[Annotated[str, Field(max_length=128)]], Field(max_length=100)]
+    )
 
 
 @router.get("/games/{cid}/observations", tags=["curate"])
@@ -187,6 +195,9 @@ def lock(cid: str, field: str, body: LockBody, st: St, session: Sess,
 
 @router.delete("/games/{cid}/locks/{field}", tags=["curate"])
 def unlock(cid: str, field: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("curate"))]):
+    lk = session.get(Lock, (cid, field))
+    if lk is not None and not lk.local_only and st.ctx.settings.role != "authority":
+        raise AtlasError("this lock is managed by the upstream authority", "conflict")
     return game_out(service.clear_lock(session, st.ctx, cid, field))
 
 
@@ -256,7 +267,7 @@ def provider_fetch(name: str, body: FetchBody, st: St, session: Sess,
     batch = st.providers.as_batch(name, results)
     if batch is None:
         raise AtlasError("provider has no such record", "not_found")
-    res = service.ingest(session, st.ctx, batch)[0]
+    res = service.ingest(session, st.ctx, batch, system=True)[0]
     row, _r = service.get_canonical(session, res.canonical_id)  # type: ignore[arg-type]
     return {"match": res.method, "confidence": res.confidence, "review": res.review, "game": game_out(row)}
 

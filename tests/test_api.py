@@ -28,6 +28,7 @@ def mint(client, scopes, **kw):
 
 
 def obs(source, ext, title, **extra):
+    source = {"steam": "playnite", "gog": "gogplugin"}.get(source, source)
     return {"connection": {"source_kind": "plugin", "source": source, "source_scope": "inst-1"},
             "observations": [{"external_id": ext, "title": title, **extra}]}
 
@@ -55,16 +56,16 @@ def test_submit_resolve_get_flow(client):
     assert r.status_code == 200
     cid = r.json()["results"][0]["atlas"]["canonical_id"]
     res = client.post("/api/v2/resolve", headers=H(w), json={"items": [
-        {"namespace": "steam", "external_id": "620"},
+        {"namespace": "playnite", "external_id": "620"},
         {"title": "Portal 2", "release_date": "2011-04-19"},
         {"title": "Unknown Thing"},
     ]}).json()["results"]
     assert res[0]["canonical_id"] == cid and res[0]["method"] == "crosswalk" and res[0]["game"]["title"] == "Portal 2"
     assert res[1]["canonical_id"] == cid and res[2]["canonical_id"] is None
     g = client.get(f"/api/v2/games/{cid}", headers=H(w))
-    assert g.json()["provider_ids"] == {"steam": "620"} and g.headers["etag"]
+    assert g.json()["provider_ids"] == {"playnite": "620"} and g.headers["etag"]
     assert client.get("/api/v2/games/atlas:nope", headers=H(w)).status_code == 404
-    assert client.get(f"/api/v2/games/{cid}/explain", headers=H(w)).json()["explain"]["title"]["source"] == "steam"
+    assert client.get(f"/api/v2/games/{cid}/explain", headers=H(w)).json()["explain"]["title"]["source"] == "playnite"
 
 
 def test_personal_data_not_returned(client):

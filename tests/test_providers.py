@@ -67,7 +67,7 @@ def test_unconfigured_and_exhausted_budget(session):
     f = Fetcher(s, build_registry(s), make_client([]))
     with pytest.raises(ProviderError, match="not configured"):
         f.lookup(session, "rawg", query="x")
-    f._budget(f.providers["steam"]).tokens = 0
+    f._budget(f.providers["steam"], "fetch").tokens = 0
     with pytest.raises(ProviderError, match="budget"):
         f.lookup(session, "steam", external_id="999")
 

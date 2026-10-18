@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from . import service
-from .models import Canonical, Crosswalk, Observation, SyncCursor
+from .models import Canonical, Crosswalk, Lock, Observation, SyncCursor
 from .service import AtlasError, Ctx, keys_of
 from .signing import key_id_for, verify
 
@@ -68,9 +68,8 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
                 if other != cid and not _is_upstream_origin(session, other):
                     # a purely local record now has an authoritative twin: fold it in
                     service.merge_canonicals(session, ctx, other, cid, actor="sync", log=False)
-                else:
-                    row.canonical_id = cid
-                    touched.add(other)
+                # else: both are authoritative; the authority left the key where it was (and opened a
+                # review), so the mirror does too.
         session.flush()
         for t in touched:
             if session.get(Canonical, t) and session.get(Canonical, t).merged_into is None:  # type: ignore[union-attr]
@@ -89,6 +88,9 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         except AtlasError:
             return
     elif kind == "lock":
+        existing = session.get(Lock, (body["canonical_id"], body["field"]))
+        if existing is not None and existing.local_only:
+            return
         try:
             service.set_lock(session, ctx, body["canonical_id"], body["field"], body["value"],
                              actor=node_id, log=False)
@@ -139,7 +141,7 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
                     raise SyncError("entry signed by a different key than the one trusted")
                 if e["seq"] != expected + 1:
                     raise SyncError(f"feed gap or rewind: expected {expected + 1}, got {e['seq']}")
-                if not verify(pub, node_id, e["seq"], e["body"], e["body_hash"], e["signature"]):
+                if not verify(pub, node_id, e["seq"], e["kind"], e["body"], e["body_hash"], e["signature"]):
                     raise SyncError(f"bad signature on entry {e['seq']}")
                 apply_entry(session, ctx, node_id, e["seq"], e["kind"], e["body"])
                 expected = e["seq"]

@@ -46,12 +46,19 @@ def create_token(
     return row, secret
 
 
-def install_bootstrap(session: Session, secret: str) -> None:
-    """Make the configured admin secret usable as a token (idempotent)."""
-    digest = hash_token(secret)
-    if session.scalars(select(Token).where(Token.token_hash == digest)).first() is None:
+def sync_bootstrap(session: Session, secret: str | None) -> None:
+    """Make the configured admin secret the only live bootstrap token; unsetting it revokes it."""
+    digest = hash_token(secret) if secret else None
+    found = False
+    for row in session.scalars(select(Token).where(Token.name == "bootstrap-admin")):
+        if row.token_hash == digest:
+            found = True
+            row.revoked_at = None
+        elif row.revoked_at is None:
+            row.revoked_at = now()
+    if digest and not found:
         session.add(Token(name="bootstrap-admin", token_hash=digest, scopes=["admin"]))
-        session.flush()
+    session.flush()
 
 
 def authenticate(session: Session, header: str | None) -> Principal | None:

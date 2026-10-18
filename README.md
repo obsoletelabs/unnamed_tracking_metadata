@@ -34,7 +34,7 @@ Without Docker: `uv sync && uv run atlas serve`. CLI: `atlas migrate | token | n
 
 | | |
 |---|---|
-| `POST /resolve` | batch: store IDs / titles → canonical ids (read-only) |
+| `POST /resolve` | batch (max `ATLAS_MAX_RESOLVE`, default 200): store IDs / titles → canonical ids (read-only) |
 | `POST /observations` | submit a batch (contribute) |
 | `GET /games?q=`, `GET /games/{id}`, `/explain` | read |
 | `GET /providers/{p}/search`, `POST /providers/{p}/fetch` | pull from a provider through the cache |
@@ -43,6 +43,8 @@ Without Docker: `uv sync && uv run atlas serve`. CLI: `atlas migrate | token | n
 | `/tokens` | admin |
 
 Scopes: `read`, `contribute`, `curate`, `sync`, `admin`. Interactive docs at `/docs` in dev.
+
+Trust model: source names that carry weight in the merge (`steam`, `igdb`, `curator`, ...) are reserved. Only a token with `curate` (or the node itself, via provider fetches) may use them; everyone else submits under their own name at default trust and cannot register IDs in a reserved namespace.
 
 ## Status and limits
 

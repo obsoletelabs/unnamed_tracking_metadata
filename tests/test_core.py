@@ -7,6 +7,7 @@ from .conftest import batch
 
 
 def ingest(session, ctx, source, items, **kw):
+    kw.setdefault("system", True)
     res = service.ingest(session, ctx, batch(source, items, **kw.pop("b", {})), **kw)
     session.commit()
     return res

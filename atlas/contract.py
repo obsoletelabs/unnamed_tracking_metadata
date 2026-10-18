@@ -76,7 +76,7 @@ class SourceObservationV1(BaseModel):
     release_date: date | None = None
     provider_ids: dict[ProviderKey, ProviderIdentity] | None = Field(default=None, max_length=32)
     facts: ObservedFacts | None = None
-    source_updated_at: int | None = Field(default=None, ge=0)
+    source_updated_at: int | None = Field(default=None, ge=0, le=4_102_444_800)
     available: bool | None = None
 
     @field_validator("external_id")

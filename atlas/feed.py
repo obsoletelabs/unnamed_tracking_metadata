@@ -26,7 +26,7 @@ def append(session: Session, identity: NodeIdentity, kind: str, body: dict[str, 
     session.add(
         ChangeLog(
             seq=seq, kind=kind, body=body, body_hash=digest,
-            signature=identity.sign(seq, digest), key_id=identity.node_id,
+            signature=identity.sign(seq, kind, digest), key_id=identity.node_id,
         )
     )
     session.flush()

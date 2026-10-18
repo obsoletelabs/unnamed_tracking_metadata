@@ -44,6 +44,7 @@ class Settings(BaseSettings):
 
     # API safety
     max_batch: int = Field(default=1000, ge=1, le=5000)
+    max_resolve: int = Field(default=200, ge=1, le=5000)
     rate_limit_per_minute: int = Field(default=600, ge=1)
     max_body_bytes: int = Field(default=2_000_000, ge=1024)
 

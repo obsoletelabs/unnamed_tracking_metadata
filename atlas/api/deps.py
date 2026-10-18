@@ -38,8 +38,7 @@ def get_session(st: Annotated[AppState, Depends(state)]) -> Iterator[Session]:
 def _client_key(request: Request, principal: auth.Principal | None) -> str:
     if principal:
         return f"t:{principal.token_id}"
-    fwd = request.headers.get("x-forwarded-for", "")
-    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")
+    ip = request.client.host if request.client else "?"  # proxy headers are applied by uvicorn for trusted proxies only
     return f"ip:{ip}"[:128]
 
 

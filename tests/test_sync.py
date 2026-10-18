@@ -110,7 +110,7 @@ def test_local_record_folds_into_authoritative_twin(pair):
     a_maker, a_ctx, m_maker, m_ctx, client = pair
     with m_maker() as s:  # mirror cached a provider locally first
         [local] = service.ingest(s, m_ctx, batch("steam", [{"external_id": "620", "title": "Portal 2",
-                                                            "release_date": "2011-04-19"}]))
+                                                            "release_date": "2011-04-19"}]), system=True)
         s.commit()
     [auth] = curate(a_maker, a_ctx, "curator", [{"external_id": "p2", "title": "Portal 2",
                                                  "provider_ids": {"steam": "620"}}])
@@ -159,3 +159,4 @@ def test_untrusted_upstream_key_is_refused(pair):
     m_ctx.settings.trusted_keys["deadbeef"] = "AAAA"
     with pytest.raises(sync.SyncError, match="not in ATLAS_TRUSTED_KEYS"):
         sync.pull_once(m_maker, m_ctx, client, "http://upstream", None)
+

@@ -44,7 +44,7 @@ def norm_title(title: str | None) -> str:
     if tokens and tokens[0] == "the":
         tokens = tokens[1:]
     tokens = [_ROMAN.get(t, t) if i > 0 else t for i, t in enumerate(tokens)]
-    return " ".join(tokens)
+    return " ".join(tokens)[:400]
 
 
 def digit_tokens(norm: str) -> frozenset[str]:

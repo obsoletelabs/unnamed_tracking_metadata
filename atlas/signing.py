@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from .models import NodeState
 
-DOMAIN = b"atlas-feed-v1\n"
+DOMAIN = b"atlas-feed-v2\n"
 
 
 def canonical_json(value: Any) -> bytes:
@@ -30,8 +30,8 @@ def key_id_for(public_raw: bytes) -> str:
     return hashlib.sha256(public_raw).hexdigest()[:16]
 
 
-def _message(node_id: str, seq: int, digest: str) -> bytes:
-    return DOMAIN + f"{node_id}\n{seq}\n{digest}".encode()
+def _message(node_id: str, seq: int, kind: str, digest: str) -> bytes:
+    return DOMAIN + f"{node_id}\n{seq}\n{kind}\n{digest}".encode()
 
 
 @dataclass(frozen=True)
@@ -46,8 +46,8 @@ class NodeIdentity:
         )
         return base64.b64encode(raw).decode()
 
-    def sign(self, seq: int, digest: str) -> str:
-        return base64.b64encode(self.private.sign(_message(self.node_id, seq, digest))).decode()
+    def sign(self, seq: int, kind: str, digest: str) -> str:
+        return base64.b64encode(self.private.sign(_message(self.node_id, seq, kind, digest))).decode()
 
 
 def load_identity(session: Session) -> NodeIdentity:
@@ -66,13 +66,14 @@ def load_identity(session: Session) -> NodeIdentity:
     return NodeIdentity(node_id=key_id_for(pub), private=key)
 
 
-def verify(public_b64: str, node_id: str, seq: int, body: Any, claimed_hash: str, signature_b64: str) -> bool:
+def verify(public_b64: str, node_id: str, seq: int, kind: str, body: Any, claimed_hash: str,
+           signature_b64: str) -> bool:
     try:
         digest = body_hash(body)
         if digest != claimed_hash:
             return False
         pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_b64))
-        pub.verify(base64.b64decode(signature_b64), _message(node_id, seq, digest))
+        pub.verify(base64.b64decode(signature_b64), _message(node_id, seq, kind, digest))
         return True
     except (InvalidSignature, ValueError):
         return False
