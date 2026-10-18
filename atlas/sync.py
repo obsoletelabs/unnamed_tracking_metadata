@@ -28,9 +28,12 @@ def _is_upstream_origin(session: Session, cid: str) -> bool:
     ).first() is not None
 
 
-def _ensure_canonical(session: Session, cid: str) -> None:
+def _ensure_canonical(session: Session, cid: str, media_type: str | None = None) -> None:
+    from .models import MediaType
+
     if session.get(Canonical, cid) is None:
-        session.add(Canonical(id=cid, view={}, explain={}))
+        known = media_type and session.get(MediaType, media_type) is not None
+        session.add(Canonical(id=cid, view={}, explain={}, media_type=media_type if known else "game"))
         session.flush()
 
 
@@ -38,7 +41,7 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
     if kind == "obs":
         cid = body["canonical_id"]
         o = body["observation"]
-        _ensure_canonical(session, cid)
+        _ensure_canonical(session, cid, body.get("media_type"))
         if session.get(Observation, o["id"]) is not None:
             return  # idempotent replay
         prior = session.scalars(
@@ -80,6 +83,19 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         try:
             fn = facets.set_artwork if kind == "artwork" else facets.set_achievements
             fn(session, ctx, body["canonical_id"], body["source"], body["items"], redistributable=True, log=False)
+        except AtlasError:
+            return
+    elif kind == "schema":
+        from . import custom
+
+        if ctx.settings.inherit_schema:
+            custom.apply_snapshot(session, body)
+    elif kind == "custom":
+        from . import custom
+
+        try:
+            custom.set_values(session, ctx, body["canonical_id"], body["source"], body.get("values") or {},
+                              redistributable=True, log=False, clear=tuple(body.get("clear") or ()))
         except AtlasError:
             return
     elif kind == "merge":

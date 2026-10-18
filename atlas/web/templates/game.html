@@ -9,12 +9,14 @@
     <h1>{{ v.get('title') }}</h1>
     {{ chips(v.get('platforms')) }}
     <dl class="facts">
-      {% if v.get('release_date') %}<dt>Released</dt><dd>{{ v.release_date }}</dd>{% endif %}
-      {% if v.get('developer') %}<dt>Developer</dt><dd>{{ v.developer }}</dd>{% endif %}
-      {% if v.get('publisher') %}<dt>Publisher</dt><dd>{{ v.publisher }}</dd>{% endif %}
-      {% if v.get('series') %}<dt>Series</dt><dd>{{ v.series }}</dd>{% endif %}
-      {% if v.get('tags') %}<dt>Genres</dt><dd>{{ chips(v.tags) }}</dd>{% endif %}
-      {% if v.get('features') %}<dt>Features</dt><dd>{{ chips(v.features) }}</dd>{% endif %}
+      {% if v.get('release_date') %}<dt>{{ lbl.release_date }}</dt><dd>{{ v.release_date }}</dd>{% endif %}
+      {% if v.get('developer') %}<dt>{{ lbl.developer }}</dt><dd>{{ v.developer }}</dd>{% endif %}
+      {% if v.get('publisher') %}<dt>{{ lbl.publisher }}</dt><dd>{{ v.publisher }}</dd>{% endif %}
+      {% if v.get('series') %}<dt>{{ lbl.series }}</dt><dd>{{ v.series }}</dd>{% endif %}
+      {% if v.get('tags') %}<dt>{{ lbl.tags }}</dt><dd>{{ chips(v.tags) }}</dd>{% endif %}
+      {% if v.get('features') %}<dt>{{ lbl.features }}</dt><dd>{{ chips(v.features) }}</dd>{% endif %}
+      {% for d in details %}<dt>{{ d.f.label }}</dt><dd>{% if d.f.kind == 'list' %}{{ chips(d.value) }}{% elif d.f.kind == 'url' %}<a href="{{ d.value }}" rel="noopener noreferrer nofollow">{{ d.value }}</a>{% elif d.f.kind == 'bool' %}{{ 'Yes' if d.value else 'No' }}{% else %}{{ d.value }}{% endif %}</dd>{% endfor %}
+      {% if mtype_label and g.media_type != 'game' %}<dt>Type</dt><dd>{{ mtype_label }}</dd>{% endif %}
       <dt>Identifiers</dt><dd><code>{{ g.id }}</code>{% for ns, ident in (v.get('provider_ids') or {}).items() %}<br>{{ ns }}: {% if ns == 'steam' and ident.isdigit() %}<a href="https://store.steampowered.com/app/{{ ident }}" rel="noopener noreferrer nofollow">{{ ident }}</a>{% else %}{{ ident }}{% endif %}{% endfor %}</dd>
     </dl>
     {% if v.get('description') %}<p>{{ v.description }}</p>{% endif %}

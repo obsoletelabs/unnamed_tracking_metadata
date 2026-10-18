@@ -57,6 +57,17 @@ def write_lock(session: Session) -> None:
         session.execute(text("SELECT pg_advisory_xact_lock(727274)"))
 
 
+def _valid_type(session: Session, media_type: str | None) -> str:
+    from .models import MediaType
+
+    if media_type and media_type != "game":
+        row = session.get(MediaType, media_type)
+        if row is None or not row.enabled:
+            raise AtlasError(f"unknown or disabled media type {media_type!r}")
+        return media_type
+    return "game"
+
+
 def keys_of(obs: Observation) -> list[tuple[str, str]]:
     keys = [(norm_namespace(obs.source), obs.external_id)]
     keys += [(k, v) for k, v in (obs.payload.get("provider_ids") or {}).items()]
@@ -115,7 +126,8 @@ def _open_review(session: Session, kind: str, cid: str, candidates: list[tuple[s
 
 
 def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bool = False,
-           system: bool = False, force_canonical: str | None = None) -> list[IngestResult]:
+           system: bool = False, force_canonical: str | None = None,
+           media_type: str | None = None) -> list[IngestResult]:
     """`curator`: token holds the curate scope. `system`: the node itself (provider fetches, imports)."""
     trusted = curator or system
     write_lock(session)
@@ -161,7 +173,7 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
             cid = match.canonical_id  # type: ignore[assignment]
         else:
             cid = new_canonical_id()
-            session.add(Canonical(id=cid, view={}, explain={}))
+            session.add(Canonical(id=cid, view={}, explain={}, media_type=_valid_type(session, media_type)))
             session.flush()
 
         left = None
@@ -206,7 +218,7 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
 
         if obs.redistributable:
             feed.append(session, ctx.identity, "obs", {
-                "canonical_id": cid,
+                "canonical_id": cid, "media_type": session.get(Canonical, cid).media_type,
                 "observation": {
                     "id": obs.id, "source_kind": obs.source_kind, "source": obs.source,
                     "source_scope": obs.source_scope, "external_id": obs.external_id, "payload": obs.payload,
@@ -256,9 +268,11 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
             item.status, item.decided_by = "merged", actor
         elif item.canonical_id == src:
             item.canonical_id = dst
+    from .custom import move_values
     from .facets import move_facets
 
     move_facets(session, src, dst)
+    move_values(session, src, dst)
     s.merged_into = dst
     s.view, s.explain = {}, {}
     session.flush()
@@ -352,7 +366,8 @@ def clear_lock(session: Session, ctx: Ctx, cid: str, field: str, *, log: bool = 
     return row
 
 
-def search(session: Session, q: str, limit: int = 25, offset: int = 0) -> list[Canonical]:
+def search(session: Session, q: str, limit: int = 25, offset: int = 0,
+           media_type: str | None = None) -> list[Canonical]:
     norm = norm_title(q)
     if not norm:
         return []
@@ -360,6 +375,7 @@ def search(session: Session, q: str, limit: int = 25, offset: int = 0) -> list[C
     stmt = (
         select(Canonical)
         .where(Canonical.merged_into.is_(None), Canonical.norm_title.like(like))
+        .where(Canonical.media_type == media_type if media_type else Canonical.media_type.is_not(None))
         .order_by(Canonical.norm_title.asc())
         .limit(min(limit, 100))
         .offset(max(offset, 0))

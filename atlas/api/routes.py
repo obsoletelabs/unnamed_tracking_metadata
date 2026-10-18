@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import __version__, auth, facets, feed, media, service
+from .. import __version__, auth, custom, facets, feed, media, service
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
 from ..models import Artwork, Canonical, Lock, Observation, ReviewItem, SyncCursor, Token
 from ..normalize import norm_namespace
@@ -30,11 +30,15 @@ def _iso(dt: datetime | None) -> str | None:
     return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).isoformat()
 
 
-def game_out(row: Canonical, redirected_from: str | None = None) -> dict[str, Any]:
-    return {
+def game_out(row: Canonical, redirected_from: str | None = None, session: Session | None = None,
+             ctx: Any = None) -> dict[str, Any]:
+    out = {
         "id": row.id, "version": row.version, "redirected_from": redirected_from,
         "media_type": row.media_type, "updated_at": _iso(row.updated_at), **row.view,
     }
+    if session is not None and ctx is not None:
+        out["custom"] = custom.merged(session, ctx, row.id)
+    return out
 
 
 def _guard_upstream(session: Session, st: AppState, cid: str) -> None:
@@ -69,13 +73,14 @@ def status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("
 
 
 @router.get("/site", tags=["ops"])
-def site(st: St) -> dict[str, Any]:
+def site(st: St, session: Sess) -> dict[str, Any]:
     """Public, non-sensitive description of this node: what a client or mirror needs to present it."""
     s = st.ctx.settings
     return {"name": s.app_name, "tagline": s.tagline, "role": s.role, "node_id": st.ctx.identity.node_id,
             "theme": {"default": s.default_theme, "accent": s.accent_color, "accent_light": s.accent_color_light,
                       "logo": f"/media/{s.logo_hash}" if s.logo_hash else None},
-            "nav_links": s.nav_links, "registration": s.registration, "email_verification": s.verification_mode(),
+            "nav_links": s.nav_links, "media_types": [t.key for t in custom.types(session, enabled_only=True)],
+            "registration": s.registration, "email_verification": s.verification_mode(),
             "contract": 1}
 
 
@@ -116,22 +121,25 @@ def resolve(body: ResolveRequest, st: St, session: Sess, _: Annotated[auth.Princ
         }
         if body.include_view and m.canonical_id:
             row = session.get(Canonical, m.canonical_id)
-            entry["game"] = game_out(row) if row else None
+            entry["game"] = game_out(row, None, session, st.ctx) if row else None
         out.append(entry)
     return {"results": out}
 
 
 @router.get("/games", tags=["read"])
-def list_games(session: Sess, _: Annotated[auth.Principal, Depends(require("read"))],
-               q: Annotated[str, Query(min_length=1, max_length=200)], limit: Annotated[int, Query(ge=1, le=100)] = 25):
-    return {"results": [game_out(r) for r in service.search(session, q, limit)]}
+def list_games(session: Sess, st: St, _: Annotated[auth.Principal, Depends(require("read"))],
+               q: Annotated[str, Query(min_length=1, max_length=200)], limit: Annotated[int, Query(ge=1, le=100)] = 25,
+               type: Annotated[str | None, Query(max_length=32)] = None):
+    rows = service.search(session, q, limit, media_type=type)
+    return {"results": [game_out(r, None, session, st.ctx) for r in rows]}
 
 
 @router.get("/games/{cid}", tags=["read"])
-def get_game(cid: str, response: Response, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+def get_game(cid: str, response: Response, session: Sess, st: St,
+             _: Annotated[auth.Principal, Depends(require("read"))]):
     row, redirected = service.get_canonical(session, cid)
     response.headers["ETag"] = f'"{row.id}-{row.version}"'
-    return game_out(row, redirected)
+    return game_out(row, redirected, session, st.ctx)
 
 
 @router.get("/games/{cid}/explain", tags=["read"])
@@ -290,7 +298,39 @@ def provider_fetch(name: str, body: FetchBody, st: St, session: Sess,
             ach = []
         if ach:
             facets.set_achievements(session, st.ctx, row.id, name, ach)
-    return {"match": res.method, "confidence": res.confidence, "review": res.review, "game": game_out(row)}
+    return {"match": res.method, "confidence": res.confidence, "review": res.review,
+            "game": game_out(row, None, session, st.ctx)}
+
+
+# ---- schema and custom values -------------------------------------------------------------------------
+
+@router.get("/schema", tags=["ops"])
+def schema(st: St, session: Sess):
+    """Public: the media types this node describes and the extra fields each one has."""
+    out = []
+    for t in custom.types(session, enabled_only=True):
+        out.append({"key": t.key, "label": t.label, "labels": t.labels or {}, "fields": [
+            {"key": f.key, "label": f.label, "kind": f.kind, "choices": f.choices or [], "help": f.help,
+             "editable": f.editable} for f in custom.fields_for(session, t.key, public=True)]})
+    return {"media_types": out, "contract": 1}
+
+
+class CustomBody(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict, max_length=60)
+    clear: list[str] = Field(default_factory=list, max_length=60)
+
+
+@router.put("/games/{cid}/custom", tags=["curate"])
+def put_custom(cid: str, body: CustomBody, st: St, session: Sess,
+               _: Annotated[auth.Principal, Depends(require("curate"))]):
+    _guard_upstream(session, st, cid)
+    row = session.get(Canonical, cid)
+    if row is None or row.merged_into:
+        raise AtlasError("unknown or merged canonical", "not_found")
+    values = custom.clean_values(session, row.media_type, body.values, editable_only=False)
+    custom.set_values(session, st.ctx, cid, "curator", values, clear=tuple(body.clear),
+                      redistributable=st.ctx.settings.role == "authority")
+    return {"custom": custom.merged(session, st.ctx, cid)}
 
 
 # ---- artwork, achievements, media --------------------------------------------------------------------

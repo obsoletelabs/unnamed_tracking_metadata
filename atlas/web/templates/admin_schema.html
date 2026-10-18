@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Fields · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+<p class="muted">Media types say what kind of thing a record is. Each type can have its own extra fields, which appear on pages, in contributor forms and in the API, and go through the same review as built-in fields.</p>
+{% for r in rows %}
+<article class="card">
+  <h3><a href="/admin/schema/{{ r.t.key }}">{{ r.t.label }}</a> <span class="muted small">{{ r.t.key }}</span>
+    {% if not r.t.enabled %}<span class="badge warn">disabled</span>{% endif %}{% if r.t.origin == 'upstream' %}<span class="badge">from upstream</span>{% endif %}</h3>
+  <p class="small muted">{{ r.count }} record{{ '' if r.count == 1 else 's' }} · {{ r.fields|length }} custom field{{ '' if r.fields|length == 1 else 's' }}{% if r.fields %}: {{ r.fields|map(attribute='label')|join(', ') }}{% endif %}</p>
+</article>
+{% endfor %}
+<h2>New media type</h2>
+<form class="card" method="post" action="/admin/schema/types">{{ csrf(p.csrf) }}
+  <div class="cols"><div><label for="key">Key <span class="hint">a-z, 0-9, _</span></label><input id="key" type="text" name="key" required maxlength="32" pattern="[a-z][a-z0-9_]*" placeholder="movie"></div>
+  <div><label for="label">Name</label><input id="label" type="text" name="label" required maxlength="60" placeholder="Movie"></div></div>
+  <label><input type="checkbox" name="enabled" checked> Enabled</label>
+  <p><button type="submit">Create type</button></p>
+</form>
+{% endblock %}

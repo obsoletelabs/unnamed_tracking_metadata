@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 
-from .. import accounts, auth, facets, feed, mail, proposals, service
+from .. import accounts, auth, custom, facets, feed, mail, proposals, service
 from ..api.routes import _guard_upstream, media_response
 from ..merge import SCALAR_FIELDS, UNION_FIELDS
 from ..models import (
@@ -15,6 +15,7 @@ from ..models import (
     AuditEntry,
     Canonical,
     Lock,
+    MediaType,
     Observation,
     Proposal,
     ReviewItem,
@@ -32,6 +33,7 @@ from .deps import (
     admin_page,
     client_ip,
     csrf_form,
+    form_dict,
     go,
     page,
     review_form,
@@ -96,6 +98,44 @@ def primary_art(p: Page, ids: list[str]) -> dict[str, str]:
     return out
 
 
+DEFAULT_LABELS = {"developer": "Developer", "publisher": "Publisher", "series": "Series", "release_date": "Released",
+                  "tags": "Genres", "features": "Features", "platforms": "Platforms"}
+
+
+def labels_for(p: Page, media_type: str) -> dict[str, str]:
+    t = p.session.get(MediaType, media_type)
+    return {**DEFAULT_LABELS, **((t.labels or {}) if t else {})}
+
+
+def custom_inputs(p: Page, media_type: str, current: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Editable custom fields with their current value rendered for an input."""
+    out = []
+    for f in custom.fields_for(p.session, media_type, editable=True):
+        v = (current or {}).get(f.key)
+        shown = "\n".join(v) if isinstance(v, list) else ("yes" if v is True else "no" if v is False else
+                                                          "" if v is None else str(v))
+        out.append({"f": f, "value": shown})
+    return out
+
+
+def custom_from_form(p: Page, media_type: str, form: dict[str, str], current: dict[str, Any] | None = None
+                     ) -> dict[str, Any]:
+    """Raw custom values that differ from what is there now (empty input never clears)."""
+    out: dict[str, Any] = {}
+    for f in custom.fields_for(p.session, media_type, editable=True):
+        raw = (form.get("cf_" + f.key) or "").strip()
+        if not raw:
+            continue
+        try:
+            value = custom.validate_value(f, raw)
+        except AtlasError:
+            out[f.key] = raw  # let proposals.create report the precise error
+            continue
+        if value != (current or {}).get(f.key):
+            out[f.key] = raw
+    return out
+
+
 def live_game(p: Page, cid: str) -> tuple[Canonical, str | None]:
     return service.get_canonical(p.session, cid)
 
@@ -128,11 +168,14 @@ def home(p: Annotated[Page, Depends(page)]):
 
 @router.get("/search", response_class=HTMLResponse)
 def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length=200)] = "",
-           page_no: Annotated[int, Query(alias="page", ge=1, le=1000)] = 1):
-    rows = service.search(p.session, q, PER_PAGE + 1, (page_no - 1) * PER_PAGE) if q.strip() else []
+           page_no: Annotated[int, Query(alias="page", ge=1, le=1000)] = 1,
+           type: Annotated[str, Query(max_length=32)] = ""):
+    rows = service.search(p.session, q, PER_PAGE + 1, (page_no - 1) * PER_PAGE, media_type=type or None) \
+        if q.strip() else []
     more = len(rows) > PER_PAGE
     rows = rows[:PER_PAGE]
-    return render(p, "search.html", q=q, results=rows, more=more, page=page_no, art=primary_art(p, [g.id for g in rows]))
+    return render(p, "search.html", q=q, results=rows, more=more, page=page_no, art=primary_art(p, [g.id for g in rows]),
+                  mtypes=custom.types(p.session, enabled_only=True), mtype=type)
 
 
 @router.get("/media/{digest}")
@@ -177,7 +220,12 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
                            for r in s.scalars(select(Proposal).where(
                                Proposal.canonical_id == g.id, Proposal.status == "approved",
                                Proposal.kind != "new_game").order_by(Proposal.created_at.desc()).limit(5))]}
+    defs = {f.key: f for f in custom.fields_for(s, g.media_type, public=True)}
+    values = custom.merged(s, ctx, g.id)
+    details = [{"f": defs[k], "value": values[k]} for k in defs if k in values]
     return render(p, "game.html", g=g, v=g.view, explain=g.explain, key_art=key_art, shots=shots,
+                  lbl=labels_for(p, g.media_type), details=details,
+                  mtype_label=(s.get(MediaType, g.media_type).label if s.get(MediaType, g.media_type) else g.media_type),
                   art_total=len(art), art_cached=len(cached), art_kinds=facets.KINDS, activity=activity,
                   achievements=facets.merged_achievements(s, ctx, g.id),
                   redirected_from=p.request.query_params.get("from"), **extra)
@@ -268,64 +316,80 @@ def _changed(current: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     return diff
 
 
+def _edit_ctx(p: Page, mtype: str, **extra: Any) -> dict[str, Any]:
+    return {"lbl": labels_for(p, mtype), "auto": proposals.can_auto_apply(p.st.ctx, p.me), **extra}
+
+
 @router.get("/game/{cid}/edit", response_class=HTMLResponse)
 def edit_form(cid: str, p: Annotated[Page, Depends(user_page)]):
     g, _ = live_game(p, cid)
+    cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False)
     return render(p, "edit.html", new=False, v=g.view, action=f"/game/{g.id}/edit", cancel=f"/game/{g.id}",
-                  auto=proposals.can_auto_apply(p.st.ctx, p.me), error=None)
+                  error=None, cfields=custom_inputs(p, g.media_type, cur), **_edit_ctx(p, g.media_type))
 
 
 @router.post("/game/{cid}/edit")
-def edit_submit(cid: str, p: Annotated[Page, Depends(user_form)], title: Annotated[str, Form()] = "",
-                release_date: Annotated[str, Form()] = "", developer: Annotated[str, Form()] = "",
-                publisher: Annotated[str, Form()] = "", series: Annotated[str, Form()] = "",
-                description: Annotated[str, Form()] = "", platforms: Annotated[str, Form()] = "",
-                tags: Annotated[str, Form()] = "", features: Annotated[str, Form()] = "",
-                note: Annotated[str, Form()] = ""):
+def edit_submit(cid: str, p: Annotated[Page, Depends(user_form)], f: Annotated[dict[str, str], Depends(form_dict)]):
     g, _ = live_game(p, cid)
-    new = _form_values(title.strip(), release_date.strip(), developer.strip(), publisher.strip(), series.strip(),
-                       description.strip(), platforms, tags, features)
+    new = _form_values(f.get("title", "").strip(), f.get("release_date", "").strip(), f.get("developer", "").strip(),
+                       f.get("publisher", "").strip(), f.get("series", "").strip(), f.get("description", "").strip(),
+                       f.get("platforms", ""), f.get("tags", ""), f.get("features", ""))
+    cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False)
     payload = _changed(g.view, new)
+    extra = custom_from_form(p, g.media_type, f, cur)
+    if extra:
+        payload["custom"] = extra
+    note = f.get("note", "")
     try:
         if not payload:
             raise AtlasError("You did not change anything.")
         pr = proposals.create(p.session, p.st.ctx, p.me, "edit", g.id, payload, note)
     except AtlasError as exc:
         p.session.rollback()
-        return render(p, "edit.html", status=400, new=False, v={**g.view, **{k: v for k, v in new.items() if v}},
-                      action=f"/game/{g.id}/edit", cancel=f"/game/{g.id}", error=str(exc), note=note,
-                      auto=proposals.can_auto_apply(p.st.ctx, p.me))
+        shown = {**g.view, **{k: v for k, v in new.items() if v}}
+        return render(p, "edit.html", status=400, new=False, v=shown, action=f"/game/{g.id}/edit",
+                      cancel=f"/game/{g.id}", error=str(exc), note=note,
+                      cfields=custom_inputs(p, g.media_type, {**cur, **{k: v for k, v in extra.items()}}),
+                      **_edit_ctx(p, g.media_type))
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
 @router.get("/new", response_class=HTMLResponse)
-def new_form(p: Annotated[Page, Depends(user_page)], title: Annotated[str, Query(max_length=500)] = ""):
-    return render(p, "edit.html", new=True, v={"title": title}, action="/new", cancel="/", error=None,
-                  auto=proposals.can_auto_apply(p.st.ctx, p.me))
+def new_form(p: Annotated[Page, Depends(user_page)], title: Annotated[str, Query(max_length=500)] = "",
+             type: Annotated[str, Query(max_length=32)] = "game"):
+    mtypes = custom.types(p.session, enabled_only=True)
+    if type not in {t.key for t in mtypes}:
+        type = "game"
+    return render(p, "edit.html", new=True, v={"title": title}, action="/new", cancel="/", error=None, mtype=type,
+                  mtypes=mtypes, cfields=custom_inputs(p, type), **_edit_ctx(p, type))
 
 
 @router.post("/new")
-def new_submit(p: Annotated[Page, Depends(user_form)], title: Annotated[str, Form()] = "",
-               release_date: Annotated[str, Form()] = "", developer: Annotated[str, Form()] = "",
-               publisher: Annotated[str, Form()] = "", series: Annotated[str, Form()] = "",
-               description: Annotated[str, Form()] = "", platforms: Annotated[str, Form()] = "",
-               tags: Annotated[str, Form()] = "", features: Annotated[str, Form()] = "",
-               provider_ids: Annotated[str, Form()] = "", note: Annotated[str, Form()] = ""):
-    new = _form_values(title.strip(), release_date.strip(), developer.strip(), publisher.strip(), series.strip(),
-                       description.strip(), platforms, tags, features)
-    payload = {k: v for k, v in new.items() if v not in ("", [])}
+def new_submit(p: Annotated[Page, Depends(user_form)], f: Annotated[dict[str, str], Depends(form_dict)]):
+    mtype = f.get("media_type", "game")
+    new = _form_values(f.get("title", "").strip(), f.get("release_date", "").strip(), f.get("developer", "").strip(),
+                       f.get("publisher", "").strip(), f.get("series", "").strip(), f.get("description", "").strip(),
+                       f.get("platforms", ""), f.get("tags", ""), f.get("features", ""))
+    payload: dict[str, Any] = {k: v for k, v in new.items() if v not in ("", [])}
+    payload["media_type"] = mtype
     ids = {}
-    for line in lines(provider_ids):
+    for line in lines(f.get("provider_ids", "")):
         key, _, val = line.partition(":")
         ids[key.strip().lower()] = val.strip()
     if ids:
         payload["provider_ids"] = ids
+    extra = custom_from_form(p, mtype, f)
+    if extra:
+        payload["custom"] = extra
+    note = f.get("note", "")
     try:
         pr = proposals.create(p.session, p.st.ctx, p.me, "new_game", None, payload, note)
     except AtlasError as exc:
         p.session.rollback()
         return render(p, "edit.html", status=400, new=True, v=new, action="/new", cancel="/", error=str(exc),
-                      note=note, ids_text=provider_ids, auto=proposals.can_auto_apply(p.st.ctx, p.me))
+                      note=note, ids_text=f.get("provider_ids", ""), mtype=mtype,
+                      mtypes=custom.types(p.session, enabled_only=True),
+                      cfields=custom_inputs(p, mtype, extra), **_edit_ctx(p, mtype))
     if pr.auto_applied and pr.canonical_id:
         return go(f"/game/{pr.canonical_id}", "applied")
     return go("/me", "proposed")
@@ -458,8 +522,16 @@ def _proposal_card(p: Page, r: Proposal) -> dict[str, Any]:
     if r.kind in ("edit", "new_game"):
         cur = (p.session.get(Canonical, r.canonical_id).view if r.canonical_id and p.session.get(Canonical, r.canonical_id)
                else {})
+        row = p.session.get(Canonical, r.canonical_id) if r.canonical_id else None
+        mtype = row.media_type if row else r.payload.get("media_type", "game")
+        defs = {f.key: f for f in custom.fields_for(p.session, mtype)}
+        old_custom = custom.merged(p.session, p.st.ctx, r.canonical_id, public_only=False) if r.canonical_id else {}
         for k, v in r.payload.items():
-            card["rows"].append((FIELD_LABELS.get(k, k), _show(cur.get(k)) if r.kind == "edit" else "", _show(v)))
+            if k == "custom":
+                for ck, cv in v.items():
+                    card["rows"].append((defs[ck].label if ck in defs else ck, _show(old_custom.get(ck)), _show(cv)))
+            elif k != "media_type":
+                card["rows"].append((FIELD_LABELS.get(k, k), _show(cur.get(k)) if r.kind == "edit" else "", _show(v)))
     elif r.kind == "artwork":
         card["entries"] = [f"{i['kind'].replace('_', ' ')}: {i['url']}" for i in r.payload["items"]]
     else:

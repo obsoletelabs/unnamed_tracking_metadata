@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import accounts, facets, mail
+from . import accounts, custom, facets, mail
 from .contract import ObservationBatchV1
 from .models import Achievement, Artwork, Canonical, Observation, Proposal, ReputationEvent, User, now
 from .service import AtlasError, Ctx, ingest, write_lock
@@ -67,13 +67,36 @@ def clean_edit(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _validate(kind: str, canonical_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+def _core_and_custom(session: Session, media_type: str, payload: dict[str, Any], skip: tuple[str, ...] = ()
+                     ) -> dict[str, Any]:
+    raw_custom = payload.get("custom") or {}
+    core_in = {k: v for k, v in payload.items() if k not in ("custom", "media_type", *skip)}
+    out: dict[str, Any] = {}
+    if any(v not in (None, "", []) for v in core_in.values()):
+        out.update(clean_edit(core_in))
+    values = custom.clean_values(session, media_type, raw_custom, editable_only=True) if raw_custom else {}
+    if values:
+        out["custom"] = values
+    if not out:
+        raise AtlasError("nothing to change")
+    return out
+
+
+def _validate(session: Session, kind: str, canonical_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
     if kind == "edit":
-        return clean_edit(payload)
+        row = session.get(Canonical, canonical_id) if canonical_id else None
+        if row is None or row.merged_into:
+            raise AtlasError("unknown game", "not_found")
+        return _core_and_custom(session, row.media_type, payload)
     if kind == "new_game":
         if not (payload.get("title") or "").strip():
             raise AtlasError("a title is required")
-        body = clean_edit({k: v for k, v in payload.items() if k != "provider_ids"})
+        mtype = payload.get("media_type") or "game"
+        from .service import _valid_type
+
+        mtype = _valid_type(session, mtype)
+        body = _core_and_custom(session, mtype, payload, skip=("provider_ids",))
+        body["media_type"] = mtype
         ids = payload.get("provider_ids") or {}
         if not isinstance(ids, dict) or len(ids) > 16 or not all(
                 re.fullmatch(r"[a-z0-9._-]{1,50}", str(k)) and isinstance(v, str) and 0 < len(v) <= 256
@@ -104,13 +127,13 @@ def _to_item(cid: str, reported: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ingest_community(session: Session, ctx: Ctx, cid: str, reported: dict[str, Any], external_id: str | None = None,
-                      force: bool = True) -> str:
+                      force: bool = True, media_type: str | None = None) -> str:
     item = _to_item(external_id or cid, reported)
     item.pop("source_updated_at", None)
     batch = ObservationBatchV1.model_validate({
         "connection": {"source_kind": "metadata", "source": SOURCE, "source_scope": SCOPE},
         "observations": [item]})
-    res = ingest(session, ctx, batch, curator=True, force_canonical=cid if force else None)[0]
+    res = ingest(session, ctx, batch, curator=True, force_canonical=cid if force else None, media_type=media_type)[0]
     return res.canonical_id  # type: ignore[return-value]
 
 
@@ -136,14 +159,24 @@ def apply(session: Session, ctx: Ctx, p: Proposal) -> None:
             raise AtlasError("the game no longer exists", "not_found")
         cur = _community_obs(session, cid)
         before = dict(cur.payload) if cur else None
-        p.previous = {"payload": before}
-        _ingest_community(session, ctx, cid, _merge_edit(before or {}, p.payload))
+        core = {k: v for k, v in p.payload.items() if k != "custom"}
+        p.previous = {"payload": before, "custom": None}
+        if core:
+            _ingest_community(session, ctx, cid, _merge_edit(before or {}, core))
+        if p.payload.get("custom"):
+            old = custom.source_values(session, cid, SOURCE)
+            p.previous = {**p.previous, "custom": {k: old.get(k) for k in p.payload["custom"]}}
+            custom.set_values(session, ctx, cid, SOURCE, p.payload["custom"],
+                              redistributable=ctx.settings.role == "authority")
     elif p.kind == "new_game":
-        reported = _merge_edit({}, {k: v for k, v in p.payload.items() if k != "provider_ids"})
+        reported = _merge_edit({}, {k: v for k, v in p.payload.items() if k not in ("provider_ids", "custom", "media_type")})
         if p.payload.get("provider_ids"):
             reported["provider_ids"] = p.payload["provider_ids"]
         p.canonical_id = _ingest_community(session, ctx, "new-" + p.id, reported, external_id="new-" + p.id,
-                                           force=False)
+                                           force=False, media_type=p.payload.get("media_type"))
+        if p.payload.get("custom"):
+            custom.set_values(session, ctx, p.canonical_id, SOURCE, p.payload["custom"],
+                              redistributable=ctx.settings.role == "authority")
         p.previous = {"created": True}
     elif p.kind in ("artwork", "achievements"):
         cid = p.canonical_id
@@ -172,7 +205,16 @@ def apply(session: Session, ctx: Ctx, p: Proposal) -> None:
 def revert_applied(session: Session, ctx: Ctx, p: Proposal) -> None:
     prev = p.previous or {}
     if p.kind == "edit":
+        for key, old in (prev.get("custom") or {}).items():
+            if old is None:
+                custom.set_values(session, ctx, p.canonical_id, SOURCE, {}, clear=(key,),  # type: ignore[arg-type]
+                                  redistributable=ctx.settings.role == "authority")
+            else:
+                custom.set_values(session, ctx, p.canonical_id, SOURCE, {key: old},  # type: ignore[arg-type]
+                                  redistributable=ctx.settings.role == "authority")
         before = prev.get("payload")
+        if not p.payload.keys() - {"custom"}:
+            return
         if before:
             _ingest_community(session, ctx, p.canonical_id, before)  # type: ignore[arg-type]
         else:  # there was no community observation: neutralise it by superseding with an empty claim
@@ -222,7 +264,7 @@ def create(session: Session, ctx: Ctx, user: User, kind: str, canonical_id: str 
         raise AtlasError("account suspended", "forbidden")
     if not mail.is_verified(s, user):
         raise AtlasError("confirm your email address before contributing (see your profile)", "forbidden")
-    payload = _validate(kind, canonical_id, payload)
+    payload = _validate(session, kind, canonical_id, payload)
     if kind != "new_game":
         row = session.get(Canonical, canonical_id) if canonical_id else None
         if row is None or row.merged_into:

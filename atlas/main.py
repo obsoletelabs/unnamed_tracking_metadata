@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import __version__, auth, mail, media, ratelimit, sync
+from . import __version__, auth, custom, mail, media, ratelimit, sync
 from .api.deps import AppState
 from .api.routes import router
 from .db import make_engine, make_sessionmaker, upgrade
@@ -27,6 +27,7 @@ from .web.admin import router as admin_router
 from .web.deps import LoginRequired
 from .web.routes import router as web_router
 from .web.routes import web_headers
+from .web.schema import router as schema_router
 
 log = logging.getLogger("atlas")
 _STATUS = {"invalid": 400, "forbidden": 403, "not_found": 404, "conflict": 409}
@@ -134,6 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         identity = load_identity(s)
         auth.sync_bootstrap(s, settings.bootstrap_admin_token)
         seed_pages(s)
+        custom.seed(s)
         s.commit()
     ctx = Ctx(settings, identity)
     stop = threading.Event()
@@ -156,6 +158,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(web_router)
     app.include_router(admin_router)
     app.include_router(account_router)
+    app.include_router(schema_router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.middleware("http")

@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     accent_color_light: str = "#1f6fe0"
     default_theme: Literal["auto", "dark", "light"] = "auto"
     logo_hash: str | None = None
+    inherit_schema: bool = True  # mirrors/locals adopt the upstream authority's media types and fields
     nav_links: list[dict[str, str]] = Field(default_factory=list)  # [{"label": ..., "url": ...}]
     # Email. The SMTP password is only ever read from ATLAS_SMTP_PASSWORD.
     mail_backend: Literal["smtp", "outbox"] = "outbox"  # outbox: stored for admins, nothing is sent

@@ -146,3 +146,9 @@ def secure_cookies(p: Page) -> bool:
 def set_anon_cookie(resp, p: Page) -> None:
     resp.set_cookie(ANON_CSRF_COOKIE, p.csrf, httponly=True, samesite="lax", secure=secure_cookies(p), path="/",
                     max_age=86400)
+
+
+async def form_dict(request: Request) -> dict[str, str]:
+    """All single-valued form fields (for forms whose inputs depend on admin-defined fields)."""
+    form = await request.form()
+    return {k: v for k, v in form.items() if isinstance(v, str)}

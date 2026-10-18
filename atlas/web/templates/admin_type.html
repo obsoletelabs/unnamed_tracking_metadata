@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}{{ t.label }} · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+<p><a href="/admin/schema">&larr; All media types</a></p>
+<h2>{{ t.label }}</h2>
+{% if t.origin == 'upstream' %}<div class="card"><p>This type is managed by the upstream authority and can't be edited here.</p></div>
+{% else %}
+<form class="card" method="post" action="/admin/schema/types">{{ csrf(p.csrf) }}
+  <input type="hidden" name="key" value="{{ t.key }}">
+  <div class="cols"><div><label for="label">Name</label><input id="label" type="text" name="label" value="{{ t.label }}" required maxlength="60"></div>
+  <div><label for="position">Order</label><input id="position" type="text" inputmode="numeric" name="position" value="{{ t.position }}"></div></div>
+  <label><input type="checkbox" name="enabled" {{ 'checked' if t.enabled }} {{ 'disabled' if t.key == 'game' }}> Enabled</label>
+  <h3>Rename built-in fields for this type</h3>
+  <p class="small muted">For example a movie's “Developer” can read “Director”. Leave empty to keep the default.</p>
+  <div class="cols">{% for c in core %}<div><label for="label_{{ c }}">{{ c|replace('_', ' ')|capitalize }}</label><input id="label_{{ c }}" type="text" name="label_{{ c }}" value="{{ (t.labels or {}).get(c, '') }}" maxlength="40"></div>{% endfor %}</div>
+  <p><button type="submit">Save type</button></p>
+</form>
+{% endif %}
+<h2>Custom fields</h2>
+{% if t.origin != 'upstream' %}<p><a class="btn" href="/admin/schema/{{ t.key }}/fields/new">Add field</a></p>{% endif %}
+{% if fields %}<table><thead><tr><th>Field</th><th>Key</th><th>Kind</th><th>Shown</th><th>Editable</th><th></th></tr></thead><tbody>
+{% for f in fields %}<tr><td><a href="/admin/schema/{{ t.key }}/fields/{{ f.key }}">{{ f.label }}</a></td><td><code>{{ f.key }}</code></td><td>{{ f.kind }}</td><td>{{ 'yes' if f.public else 'no' }}</td><td>{{ 'yes' if f.editable else 'no' }}</td>
+<td>{% if f.origin == 'local' %}<form class="inline" method="post" action="/admin/schema/{{ t.key }}/fields/{{ f.key }}/delete">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Delete this field and every value stored for it?" type="submit">Delete</button></form>{% else %}<span class="badge">upstream</span>{% endif %}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="muted">No custom fields yet.</p>{% endif %}
+{% if t.key != 'game' and t.origin == 'local' %}<form method="post" action="/admin/schema/types/{{ t.key }}/delete">{{ csrf(p.csrf) }}<p><button class="danger small" data-confirm="Delete this media type and its fields?" type="submit">Delete type</button></p></form>{% endif %}
+{% endblock %}

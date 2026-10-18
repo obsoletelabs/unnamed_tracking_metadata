@@ -74,6 +74,8 @@ REGISTRY: tuple[Spec, ...] = (
       "Matches at or above this are merged automatically.", lo=50, hi=100),
     S("review_threshold", "Review confidence (percent)", "Matching", "int",
       "Weaker matches below the auto threshold but above this open a duplicate review.", lo=0, hi=100),
+    S("inherit_schema", "Adopt the upstream media types and fields", "Federation", "bool",
+      "Mirrors and local nodes copy the authority's custom fields; yours always take precedence."),
     S("media_cache_enabled", "Download and cache artwork", "Artwork", "bool"),
     S("media_max_bytes", "Largest image (bytes)", "Artwork", "int", lo=1024, hi=50 * 1024 * 1024),
     S("mail_backend", "Email delivery", "Email", "choice",

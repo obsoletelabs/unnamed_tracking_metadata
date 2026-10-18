@@ -339,3 +339,45 @@ class Outbox(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class MediaType(Base):
+    """A kind of thing Atlas describes (game now; movie, anime... by configuration)."""
+
+    __tablename__ = "media_type"
+
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    label: Mapped[str] = mapped_column(String(60))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    position: Mapped[int] = mapped_column(Integer, default=100)
+    labels: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)  # core field -> label, e.g. developer: Director
+    origin: Mapped[str] = mapped_column(String(8), default="local")  # local | upstream
+
+
+class FieldDef(Base):
+    __tablename__ = "field_def"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    media_type: Mapped[str] = mapped_column(ForeignKey("media_type.key"), index=True)
+    key: Mapped[str] = mapped_column(String(40))
+    label: Mapped[str] = mapped_column(String(80))
+    kind: Mapped[str] = mapped_column(String(12))  # text | longtext | number | date | bool | choice | list | url
+    choices: Mapped[list[str]] = mapped_column(JSON, default=list)
+    help: Mapped[str] = mapped_column(String(300), default="")
+    public: Mapped[bool] = mapped_column(Boolean, default=True)  # shown on the page and in the API
+    editable: Mapped[bool] = mapped_column(Boolean, default=True)  # community may propose changes
+    position: Mapped[int] = mapped_column(Integer, default=100)
+    origin: Mapped[str] = mapped_column(String(8), default="local")
+
+    __table_args__ = (UniqueConstraint("media_type", "key", name="uq_field_def"),)
+
+
+class CustomValue(Base):
+    __tablename__ = "custom_value"
+
+    canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), primary_key=True)
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    source: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON)
+    redistributable: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
