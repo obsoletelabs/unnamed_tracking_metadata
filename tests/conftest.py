@@ -1,23 +1,53 @@
-import os
-import sys
-import tempfile
-from pathlib import Path
-
-# Make imports deterministic when pytest is launched from different working directories.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
-
-_TEST_ROOT = tempfile.mkdtemp(prefix="atlas-metadata-tests-")
-os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(_TEST_ROOT, "test.db")
-os.environ["UPLOAD_DIR"] = os.path.join(_TEST_ROOT, "uploads")
-os.environ["SESSION_SECRET"] = "test-only-session-secret-not-for-production"
-os.environ["ADMIN_EMAILS"] = "admin@example.test"
+from __future__ import annotations
 
 import pytest
+from sqlalchemy.pool import StaticPool
+
+from atlas.db import make_engine, make_sessionmaker
+from atlas.models import Base
+from atlas.service import Ctx
+from atlas.settings import Settings
+from atlas.signing import load_identity
 
 
-@pytest.fixture(autouse=True)
-def disable_automatic_provider_network_calls(monkeypatch):
-    # Provider discovery has dedicated mocked tests; API tests should not call third parties.
-    from app import main as main_module
-    monkeypatch.setattr(main_module, "discover_game_ids_background", lambda game_id: None)
+def build_settings(**kw) -> Settings:
+    base = dict(role="authority", database_url="sqlite://", environment="dev")
+    base.update(kw)
+    return Settings(_env_file=None, **base)
+
+
+@pytest.fixture
+def settings() -> Settings:
+    return build_settings()
+
+
+@pytest.fixture
+def maker():
+    engine = make_engine("sqlite://")
+    engine.dispose()
+    from sqlalchemy import create_engine
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    return make_sessionmaker(engine)
+
+
+@pytest.fixture
+def session(maker):
+    with maker() as s:
+        yield s
+
+
+@pytest.fixture
+def ctx(session, settings) -> Ctx:
+    identity = load_identity(session)
+    session.commit()
+    return Ctx(settings=settings, identity=identity)
+
+
+def batch(source: str, items: list[dict], *, kind: str = "metadata", scope: str = "test"):
+    from atlas.contract import ObservationBatchV1
+
+    return ObservationBatchV1.model_validate(
+        {"connection": {"source_kind": kind, "source": source, "source_scope": scope}, "observations": items}
+    )
