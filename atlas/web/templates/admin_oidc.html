@@ -40,7 +40,8 @@
 <form class="card" method="post" action="/admin/oidc/issuers">{{ csrf(p.csrf) }}
   <h3>Confirm this provider</h3>
   <p>{{ probe.issuer_url }} signs tokens with node <strong><code>{{ probe.fp }}</code></strong>. <strong>Check it matches what its administrator told you.</strong> Atlas will only accept logins signed by this key.</p>
-  {% for k in ['issuer_url', 'node_id', 'public_key', 'authorization_endpoint', 'token_endpoint'] %}<input type="hidden" name="{{ k }}" value="{{ probe[k] }}">{% endfor %}
+  <p><strong>Register this redirect address on the provider first</strong> (Admin → Sign-in sharing → Register application, signature EdDSA):<br><code>{{ probe.redirect }}</code></p>
+  {% for k in ['iid', 'issuer_url', 'node_id', 'public_key', 'authorization_endpoint', 'token_endpoint'] %}<input type="hidden" name="{{ k }}" value="{{ probe[k] }}">{% endfor %}
   <label for="iname">Name shown on the sign-in page</label><input id="iname" type="text" name="name" value="{{ probe.name }}" maxlength="80">
   <label for="cid">Client ID</label><input id="cid" type="text" name="client_id" required maxlength="40">
   <label for="csec">Client secret {% if not can_store %}<span class="error">(set ATLAS_SECRET_KEY to store it)</span>{% endif %}</label><input id="csec" type="password" name="client_secret" required maxlength="200" autocomplete="off">

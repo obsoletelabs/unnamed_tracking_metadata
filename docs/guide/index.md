@@ -34,4 +34,4 @@ Everything an operator normally wants to change (name, colours, logo, menus, pag
 * **Not a tracker.** Atlas holds facts about games. Playtime, ownership and completion belong to the app that tracks them. Atlas deliberately discards personal facts it is sent.
 * **Not a store of provider data to redistribute.** Provider-derived data stays on the node that fetched it. Only what people contribute (released as CC0) is replicated.
 
-Contributed metadata is dedicated to the public domain under [CC0 1.0](../../DATA-LICENSE.md); the software is MIT.
+Contributed metadata is dedicated to the public domain under [CC0 1.0](https://github.com/obsoletelabs/unnamed_tracking_metadata/blob/v2/DATA-LICENSE.md); the software is MIT.

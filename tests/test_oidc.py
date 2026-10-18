@@ -54,28 +54,23 @@ class World:
         return r
 
     def add_issuer(self, **opts):
-        """Register a client on the provider, then look it up and add it on the node (as the node's admin)."""
-        ctx = self.p_app.state.atlas
-        with ctx.maker() as s:
-            client, secret = oidc.create_client(s, "My node", [f"{NODE}/oidc/callback/placeholder"], id_token_alg="EdDSA")
-            s.commit()
-            cid = client.client_id
+        """Look the provider up on the node (which fixes the issuer id), register that exact redirect address on the
+        provider, then add it with the client id and secret: the order the admin UI asks for."""
         t = token(self.node, "/admin/oidc")
         probe = self.node.post("/admin/oidc/issuers/probe", data={"csrf": t, "url": PROVIDER, "name": "Central"})
         assert probe.status_code == 200 and "Confirm this provider" in probe.text, probe.text[:400]
         form = {k: re.search(rf'name="{k}" value="([^"]*)"', probe.text).group(1)
-                for k in ("issuer_url", "node_id", "public_key", "authorization_endpoint", "token_endpoint")}
+                for k in ("iid", "issuer_url", "node_id", "public_key", "authorization_endpoint", "token_endpoint")}
+        iid = form["iid"]
+        assert f"{NODE}/oidc/callback/{iid}" in probe.text
+        ctx = self.p_app.state.atlas
+        with ctx.maker() as s:
+            client, secret = oidc.create_client(s, "My node", [f"{NODE}/oidc/callback/{iid}"], id_token_alg="EdDSA")
+            s.commit()
+            cid = client.client_id
         r = self.node.post("/admin/oidc/issuers", data={"csrf": t, "name": "Central", "client_id": cid,
                                                         "client_secret": secret, **form, **opts})
         assert r.status_code == 303, r.text[:300]
-        with self.n_app.state.atlas.maker() as s:
-            issuer = s.scalars(select(OidcIssuer)).one()
-            iid = issuer.id
-        # the redirect uri must be exactly the node's callback for this issuer
-        with ctx.maker() as s:
-            row = s.get(oidc.OidcClient, cid)
-            row.redirect_uris = [f"{NODE}/oidc/callback/{iid}"]
-            s.commit()
         return iid, cid, secret
 
     def sign_in_via(self, browser, iid, as_provider_user=None, decision="allow"):
@@ -472,7 +467,7 @@ def test_issuer_probe_validates_what_it_finds(tmp_path):
         probe = w.node.post("/admin/oidc/issuers/probe", data={"csrf": t, "url": PROVIDER})
         assert probe.status_code == 200 and "Confirm this provider" in probe.text
         form = {k: re.search(rf'name="{k}" value="([^"]*)"', probe.text).group(1)
-                for k in ("issuer_url", "node_id", "public_key", "authorization_endpoint", "token_endpoint")}
+                for k in ("iid", "issuer_url", "node_id", "public_key", "authorization_endpoint", "token_endpoint")}
         assert w.node.post("/admin/oidc/issuers", data={"csrf": t, "name": "C", "client_id": "x", "client_secret": "y",
                                                         **{**form, "node_id": "0" * 16}}).status_code == 400
         assert w.node.post("/admin/oidc/issuers", data={"csrf": t, "name": "C", "client_id": "x", "client_secret": "y",

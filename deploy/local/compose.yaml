@@ -1,0 +1,18 @@
+# Atlas local node: official image, SQLite in a volume. Private to you by default.
+#   cp .env.example .env   # fill it in
+#   docker compose up -d   # http://127.0.0.1:8000
+name: atlas-local
+services:
+  atlas:
+    image: ${ATLAS_IMAGE:-ghcr.io/obsoletelabs/unnamed_tracking_metadata}:${ATLAS_TAG:-v2}
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      ATLAS_ROLE: local
+      ATLAS_DATABASE_URL: sqlite:////data/atlas.db
+      ATLAS_MEDIA_DIR: /data/media
+    # 127.0.0.1 keeps it private to this machine. Use "8000:8000" (or "192.168.1.10:8000:8000") to share on your LAN.
+    ports: ["${ATLAS_BIND:-127.0.0.1}:${ATLAS_PORT:-8000}:8000"]
+    volumes: ["atlas-data:/data"]
+volumes:
+  atlas-data:

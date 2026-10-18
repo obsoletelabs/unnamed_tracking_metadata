@@ -65,9 +65,9 @@ People then see a consent screen the first time each sign-in happens:
 
 On the node that should *accept* sign-ins (for example a household node signing in with the central one):
 
-1. On the **provider** node, register an application as above: redirect address `https://your-node/oidc/callback/<id>` (you learn `<id>` in the next step, so register with a placeholder and correct it, or create the provider entry first), signature **EdDSA**.
-2. On your node: **Admin → Sign-in sharing → Accept sign-ins from another node → Look up provider.** Atlas fetches its discovery and keys and shows the provider's **node id fingerprint**. **Compare it with what the provider's administrator gave you.** Atlas pins that key and will only accept ID tokens signed by it (the algorithm is never negotiated).
-3. Enter the client id and secret (stored encrypted; needs `ATLAS_SECRET_KEY`), choose:
+1. On your node: **Admin → Sign-in sharing → Accept sign-ins from another node → Look up provider.** Atlas fetches its discovery and keys and shows the provider's **node id fingerprint**. **Compare it with what the provider's administrator gave you.** Atlas pins that key and will only accept ID tokens signed by it (the algorithm is never negotiated). The page also shows the exact **redirect address** to register.
+2. On the **provider** node, register an application as above with that redirect address and signature **EdDSA**; copy the client id and secret.
+3. Back on your node, enter the client id and secret (stored encrypted; needs `ATLAS_SECRET_KEY`) and choose:
    * **Every user here may link and use it** (otherwise you enable it per user in the user list),
    * **Create an account on first sign-in**,
    * **Trust the provider's confirmed email address**.

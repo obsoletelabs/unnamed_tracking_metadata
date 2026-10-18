@@ -1,0 +1,85 @@
+# Atlas authoritative server: official image + PostgreSQL + automatic HTTPS (Caddy) + daily database backups.
+#   cp .env.example .env   # fill it in
+#   docker compose up -d
+name: atlas
+x-atlas: &atlas
+  image: ${ATLAS_IMAGE:-ghcr.io/obsoletelabs/unnamed_tracking_metadata}:${ATLAS_TAG:-v2}
+  env_file: [.env]
+  environment: &atlas-env
+    ATLAS_ROLE: authority
+    ATLAS_ENVIRONMENT: production
+    ATLAS_DATABASE_URL: postgresql+psycopg://atlas:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db/atlas
+    ATLAS_AUTO_MIGRATE: "false"   # the migrate job runs first; replicas never race on the schema
+    ATLAS_MEDIA_DIR: /media
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      ATLAS_DOMAIN: ${ATLAS_DOMAIN:?set ATLAS_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [atlas]
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: atlas
+    volumes: ["pg-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]
+      interval: 5s
+      retries: 30
+
+  migrate:
+    <<: *atlas
+    command: ["atlas", "migrate"]
+    restart: "no"
+    depends_on:
+      db: {condition: service_healthy}
+
+  atlas:
+    <<: *atlas
+    command: ["atlas", "serve", "--host", "0.0.0.0", "--forwarded-allow-ips", "*"]
+    restart: unless-stopped
+    # Not published on the host: only Caddy (same private network) can reach it, which is what makes trusting
+    # its forwarded headers safe.
+    expose: ["8000"]
+    volumes: ["media:/media"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+  backup:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGUSER: atlas
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: atlas
+      KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+    volumes: ["./backups:/backups"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          f=/backups/atlas-$$(date +%Y%m%d-%H%M%S).dump
+          pg_dump -Fc -f "$$f" && echo "backup written: $$f"
+          find /backups -name 'atlas-*.dump' -mtime +$$KEEP_DAYS -delete
+          sleep 86400
+        done
+    depends_on:
+      db: {condition: service_healthy}
+
+volumes:
+  pg-data:
+  media:
+  caddy-data:
+  caddy-config:

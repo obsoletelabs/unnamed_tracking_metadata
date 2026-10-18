@@ -1,0 +1,52 @@
+# Federation lab: an authority and a local node on ONE machine, to try replication, sign-in sharing and the UI.
+# Not for production: plain HTTP, dev mode, SQLite authority, well-known tokens. Both ports bind to 127.0.0.1 only.
+#   docker compose up -d
+#   authority  http://authority.lab.localhost:8001      local node  http://localhost:8002
+# (*.localhost names resolve to your own machine in browsers and curl; the local node reaches the authority at the same
+#  name through a fixed address on the lab network, so one issuer URL works for both browser and server.)
+name: atlas-lab
+x-common: &common
+  image: ${ATLAS_IMAGE:-ghcr.io/obsoletelabs/unnamed_tracking_metadata}:${ATLAS_TAG:-v2}
+  restart: unless-stopped
+services:
+  authority:
+    <<: *common
+    command: ["atlas", "serve", "--host", "0.0.0.0", "--port", "8001"]
+    ports: ["127.0.0.1:8001:8001"]
+    networks:
+      lab: {ipv4_address: 172.28.0.10}
+    environment:
+      ATLAS_ROLE: authority
+      ATLAS_PUBLIC_URL: http://authority.lab.localhost:8001
+      ATLAS_DATABASE_URL: sqlite:////data/atlas.db
+      ATLAS_MEDIA_DIR: /data/media
+      ATLAS_INITIAL_ADMIN: alice
+      ATLAS_BOOTSTRAP_ADMIN_TOKEN: lab-bootstrap-token-0123456789abcdef0123456789
+      ATLAS_EMAIL_VERIFICATION: "off"     # a real authority requires confirmed email
+      ATLAS_APP_NAME: Lab Authority
+      ATLAS_OIDC_PROVIDER_ENABLED: "true"
+      ATLAS_SYNC_INTERVAL_SECONDS: "5"
+    volumes: ["authority-data:/data"]
+  local:
+    <<: *common
+    ports: ["127.0.0.1:8002:8000"]
+    networks: [lab]
+    extra_hosts: ["authority.lab.localhost:172.28.0.10"]
+    environment:
+      ATLAS_ROLE: local
+      ATLAS_PUBLIC_URL: http://localhost:8002
+      ATLAS_DATABASE_URL: sqlite:////data/atlas.db
+      ATLAS_MEDIA_DIR: /data/media
+      ATLAS_INITIAL_ADMIN: bob
+      ATLAS_BOOTSTRAP_ADMIN_TOKEN: lab-local-token-0123456789abcdef0123456789abcd
+      ATLAS_SECRET_KEY: lab-secret-key-not-for-production-0123456789
+      ATLAS_APP_NAME: Lab Local
+      ATLAS_SYNC_INTERVAL_SECONDS: "5"
+    volumes: ["local-data:/data"]
+networks:
+  lab:
+    ipam:
+      config: [{subnet: 172.28.0.0/24}]
+volumes:
+  authority-data:
+  local-data:

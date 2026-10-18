@@ -1,0 +1,78 @@
+site_name: Atlas
+site_description: Semi-distributed game metadata server — guide and reference
+site_url: https://obsoletelabs.github.io/unnamed_tracking_metadata/
+repo_url: https://github.com/obsoletelabs/unnamed_tracking_metadata
+repo_name: obsoletelabs/unnamed_tracking_metadata
+edit_uri: edit/v2/docs/guide/
+docs_dir: docs/guide
+site_dir: site
+use_directory_urls: true
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: blue
+      toggle: {icon: material/weather-night, name: Switch to light mode}
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: blue
+      toggle: {icon: material/weather-sunny, name: Switch to dark mode}
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Quick start: quickstart.md
+      - Concepts: concepts.md
+  - Using Atlas:
+      - Using the site: using-the-site.md
+      - Reviewing: reviewing.md
+  - Hosting:
+      - Choose your setup: hosting/index.md
+      - Official images: hosting/images.md
+      - Authoritative server: hosting/authority.md
+      - Local node: hosting/local.md
+      - Try federation on one machine: hosting/lab.md
+      - Operations (backups, upgrades): deployment.md
+  - Running a node:
+      - Administering: administering.md
+      - Federation: federation.md
+      - Sign-in sharing (OIDC): sso.md
+      - Security: security.md
+  - Integrations:
+      - Tracking App: tracking-app.md
+      - Extending: extending.md
+  - Reference:
+      - API: reference-api.md
+      - Environment variables: reference-env.md
+      - Admin settings: reference-settings.md
+      - Troubleshooting & FAQ: troubleshooting.md
+
+markdown_extensions:
+  - admonition
+  - tables
+  - attr_list
+  - toc: {permalink: true}
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed: {alternate_style: true}
+  - pymdownx.highlight: {anchor_linenums: false}
+  - pymdownx.inlinehilite
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn

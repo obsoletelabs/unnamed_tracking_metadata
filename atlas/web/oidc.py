@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from typing import Annotated
 from urllib.parse import urlencode
 
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from .. import accounts, oidc, ratelimit, secrets_box
 from ..api.deps import AppState, get_session, state
+from ..ids import ulid
 from ..models import OidcClient, OidcIssuer, OidcLink, User
 from ..service import AtlasError
 from .deps import (
@@ -281,11 +283,14 @@ def issuer_probe(p: Annotated[Ctx, Depends(admin_form)], url: Annotated[str, For
         return _admin(p, error=str(exc), status=400)
     if p.session.scalars(select(OidcIssuer.id).where(OidcIssuer.issuer_url == info["issuer_url"])).first():
         return _admin(p, error="That provider is already configured.", status=409)
-    return _admin(p, probe={**info, "fp": fingerprint(info["node_id"]), "name": name.strip()})
+    iid = ulid()  # fixed now so the exact redirect address can be registered on the provider before adding it
+    return _admin(p, probe={**info, "fp": fingerprint(info["node_id"]), "name": name.strip(), "iid": iid,
+                            "redirect": f"{p.st.ctx.settings.public_url}/oidc/callback/{iid}"})
 
 
 @router.post("/admin/oidc/issuers")
-def issuer_add(p: Annotated[Ctx, Depends(admin_form)], issuer_url: Annotated[str, Form(max_length=300)],
+def issuer_add(p: Annotated[Ctx, Depends(admin_form)], iid: Annotated[str, Form(max_length=26)],
+               issuer_url: Annotated[str, Form(max_length=300)],
                name: Annotated[str, Form(max_length=80)], client_id: Annotated[str, Form(max_length=40)],
                client_secret: Annotated[str, Form(max_length=200)], node_id: Annotated[str, Form(max_length=64)],
                public_key: Annotated[str, Form(max_length=100)],
@@ -302,7 +307,9 @@ def issuer_add(p: Annotated[Ctx, Depends(admin_form)], issuer_url: Annotated[str
         raise HTTPException(400, "The provider details do not check out. Look the provider up again.")
     if not client_id.strip() or not client_secret.strip():
         raise HTTPException(400, "Enter the client id and secret you got from the provider.")
-    p.session.add(OidcIssuer(name=name.strip() or base, issuer_url=base, client_id=client_id.strip(),
+    if not re.fullmatch(r"[0-9A-Za-z]{26}", iid) or p.session.get(OidcIssuer, iid) is not None:
+        raise HTTPException(400, "Look the provider up again.")
+    p.session.add(OidcIssuer(id=iid, name=name.strip() or base, issuer_url=base, client_id=client_id.strip(),
                              client_secret_enc=enc, node_id=node_id, public_key=public_key,
                              authorization_endpoint=authorization_endpoint, token_endpoint=token_endpoint,
                              auto_create=auto_create == "on", allow_all_users=allow_all_users == "on",

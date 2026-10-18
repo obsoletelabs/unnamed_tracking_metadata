@@ -1,0 +1,7 @@
+{$ATLAS_DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size 4MB
+	}
+	reverse_proxy atlas:8000
+}

@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "pgserver>=0.1"]
+docs = ["mkdocs-material>=9.5,<10"]
 
 [project.scripts]
 atlas = "atlas.cli:main"
