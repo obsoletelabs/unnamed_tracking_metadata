@@ -1,0 +1,38 @@
+{% from "macros.html" import csrf %}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ app_name }}{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="/">{{ app_name }}</a>
+  <form class="search" action="/search" method="get" role="search">
+    <label class="sr" for="q">Search games</label>
+    <input id="q" type="search" name="q" placeholder="Search games" value="{{ q|default('') }}" maxlength="200">
+    <button class="secondary" type="submit">Search</button>
+  </form>
+  <nav aria-label="Main">
+    {% if p.user %}
+      <a href="/new">Add game</a>
+      {% if p.can_review %}<a href="/review">Review{% if pending_count %} <span class="badge warn">{{ pending_count }}</span>{% endif %}</a>{% endif %}
+      {% if p.is_admin %}<a href="/admin">Admin</a>{% endif %}
+      <a href="/me">{{ p.user.username }} <span class="muted small">({{ p.user.reputation }})</span></a>
+      <form class="inline" action="/logout" method="post">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Sign out</button></form>
+    {% else %}
+      <a href="/login">Sign in</a>
+      {% if registration_open %}<a class="btn small" href="/register">Create account</a>{% endif %}
+    {% endif %}
+  </nav>
+</div></header>
+<main><div class="wrap">
+  {% if p.flash %}<div class="flash" role="status">{{ p.flash }}</div>{% endif %}
+  {% block content %}{% endblock %}
+</div></main>
+<footer><div class="wrap">{{ app_name }} · community metadata, <a href="/api/v2/health" rel="nofollow">API</a>. Contributions are CC0.</div></footer>
+</body>
+</html>

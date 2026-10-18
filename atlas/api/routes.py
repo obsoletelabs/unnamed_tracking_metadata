@@ -19,7 +19,7 @@ from .deps import AppState, get_session, require, state
 
 router = APIRouter(prefix="/api/v2")
 
-Sess = Annotated[Session, Depends(get_session)]
+Sess = Annotated[Session, Depends(get_session, scope="function")]
 St = Annotated[AppState, Depends(state)]
 
 

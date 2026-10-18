@@ -46,7 +46,7 @@ def require(scope: str):
     def dep(
         request: Request,
         st: Annotated[AppState, Depends(state)],
-        session: Annotated[Session, Depends(get_session)],
+        session: Annotated[Session, Depends(get_session, scope="function")],
         authorization: Annotated[str | None, Header()] = None,
     ) -> auth.Principal:
         principal = auth.authenticate(session, authorization)

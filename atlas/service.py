@@ -352,7 +352,7 @@ def clear_lock(session: Session, ctx: Ctx, cid: str, field: str, *, log: bool = 
     return row
 
 
-def search(session: Session, q: str, limit: int = 25) -> list[Canonical]:
+def search(session: Session, q: str, limit: int = 25, offset: int = 0) -> list[Canonical]:
     norm = norm_title(q)
     if not norm:
         return []
@@ -362,6 +362,7 @@ def search(session: Session, q: str, limit: int = 25) -> list[Canonical]:
         .where(Canonical.merged_into.is_(None), Canonical.norm_title.like(like))
         .order_by(Canonical.norm_title.asc())
         .limit(min(limit, 100))
+        .offset(max(offset, 0))
     )
     rows = list(session.scalars(stmt))
     rows.sort(key=lambda r: (r.norm_title != norm, not r.norm_title.startswith(norm), len(r.norm_title)))

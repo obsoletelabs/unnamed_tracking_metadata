@@ -14,6 +14,8 @@ dependencies = [
   "cryptography>=43",
   "psycopg[binary]>=3.2,<4.0",
   "Pillow>=11.0,<13.0",
+  "jinja2>=3.1,<4.0",
+  "python-multipart>=0.0.9,<1.0",
 ]
 
 [project.optional-dependencies]
@@ -30,13 +32,13 @@ build-backend = "setuptools.build_meta"
 include = ["atlas*"]
 
 [tool.setuptools.package-data]
-atlas = ["migrations/script.py.mako"]
+atlas = ["migrations/script.py.mako", "web/templates/*.html", "web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 120
+line-length = 125
 target-version = "py312"
 extend-exclude = ["legacy"]
 

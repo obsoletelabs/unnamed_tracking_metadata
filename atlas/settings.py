@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     media_allowed_hosts: set[str] = Field(default_factory=set)  # empty = any public host
     steam_api_key: str | None = None
 
+    app_name: str = "Atlas"
+
     # Community
     registration: Literal["open", "closed"] = "open"
     session_ttl_days: int = Field(default=14, ge=1, le=90)

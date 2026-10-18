@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 import threading
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 
 import httpx
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
 from . import __version__, auth, media, ratelimit, sync
@@ -17,6 +19,10 @@ from .providers import Fetcher, build_registry
 from .service import AtlasError, Ctx
 from .settings import Settings, get_settings
 from .signing import load_identity
+from .web import STATIC_DIR, templates
+from .web.deps import LoginRequired
+from .web.routes import router as web_router
+from .web.routes import web_headers
 
 log = logging.getLogger("atlas")
 _STATUS = {"invalid": 400, "forbidden": 403, "not_found": 404, "conflict": 409}
@@ -126,12 +132,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.atlas = AppState(ctx=ctx, maker=maker, providers=Fetcher(settings, build_registry(settings)))
     app.add_middleware(BodyLimit, limit=settings.max_body_bytes)
     app.include_router(router)
+    app.include_router(web_router)
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.middleware("http")
+    async def _security_headers(request: Request, call_next):
+        response = await call_next(request)
+        web_headers(response, request.url.path)
+        return response
+
+    @app.exception_handler(LoginRequired)
+    async def _login_required(request: Request, _: LoginRequired):
+        target = request.url.path + (("?" + request.url.query) if request.url.query else "")
+        return RedirectResponse("/login?next=" + quote(target, safe="/"), status_code=303)
+
+    @app.exception_handler(HTTPException)
+    async def _http_error(request: Request, exc: HTTPException):
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+        resp = templates.TemplateResponse(request, "error.html", {
+            "status": exc.status_code, "message": exc.detail if isinstance(exc.detail, str) else "Something went wrong.",
+            "app_name": settings.app_name, "registration_open": settings.registration == "open", "pending_count": 0,
+            "p": _AnonPage()}, status_code=exc.status_code, headers=exc.headers)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     @app.exception_handler(AtlasError)
     async def _atlas_error(_: Request, exc: AtlasError):
         return JSONResponse({"error": {"code": exc.code, "message": str(exc)}}, status_code=_STATUS.get(exc.code, 400))
 
     return app
+
+
+class _AnonPage:
+    """Minimal page context for error pages, which never reveal who is signed in."""
+
+    user = None
+    csrf = ""
+    flash = None
+    can_review = False
+    is_admin = False
 
 
 def app_factory() -> FastAPI:  # `uvicorn atlas.main:app_factory --factory`

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Review · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Review queue</h1>
+<p><a href="/review">Proposals ({{ items|length }})</a> · <a href="/review/duplicates">Possible duplicates ({{ dup_count }})</a></p>
+{% for r in items %}
+<article class="card">
+  <h3>{{ r.kind|replace('_', ' ')|capitalize }}: {% if r.cid %}<a href="/game/{{ r.cid }}">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}</h3>
+  <p class="small muted">by <strong>{{ r.user }}</strong> (reputation {{ r.rep }}) · {{ r.when }}</p>
+  {% if r.rows %}<table class="diff"><thead><tr><th>Field</th><th>Now</th><th>Proposed</th></tr></thead><tbody>
+  {% for f, old, new in r.rows %}<tr><td>{{ f }}</td><td>{% if old %}<del>{{ old }}</del>{% else %}<span class="muted">empty</span>{% endif %}</td><td><ins>{{ new }}</ins></td></tr>{% endfor %}
+  </tbody></table>{% endif %}
+  {% if r.entries %}<ul>{% for i in r.entries %}<li>{{ i }}</li>{% endfor %}</ul>{% endif %}
+  {% if r.note %}<p><strong>Note:</strong> {{ r.note }}</p>{% endif %}
+  {% if r.own and not p.is_admin %}<p class="muted">You cannot review your own proposal.</p>{% else %}
+  <form method="post" action="/review/{{ r.id }}">{{ csrf(p.csrf) }}
+    <label for="n{{ r.id }}">Reviewer note <span class="hint">shown to the contributor</span></label><input id="n{{ r.id }}" type="text" name="note" maxlength="500">
+    <p><button name="decision" value="approve" type="submit">Approve</button> <button class="danger" name="decision" value="reject" type="submit">Reject</button></p>
+  </form>{% endif %}
+</article>
+{% else %}<p class="muted">Nothing is waiting. Nice.</p>{% endfor %}
+{% endblock %}

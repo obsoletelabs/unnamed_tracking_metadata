@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf, chips %}
+{% block title %}{{ v.get('title') }} · {{ app_name }}{% endblock %}
+{% block content %}
+{% if redirected_from %}<div class="flash">This record was merged; you were redirected from <code>{{ redirected_from }}</code>.</div>{% endif %}
+<div class="hero">
+  <div class="cover">{% if key_art %}<img src="/media/{{ key_art }}" alt="Cover art for {{ v.get('title') }}">{% endif %}</div>
+  <div>
+    <h1>{{ v.get('title') }}</h1>
+    {{ chips(v.get('platforms')) }}
+    <dl class="facts">
+      {% if v.get('release_date') %}<dt>Released</dt><dd>{{ v.release_date }}</dd>{% endif %}
+      {% if v.get('developer') %}<dt>Developer</dt><dd>{{ v.developer }}</dd>{% endif %}
+      {% if v.get('publisher') %}<dt>Publisher</dt><dd>{{ v.publisher }}</dd>{% endif %}
+      {% if v.get('series') %}<dt>Series</dt><dd>{{ v.series }}</dd>{% endif %}
+      {% if v.get('tags') %}<dt>Genres</dt><dd>{{ chips(v.tags) }}</dd>{% endif %}
+      {% if v.get('features') %}<dt>Features</dt><dd>{{ chips(v.features) }}</dd>{% endif %}
+      <dt>Identifiers</dt><dd><code>{{ g.id }}</code>{% for ns, ident in (v.get('provider_ids') or {}).items() %}<br>{{ ns }}: {% if ns == 'steam' and ident.isdigit() %}<a href="https://store.steampowered.com/app/{{ ident }}" rel="noopener noreferrer nofollow">{{ ident }}</a>{% else %}{{ ident }}{% endif %}{% endfor %}</dd>
+    </dl>
+    {% if v.get('description') %}<p>{{ v.description }}</p>{% endif %}
+    <p>{% if p.user %}<a class="btn" href="/game/{{ g.id }}/edit">Suggest an edit</a>{% else %}<a href="/login?next=/game/{{ g.id }}/edit">Sign in to suggest an edit</a>{% endif %}</p>
+  </div>
+</div>
+
+<h2>Artwork</h2>
+{% if shots %}<div class="shots">{% for a in shots %}<a href="/media/{{ a.blob_hash }}"><img src="/media/{{ a.blob_hash }}" alt="{{ a.kind|replace('_', ' ') }}" loading="lazy"></a>{% endfor %}</div>{% endif %}
+<p class="muted small">{{ art_total }} image{{ '' if art_total == 1 else 's' }} known, {{ art_cached }} cached here. Images are shown only after this server has downloaded and checked them.</p>
+{% if p.user %}
+<details><summary>Suggest artwork</summary>
+<form class="card" method="post" action="/game/{{ g.id }}/artwork">{{ csrf(p.csrf) }}
+  <label for="kind">Type</label><select id="kind" name="kind">{% for k in art_kinds %}<option value="{{ k }}">{{ k|replace('_', ' ') }}</option>{% endfor %}</select>
+  <label for="url">Image address <span class="hint">https:// link to the image file</span></label><input id="url" type="url" name="url" required maxlength="1000" placeholder="https://">
+  <label for="anote">Source / note</label><textarea id="anote" name="note" maxlength="2000"></textarea>
+  <p><button type="submit">Submit</button></p>
+</form></details>
+{% endif %}
+
+<h2>Achievements</h2>
+{% if achievements %}
+<table><thead><tr><th>Name</th><th>Description</th><th>Global %</th></tr></thead><tbody>
+{% for a in achievements %}<tr><td>{{ a.name }}{% if a.hidden %} <span class="badge">hidden</span>{% endif %}</td><td>{{ a.description }}</td><td>{{ '%.1f'|format(a.global_percent) if a.global_percent is not none else '' }}</td></tr>{% endfor %}
+</tbody></table>
+{% else %}<p class="muted">No achievements recorded.</p>{% endif %}
+{% if p.user %}
+<details><summary>Add achievements</summary>
+<form class="card" method="post" action="/game/{{ g.id }}/achievements">{{ csrf(p.csrf) }}
+  <label for="alist">One per line: <code>Name | Description</code></label><textarea id="alist" name="lines" required></textarea>
+  <label for="anote2">Source / note</label><textarea id="anote2" name="note" maxlength="2000"></textarea>
+  <p><button type="submit">Submit</button></p>
+</form></details>
+{% endif %}
+
+<h2>Where this came from</h2>
+<table><thead><tr><th>Field</th><th>Chosen from</th><th>How</th></tr></thead><tbody>
+{% for field, e in explain.items() %}<tr><td>{{ field }}</td><td>{% if e.get('source') %}{{ e.source }}{% elif e.get('sources') %}{{ e.sources|join(', ') }}{% else %}curator lock{% endif %}</td><td>{{ e.strategy }}</td></tr>{% endfor %}
+</tbody></table>
+
+{% if activity %}<h2>Recent changes</h2>
+<ul>{% for a in activity %}<li><strong>{{ a.user }}</strong> {{ a.kind|replace('_', ' ') }} <span class="muted small">{{ a.when }}</span>{% if a.note %} — {{ a.note }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+
+{% if p.can_review %}
+<h2>Curation</h2>
+<div class="cols">
+<form class="card" method="post" action="/game/{{ g.id }}/merge">{{ csrf(p.csrf) }}
+  <h3>Merge into another record</h3>
+  <label for="into">Target ID</label><input id="into" type="text" name="into" required placeholder="atlas:…" maxlength="40">
+  <p class="small muted">This record becomes a redirect to the target. Observations and identifiers move with it.</p>
+  <button class="danger" data-confirm="Merge this record into the target?" type="submit">Merge</button>
+</form>
+<div class="card"><h3>Pinned fields</h3>
+  {% for lk in locks %}<form class="inline" method="post" action="/game/{{ g.id }}/unlock">{{ csrf(p.csrf) }}<input type="hidden" name="field" value="{{ lk.field }}"><strong>{{ lk.field }}</strong>: {{ lk.value }} <button class="secondary small" type="submit">Unpin</button></form><br>{% else %}<p class="muted small">Nothing pinned.</p>{% endfor %}
+  <form method="post" action="/game/{{ g.id }}/lock">{{ csrf(p.csrf) }}
+    <label for="lf">Field</label><select id="lf" name="field">{% for f in lockable %}<option>{{ f }}</option>{% endfor %}</select>
+    <label for="lv">Value <span class="hint">lists: one per line</span></label><textarea id="lv" name="value" required></textarea>
+    <p><button type="submit">Pin value</button></p></form>
+</div></div>
+<h3>Source records</h3>
+<table><thead><tr><th>Source</th><th>ID</th><th>Seen</th><th></th></tr></thead><tbody>
+{% for o in observations %}<tr><td>{{ o.source }}{% if not o.is_current %} <span class="badge">superseded</span>{% endif %}</td><td>{{ o.external_id }}</td><td class="small muted">{{ o.observed_at.strftime('%Y-%m-%d') }}</td>
+<td>{% if o.is_current and can_split %}<form class="inline" method="post" action="/observation/{{ o.id }}/detach">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Split this source record into its own game?" type="submit">Split off</button></form>{% endif %}</td></tr>{% endfor %}
+</tbody></table>
+{% if revertable %}<h3>Revert a change</h3><ul>{% for r in revertable %}<li>{{ r.user }} · {{ r.kind }} · {{ r.when }}
+<form class="inline" method="post" action="/review/{{ r.id }}/revert">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Revert this change?" type="submit">Revert</button></form></li>{% endfor %}</ul>{% endif %}
+{% endif %}
+{% endblock %}

@@ -13,6 +13,16 @@ Built for the [unnamed tracking app](https://github.com/obsoletelabs/unnamed_tra
 - **Matching is conservative.** Shared store IDs match automatically; same title + same release year matches; anything weaker opens a review item and creates a separate record. Merges leave redirects, and a wrong merge can be split with `detach`.
 - **Nodes** are one codebase with three roles: `authority` (PostgreSQL, publishes a signed change feed), `mirror` (replicates an authority), `local` (SQLite, caches providers, optionally replicates). Replication verifies an Ed25519 signature per entry against a key *you* pinned, and rejects gaps or rewinds. Provider-derived data is cached locally and never published.
 
+## The website
+
+Atlas ships its own site (server-rendered, no build step, dark/light automatic): public browsing of games, artwork, achievements and provenance; accounts and a proposal workflow; reviewer tools; admin. The tracking app only pulls metadata through the API.
+
+- **Contribute:** anyone can register (`ATLAS_REGISTRATION=open|closed`) and propose edits, new games, artwork and achievements. The first account becomes the administrator.
+- **Reputation:** approved proposals earn reputation; from `ATLAS_AUTO_APPROVE_REPUTATION` (default 50) changes apply immediately and can still be reverted; from `ATLAS_CURATOR_REPUTATION` (default 500) a user can review others. Rejections and reverts cost reputation. Per-user pending and daily limits apply.
+- **Review:** diff view of each proposal, a possible-duplicates queue with one-click merge, split-off of wrongly merged source records, field pinning, ordered revert.
+- **Artwork** is shown only after the server has downloaded and verified it (pinned public IP, redirect revalidation, size and pixel caps, decode check); pages never hotlink third-party images.
+- Hardened by default: CSRF on every form, HttpOnly SameSite session cookies, a strict CSP with no inline script or style, login/registration throttling.
+
 ## Run it
 
 ```sh
@@ -48,6 +58,6 @@ Trust model: source names that carry weight in the merge (`steam`, `igdb`, `cura
 
 ## Status and limits
 
-Tested: merge/resolution, signed replication, API, auth, rate limits, migrations, concurrent writes on real PostgreSQL. **Not yet verified in this repo:** live calls to Steam/RAWG/IGDB (adapters are tested against recorded response shapes only), and the tracking-app plugin (see [`docs/v2/app-integration.md`](docs/v2/app-integration.md)). Writes are serialised by a global lock, which is fine for a metadata service and the first thing to revisit under heavy ingest.
+Tested: merge/resolution, signed replication, API, auth, rate limits, migrations, concurrent writes on real PostgreSQL, the whole website (browser-level checks of CSRF, permissions, escaping, headers) and the Docker image. **Not yet verified in this repo:** live calls to Steam/RAWG/IGDB (adapters are tested against recorded response shapes only), and the tracking-app plugin (see [`docs/v2/app-integration.md`](docs/v2/app-integration.md)). Writes are serialised by a global lock, which is fine for a metadata service and the first thing to revisit under heavy ingest.
 
 Code: MIT. Contributed metadata: CC0 ([DATA-LICENSE.md](DATA-LICENSE.md)).
