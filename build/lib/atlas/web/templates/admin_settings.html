@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Settings · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+<form method="post" action="/admin/settings">
+  {{ csrf(p.csrf) }}
+  {% for group, items in groups %}
+  <fieldset><legend>{{ group }}</legend>
+    {% for it in items %}{% set sp = it.spec %}
+    <div class="setting">
+      <div><label for="s_{{ sp.key }}">{{ sp.label }}</label>{% if sp.help %}<div class="small muted">{{ sp.help }}</div>{% endif %}
+        {% if it.overridden %}<span class="badge">changed</span>{% endif %}</div>
+      <div>
+      {% if sp.kind == 'bool' %}<input id="s_{{ sp.key }}" type="checkbox" name="{{ sp.key }}" {{ 'checked' if it.raw }}>
+      {% elif sp.kind == 'choice' %}<select id="s_{{ sp.key }}" name="{{ sp.key }}">{% if sp.nullable %}<option value="" {{ 'selected' if not it.raw }}>(by node role)</option>{% endif %}{% for c in sp.choices %}<option {{ 'selected' if c == it.raw }}>{{ c }}</option>{% endfor %}</select>
+      {% elif sp.kind == 'color' %}<input id="s_{{ sp.key }}" type="color" name="{{ sp.key }}" value="{{ it.value }}">
+      {% elif sp.kind == 'links' %}<textarea id="s_{{ sp.key }}" name="{{ sp.key }}" rows="3">{{ it.value }}</textarea>
+      {% elif sp.kind == 'int' %}<input id="s_{{ sp.key }}" type="text" inputmode="numeric" name="{{ sp.key }}" value="{{ it.value }}">
+      {% else %}<input id="s_{{ sp.key }}" type="text" name="{{ sp.key }}" value="{{ it.value }}" maxlength="{{ sp.max_len }}">{% endif %}
+      {% if it.overridden %}<button class="secondary small" type="submit" formaction="/admin/settings/reset/{{ sp.key }}" formnovalidate>Use default</button>{% endif %}
+      </div>
+    </div>{% endfor %}
+  </fieldset>{% endfor %}
+  <p><button type="submit">Save settings</button></p>
+</form>
+<h2>Logo</h2>
+<div class="card">
+  {% if s.logo_hash %}<p><img class="logo-preview" src="/media/{{ s.logo_hash }}" alt="Current logo"></p>{% endif %}
+  <form method="post" action="/admin/branding/logo" enctype="multipart/form-data">{{ csrf(p.csrf) }}
+    <label for="logo">Upload a PNG, JPEG, WebP or GIF (max 512 KB, 1024 px)</label><input id="logo" type="file" name="file" accept="image/png,image/jpeg,image/webp,image/gif" required>
+    <p><button type="submit">Upload logo</button></p></form>
+  {% if s.logo_hash %}<form method="post" action="/admin/branding/logo/remove">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Remove logo</button></form>{% endif %}
+</div>
+{% endblock %}

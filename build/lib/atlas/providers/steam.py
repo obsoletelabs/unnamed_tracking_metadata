@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+from .base import ProviderResult, get_json, parse_date, strip_html
+
+
+class Steam:
+    name = "steam"
+    redistributable = False
+    requests_per_minute = 40  # appdetails is aggressively throttled by Valve
+
+    def search(self, client, query):
+        data = get_json(client, "GET", "https://store.steampowered.com/api/storesearch/",
+                        params={"term": query, "cc": "us", "l": "en"})
+        return [
+            ProviderResult(external_id=str(i["id"]), title=i["name"], platform="pc")
+            for i in data.get("items", []) if i.get("type", "app") == "app" and i.get("name")
+        ][:10]
+
+    def fetch(self, client, external_id):
+        data = get_json(client, "GET", "https://store.steampowered.com/api/appdetails",
+                        params={"appids": external_id, "cc": "us", "l": "en"})
+        entry = (data or {}).get(str(external_id)) or {}
+        if not entry.get("success"):
+            return None
+        d = entry["data"]
+        if d.get("type") not in (None, "game", "dlc", "demo"):
+            return None
+        rel = d.get("release_date") or {}
+        return ProviderResult(
+            external_id=str(external_id), title=d["name"], platform="pc",
+            release_date=None if rel.get("coming_soon") else parse_date(rel.get("date")),
+            facts={
+                "description": strip_html(d.get("short_description")),
+                "developer": (d.get("developers") or [None])[0],
+                "publisher": (d.get("publishers") or [None])[0],
+                "tags": [g["description"] for g in d.get("genres", [])][:50],
+                "features": [c["description"] for c in d.get("categories", [])][:50],
+            },
+            artwork=_artwork(external_id, d),
+        )
+
+    def achievements(self, client, external_id, api_key=None):
+        """Names/descriptions need a Steam Web API key; global percentages do not."""
+        pct = {}
+        data = get_json(client, "GET", "https://api.steampowered.com/ISteamUserStats/"
+                        "GetGlobalAchievementPercentagesForApp/v2/", params={"gameid": external_id})
+        for a in (data.get("achievementpercentages") or {}).get("achievements", []):
+            try:
+                pct[a["name"]] = float(a["percent"])
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not api_key:
+            return []
+        schema = get_json(client, "GET", "https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/",
+                          params={"key": api_key, "appid": external_id, "l": "english"})
+        out = []
+        for a in ((schema.get("game") or {}).get("availableGameStats") or {}).get("achievements", []):
+            if not a.get("displayName"):
+                continue
+            row = {"name": a["displayName"], "external_id": a.get("name", ""), "hidden": bool(a.get("hidden")),
+                   "description": a.get("description", "")}
+            if a.get("icon"):
+                row["icon_url"] = a["icon"]
+            if a.get("name") in pct:
+                row["global_percent"] = min(100.0, max(0.0, pct[a["name"]]))
+            out.append(row)
+        return out
+
+
+def _artwork(app_id, d):
+    base = f"https://cdn.akamai.steamstatic.com/steam/apps/{app_id}"
+    art = []
+    if str(d.get("header_image", "")).startswith("https://"):
+        art.append({"kind": "banner", "url": d["header_image"], "priority": 10})
+    art.append({"kind": "key_art", "url": f"{base}/library_600x900.jpg", "priority": 10, "width": 600, "height": 900})
+    art.append({"kind": "hero", "url": f"{base}/library_hero.jpg", "priority": 10})
+    art.append({"kind": "logo", "url": f"{base}/logo.png", "priority": 10})
+    for i, s in enumerate((d.get("screenshots") or [])[:12]):
+        if str(s.get("path_full", "")).startswith("https://"):
+            art.append({"kind": "screenshot", "url": s["path_full"], "priority": 20 + i})
+    return art

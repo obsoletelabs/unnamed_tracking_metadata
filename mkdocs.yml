@@ -41,9 +41,11 @@ nav:
       - Reviewing: reviewing.md
   - Hosting:
       - Choose your setup: hosting/index.md
+      - Ways to install: hosting/install.md
       - Official images: hosting/images.md
       - Authoritative server: hosting/authority.md
       - Local node: hosting/local.md
+      - Proxmox LXC: hosting/proxmox.md
       - Try federation on one machine: hosting/lab.md
       - Operations (backups, upgrades): deployment.md
   - Running a node:

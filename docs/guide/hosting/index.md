@@ -24,7 +24,7 @@ Not sure? Start with a [local node](local.md); it takes five minutes and can fol
 * Contains the web site, API, migrations and the `atlas` command-line tool.
 * Built and **smoke-tested by CI on every release**, then scanned for known vulnerabilities.
 
-See [Official images](images.md) for tags, pulling, pinning and verifying.
+See [Ways to install](install.md) (image, build from source, Python package), [Official images](images.md) for tags and pinning, and [Proxmox LXC](proxmox.md).
 
 ## The three files you need
 
@@ -35,8 +35,9 @@ For each setup there is a ready-made folder in the repository under `deploy/`:
 | `deploy/authority/` | `compose.yaml` (Atlas, PostgreSQL, Caddy with automatic HTTPS, daily backups), `Caddyfile`, `.env.example`, `restore.sh` |
 | `deploy/local/` | `compose.yaml`, `.env.example` |
 | `deploy/lab/` | `compose.yaml`: an authority and a local node on one machine |
+| each folder | `compose.build.yaml`: add `-f compose.build.yaml --build` to build the image from source instead of pulling it |
 
-You do **not** need to clone the repository: each guide shows how to fetch just the folder.
+Each guide starts with `git clone`; the folder is all you use afterwards.
 
 ## After it's running
 

@@ -36,12 +36,7 @@ echo "$GITHUB_PAT" | docker login ghcr.io -u <your-github-username> --password-s
 
 ## Using your own build instead
 
-```sh
-git clone https://github.com/obsoletelabs/unnamed_tracking_metadata.git && cd unnamed_tracking_metadata
-docker build -t atlas:local .
-```
-
-and set `ATLAS_IMAGE=atlas` and `ATLAS_TAG=local` in the deploy folder's `.env` (the same variables the compose files read). Behind a firewall, build with `--network=host` if the build cannot reach the Python package index.
+Every `deploy/` folder has a `compose.build.yaml`: `docker compose -f compose.yaml -f compose.build.yaml up -d --build`. Details and the plain `docker build` route: [Ways to install](install.md#2-build-the-image-from-source). There is also a [Python package](install.md#3-python-package-no-docker).
 
 ## What's inside
 

@@ -1,0 +1,77 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main, v2]
+    paths: ["docs/guide/**", "mkdocs.yml", "Dockerfile.docs", ".github/workflows/docs.yml"]
+  pull_request:
+    paths: ["docs/guide/**", "mkdocs.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --extra docs
+      - name: Build the site (broken links or anchors fail the build)
+        run: uv run mkdocs build --strict
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: site
+      - uses: actions/upload-pages-artifact@v3
+        if: ${{ !github.event.repository.private }}
+        with:
+          path: site
+
+  pages:
+    # GitHub Pages needs a public repository (or a paid plan); this job runs itself once that is true.
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !github.event.repository.private }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  image:
+    if: ${{ github.event_name == 'push' }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-docs
+          tags: |
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.docs
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

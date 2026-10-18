@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}{{ 'Add a game' if new else 'Edit ' ~ v.get('title', '') }} · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>{{ 'Add a game' if new else 'Edit ' ~ v.get('title', '') }}</h1>
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+{% if new and mtypes and mtypes|length > 1 %}<p>Type: {% for t in mtypes %}{% if t.key == mtype %}<strong>{{ t.label }}</strong>{% else %}<a href="/new?type={{ t.key }}">{{ t.label }}</a>{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+<form class="card" method="post" action="{{ action }}">
+  {{ csrf(p.csrf) }}{% if new %}<input type="hidden" name="media_type" value="{{ mtype }}">{% endif %}
+  {% include "_fields.html" %}
+  {% if new %}
+  <label for="provider_ids">Known store IDs <span class="hint">one per line, e.g. <code>steam:620</code></span></label>
+  <textarea id="provider_ids" name="provider_ids">{{ ids_text|default('') }}</textarea>
+  {% endif %}
+  <label for="note">Source / note for reviewers <span class="hint">link to the store page or announcement</span></label>
+  <textarea id="note" name="note" maxlength="2000">{{ note|default('') }}</textarea>
+  <p class="small muted">{% if auto %}Your reputation lets this apply immediately; reviewers can still revert it.{% else %}A reviewer will check this before it is published.{% endif %}</p>
+  <button type="submit">{{ 'Submit' if new else 'Propose changes' }}</button> <a class="btn secondary" href="{{ cancel }}">Cancel</a>
+</form>
+{% endblock %}

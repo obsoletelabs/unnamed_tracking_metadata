@@ -73,6 +73,7 @@ dev = [
     { name = "ruff" },
 ]
 docs = [
+    { name = "mkdocs" },
     { name = "mkdocs-material" },
 ]
 
@@ -84,6 +85,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "jinja2", specifier = ">=3.1,<4.0" },
     { name = "markdown-it-py", specifier = ">=3.0,<5.0" },
+    { name = "mkdocs", marker = "extra == 'docs'", specifier = ">=1.6,<2" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5,<10" },
     { name = "pgserver", marker = "extra == 'dev'", specifier = ">=0.1" },
     { name = "pillow", specifier = ">=11.0,<13.0" },

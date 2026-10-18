@@ -1,0 +1,29 @@
+{# Shared edit/new form fields. `v` holds current values; `new` adds the title/provider-id inputs. #}
+<label for="title">Title{% if not new %} <span class="hint">(leave unchanged if correct)</span>{% endif %}</label>
+<input id="title" type="text" name="title" value="{{ v.get('title', '') }}" maxlength="500" {% if new %}required{% endif %}>
+<label for="release_date">{{ lbl.release_date }} <span class="hint">YYYY-MM-DD</span></label>
+<input id="release_date" type="text" name="release_date" value="{{ v.get('release_date', '') }}" pattern="\d{4}-\d{2}-\d{2}" maxlength="10" placeholder="2020-09-17">
+<div class="cols"><div>
+<label for="developer">{{ lbl.developer }}</label><input id="developer" type="text" name="developer" value="{{ v.get('developer', '') }}" maxlength="200">
+</div><div>
+<label for="publisher">{{ lbl.publisher }}</label><input id="publisher" type="text" name="publisher" value="{{ v.get('publisher', '') }}" maxlength="200">
+</div></div>
+<label for="series">{{ lbl.series }}</label><input id="series" type="text" name="series" value="{{ v.get('series', '') }}" maxlength="200">
+<label for="description">Description</label><textarea id="description" name="description" maxlength="20000">{{ v.get('description', '') }}</textarea>
+<div class="cols"><div>
+<label for="platforms">{{ lbl.platforms }} <span class="hint">one per line</span></label><textarea id="platforms" name="platforms">{{ (v.get('platforms') or [])|join('\n') }}</textarea>
+</div><div>
+<label for="tags">{{ lbl.tags }} <span class="hint">one per line</span></label><textarea id="tags" name="tags">{{ (v.get('tags') or [])|join('\n') }}</textarea>
+</div><div>
+<label for="features">{{ lbl.features }} <span class="hint">one per line</span></label><textarea id="features" name="features">{{ (v.get('features') or [])|join('\n') }}</textarea>
+</div></div>
+{% for c in cfields %}{% set fd = c.f %}
+<label for="cf_{{ fd.key }}">{{ fd.label }}{% if fd.help %} <span class="hint">{{ fd.help }}</span>{% endif %}</label>
+{% if fd.kind == 'longtext' or fd.kind == 'list' %}<textarea id="cf_{{ fd.key }}" name="cf_{{ fd.key }}">{{ c.value }}</textarea>
+{% elif fd.kind == 'choice' %}<select id="cf_{{ fd.key }}" name="cf_{{ fd.key }}"><option value=""></option>{% for o in fd.choices %}<option {{ 'selected' if o == c.value }}>{{ o }}</option>{% endfor %}</select>
+{% elif fd.kind == 'bool' %}<select id="cf_{{ fd.key }}" name="cf_{{ fd.key }}"><option value=""></option><option value="yes" {{ 'selected' if c.value == 'yes' }}>Yes</option><option value="no" {{ 'selected' if c.value == 'no' }}>No</option></select>
+{% elif fd.kind == 'url' %}<input id="cf_{{ fd.key }}" type="url" name="cf_{{ fd.key }}" value="{{ c.value }}" maxlength="1000" placeholder="https://">
+{% elif fd.kind == 'number' %}<input id="cf_{{ fd.key }}" type="text" inputmode="decimal" name="cf_{{ fd.key }}" value="{{ c.value }}">
+{% elif fd.kind == 'date' %}<input id="cf_{{ fd.key }}" type="text" name="cf_{{ fd.key }}" value="{{ c.value }}" pattern="\d{4}-\d{2}-\d{2}" placeholder="2020-09-17">
+{% else %}<input id="cf_{{ fd.key }}" type="text" name="cf_{{ fd.key }}" value="{{ c.value }}" maxlength="500">{% endif %}
+{% endfor %}

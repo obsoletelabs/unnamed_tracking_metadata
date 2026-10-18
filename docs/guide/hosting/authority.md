@@ -11,15 +11,12 @@ An **authority** is the public source of truth for a community: it accepts contr
 ## 1. Get the deployment files
 
 ```sh
-mkdir -p /opt/atlas && cd /opt/atlas
-for f in compose.yaml Caddyfile .env.example restore.sh; do
-  curl -fsSLO "https://raw.githubusercontent.com/obsoletelabs/unnamed_tracking_metadata/v2/deploy/authority/$f"
-done
-chmod +x restore.sh
+git clone -b v2 https://github.com/obsoletelabs/unnamed_tracking_metadata.git /opt/atlas-src
+cd /opt/atlas-src/deploy/authority
 cp .env.example .env
 ```
 
-(Private repository? Use `git clone` with your credentials and copy `deploy/authority/` instead.)
+Work from this folder (`/opt/atlas-src/deploy/authority`) for the rest of the guide; copy it elsewhere if you prefer.
 
 ## 2. Fill in `.env`
 
@@ -61,6 +58,9 @@ docker compose logs -f atlas
 What runs: **PostgreSQL**, a one-shot **migrate** job (`atlas migrate`), **Atlas** (not published on the host; only the proxy can reach it, which is what makes trusting its forwarded headers safe), **Caddy** (automatic Let's Encrypt certificates for your domain), and a **backup** container (daily `pg_dump`, 14 days kept, in `./backups`).
 
 Check: <https://atlas.example.org/api/v2/health> returns `{"status":"ok"…}`, and <https://atlas.example.org/api/v2/ready> too.
+
+!!! tip "Build from source instead"
+    From a clone of the repository, in `deploy/authority`: `docker compose -f compose.yaml -f compose.build.yaml up -d --build`. The rest of this guide is identical.
 
 ## 4. First sign-in and basic setup
 

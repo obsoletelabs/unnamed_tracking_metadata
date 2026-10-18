@@ -5,10 +5,8 @@ A **local node** is your own Atlas: private, cheap to run, and able to cache pro
 ## 1. Get the files
 
 ```sh
-mkdir -p ~/atlas && cd ~/atlas
-for f in compose.yaml .env.example; do
-  curl -fsSLO "https://raw.githubusercontent.com/obsoletelabs/unnamed_tracking_metadata/v2/deploy/local/$f"
-done
+git clone -b v2 https://github.com/obsoletelabs/unnamed_tracking_metadata.git
+cd unnamed_tracking_metadata/deploy/local
 cp .env.example .env
 ```
 
@@ -34,6 +32,9 @@ docker compose up -d
 Open <http://localhost:8000>, **Create account** as `alice` (administrator). Email isn't required on a local node, and nothing is sent: messages appear under **Admin → Email**.
 
 By default the port is bound to `127.0.0.1` (this machine only). To share on your network set `ATLAS_BIND=0.0.0.0` (or your LAN address) in `.env` and **put a firewall rule or reverse proxy in front** if others you don't trust share that network.
+
+!!! tip "Build from source instead"
+    `docker compose -f compose.yaml -f compose.build.yaml up -d --build` builds the image from a checkout of the repository rather than pulling it. No Docker at all? See [Ways to install](install.md#3-python-package-no-docker) and [Proxmox LXC](proxmox.md).
 
 ## 4. Use it
 

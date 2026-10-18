@@ -1,0 +1,11 @@
+# The documentation site as a container: docker run -p 8080:8080 ghcr.io/obsoletelabs/unnamed_tracking_metadata-docs
+FROM python:3.12-slim AS build
+WORKDIR /src
+RUN pip install --no-cache-dir "mkdocs>=1.6,<2" "mkdocs-material>=9.5,<10"
+COPY mkdocs.yml ./
+COPY docs ./docs
+RUN mkdocs build --strict
+
+FROM nginxinc/nginx-unprivileged:stable-alpine
+COPY --from=build /src/site /usr/share/nginx/html
+EXPOSE 8080

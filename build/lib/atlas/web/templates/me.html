@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}{{ p.user.username }} · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>{{ p.user.username }}</h1>
+<p class="small"><a href="/u/{{ p.user.username }}">Public profile</a> · <a href="/me/settings">Profile settings</a> · <a href="/me/lists">My lists</a> · <a href="/me/following">Following</a></p>
+<p><span class="badge">{{ p.user.role }}</span> · reputation <strong>{{ p.user.reputation }}</strong>
+{% if auto_threshold %}<span class="muted small"> · changes apply immediately from {{ auto_threshold }}</span>{% endif %}</p>
+<h2>Email</h2>
+<div class="card">
+  {% if p.user.email %}<p>{{ p.user.email }} {% if p.user.email_verified_at %}<span class="badge ok">confirmed</span>{% else %}<span class="badge warn">not confirmed</span>{% endif %}</p>
+  {% if not p.user.email_verified_at %}<form class="inline" method="post" action="/me/verify">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Send confirmation email</button></form>
+  {% if verification == 'required' %}<p class="small muted">This server needs a confirmed address before you can contribute.</p>{% endif %}{% endif %}
+  {% else %}<p class="muted">No email address on this account.{% if verification == 'required' %} This server needs one to contribute.{% endif %}</p>{% endif %}
+  <details><summary>{{ 'Change' if p.user.email else 'Add' }} email address</summary>
+  <form method="post" action="/me/email">{{ csrf(p.csrf) }}
+    <label for="email">New address</label><input id="email" type="email" name="email" required maxlength="254">
+    <label for="ecur">Current password</label><input id="ecur" type="password" name="current" autocomplete="current-password" {{ 'required' if has_password }} maxlength="200">
+    <p><button type="submit">Save address</button></p></form></details>
+</div>
+<h2>My proposals</h2>
+{% if mine %}<table><thead><tr><th>When</th><th>Game</th><th>Kind</th><th>Status</th><th></th></tr></thead><tbody>
+{% for r in mine %}<tr><td class="small">{{ r.when }}</td><td>{% if r.cid %}<a href="/game/{{ r.cid }}">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}</td><td>{{ r.kind|replace('_', ' ') }}</td>
+<td><span class="badge {{ 'ok' if r.status == 'approved' else 'bad' if r.status in ('rejected', 'reverted') else 'warn' }}">{{ r.status }}</span>{% if r.decision_note %}<div class="small muted">{{ r.decision_note }}</div>{% endif %}</td>
+<td><a class="small" href="/proposal/{{ r.id }}">Open</a> {% if r.status == 'pending' %}<form class="inline" method="post" action="/proposal/{{ r.id }}/withdraw">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Withdraw</button></form>{% endif %}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="muted">Nothing yet. Open a game and choose “Suggest an edit”.</p>{% endif %}
+
+<h2>API tokens</h2>
+<p class="muted small">Personal tokens let your own tools read Atlas. They are read-only; suggest changes on the site so they can be reviewed.</p>
+{% if new_token %}<div class="flash"><strong>{{ new_token }}</strong><br><span class="small">Copy it now; it will not be shown again.</span></div>{% endif %}
+{% if tokens %}<table><thead><tr><th>Name</th><th>Scopes</th><th>Last used</th><th></th></tr></thead><tbody>
+{% for t in tokens %}<tr><td>{{ t.name }}</td><td>{{ t.scopes|join(', ') }}</td><td class="small">{{ t.last_used or 'never' }}</td>
+<td><form class="inline" method="post" action="/me/tokens/{{ t.id }}/revoke">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Revoke this token?" type="submit">Revoke</button></form></td></tr>{% endfor %}
+</tbody></table>{% endif %}
+<form class="card" method="post" action="/me/tokens">{{ csrf(p.csrf) }}
+  <label for="tname">Name</label><input id="tname" type="text" name="name" required maxlength="128" placeholder="Tracking app">
+  <label for="tscope">Access</label><select id="tscope" name="scope"><option value="read">Read only</option></select>
+  <p><button type="submit">Create token</button></p>
+</form>
+
+<h2>Password</h2>
+<form class="card" method="post" action="/me/password">{{ csrf(p.csrf) }}
+  <label for="cur">Current password</label><input id="cur" type="password" name="current" autocomplete="current-password" {{ 'required' if has_password }} maxlength="200">
+  <label for="new">New password</label><input id="new" type="password" name="new" autocomplete="new-password" required minlength="{{ min_len }}" maxlength="200">
+  <p><button type="submit">Change password</button></p>
+</form>
+{% endblock %}

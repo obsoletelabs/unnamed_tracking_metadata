@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Reported comments · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Reported comments</h1>
+<p><a href="/review">Proposals</a> · <a href="/review/duplicates">Possible duplicates</a> · <a href="/review/reports">Reported comments ({{ rows|length }})</a></p>
+{% for r in rows %}
+<article class="card">
+  <p class="small muted">by <strong>{{ r.author }}</strong> · {{ r.n }} open report{{ '' if r.n == 1 else 's' }} · {{ r.c.status }} · <a href="{{ r.where }}">in context</a></p>
+  <div class="comment-body">{{ r.c.body }}</div>
+  {% for reason in r.reports %}<p class="small muted">“{{ reason }}”</p>{% endfor %}
+  <form method="post" action="/comments/{{ r.c.id }}/moderate">{{ csrf(p.csrf) }}
+    <button class="danger" name="action" value="hide" type="submit">Hide</button> <button class="secondary" name="action" value="restore" type="submit">Keep visible</button></form>
+</article>{% else %}<p class="muted">Nothing to moderate.</p>{% endfor %}
+{% endblock %}

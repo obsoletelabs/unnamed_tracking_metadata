@@ -1,0 +1,26 @@
+Metadata-Version: 2.4
+Name: atlas-metadata
+Version: 2.0.0.dev0
+Summary: Semi-distributed game metadata server
+License: MIT
+Requires-Python: >=3.12
+License-File: LICENSE
+Requires-Dist: fastapi<1.0,>=0.115
+Requires-Dist: uvicorn[standard]<1.0,>=0.30
+Requires-Dist: SQLAlchemy<3.0,>=2.0
+Requires-Dist: alembic<2.0,>=1.13
+Requires-Dist: pydantic-settings<3.0,>=2.4
+Requires-Dist: httpx<1.0,>=0.27
+Requires-Dist: cryptography>=43
+Requires-Dist: psycopg[binary]<4.0,>=3.2
+Requires-Dist: Pillow<13.0,>=11.0
+Requires-Dist: jinja2<4.0,>=3.1
+Requires-Dist: markdown-it-py<5.0,>=3.0
+Requires-Dist: python-multipart<1.0,>=0.0.9
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: ruff>=0.6; extra == "dev"
+Requires-Dist: pgserver>=0.1; extra == "dev"
+Provides-Extra: docs
+Requires-Dist: mkdocs-material<10,>=9.5; extra == "docs"
+Dynamic: license-file

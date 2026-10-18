@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Inbox · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Inbox</h1>
+<form method="post" action="/notifications/read">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Mark all as read</button></form>
+{% for n in rows %}
+<div class="card{{ '' if n.read_at else ' unread' }}"><a href="/go/{{ n.id }}">{{ n.title }}{% if n.count > 1 %} ({{ n.count }} changes){% endif %}</a> <span class="muted small">{{ when(n.created_at) }}</span></div>
+{% else %}<p class="muted">Nothing here. Follow games or people to hear about changes.</p>{% endfor %}
+<p class="small"><a href="/me/following">What I follow</a> · <a href="/me/settings">Email settings</a></p>
+{% endblock %}

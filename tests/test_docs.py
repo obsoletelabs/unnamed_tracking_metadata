@@ -40,7 +40,7 @@ def test_every_api_endpoint_is_described():
 
 
 def markdown_files():
-    return sorted([*GUIDE.glob("*.md"), ROOT / "README.md"])
+    return sorted([*GUIDE.rglob("*.md"), ROOT / "README.md"])
 
 
 @pytest.mark.parametrize("path", markdown_files(), ids=lambda p: p.name)
@@ -77,3 +77,19 @@ def test_cli_commands_in_the_guide_exist():
     assert commands <= parser_commands
     assert parser_commands <= {name for name in dir(cli) if name.startswith("cmd_")} | {
         n.removeprefix("cmd_").replace("_", "-") for n in dir(cli) if n.startswith("cmd_")}
+
+
+def test_every_page_is_in_the_mkdocs_navigation():
+    nav = (ROOT / "mkdocs.yml").read_text()
+    for page in GUIDE.rglob("*.md"):
+        assert page.relative_to(GUIDE).as_posix() in nav, f"{page.name} is not in mkdocs.yml nav"
+
+
+def test_deploy_folders_are_complete_and_offer_a_source_build():
+    for folder in ("authority", "local", "lab"):
+        base = ROOT / "deploy" / folder
+        assert (base / "compose.yaml").exists() and (base / "compose.build.yaml").exists(), folder
+        text = (base / "compose.yaml").read_text()
+        assert "ghcr.io/obsoletelabs/unnamed_tracking_metadata" in text and "${ATLAS_TAG" in text
+        assert "context: ../.." in (base / "compose.build.yaml").read_text()
+    assert (ROOT / "deploy" / "authority" / ".env.example").exists() and (ROOT / "deploy" / "local" / ".env.example").exists()

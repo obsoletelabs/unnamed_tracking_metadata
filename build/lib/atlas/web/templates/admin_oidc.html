@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Sign-in sharing · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+<p class="muted">Accounts are per node. Sign-in sharing lets another node accept logins from this one (<strong>provider</strong>), and lets this node accept logins from another (<strong>relying party</strong>). Reputation is never shared.</p>
+
+<h2>Let other nodes sign users in with this node</h2>
+<p>Provider is <strong>{{ 'on' if provider_on else 'off' }}</strong> (Settings → Federation). Issuer address: <code>{{ issuer_url }}</code></p>
+{% if new_client %}<div class="flash"><p>Give these to the other node's administrator. The secret is shown once.</p>
+ <p>Client ID: <code>{{ new_client[0] }}</code><br>Client secret: <code>{{ new_client[1] }}</code></p></div>{% endif %}
+{% if clients %}<table><thead><tr><th>Application</th><th>Client ID</th><th>Redirect addresses</th><th></th></tr></thead><tbody>
+{% for c in clients %}<tr><td>{{ c.name }}{% if not c.enabled %} <span class="badge warn">disabled</span>{% endif %}{% if not c.require_pkce %} <span class="badge">no PKCE</span>{% endif %} <span class="badge">{{ c.id_token_alg }}</span></td><td><code>{{ c.client_id }}</code></td><td class="small">{{ c.redirect_uris|join(', ') }}</td>
+<td><form class="inline" method="post" action="/admin/oidc/clients/{{ c.client_id }}/toggle">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">{{ 'Disable' if c.enabled else 'Enable' }}</button></form>
+<form class="inline" method="post" action="/admin/oidc/clients/{{ c.client_id }}/delete">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Delete this application?" type="submit">Delete</button></form></td></tr>{% endfor %}
+</tbody></table>{% endif %}
+<form class="card" method="post" action="/admin/oidc/clients">{{ csrf(p.csrf) }}
+  <label for="cname">Application (the other node)</label><input id="cname" type="text" name="name" required maxlength="80">
+  <label for="uris">Redirect addresses <span class="hint">one per line; on the other node this is <code>https://its-address/oidc/callback/&lt;provider id&gt;</code></span></label>
+  <textarea id="uris" name="redirect_uris" required></textarea>
+  <label for="alg">Token signature</label><select id="alg" name="id_token_alg"><option value="RS256" selected>RS256 — works with almost every application</option><option value="EdDSA">EdDSA — for another Atlas node</option></select>
+  <label><input type="checkbox" name="require_pkce" checked> Require PKCE (recommended). Untick only for confidential clients that cannot send it, such as the Unnamed Tracking App.</label>
+  <p><button type="submit">Register application</button></p></form>
+
+<h2>Accept sign-ins from another node</h2>
+{% for r in issuers %}{% set i = r.i %}
+<form class="card" method="post" action="/admin/oidc/issuers/{{ i.id }}">{{ csrf(p.csrf) }}
+  <h3>{{ i.name }} {% if not i.enabled %}<span class="badge warn">off</span>{% endif %}</h3>
+  <p class="small muted">{{ i.issuer_url }} · node <code>{{ r.fp }}</code> · {{ r.links }} linked account{{ '' if r.links == 1 else 's' }}<br>Its redirect address is <code>{{ callback_base }}{{ i.id }}</code></p>
+  <label><input type="checkbox" name="enabled" {{ 'checked' if i.enabled }}> Enabled</label>
+  <label><input type="checkbox" name="allow_all_users" {{ 'checked' if i.allow_all_users }}> Every user here may link and use it (otherwise only users you allow in the user list)</label>
+  <label><input type="checkbox" name="auto_create" {{ 'checked' if i.auto_create }}> Create an account on first sign-in</label>
+  <label><input type="checkbox" name="trust_email" {{ 'checked' if i.trust_email }}> Trust the provider's confirmed email address</label>
+  <p><button type="submit">Save</button></p></form>
+<form method="post" action="/admin/oidc/issuers/{{ i.id }}/delete">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Remove this provider and unlink everyone who used it?" type="submit">Remove provider</button></form>
+{% endfor %}
+{% if probe %}
+<form class="card" method="post" action="/admin/oidc/issuers">{{ csrf(p.csrf) }}
+  <h3>Confirm this provider</h3>
+  <p>{{ probe.issuer_url }} signs tokens with node <strong><code>{{ probe.fp }}</code></strong>. <strong>Check it matches what its administrator told you.</strong> Atlas will only accept logins signed by this key.</p>
+  <p><strong>Register this redirect address on the provider first</strong> (Admin → Sign-in sharing → Register application, signature EdDSA):<br><code>{{ probe.redirect }}</code></p>
+  {% for k in ['iid', 'issuer_url', 'node_id', 'public_key', 'authorization_endpoint', 'token_endpoint'] %}<input type="hidden" name="{{ k }}" value="{{ probe[k] }}">{% endfor %}
+  <label for="iname">Name shown on the sign-in page</label><input id="iname" type="text" name="name" value="{{ probe.name }}" maxlength="80">
+  <label for="cid">Client ID</label><input id="cid" type="text" name="client_id" required maxlength="40">
+  <label for="csec">Client secret {% if not can_store %}<span class="error">(set ATLAS_SECRET_KEY to store it)</span>{% endif %}</label><input id="csec" type="password" name="client_secret" required maxlength="200" autocomplete="off">
+  <label><input type="checkbox" name="allow_all_users"> Every user here may link and use it</label>
+  <label><input type="checkbox" name="auto_create"> Create an account on first sign-in</label>
+  <label><input type="checkbox" name="trust_email"> Trust the provider's confirmed email address</label>
+  <p><button type="submit">Add provider</button></p></form>
+{% else %}
+<form class="card" method="post" action="/admin/oidc/issuers/probe">{{ csrf(p.csrf) }}
+  <label for="iurl">Provider address</label><input id="iurl" type="url" name="url" required maxlength="300" placeholder="https://central.example.org">
+  <label for="in">Name</label><input id="in" type="text" name="name" maxlength="80" placeholder="Central">
+  <p><button type="submit">Look up provider</button></p></form>
+{% endif %}
+{% endblock %}

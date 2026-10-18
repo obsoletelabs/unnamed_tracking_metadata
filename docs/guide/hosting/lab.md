@@ -8,8 +8,8 @@ The **lab** runs an authority and a local node side by side on your computer so 
 ## Start it
 
 ```sh
-mkdir -p atlas-lab && cd atlas-lab
-curl -fsSLO https://raw.githubusercontent.com/obsoletelabs/unnamed_tracking_metadata/v2/deploy/lab/compose.yaml
+git clone -b v2 https://github.com/obsoletelabs/unnamed_tracking_metadata.git
+cd unnamed_tracking_metadata/deploy/lab
 docker compose up -d
 ```
 
@@ -21,6 +21,9 @@ docker compose up -d
 (`*.localhost` names resolve to your own machine in browsers and `curl`. The local node reaches the authority under the same name through a fixed lab address, so one address works for both the browser and the server.)
 
 Lab tokens: authority `lab-bootstrap-token-0123456789abcdef0123456789`, local `lab-local-token-0123456789abcdef0123456789abcd`.
+
+!!! tip "No registry access?"
+    Build the image instead: `docker compose -f compose.yaml -f compose.build.yaml up -d --build` from `deploy/lab` in a clone of the repository.
 
 ## 1. Put curated data on the authority
 
