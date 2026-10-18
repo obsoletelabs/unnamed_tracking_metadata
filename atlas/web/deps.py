@@ -22,7 +22,7 @@ FLASH = {
     "reverted": "Reverted.", "merged": "Merged.", "locked": "Field locked.", "unlocked": "Lock removed.",
     "withdrawn": "Proposal withdrawn.", "dismissed": "Dismissed.", "detached": "Split into its own record.",
     "token": "Token created. Copy it now; it will not be shown again.", "revoked": "Token revoked.",
-    "password": "Password changed. Other sessions were signed out.", "bye": "Signed out.",
+    "nochange": "Nothing changed.", "password": "Password changed. Other sessions were signed out.", "bye": "Signed out.",
 }
 
 

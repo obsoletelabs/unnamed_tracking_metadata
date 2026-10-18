@@ -67,6 +67,23 @@ class Settings(BaseSettings):
     steam_api_key: str | None = None
 
     app_name: str = "Atlas"
+    tagline: str = "Game metadata, merged and sourced"
+    footer_text: str = "Community metadata. Contributions are CC0."
+    accent_color: str = "#6aa8ff"  # dark theme accent
+    accent_color_light: str = "#1f6fe0"
+    default_theme: Literal["auto", "dark", "light"] = "auto"
+    logo_hash: str | None = None
+    nav_links: list[dict[str, str]] = Field(default_factory=list)  # [{"label": ..., "url": ...}]
+    # Email. The SMTP password is only ever read from ATLAS_SMTP_PASSWORD.
+    mail_backend: Literal["smtp", "outbox"] = "outbox"  # outbox: stored for admins, nothing is sent
+    smtp_host: str = ""
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = True
+    mail_from: str = "atlas@localhost"
+    # None = decided by role: authorities require a verified email, other nodes do not.
+    email_verification: Literal["off", "optional", "required"] | None = None
 
     # Community
     registration: Literal["open", "closed"] = "open"
@@ -107,6 +124,9 @@ class Settings(BaseSettings):
             if self.bootstrap_admin_token and len(self.bootstrap_admin_token) < 32:
                 raise ValueError("ATLAS_BOOTSTRAP_ADMIN_TOKEN must be at least 32 characters")
         return self
+
+    def verification_mode(self) -> str:
+        return self.email_verification or ("required" if self.role == "authority" else "optional")
 
     def trust(self, source: str) -> int:
         return self.source_trust.get(source, self.default_trust)

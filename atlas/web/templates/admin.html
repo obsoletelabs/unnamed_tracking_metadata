@@ -3,6 +3,7 @@
 {% block title %}Administration · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>Administration</h1>
+{% include "_adminnav.html" %}
 <div class="cols">
 <div class="card"><h3>Node</h3>
   <dl class="facts"><dt>Role</dt><dd>{{ role }}</dd><dt>Node ID</dt><dd><code>{{ node_id }}</code></dd>

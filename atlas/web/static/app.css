@@ -1,13 +1,16 @@
 :root {
   color-scheme: dark light;
   --bg: #0f1218; --surface: #171c26; --surface-2: #1e2532; --border: #2a3345; --text: #e6eaf2;
-  --muted: #98a3b8; --accent: #6aa8ff; --accent-ink: #08111f; --danger: #ff6b6b; --ok: #4cd08a; --warn: #f2b84b;
-  --radius: 10px; --gap: 16px;
+  --muted: #98a3b8; --danger: #ff6b6b; --ok: #4cd08a; --warn: #f2b84b; --radius: 10px; --gap: 16px;
+  --accent: #6aa8ff; --accent-ink: #08111f;
 }
 @media (prefers-color-scheme: light) {
-  :root { --bg: #f5f7fb; --surface: #fff; --surface-2: #eef2f8; --border: #d7deea; --text: #151a24; --muted: #5b6678;
-          --accent: #1f6fe0; --accent-ink: #fff; --danger: #c62828; --ok: #1b8a4f; --warn: #a86a00; }
+  :root:not([data-theme=dark]) { --bg: #f5f7fb; --surface: #fff; --surface-2: #eef2f8; --border: #d7deea; --text: #151a24;
+    --muted: #5b6678; --danger: #c62828; --ok: #1b8a4f; --warn: #a86a00; }
 }
+:root[data-theme=dark] { color-scheme: dark; }
+:root[data-theme=light] { color-scheme: light; --bg: #f5f7fb; --surface: #fff; --surface-2: #eef2f8; --border: #d7deea;
+  --text: #151a24; --muted: #5b6678; --danger: #c62828; --ok: #1b8a4f; --warn: #a86a00; }
 * { box-sizing: border-box; }
 html { background: var(--bg); }
 body { margin: 0; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text);
@@ -67,3 +70,14 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .row { display: flex; gap: 8px; }
 dl.facts dd, code { overflow-wrap: anywhere; }
 .hero > div { min-width: 0; }
+.brand img { height: 28px; width: auto; vertical-align: middle; margin-right: 8px; border-radius: 6px; }
+.prose { max-width: 70ch; } .prose h1 { margin-top: 0; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 16px; padding: 0; list-style: none; }
+.tabs a[aria-current=page] { font-weight: 700; color: var(--text); }
+fieldset { border: 1px solid var(--border); border-radius: var(--radius); margin: 0 0 16px; padding: 8px 16px 16px; }
+legend { font-weight: 700; padding: 0 8px; }
+.setting { display: grid; grid-template-columns: minmax(180px, 1fr) 2fr; gap: 4px 16px; align-items: start; padding: 6px 0; }
+@media (max-width: 640px) { .setting { grid-template-columns: 1fr; } }
+input[type=color] { width: 56px; height: 36px; padding: 2px; }
+input[type=checkbox] { width: auto; }
+.logo-preview { max-height: 64px; }

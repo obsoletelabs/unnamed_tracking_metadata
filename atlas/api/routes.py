@@ -68,6 +68,17 @@ def status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("
             "upstream_cursors": cursors}
 
 
+@router.get("/site", tags=["ops"])
+def site(st: St) -> dict[str, Any]:
+    """Public, non-sensitive description of this node: what a client or mirror needs to present it."""
+    s = st.ctx.settings
+    return {"name": s.app_name, "tagline": s.tagline, "role": s.role, "node_id": st.ctx.identity.node_id,
+            "theme": {"default": s.default_theme, "accent": s.accent_color, "accent_light": s.accent_color_light,
+                      "logo": f"/media/{s.logo_hash}" if s.logo_hash else None},
+            "nav_links": s.nav_links, "registration": s.registration, "email_verification": s.verification_mode(),
+            "contract": 1}
+
+
 # ---- reading ------------------------------------------------------------------------------------------
 
 class ResolveItem(BaseModel):

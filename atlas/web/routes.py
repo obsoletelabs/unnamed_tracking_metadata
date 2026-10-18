@@ -22,6 +22,7 @@ from ..models import (
     Token,
     User,
 )
+from ..models import Page as PageRow
 from ..service import AtlasError
 from . import CSP, templates
 from .deps import (
@@ -55,9 +56,11 @@ def render(p: Page, name: str, status: int = 200, anon_csrf: bool = False, **ctx
     if p.can_review:
         p.session.flush()
         pending = p.session.scalar(select(func.count()).select_from(Proposal).where(Proposal.status == "pending")) or 0
+    nav_pages = list(p.session.scalars(select(PageRow).where(PageRow.published.is_(True), PageRow.in_nav.is_(True))
+                                       .order_by(PageRow.position, PageRow.slug)))
     resp = templates.TemplateResponse(p.request, name, {
-        "p": p, "app_name": s.app_name, "registration_open": s.registration == "open", "pending_count": pending,
-        **ctx}, status_code=status)
+        "p": p, "s": s, "app_name": s.app_name, "registration_open": s.registration == "open",
+        "pending_count": pending, "nav_pages": nav_pages, **ctx}, status_code=status)
     resp.headers["Cache-Control"] = "private, no-store" if p.user or anon_csrf else "public, max-age=30"
     if anon_csrf and p.new_cookie:
         set_anon_cookie(resp, p)

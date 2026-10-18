@@ -15,11 +15,13 @@ from . import __version__, auth, media, ratelimit, sync
 from .api.deps import AppState
 from .api.routes import router
 from .db import make_engine, make_sessionmaker, upgrade
+from .pages import seed_pages
 from .providers import Fetcher, build_registry
 from .service import AtlasError, Ctx
 from .settings import Settings, get_settings
 from .signing import load_identity
 from .web import STATIC_DIR, templates
+from .web.admin import router as admin_router
 from .web.deps import LoginRequired
 from .web.routes import router as web_router
 from .web.routes import web_headers
@@ -80,12 +82,12 @@ class _TooLarge(Exception):
     pass
 
 
-def _housekeeping(maker: sessionmaker[Session], settings: Settings, stop: threading.Event) -> None:
+def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             ratelimit.purge(maker)
-            if settings.media_cache_enabled:
-                media.cache_pending(maker, settings)
+            if ctx.settings.media_cache_enabled:
+                media.cache_pending(maker, ctx.settings)
         except Exception as exc:
             log.warning("housekeeping failed: %s", exc)
         stop.wait(60)
@@ -114,13 +116,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     with maker() as s:
         identity = load_identity(s)
         auth.sync_bootstrap(s, settings.bootstrap_admin_token)
+        seed_pages(s)
         s.commit()
     ctx = Ctx(settings, identity)
     stop = threading.Event()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        threading.Thread(target=_housekeeping, args=(maker, settings, stop), daemon=True,
+        threading.Thread(target=_housekeeping, args=(maker, ctx, stop), daemon=True,
                          name="atlas-housekeeping").start()
         if settings.upstream_url:
             threading.Thread(target=_sync_loop, args=(maker, ctx, stop), daemon=True, name="atlas-sync").start()
@@ -129,10 +132,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Atlas Metadata", version=__version__, lifespan=lifespan,
                   docs_url="/docs" if settings.environment == "dev" else None, redoc_url=None)
-    app.state.atlas = AppState(ctx=ctx, maker=maker, providers=Fetcher(settings, build_registry(settings)))
+    app.state.atlas = AppState(ctx=ctx, maker=maker, providers=Fetcher(settings, build_registry(settings)), base=settings)
     app.add_middleware(BodyLimit, limit=settings.max_body_bytes)
     app.include_router(router)
     app.include_router(web_router)
+    app.include_router(admin_router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.middleware("http")
@@ -152,8 +156,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
         resp = templates.TemplateResponse(request, "error.html", {
             "status": exc.status_code, "message": exc.detail if isinstance(exc.detail, str) else "Something went wrong.",
-            "app_name": settings.app_name, "registration_open": settings.registration == "open", "pending_count": 0,
-            "p": _AnonPage()}, status_code=exc.status_code, headers=exc.headers)
+            "app_name": app.state.atlas.ctx.settings.app_name, "s": app.state.atlas.ctx.settings,
+            "registration_open": app.state.atlas.ctx.settings.registration == "open", "pending_count": 0,
+            "nav_pages": [], "p": _AnonPage()}, status_code=exc.status_code, headers=exc.headers)
         resp.headers["Cache-Control"] = "no-store"
         return resp
 

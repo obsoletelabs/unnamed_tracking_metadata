@@ -2,8 +2,8 @@
 {% from "macros.html" import cover %}
 {% block content %}
 <section class="card">
-  <h1>Game metadata, merged and sourced</h1>
-  <p class="muted">One record per game, combined from Steam, IGDB, RAWG and the community, with every field traced to where it came from.</p>
+  <h1>{{ s.tagline }}</h1>
+  <p class="muted">One record per game, combined from many providers and the community, with every field traced to where it came from.</p>
   <form action="/search" method="get"><div class="row"><input type="search" name="q" placeholder="Search for a game" maxlength="200" aria-label="Search for a game"><button type="submit">Search</button></div></form>
   <p class="small muted">{{ totals.games }} games · {{ totals.artwork }} images cached · {{ totals.contributors }} contributors</p>
 </section>

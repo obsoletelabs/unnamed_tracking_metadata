@@ -282,3 +282,29 @@ class AuditEntry(Base):
     target: Mapped[str] = mapped_column(String(128), default="")
     detail: Mapped[Any] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+
+
+class Setting(Base):
+    """Admin-editable overrides of the environment defaults (see atlas/runtime.py)."""
+
+    __tablename__ = "setting"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON)
+    updated_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class Page(Base):
+    """An admin-written Markdown page (About, Rules, Help...)."""
+
+    __tablename__ = "page"
+
+    slug: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text, default="")
+    published: Mapped[bool] = mapped_column(Boolean, default=True)
+    in_nav: Mapped[bool] = mapped_column(Boolean, default=False)
+    position: Mapped[int] = mapped_column(Integer, default=100)
+    updated_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
