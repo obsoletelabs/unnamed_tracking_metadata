@@ -33,6 +33,8 @@ In Docker add `volumes: ["./backups:/backups"]` to the `atlas` service. **Admin 
 *Back up now* button. Archives are deliberately not downloadable from the website; copy the folder off the machine with your
 usual tool (rsync, restic, Proxmox Backup Server, a NAS share).
 
+![Admin → Backups](img/16-backups.png)
+
 Back up the folder **off the machine**. A backup on the same disk dies with the disk.
 
 ## Backing up by hand

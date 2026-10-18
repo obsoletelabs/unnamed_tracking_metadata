@@ -18,6 +18,8 @@ the other sources, keeps the **artwork** and **achievement list** the provider o
 uncertain match (could be a different game) is queued under *Possible duplicates* instead of being merged, and artwork and
 achievements are attached only once you resolve it.
 
+![The import page](img/15-import.png)
+
 Provider data stays on the node that fetched it and is not redistributed to followers; they can fetch their own.
 
 ## Possible duplicates
