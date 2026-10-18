@@ -91,10 +91,16 @@ def run_migrations() -> None:
             connection.exec_driver_sql("PRAGMA busy_timeout=5000")
         connection.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations (revision INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL)"))
         applied = {row[0] for row in connection.execute(text("SELECT revision FROM schema_migrations ORDER BY revision"))}
+        # Every revision is safe to repeat. If model tables are missing although their
+        # revisions are recorded (tables dropped or a partial restore kept
+        # schema_migrations), replay them all instead of starting on a broken schema.
+        missing = set(Base.metadata.tables) - set(inspect(connection).get_table_names())
+        replay = applied if missing and applied else set()
         for revision in sorted(MIGRATIONS):
-            if revision in applied:
+            if revision in applied and revision not in replay:
                 continue
             MIGRATIONS[revision](connection)
-            connection.execute(text("INSERT INTO schema_migrations (revision, applied_at) VALUES (:revision, CURRENT_TIMESTAMP)"), {"revision": revision})
+            if revision not in applied:
+                connection.execute(text("INSERT INTO schema_migrations (revision, applied_at) VALUES (:revision, CURRENT_TIMESTAMP)"), {"revision": revision})
         if CURRENT_REVISION != max(MIGRATIONS):
             raise RuntimeError("Migration registry is inconsistent")

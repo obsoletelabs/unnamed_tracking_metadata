@@ -411,6 +411,14 @@ def startup() -> None:
     if "adapter" not in provider_columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE metadata_providers ADD COLUMN adapter VARCHAR(40) NOT NULL DEFAULT 'manual'"))
+    seed_defaults()
+
+
+def seed_defaults() -> None:
+    """The default schema definition, metadata providers and demo catalogue, once.
+
+    Idempotent. app.asgi runs it after the migrations; keeping it separate from the
+    legacy schema handler means replacing that handler never loses the seed."""
     with SessionLocal() as db:
         if not db.scalar(select(SchemaDefinition).where(SchemaDefinition.name == "game")):
             db.add(SchemaDefinition(name="game", display_name="Game", schema_json="[]"))

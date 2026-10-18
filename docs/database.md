@@ -15,6 +15,8 @@ Production PostgreSQL should use:
 
 The application's migration history is append-only. A revision that has been applied must not be edited in place; create a new revision for every schema change.
 
+Every revision is written to be safe to repeat. If `schema_migrations` records revisions but model tables are missing (tables dropped, or a partial restore that kept the revision table), `run_migrations` replays the recorded revisions instead of serving a broken schema; an intact schema is left alone. After migrating, `app.asgi` runs `seed_defaults()`, which creates the default `game` schema definition, the default metadata providers (Steam Store, IGDB, RAWG) and, on an empty catalogue, the demo games, once.
+
 ## SQLite local mode
 
 SQLite remains a supported local/self-hosted mode for installations that do not need multiple writers or PostgreSQL's HA capabilities.

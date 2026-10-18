@@ -386,7 +386,10 @@ def test_scoped_api_key_cannot_write_with_read_only_scope(client):
     assert client.get("/api/v1/games", headers=headers).status_code == 200
     denied = client.post("/api/v1/games", headers=headers, json={"title": "Must not be created"})
     assert denied.status_code == 403
-    assert denied.json()["detail"].endswith("'write' scope")
+    body = denied.json()
+    # app.main's default error body, or the production API contract's (installed by app.asgi).
+    message = body["detail"] if "detail" in body else body["error"]["message"]
+    assert message.endswith("'write' scope")
 
 
 def test_scoped_api_key_can_discover_but_not_upload_without_image_scope(client):

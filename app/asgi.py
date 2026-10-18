@@ -1,4 +1,4 @@
-from .main import app, engine
+from .main import app, engine, seed_defaults
 from .api_contract import install_api_contract
 from . import authority  # noqa: F401
 from .authority_api import router as authority_router
@@ -18,8 +18,11 @@ from .tag_registry import router as tag_registry_router
 from .identity_api import router as identity_router
 from . import community, community_admin, community_browser, community_moderation, curation
 
+# Migrations replace the legacy create_all startup handler; the default data it also
+# seeded still has to be created, after the schema exists.
 app.router.on_startup = [handler for handler in app.router.on_startup if getattr(handler, "__name__", "") != "startup"]
 app.router.on_startup.append(run_migrations)
+app.router.on_startup.append(seed_defaults)
 install_api_contract(app, engine)
 install_request_metrics(app)
 

@@ -5,7 +5,10 @@ from app.main import Base, SessionLocal, engine
 
 
 def test_jobs_are_idempotent_and_retryable():
+    from app.migrations import run_migrations
+
     Base.metadata.drop_all(engine)
+    run_migrations()  # a fresh schema, as the application would create it
     with SessionLocal() as session:
         first = enqueue_job(session, "test", {"value": 1}, "same-key", max_attempts=2)
         second = enqueue_job(session, "test", {"value": 2}, "same-key", max_attempts=2)
