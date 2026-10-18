@@ -20,7 +20,15 @@
       <dt>Identifiers</dt><dd><code>{{ g.id }}</code>{% for ns, ident in (v.get('provider_ids') or {}).items() %}<br>{{ ns }}: {% if ns == 'steam' and ident.isdigit() %}<a href="https://store.steampowered.com/app/{{ ident }}" rel="noopener noreferrer nofollow">{{ ident }}</a>{% else %}{{ ident }}{% endif %}{% endfor %}</dd>
     </dl>
     {% if v.get('description') %}<p>{{ v.description }}</p>{% endif %}
-    <p>{% if p.user %}<a class="btn" href="/game/{{ g.id }}/edit">Suggest an edit</a>{% else %}<a href="/login?next=/game/{{ g.id }}/edit">Sign in to suggest an edit</a>{% endif %}</p>
+    <p>{% if p.user %}<a class="btn" href="/game/{{ g.id }}/edit">Suggest an edit</a>{% else %}<a href="/login?next=/game/{{ g.id }}/edit">Sign in to suggest an edit</a>{% endif %}
+    {% if p.user and lists_on %}
+      <form class="inline" method="post" action="/{{ 'unfollow' if following else 'follow' }}">{{ csrf(p.csrf) }}<input type="hidden" name="type" value="game"><input type="hidden" name="target" value="{{ g.id }}"><input type="hidden" name="to" value="/game/{{ g.id }}"><button class="secondary" type="submit">{{ 'Following' if following else 'Follow' }}</button></form>
+      {% if my_lists %}<details class="inline"><summary class="small">Add to list</summary><div class="card">
+        {% for l in my_lists %}{% if l.id in in_lists %}<form class="inline" method="post" action="/list/{{ l.id }}/remove">{{ csrf(p.csrf) }}<input type="hidden" name="game" value="{{ g.id }}"><button class="secondary small" type="submit">Remove from {{ l.name }}</button></form>
+        {% else %}<form class="inline" method="post" action="/list/{{ l.id }}/add">{{ csrf(p.csrf) }}<input type="hidden" name="game" value="{{ g.id }}"><input type="hidden" name="to" value="/game/{{ g.id }}"><button class="secondary small" type="submit">Add to {{ l.name }}</button></form>{% endif %}<br>{% endfor %}
+        <a class="small" href="/me/lists">Manage lists</a></div></details>
+      {% else %}<a class="small" href="/me/lists">Create a list</a>{% endif %}
+    {% endif %}</p>
   </div>
 </div>
 
@@ -59,6 +67,12 @@
 
 {% if activity %}<h2>Recent changes</h2>
 <ul>{% for a in activity %}<li><strong>{{ a.user }}</strong> {{ a.kind|replace('_', ' ') }} <span class="muted small">{{ a.when }}</span>{% if a.note %} — {{ a.note }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+
+{% if comments_on %}
+<h2>Discussion</h2>
+{% set thread = comments %}{% set action = "/game/" ~ g.id ~ "/comments" %}{% set where = "/game/" ~ g.id %}{% set can_comment = can_comment|default(false) %}
+{% include "_comments.html" %}
+{% endif %}
 
 {% if p.can_review %}
 <h2>Curation</h2>

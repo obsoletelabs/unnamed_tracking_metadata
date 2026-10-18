@@ -20,6 +20,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
+    true,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -230,6 +232,10 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    bio: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    profile_public: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    email_notifications: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())  # opt-in
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class UserSession(Base):
@@ -381,3 +387,76 @@ class CustomValue(Base):
     value: Mapped[Any] = mapped_column(JSON)
     redistributable: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class UserList(Base):
+    __tablename__ = "user_list"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str] = mapped_column(String(300), default="")
+    kind: Mapped[str] = mapped_column(String(12), default="custom")  # favourites | wishlist | custom
+    public: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_list_name"),)
+
+
+class ListItem(Base):
+    __tablename__ = "list_item"
+
+    list_id: Mapped[str] = mapped_column(ForeignKey("user_list.id"), primary_key=True)
+    canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), primary_key=True, index=True)
+    note: Mapped[str] = mapped_column(String(200), default="")
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Follow(Base):
+    __tablename__ = "follow"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), primary_key=True)
+    target_type: Mapped[str] = mapped_column(String(8), primary_key=True)  # game | user
+    target_id: Mapped[str] = mapped_column(String(40), primary_key=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Notification(Base):
+    __tablename__ = "notification"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(24))
+    key: Mapped[str] = mapped_column(String(80), default="")  # collapses repeats about the same thing
+    title: Mapped[str] = mapped_column(String(200))
+    url: Mapped[str] = mapped_column(String(300), default="")
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+
+
+class Comment(Base):
+    __tablename__ = "comment"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    canonical_id: Mapped[str | None] = mapped_column(ForeignKey("canonical.id"), nullable=True, index=True)
+    proposal_id: Mapped[str | None] = mapped_column(ForeignKey("proposal.id"), nullable=True, index=True)
+    parent_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(10), default="visible")  # visible | hidden | deleted
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Report(Base):
+    __tablename__ = "report"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    comment_id: Mapped[str] = mapped_column(ForeignKey("comment.id"), index=True)
+    reporter_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
+    reason: Mapped[str] = mapped_column(String(300), default="")
+    status: Mapped[str] = mapped_column(String(10), default="open", index=True)  # open | actioned | dismissed
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    __table_args__ = (UniqueConstraint("comment_id", "reporter_id", name="uq_report"),)

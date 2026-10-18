@@ -3,7 +3,7 @@
 {% block title %}Possible duplicates · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>Possible duplicates</h1>
-<p><a href="/review">Proposals</a> · <a href="/review/duplicates">Possible duplicates ({{ items|length }})</a></p>
+<p><a href="/review">Proposals</a> · <a href="/review/duplicates">Possible duplicates ({{ items|length }})</a> · <a href="/review/reports">Reported comments</a></p>
 {% for r in items %}
 <article class="card">
   <p><span class="badge warn">{{ r.kind|replace('_', ' ') }}</span> <span class="muted small">confidence {{ '%.2f'|format(r.confidence) }}</span></p>

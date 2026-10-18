@@ -270,9 +270,11 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
             item.canonical_id = dst
     from .custom import move_values
     from .facets import move_facets
+    from .social import move_list_items
 
     move_facets(session, src, dst)
     move_values(session, src, dst)
+    move_list_items(session, src, dst)
     s.merged_into = dst
     s.view, s.explain = {}, {}
     session.flush()

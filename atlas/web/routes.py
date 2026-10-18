@@ -7,13 +7,15 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 
-from .. import accounts, auth, custom, facets, feed, mail, proposals, service
+from .. import accounts, auth, custom, facets, feed, mail, proposals, service, social
 from ..api.routes import _guard_upstream, media_response
 from ..merge import SCALAR_FIELDS, UNION_FIELDS
 from ..models import (
     Artwork,
     AuditEntry,
     Canonical,
+    Follow,
+    ListItem,
     Lock,
     MediaType,
     Observation,
@@ -22,6 +24,7 @@ from ..models import (
     SyncCursor,
     Token,
     User,
+    UserList,
 )
 from ..models import Page as PageRow
 from ..service import AtlasError
@@ -60,8 +63,9 @@ def render(p: Page, name: str, status: int = 200, anon_csrf: bool = False, **ctx
         pending = p.session.scalar(select(func.count()).select_from(Proposal).where(Proposal.status == "pending")) or 0
     nav_pages = list(p.session.scalars(select(PageRow).where(PageRow.published.is_(True), PageRow.in_nav.is_(True))
                                        .order_by(PageRow.position, PageRow.slug)))
+    unread = social.unread_count(p.session, p.user.id) if p.user else 0
     resp = templates.TemplateResponse(p.request, name, {
-        "p": p, "s": s, "app_name": s.app_name, "registration_open": s.registration == "open",
+        "p": p, "s": s, "app_name": s.app_name, "unread": unread, "registration_open": s.registration == "open",
         "pending_count": pending, "nav_pages": nav_pages, **ctx}, status_code=status)
     resp.headers["Cache-Control"] = "private, no-store" if p.user or anon_csrf else "public, max-age=30"
     if anon_csrf and p.new_cookie:
@@ -223,7 +227,15 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     defs = {f.key: f for f in custom.fields_for(s, g.media_type, public=True)}
     values = custom.merged(s, ctx, g.id)
     details = [{"f": defs[k], "value": values[k]} for k in defs if k in values]
-    return render(p, "game.html", g=g, v=g.view, explain=g.explain, key_art=key_art, shots=shots,
+    social_ctx: dict[str, Any] = {"comments": social.thread(s, canonical_id=g.id, viewer=p.user, ctx=ctx),
+                                  "comments_on": ctx.settings.comments_enabled, "lists_on": ctx.settings.lists_enabled}
+    if p.user:
+        social_ctx["following"] = bool(s.get(Follow, (p.user.id, "game", g.id)))
+        social_ctx["my_lists"] = list(s.scalars(select(UserList).where(UserList.user_id == p.user.id)
+                                                .order_by(UserList.created_at)))
+        social_ctx["in_lists"] = {i.list_id for i in s.scalars(select(ListItem).where(ListItem.canonical_id == g.id))}
+        social_ctx["can_comment"] = mail.is_verified(ctx.settings, p.user)
+    return render(p, "game.html", g=g, v=g.view, explain=g.explain, key_art=key_art, shots=shots, **social_ctx,
                   lbl=labels_for(p, g.media_type), details=details,
                   mtype_label=(s.get(MediaType, g.media_type).label if s.get(MediaType, g.media_type) else g.media_type),
                   art_total=len(art), art_cached=len(cached), art_kinds=facets.KINDS, activity=activity,

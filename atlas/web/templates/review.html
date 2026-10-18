@@ -3,9 +3,10 @@
 {% block title %}Review · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>Review queue</h1>
-<p><a href="/review">Proposals ({{ items|length }})</a> · <a href="/review/duplicates">Possible duplicates ({{ dup_count }})</a></p>
+<p><a href="/review">Proposals ({{ items|length }})</a> · <a href="/review/duplicates">Possible duplicates ({{ dup_count }})</a> · <a href="/review/reports">Reported comments</a></p>
 {% for r in items %}
 <article class="card">
+  <p class="small"><a href="/proposal/{{ r.id }}">Discuss</a></p>
   <h3>{{ r.kind|replace('_', ' ')|capitalize }}: {% if r.cid %}<a href="/game/{{ r.cid }}">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}</h3>
   <p class="small muted">by <strong>{{ r.user }}</strong> (reputation {{ r.rep }}) · {{ r.when }}</p>
   {% if r.rows %}<table class="diff"><thead><tr><th>Field</th><th>Now</th><th>Proposed</th></tr></thead><tbody>

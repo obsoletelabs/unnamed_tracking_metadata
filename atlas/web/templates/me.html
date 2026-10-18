@@ -3,6 +3,7 @@
 {% block title %}{{ p.user.username }} · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>{{ p.user.username }}</h1>
+<p class="small"><a href="/u/{{ p.user.username }}">Public profile</a> · <a href="/me/settings">Profile settings</a> · <a href="/me/lists">My lists</a> · <a href="/me/following">Following</a></p>
 <p><span class="badge">{{ p.user.role }}</span> · reputation <strong>{{ p.user.reputation }}</strong>
 {% if auto_threshold %}<span class="muted small"> · changes apply immediately from {{ auto_threshold }}</span>{% endif %}</p>
 <h2>Email</h2>
@@ -21,7 +22,7 @@
 {% if mine %}<table><thead><tr><th>When</th><th>Game</th><th>Kind</th><th>Status</th><th></th></tr></thead><tbody>
 {% for r in mine %}<tr><td class="small">{{ r.when }}</td><td>{% if r.cid %}<a href="/game/{{ r.cid }}">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}</td><td>{{ r.kind|replace('_', ' ') }}</td>
 <td><span class="badge {{ 'ok' if r.status == 'approved' else 'bad' if r.status in ('rejected', 'reverted') else 'warn' }}">{{ r.status }}</span>{% if r.decision_note %}<div class="small muted">{{ r.decision_note }}</div>{% endif %}</td>
-<td>{% if r.status == 'pending' %}<form class="inline" method="post" action="/proposal/{{ r.id }}/withdraw">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Withdraw</button></form>{% endif %}</td></tr>{% endfor %}
+<td><a class="small" href="/proposal/{{ r.id }}">Open</a> {% if r.status == 'pending' %}<form class="inline" method="post" action="/proposal/{{ r.id }}/withdraw">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Withdraw</button></form>{% endif %}</td></tr>{% endfor %}
 </tbody></table>{% else %}<p class="muted">Nothing yet. Open a game and choose “Suggest an edit”.</p>{% endif %}
 
 <h2>API tokens</h2>

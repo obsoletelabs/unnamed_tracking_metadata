@@ -22,9 +22,10 @@
     {% for l in s.nav_links %}<a href="{{ l.url }}"{% if l.url.startswith('https://') %} rel="noopener noreferrer nofollow"{% endif %}>{{ l.label }}</a>{% endfor %}
     {% if p.user %}
       <a href="/new">Add game</a>
+      <a href="/notifications" aria-label="Notifications">Inbox{% if unread %} <span class="badge warn">{{ unread }}</span>{% endif %}</a>
       {% if p.can_review %}<a href="/review">Review{% if pending_count %} <span class="badge warn">{{ pending_count }}</span>{% endif %}</a>{% endif %}
       {% if p.is_admin %}<a href="/admin">Admin</a>{% endif %}
-      <a href="/me">{{ p.user.username }} <span class="muted small">({{ p.user.reputation }})</span></a>
+      <a href="/u/{{ p.user.username }}">{{ p.user.username }} <span class="muted small">({{ p.user.reputation }})</span></a>
       <form class="inline" action="/logout" method="post">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Sign out</button></form>
     {% else %}
       <a href="/login">Sign in</a>

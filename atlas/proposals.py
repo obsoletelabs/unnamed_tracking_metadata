@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import accounts, custom, facets, mail
+from . import accounts, custom, facets, mail, social
 from .contract import ObservationBatchV1
 from .models import Achievement, Artwork, Canonical, Observation, Proposal, ReputationEvent, User, now
 from .service import AtlasError, Ctx, ingest, write_lock
@@ -292,6 +292,7 @@ def create(session: Session, ctx: Ctx, user: User, kind: str, canonical_id: str 
         # No reputation for self-approved changes: it is earned when a reviewer confirms work.
         p.status, p.auto_applied, p.decided_at = "approved", True, now()
         accounts.audit(session, user.id, "proposal_auto_applied", p.id, {"kind": kind})
+        social.on_proposal_applied(session, ctx, p, user)
     return p
 
 
@@ -324,6 +325,9 @@ def review(session: Session, ctx: Ctx, reviewer: User, pid: str, *, approve: boo
             adjust_reputation(session, proposer, REJECT_PENALTY, "rejected:" + p.kind, p.id)
     p.decided_by, p.decided_at, p.decision_note = reviewer.id, now(), (note or "").strip()[:2000]
     accounts.audit(session, reviewer.id, "proposal_" + p.status, p.id)
+    social.on_proposal_decided(session, ctx, p, p.status, reviewer)
+    if p.status == "approved":
+        social.on_proposal_applied(session, ctx, p, proposer)
     return p
 
 
@@ -344,6 +348,7 @@ def revert(session: Session, ctx: Ctx, reviewer: User, pid: str, note: str = "")
             ReputationEvent.proposal_id == p.id, ReputationEvent.delta > 0)) or 0
         adjust_reputation(session, proposer, REVERT_PENALTY - earned, "reverted:" + p.kind, p.id)
     accounts.audit(session, reviewer.id, "proposal_reverted", p.id)
+    social.on_proposal_decided(session, ctx, p, "reverted", reviewer)
     return p
 
 

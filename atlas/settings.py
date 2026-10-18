@@ -96,6 +96,14 @@ class Settings(BaseSettings):
     password_min_length: int = Field(default=10, ge=8)
     trusted_daily_proposals: int = Field(default=100, ge=1)  # cap for auto-applied edits per user per day
     community_art_cap: int = Field(default=50, ge=1, le=200)  # community artwork per game
+    comments_enabled: bool = True
+    lists_enabled: bool = True
+    comment_daily_limit: int = Field(default=30, ge=1)
+    comment_min_reputation: int = Field(default=0, ge=0)
+    comment_autohide_reports: int = Field(default=3, ge=1)  # open reports from distinct users that hide a comment
+    max_lists_per_user: int = Field(default=20, ge=1)
+    max_list_items: int = Field(default=2000, ge=1)
+    max_follows: int = Field(default=500, ge=1)
     initial_admin: str | None = None  # username that becomes administrator; unset = first account
 
     bootstrap_admin_token: str | None = None

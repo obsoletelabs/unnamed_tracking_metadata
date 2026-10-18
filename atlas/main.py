@@ -28,6 +28,7 @@ from .web.deps import LoginRequired
 from .web.routes import router as web_router
 from .web.routes import web_headers
 from .web.schema import router as schema_router
+from .web.social import router as social_router
 
 log = logging.getLogger("atlas")
 _STATUS = {"invalid": 400, "forbidden": 403, "not_found": 404, "conflict": 409}
@@ -159,6 +160,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_router)
     app.include_router(account_router)
     app.include_router(schema_router)
+    app.include_router(social_router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.middleware("http")

@@ -1,0 +1,33 @@
+{% from "macros.html" import csrf %}
+{# Expects: thread, action (POST url for a new comment), where (return path), can_comment (bool), p #}
+<section id="comments" aria-label="Discussion">
+{% for t in thread %}{% set c = t.c %}
+<div class="comment depth-{{ t.depth }}" id="c-{{ c.id }}">
+  {% if c.status == 'deleted' %}<p class="muted small">[deleted]</p>
+  {% elif not t.show %}<p class="muted small">[hidden by a moderator]</p>
+  {% else %}
+  <p class="small"><strong>{% if t.deleted_author %}deleted user{% else %}<a href="/u/{{ t.author }}">{{ t.author }}</a>{% endif %}</strong> <span class="muted">{{ c.created_at.strftime('%Y-%m-%d %H:%M') }}{% if c.edited_at %} · edited{% endif %}{% if c.status == 'hidden' %} · <span class="badge warn">hidden</span>{% endif %}</span></p>
+  <div class="comment-body">{{ c.body }}</div>
+  {% if p.user %}
+  <div class="actions">
+    {% if can_comment %}<details class="inline"><summary class="small">Reply</summary>
+      <form method="post" action="{{ action }}">{{ csrf(p.csrf) }}<input type="hidden" name="parent" value="{{ c.id }}"><textarea name="body" required maxlength="2000" rows="3" aria-label="Reply"></textarea><button class="small" type="submit">Reply</button></form></details>{% endif %}
+    {% if t.editable %}<details class="inline"><summary class="small">Edit</summary>
+      <form method="post" action="/comments/{{ c.id }}/edit">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ where }}"><textarea name="body" required maxlength="2000" rows="3" aria-label="Edit comment">{{ c.body }}</textarea><button class="small" type="submit">Save</button></form></details>{% endif %}
+    {% if t.mine %}<form class="inline" method="post" action="/comments/{{ c.id }}/delete">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ where }}"><button class="secondary small" data-confirm="Delete this comment?" type="submit">Delete</button></form>
+    {% else %}<form class="inline" method="post" action="/comments/{{ c.id }}/report">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ where }}"><button class="secondary small" data-confirm="Report this comment to the moderators?" type="submit">Report</button></form>{% endif %}
+    {% if p.can_review %}<form class="inline" method="post" action="/comments/{{ c.id }}/moderate">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ where }}">
+      {% if c.status == 'hidden' %}<button class="secondary small" name="action" value="restore" type="submit">Restore</button>{% else %}<button class="danger small" name="action" value="hide" data-confirm="Hide this comment?" type="submit">Hide</button>{% endif %}</form>{% endif %}
+  </div>{% endif %}
+  {% endif %}
+</div>
+{% else %}<p class="muted">No comments yet.</p>{% endfor %}
+{% if p.user %}
+  {% if can_comment %}
+  <form class="card" method="post" action="{{ action }}">{{ csrf(p.csrf) }}
+    <label for="newcomment">Add a comment <span class="hint">plain text; @name mentions someone</span></label>
+    <textarea id="newcomment" name="body" required maxlength="2000" rows="4"></textarea>
+    <p><button type="submit">Post comment</button></p></form>
+  {% else %}<p class="muted small">Confirm your email address to join the discussion.</p>{% endif %}
+{% else %}<p class="muted small"><a href="/login?next={{ where }}">Sign in</a> to join the discussion.</p>{% endif %}
+</section>
