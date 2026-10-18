@@ -4,12 +4,13 @@ WORKDIR /src
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY atlas ./atlas
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim
 RUN useradd --system --uid 10001 --home /data atlas && mkdir /data && chown atlas /data
-COPY --from=build /src/.venv /opt/venv
-ENV PATH=/opt/venv/bin:$PATH PYTHONUNBUFFERED=1 ATLAS_DATABASE_URL=sqlite:////data/atlas.db
+# same path as the build stage: venv scripts embed absolute interpreter paths
+COPY --from=build /src/.venv /src/.venv
+ENV PATH=/src/.venv/bin:$PATH PYTHONUNBUFFERED=1 ATLAS_DATABASE_URL=sqlite:////data/atlas.db
 USER atlas
 WORKDIR /data
 EXPOSE 8000
