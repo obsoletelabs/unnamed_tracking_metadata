@@ -276,7 +276,8 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
     session.flush()
     obs.canonical_id = cid
     for s in siblings:  # superseded history of the same source record travels with it
-        if not s.is_current and (s.source, s.source_scope, s.external_id) == (obs.source, obs.source_scope, obs.external_id):
+        same_record = (s.source, s.source_scope, s.external_id) == (obs.source, obs.source_scope, obs.external_id)
+        if not s.is_current and same_record:
             s.canonical_id = cid
     still_claimed = {k for s in siblings if s.is_current for k in keys_of(s)}
     for key in keys_of(obs):
