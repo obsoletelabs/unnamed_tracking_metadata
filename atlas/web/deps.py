@@ -150,7 +150,10 @@ def throttle(p: Page, key: str, limit: int, window: int, what: str = "Too many a
 
 
 def go(url: str, flash: str | None = None, p: Page | None = None) -> RedirectResponse:
-    resp = RedirectResponse(url + (("&" if "?" in url else "?") + "m=" + flash if flash else ""), status_code=303)
+    target, anchor, fragment = url.partition("#")
+    if flash:
+        target += ("&" if "?" in target else "?") + "m=" + flash
+    resp = RedirectResponse(target + anchor + fragment, status_code=303)
     if p is not None and p.new_cookie:
         set_anon_cookie(resp, p)
     return resp
