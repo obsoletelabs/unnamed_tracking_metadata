@@ -83,6 +83,31 @@ def test_rate_limit_counts_exactly_under_concurrency(pg):
     assert results.count(True) == 10 and results.count(False) == 30
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_concurrent_first_start_uses_one_node_identity(pg, legacy):
+    from threading import Barrier
+
+    from sqlalchemy import delete
+
+    from atlas.models import NodeState
+
+    maker, _ = pg
+    with maker() as session:
+        session.execute(delete(NodeState).where(NodeState.key != "signing_key") if legacy else delete(NodeState))
+        session.commit()
+    barrier = Barrier(8)
+
+    def first_start(_):
+        with maker() as session:
+            barrier.wait(timeout=20)
+            identity = load_identity(session)
+            session.commit()
+            return identity.node_id
+
+    with ThreadPoolExecutor(8) as pool:
+        assert len(set(pool.map(first_start, range(8)))) == 1
+
+
 def test_mfa_recovery_code_is_consumed_once_under_concurrency(pg):
     from atlas import accounts, mfa
     from atlas.models import now

@@ -11,6 +11,7 @@ from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .models import NodeState
@@ -62,8 +63,19 @@ class NodeIdentity:
 def load_identity(session: Session) -> NodeIdentity:
     """Load this node's key, creating one on first start."""
     row = session.get(NodeState, "signing_key", populate_existing=True)
+    root = session.get(NodeState, "root_public_key", populate_existing=True)
+    saved_id = session.get(NodeState, "node_id", populate_existing=True)
+    if row is None or root is None or saved_id is None or session.get(NodeState, "feed_seq") is None:
+        # Missing rows cannot be protected by SELECT FOR UPDATE. Serialize first start and
+        # legacy identity upgrades, then re-read after another worker may have committed.
+        if session.get_bind().dialect.name == "postgresql":
+            session.execute(text("SELECT pg_advisory_xact_lock(727275)"))
+        elif session.get_bind().dialect.name == "sqlite":
+            session.execute(text("UPDATE node_state SET value=value WHERE key='signing_key'"))
+        row = session.get(NodeState, "signing_key", populate_existing=True)
+        root = session.get(NodeState, "root_public_key", populate_existing=True)
+        saved_id = session.get(NodeState, "node_id", populate_existing=True)
     if row is None:
-        root = session.get(NodeState, "root_public_key")
         head = session.get(NodeState, "feed_seq")
         if root is not None or (head is not None and int(head.value) > 0):
             raise ValueError("node signing key is missing; restore a verified backup instead of replacing the identity")
@@ -76,12 +88,10 @@ def load_identity(session: Session) -> NodeIdentity:
         session.flush()
     key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(row.value))
     pub = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    root = session.get(NodeState, "root_public_key", populate_existing=True)
     if root is None:
         root = NodeState(key="root_public_key", value=base64.b64encode(pub).decode())
         session.add(root)
     root_id = key_id_for(base64.b64decode(root.value, validate=True))
-    saved_id = session.get(NodeState, "node_id", populate_existing=True)
     if saved_id is None:
         session.add(NodeState(key="node_id", value=root_id))
     elif saved_id.value != root_id:

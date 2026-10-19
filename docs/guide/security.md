@@ -50,6 +50,10 @@ OIDC consent or administration. An incomplete sign-in expires after ten minutes;
 verification rotates the session and CSRF token. Verification is rate-limited by account and IP.
 Password reset and email verification never disable MFA.
 
+MFA protects interactive account sessions. Existing scoped API service credentials remain
+non-interactive credentials; protect and revoke them separately. Personal tokens stay read-only,
+and an incomplete MFA sign-in cannot create new ones.
+
 Administrators can enable **Require two-factor sign-in for reviewers and administrators** under
 Admin → Settings → Security (`ATLAS_REQUIRE_MFA_FOR_PRIVILEGED=true` sets the default).
 This includes reputation-based reviewers. Configure and preserve `ATLAS_SECRET_KEY`, enrol your
