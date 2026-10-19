@@ -131,12 +131,13 @@ def _apply(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: 
             custom.apply_snapshot(session, body)
     elif kind == "custom":
         from . import custom
+        from .custom_compat import key_for
 
         game = session.get(Canonical, body["canonical_id"])
         if game is None:
             return
         values = custom.clean_values(session, game.media_type, body.get("values") or {}, editable_only=False)
-        clear = tuple(str(k)[:40] for k in (body.get("clear") or [])[:60])
+        clear = tuple(key_for(session, game.media_type, str(k)[:40]) for k in (body.get("clear") or [])[:60])
         custom.set_values(session, ctx, body["canonical_id"], str(body["source"])[:128], values,
                           redistributable=True, log=False, clear=clear)
     elif kind == "merge":

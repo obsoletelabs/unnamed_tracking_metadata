@@ -4,6 +4,9 @@
 {% block content %}
 <h1>Administration</h1>
 {% include "_adminnav.html" %}
+{% if renamed_fields %}<section class="card" aria-labelledby="renamed-title"><h2 id="renamed-title">Custom fields preserved after upgrade</h2>
+<p>These custom names became built-in fields. Their keys were renamed; labels, values and source attribution were preserved. No custom values were converted into built-in metadata. Update clients to use the new keys.</p>
+<ul>{% for field in renamed_fields %}<li><strong>{{ field.media_type }}</strong>: <code>{{ field.old }}</code> → <code>{{ field.new }}</code></li>{% endfor %}</ul></section>{% endif %}
 <p class="muted">Media types say what kind of thing a record is. Each type can have its own extra fields, which appear on pages, in contributor forms and in the API, and go through the same review as built-in fields.</p>
 {% for r in rows %}
 <article class="card">

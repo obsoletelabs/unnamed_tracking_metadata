@@ -52,6 +52,9 @@ def apply_snapshot(session: Session, snap: dict[str, Any]) -> None:
 
     Every definition goes through the same validation as one typed into the admin UI; a bad entry is skipped (a
     misbehaving upstream must not be able to stall replication or plant markup in labels)."""
+    from .custom_compat import legacy_snapshot
+
+    snap = legacy_snapshot(session, snap)
     keep_t: set[str] = set()
     for t in snap.get("types", []) if isinstance(snap.get("types"), list) else []:
         try:
@@ -311,9 +314,16 @@ def validate_value(f: FieldDef, raw: Any) -> Any:
 
 def clean_values(session: Session, media_type: str, values: dict[str, Any], *, editable_only: bool) -> dict[str, Any]:
     """Validate a {key: raw} mapping; unknown or non-editable keys are errors, empty values are dropped."""
+    from .custom_compat import key_for
+
     defs = {f.key: f for f in fields_for(session, media_type)}
     out: dict[str, Any] = {}
+    seen: set[str] = set()
     for key, raw in (values or {}).items():
+        key = key_for(session, media_type, key)
+        if key in seen:
+            raise AtlasError(f"custom field {key!r} was supplied twice through an old and new name")
+        seen.add(key)
         f = defs.get(key)
         if f is None:
             raise AtlasError(f"unknown field {key!r} for {media_type}")

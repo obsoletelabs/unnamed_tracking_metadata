@@ -109,3 +109,17 @@ Updates should be rare. When you do one:
    step 1 matters.
 5. Upgrade mirrors after the authority, never before: a mirror understands older feeds but an old mirror may not understand a
    newer authority.
+
+## Reserved custom-field names
+
+Migration `0014` preserves historical custom fields whose names became core fields:
+`age_rating`, `genres`, `themes`, `languages`, `aliases`, `website`, `critic_score`, `user_score`.
+They become `custom_<old>` with `_2`, `_3`, … when necessary. Field IDs, labels, values,
+source/redistribution flags, timestamps, proposal payloads and revert history are preserved.
+Original signed feed bodies and signatures are never rewritten. Historical snapshots are
+translated when replayed. Admin → Fields shows the exact mapping and an audit entry records it.
+
+Old custom input names remain aliases, but output uses the new names; update clients that read
+`custom.genres` (for example) to the name shown in the warning. Sending both old/new names in
+one request is rejected, including when one is empty. Core fields remain separate. The rename
+is deliberately not reversed on downgrade, since clients may already use the new key.
