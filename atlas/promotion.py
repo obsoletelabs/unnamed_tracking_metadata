@@ -57,6 +57,8 @@ def candidate(settings: Settings, source_engine, authority: str, confirm_mirror:
             raise PromotionError("key history is ahead of the retained feed; finish synchronization first")
         with tempfile.TemporaryDirectory(prefix="atlas-recovery-") as folder:
             target_settings = Settings(_env_file=None, database_url=f"sqlite:///{folder}/candidate.db", role="authority",
+                                       environment="dev", public_url="http://localhost:8000",
+                                       source_trust=settings.source_trust, default_trust=settings.default_trust,
                                        media_dir=f"{folder}/media", media_cache_enabled=False)
             db.upgrade(target_settings.database_url)
             target_engine = db.make_engine(target_settings.database_url)

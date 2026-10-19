@@ -100,3 +100,15 @@ def test_recovery_refuses_incomplete_or_unverifiable_source(tmp_path, attack):
         promotion.candidate(settings, mirror[2].maker.kw["bind"], a[2].ctx.identity.node_id,
                             "wrong" if attack == "wrong_mirror" else mirror[2].ctx.identity.node_id, out)
     assert not out.exists()
+
+
+def test_production_mirror_configuration_can_build_an_offline_sqlite_candidate(tmp_path, monkeypatch):
+    a, mirror = node(tmp_path, "a", "authority"), node(tmp_path, "m", "mirror")
+    publish(a[2], "Production Recovery", "note")
+    pull(mirror[2], a)
+    monkeypatch.setenv("ATLAS_ENVIRONMENT", "production")
+    settings = mirror[2].ctx.settings.model_copy(update={"environment": "production"})
+    out = tmp_path / "production-candidate.tar.gz"
+    promotion.candidate(settings, mirror[2].maker.kw["bind"], a[2].ctx.identity.node_id,
+                        mirror[2].ctx.identity.node_id, out)
+    assert backup.verify(out)["tables"]["canonical"] == 1
