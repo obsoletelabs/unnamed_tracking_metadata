@@ -91,9 +91,9 @@ you mean it. It runs in one transaction: if anything fails the database is left 
 
 * **A mirror or local node** can be rebuilt from its upstream: install, point `ATLAS_UPSTREAM_URL` at it, and it replicates the
   feed again. You lose only local-only things (local overlays, local accounts) so back those up anyway.
-* **An authority** can only be rebuilt from a backup, because it is the source of truth. If several official authorities exist
-  and one is lost, restore the archive on a new host. Never run two copies of the same authority identity at once; if you restore
-  while the old one might still be alive, the feed would fork.
+* **An authority** should be restored from a current verified backup. If that is unavailable, use the
+  [mirror recovery runbook](recovery.md) to recover only the retained public feed under a **new root**.
+  Accounts/private data still need a backup. Never run two copies of the same identity at once.
 * Keep the **node signing key** safe independently: it is in every archive, but `atlas node` shows the public id you published.
 
 ## Upgrading
@@ -107,8 +107,8 @@ Updates should be rare. When you do one:
    file already does this in the `migrate` service and keeps `ATLAS_AUTO_MIGRATE=false` on the app.
 4. Migrations only go forward. To go back you restore the pre-upgrade backup into a database at the old version, which is why
    step 1 matters.
-5. Upgrade mirrors after the authority, never before: a mirror understands older feeds but an old mirror may not understand a
-   newer authority.
+5. Upgrade followers/relays before activating a new signing key or other incompatible feed behavior.
+   Confirm all understand successor proofs before using Admin → Signing keys.
 
 ## Reserved custom-field names
 
@@ -123,3 +123,8 @@ Old custom input names remain aliases, but output uses the new names; update cli
 `custom.genres` (for example) to the name shown in the warning. Sending both old/new names in
 one request is rejected, including when one is empty. Core fields remain separate. The rename
 is deliberately not reversed on downgrade, since clients may already use the new key.
+
+Keep `ATLAS_SECRET_KEY` with the backup configuration: it decrypts MFA, peer tokens and OIDC
+client secrets. The archive contains encrypted values, not that external encryption key.
+Use [Release verification](release-verification.md) to rehearse full-table and artwork restore
+with both SQLite and PostgreSQL before an upgrade.
