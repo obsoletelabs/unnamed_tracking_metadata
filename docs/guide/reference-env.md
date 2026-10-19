@@ -57,6 +57,8 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_MAX_RESOLVE` | `200` | Largest `/resolve` batch. **live** |
 | `ATLAS_RATE_LIMIT_PER_MINUTE` | `600` | API requests per token per minute (unauthenticated callers get 60 per address). **live** |
 | `ATLAS_MAX_BODY_BYTES` | `2000000` | Largest request body accepted. |
+| `ATLAS_JSON_LOGS` | `false` | Opt-in structured request/application logs; no query, body or credential logging. |
+| `ATLAS_METRICS_ENABLED` | `false` | Enable `/metrics`; a `metrics`-scoped bearer token is required. |
 
 ## Providers
 
