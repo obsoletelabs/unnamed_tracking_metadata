@@ -97,6 +97,7 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                            "address to contribute, other nodes do not."),
     "registration": ("Community", "`open` or `closed`."),
     "session_ttl_days": ("Community", "Sign-in lifetime."),
+    "require_mfa_for_privileged": ("Community", "Require TOTP enrolment and verified sessions for reviewers and admins."),
     "auto_approve_reputation": ("Community", "Reputation from which a user's changes apply immediately (0 disables)."),
     "curator_reputation": ("Community", "Reputation that grants review rights (0 = only people you promote)."),
     "max_pending_proposals": ("Community", "Pending proposals per user."),

@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     email_verification: Literal["off", "optional", "required"] | None = None
 
     # Community
+    require_mfa_for_privileged: bool = False
     registration: Literal["open", "closed"] = "open"
     session_ttl_days: int = Field(default=14, ge=1, le=90)
     auto_approve_reputation: int = Field(default=50, ge=0)  # 0 disables auto-approval

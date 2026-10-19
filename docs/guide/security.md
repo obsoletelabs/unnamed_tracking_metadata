@@ -31,3 +31,35 @@ Two independent code reviews were carried out during development; every confirme
 ## Reporting a problem
 
 Open a private security advisory on the repository, or contact the repository owners directly. Please include steps to reproduce.
+
+## Two-factor sign-in
+
+Account → **Manage two-factor sign-in** lets each user enrol a standard TOTP authenticator
+(SHA-1, six digits, 30 seconds). Setup requires the current password, or a linked-provider sign-in
+within the last 15 minutes for an account without a password. The setup key is encrypted with
+`ATLAS_SECRET_KEY`, is visible only to the initiating session, and expires after ten minutes.
+The authenticator must produce a valid code before protection is enabled.
+
+Ten random recovery codes are shown once, stored only as hashes and accepted once each.
+Store them separately from the authenticator. Generating new codes invalidates the old set.
+Enabling or disabling protection signs out other sessions. Authenticator time steps cannot be
+reused, including across concurrent requests. A one-step clock tolerance is allowed.
+
+Enrolled accounts must complete a second factor after either password or OIDC sign-in.
+Primary authentication alone cannot access account exports, token creation, contributions,
+OIDC consent or administration. An incomplete sign-in expires after ten minutes; successful
+verification rotates the session and CSRF token. Verification is rate-limited by account and IP.
+Password reset and email verification never disable MFA.
+
+Administrators can enable **Require two-factor sign-in for reviewers and administrators** under
+Admin → Settings → Security (`ATLAS_REQUIRE_MFA_FOR_PRIVILEGED=true` sets the default).
+This includes reputation-based reviewers. Configure and preserve `ATLAS_SECRET_KEY`, enrol your
+own authenticator and save recovery codes before requiring MFA. Accounts needing enrolment can
+only set up MFA or sign out. Existing sessions are checked against the current policy.
+
+There is deliberately no email-only or administrator-click bypass. If a user loses both their
+authenticator and recovery codes, an operator must independently verify their identity before
+any manual database recovery. Preserve an encrypted backup of the database **and** the external
+encryption key; changing that key makes stored authenticators unreadable. A missing/wrong key
+fails closed and is reported as a configuration problem. Downgrading past the MFA migration is
+refused while accounts remain enrolled.

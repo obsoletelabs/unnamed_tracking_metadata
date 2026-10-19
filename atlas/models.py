@@ -247,6 +247,20 @@ class UserSession(Base):
     csrf: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    mfa_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserMfa(Base):
+    __tablename__ = "user_mfa"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), primary_key=True)
+    secret_enc: Mapped[str] = mapped_column(Text)
+    setup_session_id: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    recovery_hashes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Proposal(Base):

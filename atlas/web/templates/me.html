@@ -38,6 +38,8 @@
   <p><button type="submit">Create token</button></p>
 </form>
 
+<h2>Sign-in security</h2>
+<p><a class="btn secondary" href="/me/security">Manage two-factor sign-in</a></p>
 <h2>Password</h2>
 <form class="card" method="post" action="/me/password">{{ csrf(p.csrf) }}
   <label for="cur">Current password</label><input id="cur" type="password" name="current" autocomplete="current-password" {{ 'required' if has_password }} maxlength="200">

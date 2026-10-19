@@ -1,0 +1,128 @@
+"""Second-factor setup and challenges; primary authentication never grants MFA assurance."""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi.responses import HTMLResponse
+from sqlalchemy import delete
+
+from .. import accounts, mfa, secrets_box
+from ..models import UserMfa, UserSession, now
+from ..service import AtlasError
+from .deps import SESSION_COOKIE, Page, client_ip, go, secure_cookies, throttle, user_form, user_page
+from .routes import render
+
+router = APIRouter()
+
+
+def _reauth(p: Page, password: str) -> None:
+    throttle(p, f"mfa:manage:{p.me.id}", 10, 900)
+    if not accounts.reauthenticated(p.me, password, p.login):
+        raise HTTPException(400, "Confirm your current password, or sign in again with your linked provider.")
+
+
+def _attempt(p: Page, code: str, *, pending: bool = False) -> bool:
+    throttle(p, f"mfa:user:{p.me.id}", 10, 300)
+    throttle(p, f"mfa:ip:{client_ip(p.request)}", 30, 300)
+    try:
+        return mfa.verify(p.session, p.st.ctx.settings, p.me.id, code, pending=pending, login_id=p.login.id)
+    except secrets_box.SecretsError as exc:
+        raise HTTPException(503, "Two-factor verification is unavailable. "
+                            "Ask the operator to check ATLAS_SECRET_KEY.") from exc
+
+
+def _security(p: Page, *, codes: list[str] | None = None, error: str | None = None, status: int = 200):
+    factor = p.session.get(UserMfa, p.me.id)
+    secret = None
+    if (factor and factor.enabled_at is None and factor.setup_session_id == p.login.id
+            and mfa._utc(factor.created_at) >= now() - timedelta(minutes=10)):
+        try:
+            secret = secrets_box.decrypt(p.st.ctx.settings, factor.secret_enc)
+        except secrets_box.SecretsError:
+            error = "The setup key is unavailable. Ask the operator to check ATLAS_SECRET_KEY."
+    return render(p, "security.html", status=status, factor=factor, setup_secret=secret, codes=codes,
+                  error=error, required=mfa.required(p.st.ctx.settings, p.me),
+                  available=secrets_box.available(p.st.ctx.settings), has_password=p.me.password_hash != "!")
+
+
+@router.get("/me/security", response_class=HTMLResponse)
+def security(p: Annotated[Page, Depends(user_page)]):
+    return _security(p)
+
+
+@router.post("/me/security/start", response_class=HTMLResponse)
+def start(p: Annotated[Page, Depends(user_form)], password: Annotated[str, Form(max_length=256)] = ""):
+    _reauth(p, password)
+    try:
+        mfa.start(p.session, p.st.ctx.settings, p.me, p.login.id)
+    except (AtlasError, secrets_box.SecretsError) as exc:
+        return _security(p, error=str(exc), status=400)
+    accounts.audit(p.session, p.me.id, "mfa_setup", p.me.id)
+    return _security(p)
+
+
+@router.post("/me/security/enable", response_class=HTMLResponse)
+def enable(p: Annotated[Page, Depends(user_form)], code: Annotated[str, Form(max_length=64)]):
+    if not _attempt(p, code, pending=True):
+        return _security(p, error="That code is invalid, already used, or setup expired. Try the next code or start again.",
+                         status=400)
+    factor = p.session.get(UserMfa, p.me.id)
+    factor.enabled_at = now()
+    codes = mfa.recovery_codes(factor)
+    p.login.mfa_verified_at = now()
+    p.session.execute(delete(UserSession).where(UserSession.user_id == p.me.id, UserSession.id != p.login.id))
+    accounts.audit(p.session, p.me.id, "mfa_enabled", p.me.id)
+    return _security(p, codes=codes)
+
+
+@router.get("/mfa", response_class=HTMLResponse)
+def challenge(p: Annotated[Page, Depends(user_page)]):
+    factor = p.session.get(UserMfa, p.me.id)
+    if not factor or not factor.enabled_at:
+        return go("/me/security")
+    return render(p, "mfa.html", error=None)
+
+
+@router.post("/mfa", response_class=HTMLResponse)
+def confirm(p: Annotated[Page, Depends(user_form)], code: Annotated[str, Form(max_length=64)]):
+    if not _attempt(p, code):
+        return render(p, "mfa.html", status=400,
+                      error="That code is invalid or already used. Try the next code or a recovery code.")
+    old_id = p.login.id
+    secret, login = accounts.create_session(p.session, p.st.ctx.settings, p.me)
+    login.mfa_verified_at = now()
+    p.session.execute(delete(UserSession).where(UserSession.id == old_id))
+    accounts.audit(p.session, p.me.id, "mfa_verified", p.me.id)
+    response = go("/me")
+    response.set_cookie(SESSION_COOKIE, secret, httponly=True, samesite="lax", secure=secure_cookies(p), path="/",
+                        max_age=p.st.ctx.settings.session_ttl_days * 86400)
+    return response
+
+
+@router.post("/me/security/disable")
+def disable(p: Annotated[Page, Depends(user_form)], code: Annotated[str, Form(max_length=64)],
+            password: Annotated[str, Form(max_length=256)] = ""):
+    _reauth(p, password)
+    if mfa.required(p.st.ctx.settings, p.me):
+        raise HTTPException(409, "This server requires two-factor sign-in for your role.")
+    if not _attempt(p, code):
+        return _security(p, error="That code is invalid or already used.", status=400)
+    p.session.delete(p.session.get(UserMfa, p.me.id))
+    p.session.execute(delete(UserSession).where(UserSession.user_id == p.me.id, UserSession.id != p.login.id))
+    accounts.audit(p.session, p.me.id, "mfa_disabled", p.me.id)
+    return go("/me/security", "saved")
+
+
+@router.post("/me/security/recovery", response_class=HTMLResponse)
+def regenerate(p: Annotated[Page, Depends(user_form)], code: Annotated[str, Form(max_length=64)],
+               password: Annotated[str, Form(max_length=256)] = ""):
+    _reauth(p, password)
+    if not _attempt(p, code):
+        return _security(p, error="That code is invalid or already used.", status=400)
+    factor = p.session.get(UserMfa, p.me.id)
+    codes = mfa.recovery_codes(factor)
+    accounts.audit(p.session, p.me.id, "mfa_recovery_rotated", p.me.id)
+    return _security(p, codes=codes)

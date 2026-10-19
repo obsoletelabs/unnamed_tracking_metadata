@@ -11,7 +11,7 @@ from datetime import timedelta
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .models import AuditEntry, Token, User, UserSession, now
+from .models import AuditEntry, Token, User, UserMfa, UserSession, now
 from .service import AtlasError, write_lock
 from .settings import Settings
 
@@ -108,6 +108,11 @@ def session_user(session: Session, secret: str | None) -> tuple[User, UserSessio
         return None
     user = session.get(User, row.user_id)
     if user is None or user.status != "active":
+        return None
+    factor = session.get(UserMfa, user.id)
+    created = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=now().tzinfo)
+    if factor and factor.enabled_at and row.mfa_verified_at is None and created < now() - timedelta(minutes=10):
+        session.delete(row)
         return None
     return user, row
 
