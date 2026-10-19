@@ -83,6 +83,84 @@ def test_rate_limit_counts_exactly_under_concurrency(pg):
     assert results.count(True) == 10 and results.count(False) == 30
 
 
+def test_mfa_recovery_code_is_consumed_once_under_concurrency(pg):
+    from atlas import accounts, mfa
+    from atlas.models import now
+
+    maker, ctx = pg
+    settings = ctx.settings.model_copy(update={"secret_key": "postgres-mfa-test-key"})
+    with maker() as session:
+        user = accounts.register(session, settings, "mfa-user", "postgres-test-password")
+        factor = mfa.start(session, settings, user, "s" * 64)
+        factor.enabled_at = now()
+        code = mfa.recovery_codes(factor)[0]
+        session.commit()
+
+    def verify(_):
+        with maker() as session:
+            result = mfa.verify(session, settings, user.id, code)
+            session.commit()
+            return result
+
+    with ThreadPoolExecutor(8) as pool:
+        results = list(pool.map(verify, range(8)))
+    assert results.count(True) == 1 and results.count(False) == 7
+
+
+def test_rotation_and_stale_feed_readers_share_one_gap_free_history(pg):
+    from threading import Barrier
+
+    from atlas import key_rotation
+
+    maker, ctx = pg
+    barrier = Barrier(9)
+
+    def append(index):
+        with maker() as session:
+            # Cache the old ORM head before another worker advances it.
+            feed.head_seq(session)
+            barrier.wait(timeout=20)
+            if index == 0:
+                key_rotation.rotate(session, ctx.identity.key_id)
+            else:
+                feed.append(session, ctx.identity, "schema", {"types": [], "fields": []})
+            session.commit()
+
+    with ThreadPoolExecutor(9) as pool:
+        list(pool.map(append, range(9)))
+    with maker() as session:
+        current = load_identity(session)
+        history, keys = key_rotation.validate_history(current.node_id, current.trust_public_b64,
+                      key_rotation.own_history(session, current.node_id), current.key_id)
+        rows = list(session.scalars(select(ChangeLog).order_by(ChangeLog.seq)))
+        assert [row.seq for row in rows] == list(range(1, 10))
+        assert feed.head_seq(session) == 9
+        assert all(key_rotation.check_entry(current.node_id, history, keys, key_rotation.proof(row, current.node_id))
+                   for row in rows)
+
+
+def test_offline_recovery_reads_a_postgres_mirror_without_mutating_it(pg, tmp_path):
+    from types import SimpleNamespace
+
+    from atlas import backup, promotion
+
+    from .test_relay import node, publish, pull
+
+    maker, ctx = pg
+    authority = node(tmp_path, "source-authority", "authority")
+    publish(authority[2], "PostgreSQL Recovery", "pg_note")
+    settings = ctx.settings.model_copy(update={"role": "mirror"})
+    mirror = SimpleNamespace(maker=maker, ctx=Ctx(settings, ctx.identity))
+    assert pull(mirror, authority) > 0
+    out = tmp_path / "postgres-candidate.tar.gz"
+    result = promotion.candidate(settings, maker.kw["bind"], authority[2].ctx.identity.node_id, ctx.identity.node_id, out)
+    assert result["node_id"] != ctx.identity.node_id
+    assert backup.verify(out)["tables"]["canonical"] == 1
+    with maker() as session:
+        assert load_identity(session).node_id == ctx.identity.node_id
+        assert feed.head_seq(session) == 0
+
+
 def test_concurrent_community_races(pg):
     """Two reviewers approving one proposal, and two simultaneous first registrations."""
     from atlas import accounts, proposals

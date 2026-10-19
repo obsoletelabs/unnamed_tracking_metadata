@@ -48,7 +48,10 @@ nav:
       - Proxmox LXC: hosting/proxmox.md
       - Try federation on one machine: hosting/lab.md
       - Backup and restore: backup.md
+      - Recover from a mirror: recovery.md
       - Operations: deployment.md
+      - Logs and metrics: observability.md
+      - Release verification: release-verification.md
   - Running a node:
       - Administering: administering.md
       - Federation: federation.md

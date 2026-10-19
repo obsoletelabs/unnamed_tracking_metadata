@@ -103,7 +103,7 @@ Mirrors retain verified original entries, independently of their applied catalog
 advertises available origins under `/api/v2/sync/info` → `feeds`; request an origin with
 `/api/v2/sync/changes?node_id=<authority-id>`. Its body, sequence, key ID and signature remain
 the original authority's. Followers pin that authority, not a replacement mirror signature.
-The relay's own default feed remains separate. Each endpoint still needs `read` and `sync`.
+The relay's own default feed remains separate. Replication needs `read` for info and `sync` for changes.
 
 Admin → Peers → Look up node lists relayed origins. Select one and compare its fingerprint
 through an independent channel. Add a separate peer for each origin, even when URLs match.
@@ -120,3 +120,24 @@ or automatic conflict consensus.
 
 For signing-key rotation, upgrade followers first and follow [Security](security.md#rotate-a-node-signing-key).
 See [Release verification](release-verification.md) for the four-node HTTP acceptance drill.
+
+### Feed and successor-proof wire contract
+
+The existing default feed remains compatible until an operator explicitly rotates a signer.
+`sync/info` keeps `node_id` and `public_key` as the stable root fingerprint/public key, and adds
+`signing_key_id` (current signer), `rotations` (ordered proofs) and `feeds` (available relayed
+origins, each with its own root, signer, proofs and retained `head`). Node IDs are the first
+16 hexadecimal SHA-256 characters of the original raw Ed25519 public key.
+
+Every entry carries `node_id` (original root), `key_id` (signer for that sequence), `seq`,
+`kind`, `body`, `body_hash` and `signature`. The signature covers the existing domain-separated
+message `atlas-feed-v2\n<node_id>\n<seq>\n<kind>\n<body_hash>`. The hash is SHA-256 of UTF-8 JSON
+with sorted keys, no extra separators/spaces and Unicode preserved. Entries are independently
+signed and required to be contiguous; this is not a previous-entry hash chain.
+
+A `key_rotation` body is exactly `{"key_id": "<successor fingerprint>", "public_key": "<base64 raw key>"}`.
+Its proof contains all entry fields above. The old key signs the transition entry itself;
+the successor signs only later sequences. At most 128 ordered transitions are accepted, with
+unique 32-byte successor keys and a final signer matching `signing_key_id`. Followers verify
+from their independently pinned root and retain the full prefix to reject later rollback or
+fork. The root is never replaced by an unverified key received from `sync/info`.

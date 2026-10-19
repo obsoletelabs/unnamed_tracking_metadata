@@ -79,12 +79,12 @@ Restore: new host, same `.env`, restore the database and media, `docker compose 
 ## Operating
 
 * **Health:** `GET /api/v2/health` (liveness), `/api/v2/ready` (database), `/api/v2/status` (admin: feed head, replication).
-* **Logs:** plain uvicorn logs on stdout. Structured logs and metrics are not built yet.
+* **Logs/metrics:** enable `ATLAS_JSON_LOGS` and `ATLAS_METRICS_ENABLED` as needed; [Logs and metrics](observability.md) explains redaction and scoped scraping.
 * **Scaling:** more replicas are fine (rate limits, sessions and tokens live in the database); one writer holds a lock at a time. No load figures have been measured; plan capacity by testing your own workload.
 * **Housekeeping:** background threads in each process send email, cache artwork, purge expired counters/tokens and pull from peers. `atlas cache-media` runs a caching pass by hand.
 
 ## Command line
 
-`atlas serve | migrate | token | node | secret-key | sync | cache-media | make-admin | import-legacy` (`docker compose exec atlas atlas <command>`). `import-legacy <demo-1.db>` migrates data from the earlier demo version (release dates were year-only there and are dropped).
+`atlas serve | migrate | backup | recover-mirror | token | node | secret-key | sync | cache-media | make-admin | import-legacy` (`docker compose exec atlas atlas <command>`). `import-legacy <demo-1.db>` migrates data from the earlier demo version (release dates were year-only there and are dropped). Use `recover-mirror` only with the [recovery runbook](recovery.md).
 
 For every environment variable: [Environment variables](reference-env.md).

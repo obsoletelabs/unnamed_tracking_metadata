@@ -23,8 +23,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --frozen --extra dev
-      - run: uv run ruff check atlas tests
+      - run: uv run ruff check atlas tests tools
       - run: uv run pytest -q
+      - name: Multi-authority HTTP and restore drills
+        run: |
+          uv run python -m tools.multinode_drill --postgres-admin-url "$ATLAS_TEST_PG_URL" --output topology-postgres.json
+          uv run python -m tools.restore_drill --postgres-admin-url "$ATLAS_TEST_PG_URL" --output restore-postgres.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-drill-results
+          path: |
+            topology-postgres.json
+            restore-postgres.json
   docker:
     runs-on: ubuntu-latest
     steps:

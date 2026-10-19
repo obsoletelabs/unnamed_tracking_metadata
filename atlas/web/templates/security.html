@@ -4,7 +4,7 @@
 {% block content %}
 <h1>Sign-in security</h1>
 <p>Protect your account with a code from an authenticator app, in addition to your password or linked sign-in.</p>
-{% if required %}<p class="flash">This server requires two-factor sign-in for reviewers and administrators. Complete setup to continue.</p>{% endif %}
+{% if required %}<p class="flash">This server requires two-factor sign-in for reviewers and administrators.{% if not factor or not factor.enabled_at %} Complete setup to continue.{% endif %}</p>{% endif %}
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 {% if codes %}<section class="card" aria-labelledby="recovery-title"><h2 id="recovery-title">Save your recovery codes</h2>
 <p>These ten codes are shown only now. Store them somewhere safe, separate from your authenticator. Each works once; generating new codes replaces all the old ones.</p>
@@ -14,18 +14,18 @@
 <section class="card"><h2>Two-factor sign-in is enabled</h2><p>Your authenticator is required after password and linked-provider sign-in. {{ factor.recovery_hashes|length }} recovery codes remain.</p>
 <form method="post" action="/me/security/recovery">{{ csrf(p.csrf) }}
 <label for="rp">Current password{% if not has_password %} (or a recent linked sign-in){% endif %}</label><input id="rp" name="password" type="password" autocomplete="current-password" maxlength="200" {{ 'required' if has_password }}>
-<label for="rc">Authenticator or unused recovery code</label><input id="rc" name="code" autocomplete="one-time-code" required maxlength="64">
+<label for="rc">Authenticator or unused recovery code</label><input id="rc" name="code" type="text" autocomplete="one-time-code" required maxlength="64">
 <p><button type="submit">Generate new recovery codes</button></p></form></section>
 {% if not required %}<details class="card"><summary>Turn off two-factor sign-in</summary><p>This removes the extra sign-in protection and invalidates your recovery codes.</p>
 <form method="post" action="/me/security/disable">{{ csrf(p.csrf) }}
 <label for="dp">Current password{% if not has_password %} (or a recent linked sign-in){% endif %}</label><input id="dp" name="password" type="password" autocomplete="current-password" maxlength="200" {{ 'required' if has_password }}>
-<label for="dc">Authenticator or unused recovery code</label><input id="dc" name="code" autocomplete="one-time-code" required maxlength="64">
+<label for="dc">Authenticator or unused recovery code</label><input id="dc" name="code" type="text" autocomplete="one-time-code" required maxlength="64">
 <p><button class="danger" type="submit" data-confirm="Turn off two-factor sign-in?">Turn off two-factor sign-in</button></p></form></details>{% endif %}
 {% elif setup_secret %}
 <section class="card"><h2>1. Add Atlas to your authenticator</h2><p>Choose manual setup: time-based (TOTP), six digits, 30 seconds. Account: {{ p.user.username }} · {{ app_name }}.</p>
 <p>Setup key: <code>{{ setup_secret }}</code></p><p class="small muted">Keep this key private. Setup expires after ten minutes.</p>
 <h2>2. Confirm a code</h2><form method="post" action="/me/security/enable">{{ csrf(p.csrf) }}
-<label for="code">Six-digit authenticator code</label><input id="code" name="code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" required maxlength="6">
+<label for="code">Six-digit authenticator code</label><input id="code" name="code" type="text" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" required maxlength="6">
 <p><button type="submit">Enable two-factor sign-in</button></p></form></section>
 {% else %}<section class="card"><h2>Set up an authenticator</h2>
 {% if available %}<p>Confirm your password to get a setup key. You will also receive ten recovery codes.</p>

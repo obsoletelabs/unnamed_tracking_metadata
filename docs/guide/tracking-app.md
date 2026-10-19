@@ -4,12 +4,12 @@ Atlas works with the [Unnamed Tracking App](https://github.com/obsoletelabs/unna
 
 ## Metadata: the Atlas provider plugin
 
-The plugin **`official.metadata-atlas`** (source in the plugins repository, pull request #64) adds Atlas as a metadata provider: search, merged metadata, artwork and a health check.
+The plugin **`official.metadata-atlas`** adds Atlas as a metadata provider: search, merged metadata, artwork and a health check.
 
 ### Install
 
 1. Run an Atlas node ([Quick start](quickstart.md)) and create a token with only the **`read`** scope (**Admin → Tokens**).
-2. Get the plugin package. The plugin repository's branch CI publishes an unsigned preview (`unsigned-dist`); or build one: `python tools/build_packages.py` produces `official.metadata-atlas-<version>.utp`. Signed releases come from the official publisher.
+2. Get the signed package from the official catalogue. Version [0.2.0](https://github.com/obsoletelabs/unnamed_tracking_app_plugins/blob/main/dist/official.metadata-atlas-0.2.0.utp) was tested in the release drill. Development builds from `python tools/build_packages.py` are isolated unsigned previews and require explicit consent.
 3. In the app: **Plugin Manager** → install the `.utp` (unsigned previews need explicit consent) and grant the declared permissions.
 4. Open the provider's settings and enter **Atlas server URL** (`https://atlas.example.org`, optional path prefix) and **Atlas API token** (write-only, stored encrypted by the app).
 
@@ -28,6 +28,21 @@ The plugin **`official.metadata-atlas`** (source in the plugins repository, pull
 * Achievements are not part of the app's provider contract yet. Atlas serves the achievement *list* (`GET /games/{id}/achievements`); there is no per-user progress anywhere in Atlas.
 * Custom fields are available in the API (`custom`) but the app's metadata model has no slot for them.
 * The plugin sends no personal data: only titles, years and provider ids.
+
+### Verified host workflow
+
+The [release drill](release-verification.md) installs the unchanged signed `.utp` through the
+real Plugin Manager, approves its exact declared permissions, starts the runtime worker and
+uses ordinary host accounts. It checks secret redaction/system-configuration denial, search,
+canonical/store identifiers, enrichment, per-user search-session ownership, game creation,
+the existing metadata-refresh endpoint, manually protected fields and an unreachable Atlas.
+Host, runtime and Atlas communicate over real HTTP; gateways and provider replies are not
+mocked. The container runtime uses its documented `NONBUBBLE_ENV` development fallback, so
+this is functional acceptance, not verification of production sandbox isolation. The existing
+refresh response labels a focused local record **Library** even when Atlas supplied fields.
+
+Achievements, custom-field mapping and public artwork delivery retain the limits above;
+this check does not close every part of the integration roadmap.
 
 ## Signing in to the Tracking App with Atlas
 
