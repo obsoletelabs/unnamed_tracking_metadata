@@ -27,7 +27,7 @@ class JsonFormatter(logging.Formatter):
             # Keep the source and exception class, not their text or traceback.
             errors = [type(arg).__name__ for arg in (record.args if isinstance(record.args, tuple) else ())
                       if isinstance(arg, BaseException)]
-            if record.exc_info:
+            if record.exc_info and record.exc_info[0]:
                 errors.append(record.exc_info[0].__name__)
             data = {"event": "application", "source": f"{record.module}.{record.funcName}", "errors": errors}
         return json.dumps({"level": record.levelname, **data}, separators=(",", ":"))

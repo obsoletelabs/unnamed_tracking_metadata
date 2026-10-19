@@ -78,3 +78,12 @@ def test_application_exception_arguments_are_not_serialized(secret):
     record = logging.LogRecord("atlas", logging.ERROR, "module", 1, "worker failed: %s", (RuntimeError(secret),), None)
     payload = JsonFormatter().format(record)
     assert secret not in payload and "RuntimeError" in payload
+
+
+def test_inactive_exception_logging_cannot_break_redaction():
+    # logging.exception outside an except block supplies this tuple. A formatter error
+    # would make logging's own diagnostics echo the otherwise-redacted message/arguments.
+    record = logging.LogRecord("atlas", logging.ERROR, "module", 1, "secret: %s", ("private-token",),
+                               (None, None, None))
+    payload = JsonFormatter().format(record)
+    assert "private-token" not in payload and "secret" not in payload
