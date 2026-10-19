@@ -19,10 +19,9 @@ Two independent code reviews were carried out during development; every confirme
 
 ## Known limits (be aware)
 
-* **No two-factor authentication** yet.
 * **No breached-password check**; passwords are length-checked only.
-* **Signing keys** (the node's Ed25519 identity and the OIDC RSA key) are stored in the database; there is no in-app rotation yet.
-* Observability (structured logs, metrics, alerting) is minimal.
+* **Signing keys** remain in the database. Ed25519 feed keys support signed successor rotation; OIDC RSA-key rotation is not implemented.
+* [Logs and metrics](observability.md) are opt-in. Monitoring, alert delivery and production thresholds remain operator responsibilities.
 * The SMTP server and the reverse proxy are yours to harden.
 * Admin-supplied URLs (peers, OIDC providers) are fetched by the server; only administrators can set them, and private addresses are allowed on purpose (LAN mirrors).
 * **Change-email** answers "already used" for taken addresses (rate-limited), so a signed-in user can test whether an address is registered.
@@ -63,3 +62,28 @@ any manual database recovery. Preserve an encrypted backup of the database **and
 encryption key; changing that key makes stored authenticators unreadable. A missing/wrong key
 fails closed and is reported as a configuration problem. Downgrading past the MFA migration is
 refused while accounts remain enrolled.
+
+## Rotate a node signing key
+
+First upgrade **every follower and relay** to software supporting successor proofs. Older
+followers cannot verify events signed by the new key. Take and verify a private backup.
+Under **Admin → Signing keys**, compare the current signer fingerprint, confirm your password
+(or a fresh linked-provider sign-in), check the follower-upgrade acknowledgement and submit.
+The form is CSRF-protected, rate-limited and subject to the same MFA policy as administration.
+
+Rotation appends a transition signed by the old key, then atomically switches the private
+signer. The original node ID and public trust root stay stable. Followers verify each
+transition from that independently pinned root, enforce the key appropriate for every
+sequence and remember the verified prefix, refusing rewind, tampering or re-use of retired
+keys. Relays retain original signatures and proofs. Stale workers load the current signer
+under the feed lock. The rotation limit is 128 transitions per root.
+
+Take a new verified backup after rotation. Never restore a stale archive as a live second
+writer: it would bring back an old signer/feed head. A missing signing key fails startup
+rather than silently replacing the identity. Restore a verified current backup or use the
+[fresh-identity recovery runbook](recovery.md).
+
+This is routine key hygiene, not a complete response to a compromised trust root. Someone
+holding an old root key can forge an alternative history for a new follower that has no
+remembered prefix. Use an independently published new root and explicitly retire the old pin
+after compromise. Rotation does not rotate OIDC keys, API tokens or `ATLAS_SECRET_KEY`.

@@ -38,6 +38,15 @@ def _message(node_id: str, seq: int, kind: str, digest: str) -> bytes:
 class NodeIdentity:
     node_id: str
     private: Ed25519PrivateKey
+    root_public_b64: str | None = None
+
+    @property
+    def key_id(self) -> str:
+        return key_id_for(base64.b64decode(self.public_b64))
+
+    @property
+    def trust_public_b64(self) -> str:
+        return self.root_public_b64 or self.public_b64
 
     @property
     def public_b64(self) -> str:
@@ -52,8 +61,12 @@ class NodeIdentity:
 
 def load_identity(session: Session) -> NodeIdentity:
     """Load this node's key, creating one on first start."""
-    row = session.get(NodeState, "signing_key")
+    row = session.get(NodeState, "signing_key", populate_existing=True)
     if row is None:
+        root = session.get(NodeState, "root_public_key")
+        head = session.get(NodeState, "feed_seq")
+        if root is not None or (head is not None and int(head.value) > 0):
+            raise ValueError("node signing key is missing; restore a verified backup instead of replacing the identity")
         key = Ed25519PrivateKey.generate()
         raw = key.private_bytes(
             serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption()
@@ -63,7 +76,20 @@ def load_identity(session: Session) -> NodeIdentity:
         session.flush()
     key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(row.value))
     pub = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    return NodeIdentity(node_id=key_id_for(pub), private=key)
+    root = session.get(NodeState, "root_public_key", populate_existing=True)
+    if root is None:
+        root = NodeState(key="root_public_key", value=base64.b64encode(pub).decode())
+        session.add(root)
+    root_id = key_id_for(base64.b64decode(root.value, validate=True))
+    saved_id = session.get(NodeState, "node_id", populate_existing=True)
+    if saved_id is None:
+        session.add(NodeState(key="node_id", value=root_id))
+    elif saved_id.value != root_id:
+        raise ValueError("stored node identity does not match its trust anchor")
+    if session.get(NodeState, "feed_seq") is None:
+        session.add(NodeState(key="feed_seq", value="0"))
+    session.flush()
+    return NodeIdentity(node_id=root_id, private=key, root_public_b64=root.value)
 
 
 def verify(public_b64: str, node_id: str, seq: int, kind: str, body: Any, claimed_hash: str,

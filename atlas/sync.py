@@ -10,14 +10,14 @@ from typing import Any
 
 import httpx
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import service
+from . import key_rotation, service
 from .contract import SourceObservationV1
-from .models import Canonical, Crosswalk, Lock, Observation, SyncCursor
+from .models import Canonical, Crosswalk, Lock, Observation, ReplicatedChange, ReplicatedFeed, SyncCursor
 from .service import AtlasError, Ctx, keys_of
-from .signing import key_id_for, verify
+from .signing import key_id_for
 
 log = logging.getLogger("atlas.sync")
 
@@ -128,7 +128,7 @@ def _apply(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: 
         from . import custom
 
         if ctx.settings.inherit_schema:
-            custom.apply_snapshot(session, body)
+            custom.apply_snapshot(session, body, node_id=node_id)
     elif kind == "custom":
         from . import custom
         from .custom_compat import key_for
@@ -167,6 +167,8 @@ def _apply(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: 
             service.clear_lock(session, ctx, body["canonical_id"], body["field"], log=False)
         except AtlasError:
             return
+    elif kind == "key_rotation":
+        pass  # Verified with the complete key history before any entry is applied.
     else:
         log.warning("ignoring unknown feed entry kind %r", kind)
 
@@ -180,6 +182,16 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
     info.raise_for_status()
     meta = info.json()
     node_id = meta["node_id"]
+    relay = False
+    if node_id not in keys:
+        available = {f.get("node_id") for f in meta.get("feeds", []) if isinstance(f, dict)}
+        choices = available & keys.keys()
+        if len(choices) == 1:
+            node_id = choices.pop()
+            meta = next(f for f in meta["feeds"] if f.get("node_id") == node_id)
+            relay = True
+        elif len(choices) > 1:
+            raise SyncError("relay has several trusted feeds; configure a separate peer for each authority")
     pub = keys.get(node_id)
     if pub is None:
         raise SyncError(f"upstream key {node_id} is not trusted (pin it under Admin → Peers or in ATLAS_TRUSTED_KEYS)")
@@ -187,30 +199,63 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
     import base64
     if key_id_for(base64.b64decode(pub)) != node_id:
         raise SyncError("configured trusted key does not match its key id")
+    try:
+        history, signing_keys = key_rotation.validate_history(node_id, pub, meta.get("rotations", []),
+                                                              meta.get("signing_key_id", node_id))
+    except key_rotation.RotationError as exc:
+        raise SyncError(str(exc)) from exc
 
     with maker() as session:
         cursor = session.get(SyncCursor, node_id)
         last = cursor.last_seq if cursor else 0
+        # Upgraded mirrors backfill original signatures without re-applying old state.
+        from sqlalchemy import func
 
+        retained = session.scalar(select(func.max(ReplicatedChange.seq)).where(ReplicatedChange.node_id == node_id)) or 0
+        since = min(last, retained)
+
+    params = {"since": since, "limit": ctx.settings.sync_batch_size}
+    if relay:
+        params["node_id"] = node_id
     resp = client.get(
         f"{upstream_url}/api/v2/sync/changes",
-        params={"since": last, "limit": ctx.settings.sync_batch_size}, headers=headers, timeout=30,
+        params=params, headers=headers, timeout=30,
     )
     resp.raise_for_status()
     entries = resp.json()["entries"]
     applied = 0
     with maker() as session:
         try:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
             service.write_lock(session)
-            expected = last
+            # A second worker may have advanced while this request was in flight.
+            cursor = session.get(SyncCursor, node_id, populate_existing=True)
+            current = cursor.last_seq if cursor else 0
+            expected = since
+            try:
+                key_rotation.remember(session, node_id, history)
+            except key_rotation.RotationError as exc:
+                raise SyncError(str(exc)) from exc
+            retained_feed = session.get(ReplicatedFeed, node_id)
+            if retained_feed is None:
+                session.add(ReplicatedFeed(node_id=node_id, public_key=pub))
+                session.flush()
+            elif retained_feed.public_key != pub:
+                raise SyncError("retained authority key differs from the pinned key")
             for e in entries:
-                if e["key_id"] != node_id or e["node_id"] != node_id:
-                    raise SyncError("entry signed by a different key than the one trusted")
                 if e["seq"] != expected + 1:
                     raise SyncError(f"feed gap or rewind: expected {expected + 1}, got {e['seq']}")
-                if not verify(pub, node_id, e["seq"], e["kind"], e["body"], e["body_hash"], e["signature"]):
+                if not key_rotation.check_entry(node_id, history, signing_keys, e):
                     raise SyncError(f"bad signature on entry {e['seq']}")
-                apply_entry(session, ctx, node_id, e["seq"], e["kind"], e["body"])
+                retained_entry = session.get(ReplicatedChange, (node_id, e["seq"]))
+                if retained_entry is None:
+                    session.add(ReplicatedChange(node_id=node_id, seq=e["seq"], kind=e["kind"], body=e["body"],
+                                                body_hash=e["body_hash"], signature=e["signature"], key_id=e["key_id"]))
+                elif (retained_entry.body_hash, retained_entry.signature) != (e["body_hash"], e["signature"]):
+                    raise SyncError("authority feed fork: an already retained entry changed")
+                if e["seq"] > current:
+                    apply_entry(session, ctx, node_id, e["seq"], e["kind"], e["body"])
                 expected = e["seq"]
                 applied += 1
             if applied:
@@ -218,7 +263,7 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
                 if cur is None:
                     session.add(SyncCursor(upstream=node_id, last_seq=expected))
                 else:
-                    cur.last_seq = expected
+                    cur.last_seq = max(current, expected)
             session.commit()
         except Exception:
             session.rollback()

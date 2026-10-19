@@ -89,10 +89,34 @@ You can also configure a single upstream with environment variables (`ATLAS_UPST
 * **Position/lag:** Admin → Peers shows each peer's position; `GET /api/v2/status` (admin) shows the authority's feed head.
 * **Add a mirror:** nothing to do on the authority except issue a token.
 * **Remove a peer:** *Remove*; data already received stays.
-* **Disaster recovery:** a node's identity (signing key) lives in its **database**; restoring the database restores the identity and followers keep working. **Promoting a mirror to authority is not supported yet**, because a mirror has a different identity; plan recovery around database backups ([Deployment](deployment.md#backups)).
+* **Disaster recovery:** a current verified database backup preserves identity. If that is unavailable, a mirror with complete retained signatures can build an [offline recovery candidate](recovery.md) under a fresh root; followers explicitly retire the old origin and pin the new one.
 * **Several workers:** every worker process runs the sync loop; replays are idempotent, so extra pulls are wasteful but harmless.
 * **One writer at a time:** writes are serialised by a database lock. This is fine for metadata; it is the first thing to revisit under very heavy ingestion.
 
 ## Sharing sign-ins between nodes
 
 Separate from replication: [Sign-in sharing](sso.md).
+
+## Relays and several authorities
+
+Mirrors retain verified original entries, independently of their applied catalogue. A relay
+advertises available origins under `/api/v2/sync/info` → `feeds`; request an origin with
+`/api/v2/sync/changes?node_id=<authority-id>`. Its body, sequence, key ID and signature remain
+the original authority's. Followers pin that authority, not a replacement mirror signature.
+The relay's own default feed remains separate. Each endpoint still needs `read` and `sync`.
+
+Admin → Peers → Look up node lists relayed origins. Select one and compare its fingerprint
+through an independent channel. Add a separate peer for each origin, even when URLs match.
+Environment configuration can select one pinned relayed origin; several matching origins
+are refused as ambiguous. The relay operator may withhold updates, but cannot forge a
+valid entry for an independently pinned origin.
+
+Upgraded old mirrors backfill original history from sequence zero without re-applying old
+entries to their current catalogue. Until backfill completes they cannot provide a complete
+recovery source. Origin-scoped schema snapshots preserve other authorities' definitions;
+local definitions win and the first upstream owner retains conflicting names. Coordinate
+namespaces and curation policy across independent authorities: this is not leader election
+or automatic conflict consensus.
+
+For signing-key rotation, upgrade followers first and follow [Security](security.md#rotate-a-node-signing-key).
+See [Release verification](release-verification.md) for the four-node HTTP acceptance drill.

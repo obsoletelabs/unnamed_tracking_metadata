@@ -12,14 +12,46 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
-from .. import accounts, auth, secrets_box, sync
+from .. import accounts, auth, key_rotation, secrets_box, sync
 from ..models import Peer, SyncCursor, Token, User
-from ..signing import key_id_for
+from ..service import AtlasError
+from ..signing import key_id_for, load_identity
 from .deps import Page as Ctx
-from .deps import admin_form, admin_page, go
+from .deps import admin_form, admin_page, go, throttle
 from .routes import render, when
 
 router = APIRouter()
+
+
+def _keys(p: Ctx, error=None, status=200):
+    identity = load_identity(p.session)
+    return render(p, "admin_keys.html", status=status, identity=identity,
+                  history=key_rotation.own_history(p.session, identity.node_id), error=error,
+                  has_password=p.me.password_hash != "!")
+
+
+@router.get("/admin/keys", response_class=HTMLResponse)
+def signing_keys(p: Annotated[Ctx, Depends(admin_page)]):
+    return _keys(p)
+
+
+@router.post("/admin/keys/rotate", response_class=HTMLResponse)
+def rotate_signing_key(p: Annotated[Ctx, Depends(admin_form)], confirm: Annotated[str, Form(max_length=64)],
+                       password: Annotated[str, Form(max_length=256)] = "",
+                       followers_upgraded: Annotated[str, Form()] = ""):
+    throttle(p, f"key-rotation:{p.me.id}", 3, 3600)
+    if followers_upgraded != "on":
+        return _keys(p, "Upgrade all followers before rotating this key.", status=400)
+    if not accounts.reauthenticated(p.me, password, p.login):
+        return _keys(p, "Confirm your current password or sign in again with your linked provider.", status=400)
+    try:
+        successor = key_rotation.rotate(p.session, confirm.strip())
+    except AtlasError as exc:
+        return _keys(p, str(exc), status=409)
+    accounts.audit(p.session, p.me.id, "signing_key_rotated", successor.node_id,
+                   {"previous": confirm.strip(), "current": successor.key_id})
+    p.st.ctx.identity = successor
+    return go("/admin/keys", "saved")
 
 
 def clean_url(raw: str) -> str:
@@ -50,22 +82,30 @@ def peers(p: Annotated[Ctx, Depends(admin_page)], probe: dict | None = None, err
 
 @router.post("/admin/peers/probe", response_class=HTMLResponse)
 def probe(p: Annotated[Ctx, Depends(admin_form)], url: Annotated[str, Form(max_length=300)],
-          token: Annotated[str, Form(max_length=200)] = "", name: Annotated[str, Form(max_length=80)] = ""):
+          token: Annotated[str, Form(max_length=200)] = "", name: Annotated[str, Form(max_length=80)] = "",
+          feed_node_id: Annotated[str, Form(max_length=64)] = ""):
     target = clean_url(url)
     headers = {"Authorization": f"Bearer {token.strip()}"} if token.strip() else {}
     try:
         resp = p.st.http.get(f"{target}/api/v2/sync/info", headers=headers)
         resp.raise_for_status()
         info = resp.json()
+        available = [f for f in info.get("feeds", []) if isinstance(f, dict)
+                     and isinstance(f.get("node_id"), str) and isinstance(f.get("public_key"), str)]
+        if feed_node_id:
+            selected = next((f for f in available if f["node_id"] == feed_node_id), None)
+            if selected is None:
+                raise ValueError("That authority feed is not available from this relay.")
+            info = {**info, "node_id": selected["node_id"], "public_key": selected["public_key"]}
         node_id, key = str(info["node_id"]), str(info["public_key"])
         if key_id_for(base64.b64decode(key)) != node_id:
             raise ValueError("the node's id does not match its public key")
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
         return peers(p, error=f"Could not verify that node: {exc}")  # type: ignore[arg-type]
-    if p.session.scalars(select(Peer.id).where(Peer.node_id == node_id)).first():
+    if p.session.scalars(select(Peer.id).where(Peer.node_id == node_id)).first() and (feed_node_id or not available):
         return peers(p, error="That node is already a peer.")  # type: ignore[arg-type]
     return peers(p, probe={"url": target, "token": token.strip(), "node_id": node_id, "fp": fingerprint(node_id),
-                           "public_key": key, "role": info.get("role", "?"), "kind": (k if (k := str(info.get("kind", info.get("role", "")))) in ("official", "community", "mirror", "local") else "community"), "name": name.strip() or info.get("name", "")})  # type: ignore[arg-type]  # noqa: E501
+                           "public_key": key, "role": info.get("role", "?"), "kind": (k if (k := str(info.get("kind", info.get("role", "")))) in ("official", "community", "mirror", "local") else "community"), "name": name.strip() or info.get("name", ""), "feeds": available})  # type: ignore[arg-type]  # noqa: E501
 
 
 @router.post("/admin/peers")

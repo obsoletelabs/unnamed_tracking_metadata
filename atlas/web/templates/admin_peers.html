@@ -6,7 +6,7 @@
 {% include "_adminnav.html" %}
 {% if error %}<div class="card {{ 'error' if 'fail' in error|lower or 'could not' in error|lower else '' }}" role="status">{{ error }}</div>{% endif %}
 <div class="card"><h3>This node</h3>
-  <dl class="facts"><dt>Node ID</dt><dd><code>{{ fp }}</code></dd><dt>Public key</dt><dd><code>{{ own.public_b64 }}</code></dd></dl>
+  <dl class="facts"><dt>Node ID</dt><dd><code>{{ fp }}</code></dd><dt>Trust anchor public key</dt><dd><code>{{ own.trust_public_b64 }}</code></dd></dl>
   <p class="small muted">Give these to the administrators of nodes that should replicate from this one. Compare the node ID out of band when they add you.</p></div>
 <h2>Peers this node replicates from</h2>
 {% if env_upstream %}<p class="small muted">The environment also configures an upstream: <code>{{ env_upstream }}</code> (ATLAS_UPSTREAM_URL).</p>{% endif %}
@@ -21,6 +21,12 @@
 <p class="small muted">Adopting the upstream's media types and fields: <strong>{{ 'on' if inherit else 'off' }}</strong> (Settings → Federation).</p>
 
 {% if probe %}
+{% if probe.feeds %}<section class="card"><h2>Authority feeds available through this relay</h2>
+<p>A mirror has its own identity and also retains original signed authority feeds. To build a replication tree, choose an authority below and verify its fingerprint with that authority's operator.</p>
+{% for feed in probe.feeds %}<form method="post" action="/admin/peers/probe">{{ csrf(p.csrf) }}
+<input type="hidden" name="url" value="{{ probe.url }}"><input type="hidden" name="token" value="{{ probe.token }}">
+<input type="hidden" name="name" value="{{ probe.name }}"><input type="hidden" name="feed_node_id" value="{{ feed.node_id }}">
+<p><code>{{ feed.node_id }}</code> · retained through entry {{ feed.head }} <button class="secondary small" type="submit">Inspect this authority</button></p></form>{% endfor %}</section>{% endif %}
 <h2>Confirm this node</h2>
 <form class="card" method="post" action="/admin/peers">{{ csrf(p.csrf) }}
   <p>The node at <strong>{{ probe.url }}</strong> identifies as:</p>
