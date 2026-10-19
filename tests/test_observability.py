@@ -87,3 +87,32 @@ def test_inactive_exception_logging_cannot_break_redaction():
                                (None, None, None))
     payload = JsonFormatter().format(record)
     assert "private-token" not in payload and "secret" not in payload
+
+
+def test_peer_entry_lag_tracks_a_partial_pull_then_catches_up(tmp_path):
+    from atlas import sync
+    from atlas.models import Peer
+
+    from .test_relay import node, publish, transport
+
+    source = node(tmp_path, "source", "authority")
+    publish(source[2], "Lag Test", "lag_note")  # one observation and one schema entry
+    app = app_for(tmp_path, metrics_enabled=True, sync_batch_size=1)
+    state = app.state.atlas
+    origin = source[2].ctx.identity
+    with state.maker() as session:
+        peer = Peer(name="lag-test", url="http://upstream", node_id=origin.node_id, public_key=origin.public_b64)
+        session.add(peer)
+        _, token = auth.create_token(session, "scraper", ["metrics"])
+        session.commit()
+        peer_id = peer.id
+    headers = {"Authorization": f"Bearer {token}"}
+    client = TestClient(app)
+    label = f'peer_id="{peer_id}",node_id="{origin.node_id}"'
+    assert "atlas_peer_lag_entries{" not in client.get("/metrics", headers=headers).text  # unknown, not zero
+    with transport(source[1]) as http:
+        trusted = {origin.node_id: origin.public_b64}
+        assert sync.pull_once(state.maker, state.ctx, http, "http://upstream", source[3], trusted=trusted) == 1
+        assert f"atlas_peer_lag_entries{{{label}}} 1" in client.get("/metrics", headers=headers).text
+        assert sync.pull_once(state.maker, state.ctx, http, "http://upstream", source[3], trusted=trusted) == 1
+        assert f"atlas_peer_lag_entries{{{label}}} 0" in client.get("/metrics", headers=headers).text

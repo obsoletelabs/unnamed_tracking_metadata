@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from . import key_rotation, service
 from .contract import SourceObservationV1
-from .models import Canonical, Crosswalk, Lock, Observation, ReplicatedChange, ReplicatedFeed, SyncCursor
+from .models import Canonical, Crosswalk, Lock, NodeState, Observation, ReplicatedChange, ReplicatedFeed, SyncCursor
 from .service import AtlasError, Ctx, keys_of
 from .signing import key_id_for
 
@@ -222,7 +222,9 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
         params=params, headers=headers, timeout=30,
     )
     resp.raise_for_status()
-    entries = resp.json()["entries"]
+    page = resp.json()
+    entries = page["entries"]
+    advertised_head = page.get("head")
     applied = 0
     with maker() as session:
         try:
@@ -264,6 +266,14 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
                     session.add(SyncCursor(upstream=node_id, last_seq=expected))
                 else:
                     cur.last_seq = max(current, expected)
+            if type(advertised_head) is int and expected <= advertised_head < 2**63:
+                # Operational watermark only: this transport-reported head is not signed
+                # and never authorizes an entry or advances the applied cursor.
+                watermark = session.get(NodeState, "sync_head:" + node_id)
+                if watermark is None:
+                    session.add(NodeState(key="sync_head:" + node_id, value=str(advertised_head)))
+                else:
+                    watermark.value = str(max(int(watermark.value), advertised_head))
             session.commit()
         except Exception:
             session.rollback()

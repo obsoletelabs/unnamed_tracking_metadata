@@ -39,6 +39,8 @@ scrape_configs:
 | `atlas_http_request_duration_seconds` | Request duration histogram, sum and count, in seconds |
 | `atlas_feed_head` | This node's own signed feed head |
 | `atlas_sync_cursor` | Applied position per independently trusted origin |
+| `atlas_sync_head` | Highest transport-reported head observed for an origin |
+| `atlas_peer_lag_entries` | Entries between that origin's observed head and applied cursor, labeled per peer |
 | `atlas_peer_last_success_timestamp_seconds` | Last successful pull per enabled peer; zero before first success |
 | `atlas_peer_error` | One when the last peer pull failed |
 | `atlas_outbox_messages` | Pending, failed and sent email counts; failed deliveries may be retried |
@@ -55,6 +57,12 @@ Backup timestamps describe files present, **not proof that a restore succeeded**
 backups are verified after creation, but an archive copied into that directory still needs
 verification. Filesystem names and error messages are not exported. There are no measured
 provider quotas, provider latency histograms, distributed traces or consensus-lag metrics.
+
+Entry lag is relative to the highest head observed for a pinned origin (shared when several
+peer URLs relay the same origin). It is omitted until a valid head is observed. Heads are
+unsigned operational hints; they never authorize feed entries or advance cursors. A cached
+relay cannot reveal writes it has not seen, and zero lag is not proof that an unreachable
+authority has no newer writes. Alert on stale successful pulls as well as entry lag.
 
 ## Safe request logs
 
@@ -83,5 +91,26 @@ Start with readiness failing for two minutes, stale/failed peer pulls for severa
 intervals, increasing provider failures, growing email backlog and old backup timestamps.
 Tune against real traffic. Histograms can drive p95 alerts; filter the route and exclude
 `/metrics` itself. No dashboard or alert delivery service is bundled.
+
+Example Prometheus rule group; adjust thresholds to the configured sync interval and backup
+schedule. The peer rules include peers that have never completed a pull:
+
+```yaml
+groups:
+  - name: atlas
+    rules:
+      - alert: AtlasPeerStale
+        expr: time() - atlas_peer_last_success_timestamp_seconds > 600
+        for: 5m
+      - alert: AtlasPeerBehind
+        expr: atlas_peer_lag_entries > 100
+        for: 10m
+      - alert: AtlasBackupOverdue
+        expr: (time() - atlas_backup_last_success_timestamp_seconds > 90000) and on(job, instance) (atlas_backup_enabled == 1)
+        for: 15m
+      - alert: AtlasServerErrors
+        expr: sum by(job, instance) (rate(atlas_http_requests_total{status=~"5.."}[30m])) / sum by(job, instance) (rate(atlas_http_requests_total[30m])) > 0.01
+        for: 5m
+```
 
 See [Release verification](release-verification.md) for repeatable topology/restore drills.

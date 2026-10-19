@@ -13,7 +13,7 @@ from collections import Counter
 from sqlalchemy import case, func, select
 
 from . import backup, feed
-from .models import Outbox, Peer, SyncCursor
+from .models import NodeState, Outbox, Peer, SyncCursor
 
 BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)
 REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
@@ -82,7 +82,11 @@ class Stats:
         counts = dict(session.execute(select(status, func.count()).select_from(Outbox).group_by(status)).all())
         for name in ("pending", "failed", "sent"):
             lines.append(f'atlas_outbox_messages{{state="{name}"}} {counts.get(name, 0)}')
-        lines.extend(["# TYPE atlas_peer_last_success_timestamp_seconds gauge", "# TYPE atlas_peer_error gauge"])
+        cursors = {row.upstream: row.last_seq for row in session.scalars(select(SyncCursor))}
+        heads = {row.key.removeprefix("sync_head:"): int(row.value)
+                 for row in session.scalars(select(NodeState).where(NodeState.key.like("sync_head:%")))}
+        lines.extend(["# TYPE atlas_peer_last_success_timestamp_seconds gauge", "# TYPE atlas_peer_error gauge",
+                      "# TYPE atlas_peer_lag_entries gauge"])
         for peer in session.scalars(select(Peer).where(Peer.enabled.is_(True))):
             from datetime import UTC
 
@@ -90,9 +94,15 @@ class Stats:
             timestamp = (last if last.tzinfo else last.replace(tzinfo=UTC)).timestamp() if last else 0
             lines.append(f'atlas_peer_last_success_timestamp_seconds{{peer_id="{peer.id}"}} {timestamp}')
             lines.append(f'atlas_peer_error{{peer_id="{peer.id}"}} {int(bool(peer.last_error))}')
+            if peer.node_id in heads:
+                lag = max(0, heads[peer.node_id] - cursors.get(peer.node_id, 0))
+                lines.append(f'atlas_peer_lag_entries{{peer_id="{peer.id}",node_id="{peer.node_id}"}} {lag}')
         lines.append("# TYPE atlas_sync_cursor gauge")
-        for cursor in session.scalars(select(SyncCursor)):
-            lines.append(f"atlas_sync_cursor{{node_id={json.dumps(cursor.upstream)}}} {cursor.last_seq}")
+        for origin, cursor in cursors.items():
+            lines.append(f"atlas_sync_cursor{{node_id={json.dumps(origin)}}} {cursor}")
+        lines.append("# TYPE atlas_sync_head gauge")
+        for origin, head in heads.items():
+            lines.append(f"atlas_sync_head{{node_id={json.dumps(origin)}}} {head}")
         lines.append("# TYPE atlas_provider_failures_total counter")
         for provider, count in sorted(state.providers.failure_counts().items()):
             lines.append(f"atlas_provider_failures_total{{provider={json.dumps(provider)}}} {count}")
