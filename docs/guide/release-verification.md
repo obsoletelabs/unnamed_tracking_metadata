@@ -109,3 +109,34 @@ field locks and failure while Atlas is unreachable. It does not verify browser l
 production sandboxing, public artwork delivery or achievements. The package SHA-256 and public
 publisher key ID appear in the report. This cross-repository drill is operator-run; the four-node
 and restore drills run in CI without needing the Tracking App checkout.
+
+## 19 October 2026 acceptance evidence
+
+Run in isolated Ubuntu 24.04 WSL test instances. The public reports record the source commit;
+the evidence commit only adds documentation. No existing deployment was used or changed.
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Two SQLite authorities → mirror → local, including regular-user workflows | [Topology](verification/2026-10-19/topology-sqlite.json) | Passed |
+| Two PostgreSQL 16.15 authorities → SQLite mirror → local | [Topology](verification/2026-10-19/topology-postgres.json) | Passed |
+| SQLite full-table, MFA, rotated-key and image restore | [Restore](verification/2026-10-19/restore-sqlite.json) | Passed |
+| PostgreSQL 16.15 equivalent restore | [Restore](verification/2026-10-19/restore-postgres.json) | Passed |
+| Published signed Atlas package in Tracking App/runtime with PostgreSQL 18.6 | [Package acceptance](verification/2026-10-19/tracking-app.json) | Passed |
+
+The package check used host commit `5e0f61438e6905b51495b5c505ab925cb71ec6bb` and plugins commit
+`c0b3be0cd33258d97472242d09fa603507200e03`, with the unchanged signed 0.2.0 package. The host
+was rebuilt from source into its own disposable stack. Package digest, archive SHA-256 and
+publisher key ID are in the report. A fresh stack repeated the successful run after harness
+corrections; failed harness assertions were not accepted as passes.
+
+Additional regressions exercised eight concurrent first starts on PostgreSQL, both an empty
+database and legacy identity metadata; eight attempts to consume one recovery code; and
+rotation alongside nine writers with cached heads. The first-start test reproduced a duplicate
+signing-key insertion before the fix. Comment-anchor regression tests likewise followed a live
+failure reproduction. Ruff, generated-reference checking, strict MkDocs and a non-root container
+build/liveness/readiness smoke check passed.
+
+**Visual review is pending.** A saved browser permission policy denied the isolated origin,
+including the integrated tab opened by the operator. No new UI screenshots were captured.
+Review account security/enrollment/challenge, Signing keys, the custom-field rename warning
+and relay selection at desktop and narrow widths before removing the PR's draft status.

@@ -1,0 +1,17 @@
+{
+  "started_at": "2026-10-19T06:20:37.018697+00:00",
+  "checks": [
+    "authority archive checksums and manifest verified",
+    "every table and cached artwork restored without changing data",
+    "node identity, password/token authentication, encrypted MFA and signed feed remain valid",
+    "a second restore refuses occupied storage without changing it"
+  ],
+  "status": "passed",
+  "source": "PostgreSQL",
+  "target": "PostgreSQL",
+  "revision": "0015",
+  "tables": 41,
+  "rows": 19,
+  "atlas_source_commit": "81a7ff2f6f48386c80855173403ce9a55520a632",
+  "postgres_version": "16.15"
+}
