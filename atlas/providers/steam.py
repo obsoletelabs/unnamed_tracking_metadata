@@ -39,6 +39,7 @@ class Steam:
                 "critic_score": _score((d.get("metacritic") or {}).get("score")),
                 "website": _https(d.get("website")),
             },
+            custom=_multiplayer(d),
             artwork=_artwork(external_id, d),
         )
 
@@ -68,6 +69,12 @@ class Steam:
                 row["global_percent"] = min(100.0, max(0.0, pct[a["name"]]))
             out.append(row)
         return out
+
+
+def _multiplayer(d) -> dict:
+    """Steam only states crossplay when it exists; absence is not evidence of 'no'."""
+    categories = {c.get("description") for c in d.get("categories", [])}
+    return {"crossplay": "yes"} if "Cross-Platform Multiplayer" in categories else {}
 
 
 def _languages(raw) -> list[str]:
