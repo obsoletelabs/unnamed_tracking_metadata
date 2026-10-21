@@ -116,3 +116,25 @@ def test_peer_entry_lag_tracks_a_partial_pull_then_catches_up(tmp_path):
         assert f"atlas_peer_lag_entries{{{label}}} 1" in client.get("/metrics", headers=headers).text
         assert sync.pull_once(state.maker, state.ctx, http, "http://upstream", source[3], trusted=trusted) == 1
         assert f"atlas_peer_lag_entries{{{label}}} 0" in client.get("/metrics", headers=headers).text
+
+
+def test_readiness_fails_when_migrations_are_pending_and_status_reports_the_detail(tmp_path):
+    from sqlalchemy import create_engine, text
+
+    url = f"sqlite:///{tmp_path}/r.db"
+    admin = "a" * 40
+    settings = build_settings(database_url=url, bootstrap_admin_token=admin, media_dir=str(tmp_path / "media"))
+    with TestClient(main.create_app(settings)) as c:
+        assert c.get("/api/v2/ready").json() == {"status": "ready"}
+        status = c.get("/api/v2/status", headers={"Authorization": f"Bearer {admin}"}).json()["checks"]
+        assert status["database"] == "ok" and status["schema"] == "current" and status["media"] == "ok"
+        engine = create_engine(url)
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE alembic_version SET version_num = '0001'"))
+        engine.dispose()
+        behind = c.get("/api/v2/ready")
+        assert behind.status_code == 503 and behind.json() == {"status": "not_ready"}
+        assert behind.headers["cache-control"] == "no-store"
+        assert c.get("/api/v2/health").status_code == 200  # liveness is unaffected
+        detail = c.get("/api/v2/status", headers={"Authorization": f"Bearer {admin}"}).json()["checks"]
+        assert detail["schema"] == "behind"

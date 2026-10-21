@@ -78,7 +78,7 @@ Restore: new host, same `.env`, restore the database and media, `docker compose 
 
 ## Operating
 
-* **Health:** `GET /api/v2/health` (liveness), `/api/v2/ready` (database), `/api/v2/status` (admin: feed head, replication).
+* **Health:** `GET /api/v2/health` (liveness), `/api/v2/ready` (database and schema current), `/api/v2/status` (admin: feed head, replication).
 * **Logs/metrics:** enable `ATLAS_JSON_LOGS` and `ATLAS_METRICS_ENABLED` as needed; [Logs and metrics](observability.md) explains redaction and scoped scraping.
 * **Scaling:** more replicas are fine (rate limits, sessions and tokens live in the database); one writer holds a lock at a time. No load figures have been measured; plan capacity by testing your own workload.
 * **Housekeeping:** background threads in each process send email, cache artwork, purge expired counters/tokens and pull from peers. `atlas cache-media` runs a caching pass by hand.
