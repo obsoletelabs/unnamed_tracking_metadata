@@ -1,0 +1,50 @@
+{
+  "started_at": "2026-10-21T01:18:15.711445+00:00",
+  "checks": [
+    "four real HTTP servers, distinct node identities and healthy readiness endpoints",
+    "mirror combines two independently pinned authorities",
+    "local follows both original authority feeds through a mirror; replay is idempotent",
+    "signing-key rotation preserves node identity and continues through a relay without re-pinning",
+    "ordinary-user browse/profile/export/read-only tokens; CSRF and admin/reviewer boundaries hold",
+    "ordinary-user private lists, follows, comments, reports, proposals, review and notifications work",
+    "accounts, session cookies, personal tokens and private profile data do not federate",
+    "one authority can fail and restart while other-authority updates and cached relay reads continue",
+    "live metrics require a dedicated scope and expose node synchronization state",
+    "ordinary-user deletion revokes personal credentials without deleting canonical games"
+  ],
+  "transport": "isolated loopback HTTP, development mode; production TLS is not exercised",
+  "nodes": [
+    {
+      "name": "authority-a",
+      "role": "authority",
+      "node_id": "75eceb3b3bcd493a",
+      "database": "PostgreSQL"
+    },
+    {
+      "name": "authority-b",
+      "role": "authority",
+      "node_id": "8881f219c31afbdc",
+      "database": "PostgreSQL"
+    },
+    {
+      "name": "mirror",
+      "role": "mirror",
+      "node_id": "d77655bc5f07b90f",
+      "database": "SQLite"
+    },
+    {
+      "name": "local",
+      "role": "local",
+      "node_id": "eddc6f64c2b653e2",
+      "database": "SQLite"
+    }
+  ],
+  "status": "passed",
+  "source_commit": "56f3bc2fdf33aa4812a1cb95d437d3a63791e381",
+  "environment": {
+    "python": "3.12.14",
+    "postgresql": "16.15 (Debian 16.15-1.pgdg13+2)",
+    "pillow": "13.0.0",
+    "certifi": "2026.10.19"
+  }
+}

@@ -155,6 +155,28 @@ signing-key insertion before the fix. Comment-anchor regression tests likewise f
 failure reproduction. Ruff, generated-reference checking, strict MkDocs and a non-root container
 build/liveness/readiness smoke check passed.
 
+## 21 October 2026 security-update verification
+
+Source commit `56f3bc2fdf33aa4812a1cb95d437d3a63791e381` passed **425 tests** locally
+against isolated PostgreSQL, including the four supported image-format checks with
+Pillow 13.0.0. The dependency audit reported no known vulnerabilities. Ruff,
+generated-reference checks and strict MkDocs also passed.
+[CI](https://github.com/obsoletelabs/unnamed_tracking_metadata/actions/runs/39525364807)
+passed the test, topology/restore, dependency-audit and Docker smoke gates;
+[documentation checks](https://github.com/obsoletelabs/unnamed_tracking_metadata/actions/runs/39525364798)
+passed on the same source commit.
+
+The real HTTP drills were repeated locally with Python 3.12.14, Pillow 13.0.0 and
+certifi 2026.10.19. The reports record the exact PostgreSQL version and source:
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Two PostgreSQL authorities → SQLite mirror → local, including ordinary-user workflows and authority outage/restart | [Topology](verification/2026-10-21/topology-postgres.json) | Passed |
+| PostgreSQL full-table, cached-image, encrypted-MFA and rotated-signing-key restore; occupied-target refusal | [Restore](verification/2026-10-21/restore-postgres.json) | Passed |
+
+These runs use disposable development services. They do not extend the production
+TLS, load, Proxmox or downstream image-delivery claims described above.
+
 **Visual review is pending.** A saved browser permission policy denied the isolated origin,
 including the integrated tab opened by the operator. No new UI screenshots were captured.
 Review account security/enrollment/challenge, Signing keys, the custom-field rename warning
