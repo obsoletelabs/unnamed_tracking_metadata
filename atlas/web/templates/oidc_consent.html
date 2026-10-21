@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "macros.html" import csrf %}
 {% block title %}Allow sign-in · {{ app_name }}{% endblock %}
+{% block body_class %}consent-page{% endblock %}
 {% block content %}
 <div class="consent-layout"><div class="narrow card consent-card">
 <h1>Sign in to {{ client.name }}?</h1>
