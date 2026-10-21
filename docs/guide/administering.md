@@ -30,6 +30,10 @@ Upload a PNG/JPEG/WebP/GIF (≤512 KB, ≤1024 px; checked and re-served from th
 
 **Admin → Pages** writes About, Rules, Help or anything else in **Markdown** (headings, lists, emphasis, links; raw HTML and images are ignored for safety). Pages can be drafts, ordered, and shown in the top menu. Three starter pages exist.
 
+## Integrations
+
+**Admin → Integrations** lists the metadata providers Atlas can import from (Steam, IGDB, RAWG), whether each is active, recent failures, and the environment variables that switch an inactive one on. It is read-only on purpose: keys and secrets are supplied as environment variables when the node starts (see [Environment variables](reference-env.md)) and are never stored in the database or shown in a page. GOG and other stores have no built-in adapter yet; their ids are linked by plugins and curators on the game page.
+
 ## Media types and custom fields
 
 **Admin → Fields.** A **media type** says what a record is (`game` is built in; add *movie*, *anime*, *tool*…). For each type you can:
