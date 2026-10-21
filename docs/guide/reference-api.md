@@ -9,7 +9,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
 | `GET` | `/health` | public | Liveness: the process is up. |
-| `GET` | `/ready` | public | Readiness: the database answers. |
+| `GET` | `/ready` | public | Readiness: the database answers and its schema is current (503 otherwise). |
 | `GET` | `/schema` | public | Media types and custom fields this node describes (public ones only). |
 | `GET` | `/site` | public | Name, theme, navigation, role, registration and email policy of this node. |
 

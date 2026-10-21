@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -112,6 +113,24 @@ def primary_art(p: Page, ids: list[str]) -> dict[str, str]:
     return out
 
 
+def pending_artwork(rows: list[Any], caching: bool) -> list[dict[str, Any]]:
+    """Images assigned to a game but not cached here, as text only: a source link and why it is waiting.
+
+    They are never embedded: the content security policy forbids loading third-party images, and a
+    hotlink would also tell the source site who is viewing the page."""
+    out = []
+    for a in rows[:50]:
+        host = urlsplit(a.url).hostname or ""
+        if not caching:
+            state = "Caching is switched off"
+        elif a.fail_count:
+            state = f"Download failed {a.fail_count} time{'' if a.fail_count == 1 else 's'}; retrying later"
+        else:
+            state = "Waiting to be downloaded and checked"
+        out.append({"kind": a.kind.replace("_", " "), "url": a.url, "host": host, "state": state, "source": a.source})
+    return out
+
+
 DEFAULT_LABELS = {"developer": "Developer", "publisher": "Publisher", "series": "Series", "release_date": "Released",
                   "genres": "Genres", "themes": "Themes", "tags": "Tags", "features": "Features", "platforms": "Platforms",
                   "languages": "Languages", "aliases": "Also known as", "age_rating": "Age rating", "website": "Website",
@@ -218,6 +237,7 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     cached = [a for a in art if a.blob_hash]
     key_art = next((a.blob_hash for a in cached if a.kind == "key_art"), None)
     shots = [a for a in cached if a.kind in ("screenshot", "hero", "banner")][:12]
+    pending = pending_artwork([a for a in art if not a.blob_hash], ctx.settings.media_cache_enabled)
     activity = []
     for pr in s.scalars(select(Proposal).where(Proposal.canonical_id == g.id, Proposal.status == "approved")
                         .order_by(Proposal.created_at.desc()).limit(10)):
@@ -250,8 +270,8 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     return render(p, "game.html", g=g, v=g.view, explain=g.explain, key_art=key_art, shots=shots, **social_ctx,
                   lbl=labels_for(p, g.media_type), details=details,
                   mtype_label=(s.get(MediaType, g.media_type).label if s.get(MediaType, g.media_type) else g.media_type),
-                  stores=integrations.STORES, art_total=len(art), art_cached=len(cached), art_kinds=facets.KINDS,
-                  activity=activity,
+                  pending_art=pending, stores=integrations.STORES, art_total=len(art), art_cached=len(cached),
+                  art_kinds=facets.KINDS, activity=activity,
                   achievements=facets.merged_achievements(s, ctx, g.id),
                   redirected_from=p.request.query_params.get("from"), **extra)
 

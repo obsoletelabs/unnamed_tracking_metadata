@@ -51,6 +51,20 @@ def alembic_config(url: str):
     return cfg
 
 
+def schema_state(session: Session, url: str) -> str:
+    """"current" when the database is at the newest migration, "behind" when migrations are pending,
+    "unknown" when it cannot be told (never raises: this feeds readiness checks)."""
+    try:
+        from alembic.script import ScriptDirectory
+        from sqlalchemy import text
+
+        heads = set(ScriptDirectory.from_config(alembic_config(url)).get_heads())
+        applied = set(session.execute(text("SELECT version_num FROM alembic_version")).scalars())
+    except Exception:
+        return "unknown"
+    return "current" if applied == heads else "behind"
+
+
 def upgrade(url: str, revision: str = "head") -> None:
     from alembic import command
 
