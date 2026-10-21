@@ -26,7 +26,7 @@ The plugin **`official.metadata-atlas`** adds Atlas as a metadata provider: sear
 
 `tests/test_tracking_app_contract.py` replays the exact requests the plugin makes (read-only token, search with case and punctuation differences, lookup by Atlas id, resolving a candidate that only has other providers' ids, artwork before and after caching, the tokenless public `/media/<sha256>` download) and pins every response field the plugin reads. An Atlas change that would break the app fails this test first.
 
-Known gaps on the app/plugin side, not in Atlas: the plugin maps `tags`, `features` and `platforms` but not Atlas's `genres`, `themes`, `languages`, scores or `custom` fields (including the [multiplayer fields](administering.md#standard-multiplayer-fields)); the app's provider contract has no slot for achievements.
+Known gaps on the app/plugin side, not in Atlas: the plugin maps `tags`, `features` and `platforms` but not Atlas's `genres`, `themes`, `languages`, scores or `custom` fields (including the multiplayer fields); the app's provider contract has no slot for achievements.
 
 ### Limits to know
 
