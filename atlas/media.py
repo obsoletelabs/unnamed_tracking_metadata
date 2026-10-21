@@ -246,3 +246,40 @@ def cache_pending_achievement_icons(maker: sessionmaker[Session], settings: Sett
         if client is None:
             own.close()
     return done
+
+
+def stats(session: Session) -> dict[str, int]:
+    from sqlalchemy import func
+
+    count = lambda *cond: session.scalar(select(func.count()).select_from(Artwork).where(*cond)) or 0  # noqa: E731
+    return {"total": count(), "cached": count(Artwork.blob_hash.is_not(None)),
+            "failing": count(Artwork.blob_hash.is_(None), Artwork.fail_count > 0)}
+
+
+def retry_pending(session: Session) -> int:
+    """Make every uncached image eligible for the next background pass immediately."""
+    rows = session.scalars(select(Artwork).where(Artwork.blob_hash.is_(None))).all()
+    for art in rows:
+        art.fail_count, art.next_try_at = 0, None
+    return len(rows)
+
+
+def clear_cache(session: Session, settings: Settings) -> int:
+    """Forget downloaded provider images and delete their files; uploads to this node are kept.
+
+    Images stay listed and are cached again if caching is on. A file still used by an upload or the logo stays."""
+    own = settings.public_url.rstrip("/") + "/media/"
+    cached = session.scalars(select(Artwork).where(Artwork.blob_hash.is_not(None), ~Artwork.url.startswith(own))).all()
+    keep = {a.blob_hash for a in session.scalars(select(Artwork).where(Artwork.url.startswith(own)))}
+    cleared = 0
+    for art in cached:
+        digest = art.blob_hash
+        art.blob_hash = art.content_type = art.size_bytes = art.cached_at = None
+        art.fail_count, art.next_try_at = 0, None
+        cleared += 1
+        if digest not in keep:
+            keep.add(digest)  # one delete attempt per file
+            found = find_blob(settings, digest)
+            if found is not None:
+                found[0].unlink(missing_ok=True)
+    return cleared

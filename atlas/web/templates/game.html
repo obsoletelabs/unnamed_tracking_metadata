@@ -61,7 +61,16 @@
   <p class="small muted">Linking is reviewed like other contributions. An id already used by another game is refused: ask a reviewer to merge the games.</p>
   <p><button type="submit">Propose link</button></p>
 </form></details>
-<details><summary>Suggest artwork</summary>
+<details><summary>Upload or suggest artwork</summary>
+<form class="card" method="post" action="/game/{{ g.id }}/artwork/upload" enctype="multipart/form-data">{{ csrf(p.csrf) }}
+  <h3>Upload an image</h3>
+  <label for="ukind">Type</label><select id="ukind" name="kind">{% for k in art_kinds %}<option value="{{ k }}">{{ k|replace('_', ' ') }}</option>{% endfor %}</select>
+  <label for="ufile">Image file <span class="hint">PNG, JPEG, WebP or GIF; checked before it is stored</span></label><input id="ufile" type="file" name="file" accept="image/png,image/jpeg,image/webp,image/gif" required>
+  <label for="unote">Source / note</label><textarea id="unote" name="note" maxlength="2000"></textarea>
+  <p class="small muted">By uploading you confirm you may share this image under the site's contribution licence.</p>
+  <p><button type="submit">Upload</button></p>
+</form>
+<h3>Or link an image</h3>
 <form class="card" method="post" action="/game/{{ g.id }}/artwork">{{ csrf(p.csrf) }}
   <label for="kind">Type</label><select id="kind" name="kind">{% for k in art_kinds %}<option value="{{ k }}">{{ k|replace('_', ' ') }}</option>{% endfor %}</select>
   <label for="url">Image address <span class="hint">https:// link to the image file</span></label><input id="url" type="url" name="url" required maxlength="1000" placeholder="https://">

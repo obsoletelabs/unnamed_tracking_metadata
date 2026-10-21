@@ -593,3 +593,45 @@ def test_link_page_autosuggests_likely_stores_from_the_game_name(site):
                                                "ident": "hades-gog"})
     assert "Suggested matches" in site.get(f"/game/{site.gid}/links").text
     assert "hades-gog" not in site.get(f"/game/{site.gid}/links").text  # a store it is linked to is skipped
+
+
+def test_members_can_upload_artwork_files_and_admins_control_the_cache(site):
+    from tests.test_media_facets import png
+
+    signup(site, "alice")  # the first account is the administrator
+    t = token(site, f"/game/{site.gid}")
+    ok = site.post(f"/game/{site.gid}/artwork/upload", data={"csrf": t, "kind": "key_art"},
+                   files={"file": ("cover.png", png(30, 40), "image/png")})
+    assert ok.status_code == 303 and "m=" in ok.headers["location"]
+    bad = site.post(f"/game/{site.gid}/artwork/upload", data={"csrf": t, "kind": "key_art"},
+                    files={"file": ("x.png", b"<html>not an image</html>", "image/png")})
+    assert bad.status_code == 400
+    assert site.post(f"/game/{site.gid}/artwork/upload", data={"csrf": "wrong", "kind": "key_art"},
+                     files={"file": ("cover.png", png(), "image/png")}).status_code == 403
+    page = site.get(f"/game/{site.gid}")
+    assert "Upload an image" in page.text
+    # applied immediately for a trusted account: shown from this node's own cache, no download needed
+    assert "/media/" in page.text and "1 cached here" in page.text
+
+    admin = site.get("/admin/integrations")
+    assert "Artwork cache" in admin.text and "1 of 1 images are cached" in admin.text
+    t = token(site, "/admin/integrations")
+    assert site.post("/admin/media/retry", data={"csrf": t}).status_code == 303
+    assert site.post("/admin/media/clear", data={"csrf": t, "confirm": "nope"}).status_code == 400
+    assert site.post("/admin/media/clear", data={"csrf": t, "confirm": "clear"}).status_code == 303
+    assert "1 of 1 images are cached" in site.get("/admin/integrations").text  # uploads survive the clear
+    assert fresh(site).post("/admin/media/clear", data={"csrf": "x", "confirm": "clear"}).status_code in (303, 403)
+
+
+def test_a_refused_upload_leaves_no_stored_file_behind(site):
+    from tests.test_media_facets import png
+
+    signup(site, "alice")
+    site.st.ctx.settings = site.st.ctx.settings.model_copy(update={"max_pending_proposals": 0})
+    t = token(site, f"/game/{site.gid}")
+    before = sorted(p.name for p in __import__("pathlib").Path(site.st.ctx.settings.media_dir).rglob("*") if p.is_file())
+    refused = site.post(f"/game/{site.gid}/artwork/upload", data={"csrf": t, "kind": "key_art"},
+                        files={"file": ("c.png", png(21, 22), "image/png")})
+    assert refused.status_code in (400, 409)
+    after = sorted(p.name for p in __import__("pathlib").Path(site.st.ctx.settings.media_dir).rglob("*") if p.is_file())
+    assert after == before  # nothing was left on disk for a proposal that was never created
