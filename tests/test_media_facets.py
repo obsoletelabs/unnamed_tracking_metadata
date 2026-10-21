@@ -131,6 +131,26 @@ def test_cache_pending_stores_validates_and_backs_off(session, ctx, resolver, tm
     assert media.find_blob(s, "../../etc/passwd") is None
 
 
+@pytest.mark.parametrize("bad_url", [
+    "https://img.test:invalid/bad.png", "https://img.test:65536/bad.png", "https://[::1/bad.png",
+])
+def test_malformed_artwork_does_not_block_the_cache_queue(session, ctx, resolver, tmp_path, maker, bad_url):
+    cid = seed(session, ctx)
+    settings = ctx.settings.model_copy(update={"media_dir": str(tmp_path)})
+    facets.set_artwork(session, ctx, cid, "curator", [
+        {"kind": "banner", "url": bad_url, "priority": 0},
+        {"kind": "key_art", "url": "https://img.test/good.png", "priority": 1},
+    ])
+    session.commit()
+
+    assert media.cache_pending(maker, settings, client_for(lambda _: httpx.Response(200, content=png()))) == 1
+    session.expire_all()
+    bad = session.scalars(select(Artwork).where(Artwork.url == bad_url)).one()
+    good = session.scalars(select(Artwork).where(Artwork.kind == "key_art")).one()
+    assert bad.blob_hash is None and bad.fail_count == 1 and bad.next_try_at is not None
+    assert good.blob_hash and media.find_blob(settings, good.blob_hash)[1] == "image/png"
+
+
 def test_set_artwork_replaces_per_source_and_merge_moves_facets(session, ctx):
     a = seed(session, ctx)
     [b] = service.ingest(session, ctx, batch("gogplugin", [{"external_id": "1", "title": "Other Thing"}]))

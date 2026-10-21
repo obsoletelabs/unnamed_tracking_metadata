@@ -101,11 +101,21 @@ def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event)
             with maker() as s:
                 oidc.purge(s)
                 s.commit()
-            if ctx.settings.media_cache_enabled:
-                media.cache_pending(maker, ctx.settings)
         except Exception as exc:
             log.warning("housekeeping failed: %s", exc)
         stop.wait(60)
+
+
+def _cache_media(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
+    while not stop.is_set():
+        settings = ctx.settings
+        try:
+            cached = media.cache_pending(maker, settings) if settings.media_cache_enabled else 0
+        except Exception as exc:
+            log.warning("artwork cache failed: %s", type(exc).__name__)
+            cached = 0
+        # Drain full successful batches, but avoid a busy loop on an empty or failing queue.
+        stop.wait(0 if cached >= settings.media_cache_batch else 5)
 
 
 def _backups(engine, ctx: Ctx, stop: threading.Event) -> None:
@@ -174,6 +184,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         threading.Thread(target=_housekeeping, args=(maker, ctx, stop), daemon=True,
                          name="atlas-housekeeping").start()
+        threading.Thread(target=_cache_media, args=(maker, ctx, stop), daemon=True, name="atlas-media").start()
         threading.Thread(target=_mailer, args=(maker, ctx, stop), daemon=True, name="atlas-mail").start()
         if ctx.settings.backup_dir:
             threading.Thread(target=_backups, args=(engine, ctx, stop), daemon=True, name="atlas-backup").start()

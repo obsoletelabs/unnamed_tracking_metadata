@@ -46,11 +46,14 @@ def check_url(url: str, settings: Settings) -> tuple[str, str, int, str]:
     """Validate a URL for fetching. Returns (scheme, host, port, ip) with the address pinned."""
     if len(url) > 1000 or any(c.isspace() or ord(c) < 32 or c == "\\" for c in url):
         raise MediaError("invalid url")
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError as exc:
+        raise MediaError("invalid url") from exc
     if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password \
             or parts.fragment:
         raise MediaError("invalid url")
-    port = parts.port or (443 if parts.scheme == "https" else 80)
     if port not in (80, 443):
         raise MediaError("port not allowed")
     host = parts.hostname.lower()

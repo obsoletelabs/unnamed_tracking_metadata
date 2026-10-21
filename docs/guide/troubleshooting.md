@@ -16,6 +16,33 @@
 * **“too many …”**: a throttle; wait the number of seconds shown.
 * **Their changes don't appear**: they are waiting for review (new accounts) or were rejected (see **My account → My proposals**).
 
+## Artwork is missing
+
+The game's **Artwork** section shows how many images are known and cached. Pages and
+the Tracking App plugin use only images downloaded and checked by this node. An
+artwork suggestion awaiting review is not yet part of that download queue; check
+**My account → My proposals** first.
+
+Check **Admin → Settings → Artwork → Download and cache artwork**. The background
+worker checks an idle queue every five seconds and continues immediately after a
+full successful batch. Downloads run separately from account housekeeping and
+never inside a page or API request. This polling interval is not a download-time
+guarantee: upstream responses and the queue's size still matter. Disabling caching
+stops new batches; an already running batch may finish.
+
+Only public HTTP/HTTPS image addresses on ports 80/443 are eligible. DNS addresses
+and redirects are checked, and any configured `ATLAS_MEDIA_ALLOWED_HOSTS` list must
+include the image host. PNG, JPEG, WebP and GIF must pass the byte/pixel limits and
+image validation. Failed downloads wait ten minutes before the first retry, then
+back off further, up to seven days. A malformed URL fails that image without
+blocking other queued images. `atlas cache-media` drains eligible batches until a
+batch has no successful downloads; it does not bypass retry delays or safety checks.
+
+If Atlas shows cached artwork but the Tracking App does not, check the Atlas
+plugin's server address and read token, and whether the plugin runtime and host
+can reach the node. The artwork API requires a read token; verified cached bytes
+are served from the node's public `/media/<sha256>` path.
+
 ## Replication problems
 
 Admin → Peers shows each peer's last error. Common ones: *not trusted* (the node id changed or was never pinned), *feed gap or rewind* (the upstream was restored from an older backup; re-pin after confirming with its administrator), *bad signature*, token missing the `sync` scope, unreachable upstream (the node keeps serving and retries).
