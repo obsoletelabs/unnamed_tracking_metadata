@@ -357,9 +357,18 @@ def put_artwork(cid: str, body: ArtworkBody, st: St, session: Sess,
 
 
 @router.get("/games/{cid}/achievements", tags=["read"])
-def get_achievements(cid: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+def get_achievements(cid: str, st: St, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
+                     reveal: Annotated[str | None, Query(max_length=2000)] = None):
+    """Hidden achievements come back redacted. `reveal=all` or `reveal=<id>,<id>` unlocks their real text, but only
+    for a signed-in user's own token or a curator/admin token; any other caller still gets the redacted rows."""
     row, redirected = service.get_canonical(session, cid)
-    return {"id": row.id, "redirected_from": redirected, "results": facets.merged_achievements(session, st.ctx, row.id)}
+    allowed = principal.personal or principal.allows("curate")
+    wanted: bool | set[str] = False
+    if reveal and allowed:
+        wanted = True if reveal.strip().lower() == "all" else {i.strip() for i in reveal.split(",") if i.strip()}
+    results = facets.merged_achievements(session, st.ctx, row.id, reveal=wanted)
+    return {"id": row.id, "redirected_from": redirected,
+            "hidden_count": sum(1 for r in results if r["hidden"]), "results": results}
 
 
 @router.put("/games/{cid}/achievements", tags=["curate"])

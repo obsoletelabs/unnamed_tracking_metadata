@@ -1,5 +1,6 @@
 import io
 import socket
+from contextlib import nullcontext
 
 import httpx
 import pytest
@@ -185,11 +186,75 @@ def test_achievement_merge_prefers_trusted_source_and_fills_gaps(session, ctx):
     facets.set_achievements(session, ctx, cid, "steam", [
         {"name": "wake up call", "description": "Finish the intro", "external_id": "ACH_1", "hidden": False,
          "icon_url": "https://x.test/i.jpg"}, {"name": "Secret", "hidden": True}])
-    merged = {m["name"]: m for m in facets.merged_achievements(session, ctx, cid)}
+    merged = {m["name"]: m for m in facets.merged_achievements(session, ctx, cid, reveal=True)}
     assert merged["wake up call"]["global_percent"] == 80.5 and merged["wake up call"]["description"]
     assert merged["wake up call"]["sources"] == ["steam", "rawg"] and merged["Secret"]["hidden"]
     with pytest.raises(AtlasError):
         facets.set_achievements(session, ctx, cid, "curator", [{"name": "x", "global_percent": 120}])
+
+
+def test_achievement_options_validate_and_merge(session, ctx):
+    cid = seed(session, ctx)
+    facets.set_achievements(session, ctx, cid, "curator", [{
+        "name": "Escape", "kind": "win_condition", "tier": "gold", "points": 50, "global_percent": 3.5,
+        "locked_icon_url": "https://x.test/l.png", "icon_url": "https://x.test/u.png"}])
+    [m] = facets.merged_achievements(session, ctx, cid)
+    assert (m["kind"], m["tier"], m["points"]) == ("win_condition", "gold", 50)
+    assert m["icon_url"] is None and m["locked_icon_url"] is None  # origin urls are never handed out
+    for bad in ({"kind": "weird"}, {"tier": "platinum"}, {"points": -1}, {"points": 1.5}, {"points": True},
+                {"points": 100001}, {"icon_url": "javascript:alert(1)"}, {"locked_icon_url": "file:///etc/passwd"}):
+        with pytest.raises(AtlasError):
+            facets.set_achievements(session, ctx, cid, "curator", [{"name": "x", **bad}])
+
+
+def test_hidden_achievements_are_redacted_unless_revealed(session, ctx):
+    cid = seed(session, ctx)
+    facets.set_achievements(session, ctx, cid, "rawg", [{"name": "Final Boss", "hidden": False}])
+    facets.set_achievements(session, ctx, cid, "steam", [
+        {"name": "Final Boss", "hidden": True, "description": "Beat him", "external_id": "ACH_9", "kind": "missable"},
+        {"name": "Ordinary", "description": "Visible"}])
+    by_id = {m["id"]: m for m in facets.merged_achievements(session, ctx, cid)}
+    hidden = next(m for m in by_id.values() if m["hidden"])  # one source saying hidden is enough
+    assert hidden["name"] == "Hidden achievement" and hidden["description"] == "" and not hidden["revealed"]
+    assert hidden["external_ids"] == {} and hidden["sources"] == [] and hidden["icon_url"] is None
+    assert "Final Boss" not in str(hidden) and "ACH_9" not in str(hidden)
+    one = facets.merged_achievements(session, ctx, cid, reveal={hidden["id"]})
+    shown = next(m for m in one if m["hidden"])
+    assert shown["name"] == "Final Boss" and shown["revealed"] and shown["external_ids"] == {"steam": "ACH_9"}
+    assert facets.merged_achievements(session, ctx, cid)[-1]["hidden"]  # redacted ones sort last
+
+
+def test_unchanged_achievement_icon_keeps_its_cached_copy(session, ctx):
+    cid = seed(session, ctx)
+    item = {"name": "A", "icon_url": "https://x.test/a.png"}
+    facets.set_achievements(session, ctx, cid, "steam", [item])
+    row = session.scalars(select(Achievement)).one()
+    row.icon_blob_hash = "a" * 64
+    session.flush()
+    facets.set_achievements(session, ctx, cid, "steam", [item])
+    assert session.scalars(select(Achievement)).one().icon_blob_hash == "a" * 64
+    facets.set_achievements(session, ctx, cid, "steam", [{**item, "icon_url": "https://x.test/b.png"}])
+    assert session.scalars(select(Achievement)).one().icon_blob_hash is None
+
+
+def test_achievement_icons_are_cached_through_the_artwork_rules(session, ctx, resolver, tmp_path):
+    cid = seed(session, ctx)
+    facets.set_achievements(session, ctx, cid, "steam", [
+        {"name": "Good", "icon_url": "https://img.test/g.png", "locked_icon_url": "https://img.test/l.png"},
+        {"name": "Bad", "icon_url": "https://img.test/bad.png"}])
+    session.commit()
+    settings = build_settings(database_url="sqlite://", media_dir=str(tmp_path / "m"))
+
+    def handler(request):
+        return httpx.Response(200, content=b"not an image" if "bad" in request.url.path else png())
+
+    assert media.cache_pending(lambda: nullcontext(session), settings, client_for(handler)) == 2
+    good = next(a for a in session.scalars(select(Achievement)) if a.name == "Good")
+    bad = next(a for a in session.scalars(select(Achievement)) if a.name == "Bad")
+    assert good.icon_blob_hash and good.locked_icon_blob_hash and bad.icon_blob_hash is None
+    assert bad.icon_fail_count == 1 and bad.icon_next_try_at is not None
+    [g] = [m for m in facets.merged_achievements(session, ctx, cid) if m["name"] == "Good"]
+    assert g["icon_url"] == f"/api/v2/media/{good.icon_blob_hash}" and g["locked_icon_url"].startswith("/api/v2/media/")
 
 
 def test_artwork_and_achievements_replicate_but_provider_art_does_not(pair):  # noqa: F811
@@ -258,7 +323,7 @@ def test_provider_fetch_attaches_artwork_and_achievements(api):
         if "GetSchemaForGame" in request.url.path:
             return httpx.Response(200, json={"game": {"availableGameStats": {"achievements": [
                 {"name": "ACH_1", "displayName": "Wake Up Call", "hidden": 0, "description": "Wake up",
-                 "icon": "https://cdn.test/a.jpg"}]}}})
+                 "icon": "https://cdn.test/a.jpg", "icongray": "https://cdn.test/a_gray.jpg"}]}}})
         return httpx.Response(404)
 
     api.state.providers.client = client_for(handler)
@@ -272,6 +337,9 @@ def test_provider_fetch_attaches_artwork_and_achievements(api):
     assert {"banner", "key_art", "screenshot"} <= kinds
     ach = api.get(f"/api/v2/games/{cid}/achievements").json()["results"]
     assert ach[0]["name"] == "Wake Up Call" and ach[0]["global_percent"] == 45.5
+    with api.state.maker() as s:  # both icons are queued for the normal image cache
+        row = s.scalars(select(Achievement)).one()
+        assert (row.icon_url, row.locked_icon_url) == ("https://cdn.test/a.jpg", "https://cdn.test/a_gray.jpg")
 
 
 def test_upgrade_preserves_existing_rows(tmp_path):

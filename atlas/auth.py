@@ -25,6 +25,7 @@ class Principal:
     token_id: str
     name: str
     scopes: frozenset[str]
+    personal: bool = False  # a signed-in user's own token
 
     def allows(self, scope: str) -> bool:
         return "admin" in self.scopes or scope in self.scopes
@@ -84,4 +85,4 @@ def authenticate(session: Session, header: str | None) -> Principal | None:
     last = row.last_used_at
     if last is None or (current - (last if last.tzinfo else last.replace(tzinfo=current.tzinfo))).total_seconds() > 60:
         row.last_used_at = current
-    return Principal(row.id, row.name, scopes)
+    return Principal(row.id, row.name, scopes, personal=bool(row.user_id))

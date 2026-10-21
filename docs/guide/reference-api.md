@@ -19,7 +19,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | --- | --- | --- | --- |
 | `GET` | `/games` | read | Search records by title (`q`, optional `type`, `limit`). Includes `custom` values. |
 | `GET` | `/games/{cid}` | read | One record. Follows merge redirects (`redirected_from`). ETag = id-version. |
-| `GET` | `/games/{cid}/achievements` | read | Merged achievement list: name, description, icon, hidden, global percent. No per-user progress. |
+| `GET` | `/games/{cid}/achievements` | read | Merged achievement list: name, description, kind, tier, points, icons, global percent. Hidden ones are redacted unless `reveal=all` or `reveal=<id>,<id>` is sent with a signed-in user's token or a curator token. No per-user progress. See [Achievements](achievements.md). |
 | `GET` | `/games/{cid}/artwork` | read | Artwork by trust and priority, plus the best image per kind; `media_url` once cached. |
 | `GET` | `/games/{cid}/explain` | read | Which source and rule produced each field (provenance). |
 | `GET` | `/media/{digest}` | read | A cached, verified image. Immutable; `nosniff`. |
