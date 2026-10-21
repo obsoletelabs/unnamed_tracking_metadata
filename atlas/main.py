@@ -181,6 +181,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         custom.seed(s)
         s.commit()
     ctx = Ctx(settings, identity)
+    with maker() as s:
+        custom.seed_multiplayer(s, ctx)
+        s.commit()
     stop = threading.Event()
 
     @asynccontextmanager

@@ -11,7 +11,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from . import feed
-from .models import Canonical, CustomValue, FieldDef, MediaType
+from .models import Canonical, CustomValue, FieldDef, MediaType, Setting
 from .service import AtlasError, Ctx, write_lock
 
 KINDS = ("text", "longtext", "number", "date", "bool", "choice", "list", "url")
@@ -28,6 +28,34 @@ def seed(session: Session) -> None:
     if session.get(MediaType, "game") is None:
         session.add(MediaType(key="game", label="Game", position=0, origin="local"))
         session.flush()
+
+
+# Standard multiplayer fields every game node offers (issue #39). Added once per node; an administrator who
+# deletes or renames one is not overridden on the next start. Mirrors receive them from their upstream.
+MULTIPLAYER_FIELDS = (
+    ("players_min", "Minimum players", "number", None, "Fewest players needed to play (1 for single-player)."),
+    ("players_max", "Maximum players", "number", None, "Most players in one session, local or online."),
+    ("crossplay", "Crossplay", "choice", ["yes", "no", "partial"],
+     "Can players on different platforms play together? 'partial' means only some platforms or modes."),
+)
+_MULTIPLAYER_SEEDED = "defaults.multiplayer_fields"
+
+
+def seed_multiplayer(session: Session, ctx: Ctx) -> None:
+    if ctx.settings.role == "mirror" or session.get(Setting, _MULTIPLAYER_SEEDED) is not None:
+        return
+    if session.get(MediaType, "game") is None:
+        return
+    for position, (key, label, kind, choices, help_text) in enumerate(MULTIPLAYER_FIELDS):
+        exists = session.scalars(select(FieldDef.id).where(FieldDef.media_type == "game", FieldDef.key == key)).first()
+        if exists is None:
+            # Written directly, not through save_field: seeding must not append to the change feed. Followers
+            # carry identical definitions of their own, and the next schema change publishes them with the rest.
+            c = check_field("game", key, label, kind, choices, help_text, True, True, 50 + position)
+            session.add(FieldDef(media_type="game", origin="local", key=c["key"], label=c["label"], kind=c["kind"],
+                                 choices=c["choices"], help=c["help"], public=True, editable=True, position=c["position"]))
+    session.add(Setting(key=_MULTIPLAYER_SEEDED, value=True))
+    session.flush()
 
 
 # ---- schema administration ---------------------------------------------------------------------------

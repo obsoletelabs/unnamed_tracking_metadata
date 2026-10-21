@@ -4,7 +4,7 @@ import tarfile
 import pytest
 from sqlalchemy import delete, select
 
-from atlas import accounts, auth, backup, db, key_rotation, promotion, service
+from atlas import accounts, auth, backup, custom, db, key_rotation, promotion, service
 from atlas.models import Canonical, FieldDef, NodeState, ReplicatedChange, User
 from atlas.settings import Settings
 from atlas.signing import load_identity
@@ -12,6 +12,8 @@ from atlas.signing import load_identity
 from .conftest import batch
 from .test_key_rotation import rotate
 from .test_relay import node, publish, pull
+
+STANDARD = {key for key, *_ in custom.MULTIPLAYER_FIELDS}  # seeded on every non-mirror node
 
 
 def archive_rows(path, table):
@@ -59,7 +61,7 @@ def test_recovery_uses_only_one_verified_public_feed_and_a_new_identity(tmp_path
             identity = load_identity(session)
             assert identity.node_id == result["node_id"]
             assert session.get(Canonical, aid).view["title"] == "Recovered Alpha"
-            assert {row.key for row in session.scalars(select(FieldDef))} == {"alpha_note", "after_note"}
+            assert {row.key for row in session.scalars(select(FieldDef))} - STANDARD == {"alpha_note", "after_note"}
             from atlas.models import ChangeLog
 
             for entry in session.scalars(select(ChangeLog)):

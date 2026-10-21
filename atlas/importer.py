@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
-from . import facets, service
+from . import custom, facets, service
 from .models import Canonical
 from .providers import ProviderError
 
@@ -42,6 +42,7 @@ def import_from_provider(st: AppState, session: Session, provider: str, external
         if got.artwork:
             facets.set_artwork(session, st.ctx, row.id, provider, got.artwork)
             art = len(got.artwork)
+        _apply_custom(st, session, row, provider, got)
         try:
             items = st.providers.achievements(session, provider, external_id)
         except ProviderError:
@@ -50,3 +51,15 @@ def import_from_provider(st: AppState, session: Session, provider: str, external
             facets.set_achievements(session, st.ctx, row.id, provider, items)
             ach = len(items)
     return Imported(row, res.method, res.confidence, res.review, art, ach)
+
+
+def _apply_custom(st: AppState, session: Session, row: Canonical, provider: str, got) -> None:
+    """Store provider-reported values for admin-defined fields; fields this node does not define are skipped."""
+    values = {}
+    for key, raw in (got.custom or {}).items():
+        try:
+            values.update(custom.clean_values(session, row.media_type, {key: raw}, editable_only=False))
+        except service.AtlasError:
+            continue
+    if values:
+        custom.set_values(session, st.ctx, row.id, provider, values, redistributable=False)
