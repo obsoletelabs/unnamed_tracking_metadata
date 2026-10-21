@@ -254,6 +254,30 @@ def test_personal_tokens_work_against_the_api_and_are_scoped(site):
     assert other.post(f"/me/tokens/{tid}/revoke", data={"csrf": t2}).status_code == 404
 
 
+def test_hidden_achievements_reveal_only_for_signed_in_user_tokens(site):
+    admin = {"Authorization": "Bearer " + "b" * 40}
+    assert site.put(f"/api/v2/games/{site.gid}/achievements", headers=admin, json={"items": [
+        {"name": "Secret Ending", "description": "Spoiler", "hidden": True, "external_id": "S1"},
+        {"name": "Warm Up"}]}).status_code == 200
+    signup(site, "alice")
+    t = token(site, "/me")
+    secret = re.search(r"(atl_[A-Za-z0-9_-]+)", site.post(
+        "/me/tokens", data={"csrf": t, "name": "app", "scope": "read"}).text).group(1)
+    user = {"Authorization": "Bearer " + secret}
+    url = f"/api/v2/games/{site.gid}/achievements"
+    plain = site.get(url, headers=user).json()
+    assert plain["hidden_count"] == 1 and "Secret Ending" not in str(plain) and "Spoiler" not in str(plain)
+    hid = next(r["id"] for r in plain["results"] if r["hidden"])
+    assert site.get(f"{url}?reveal=all", headers=user).json()["results"][0]["name"] in ("Secret Ending", "Warm Up")
+    assert "Secret Ending" in str(site.get(f"{url}?reveal={hid}", headers=user).json())
+    assert "Warm Up" in str(site.get(f"{url}?reveal=nope", headers=user).json())
+    assert "Secret Ending" not in str(site.get(f"{url}?reveal=nope", headers=user).json())
+    # a plain read token (not a person's) cannot reveal; the public page redacts too
+    read_only = site.post("/api/v2/tokens", headers=admin, json={"name": "ro", "scopes": ["read"]}).json()["token"]
+    assert "Secret Ending" not in str(site.get(f"{url}?reveal=all", headers={"Authorization": "Bearer " + read_only}).json())
+    assert "Secret Ending" not in site.get(f"/game/{site.gid}").text
+
+
 def test_password_change_signs_out_other_sessions(site):
     signup(site, "alice")
     second = fresh(site)

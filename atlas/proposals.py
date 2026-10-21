@@ -196,9 +196,7 @@ def apply(session: Session, ctx: Ctx, p: Proposal) -> None:
         else:
             rows = session.scalars(select(Achievement).where(
                 Achievement.canonical_id == cid, Achievement.source == SOURCE)).all()
-            old = [{"name": a.name, "description": a.description, "external_id": a.external_id, "hidden": a.hidden,
-                    **({"icon_url": a.icon_url} if a.icon_url else {}),
-                    **({"global_percent": a.global_percent} if a.global_percent is not None else {})} for a in rows]
+            old = facets.achievement_items(list(rows))
             p.previous = {"items": old}
             facets.set_achievements(session, ctx, cid, SOURCE, old + p.payload["items"], redistributable=redistribute)
     else:  # pragma: no cover - validated earlier

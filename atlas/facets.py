@@ -54,6 +54,12 @@ def clean_artwork(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+ACH_KINDS = ("progression", "missable", "win_condition")
+ACH_TIERS = ("bronze", "silver", "gold")
+HIDDEN_NAME = "Hidden achievement"
+MAX_POINTS = 100000
+
+
 def clean_achievements(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if len(items) > MAX_ACH:
         raise AtlasError(f"at most {MAX_ACH} achievements")
@@ -67,17 +73,44 @@ def clean_achievements(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         seen.add(key)
         pct = it.get("global_percent")
-        if pct is not None and not (isinstance(pct, (int, float)) and 0 <= pct <= 100):
+        if pct is not None and not (isinstance(pct, (int, float)) and not isinstance(pct, bool) and 0 <= pct <= 100):
             raise AtlasError("global_percent must be 0-100")
         row: dict[str, Any] = {
             "name": name, "description": str(it.get("description") or "")[:2000],
             "external_id": str(it.get("external_id") or "")[:200], "hidden": bool(it.get("hidden", False)),
         }
-        if it.get("icon_url"):
-            row["icon_url"] = _url(it["icon_url"])
+        for field in ("icon_url", "locked_icon_url"):
+            if it.get(field):
+                row[field] = _url(it[field])
+        if it.get("kind") not in (None, ""):
+            if it["kind"] not in ACH_KINDS:
+                raise AtlasError(f"kind must be one of {ACH_KINDS}")
+            row["kind"] = it["kind"]
+        if it.get("tier") not in (None, ""):
+            if it["tier"] not in ACH_TIERS:
+                raise AtlasError(f"tier must be one of {ACH_TIERS}")
+            row["tier"] = it["tier"]
+        pts = it.get("points")
+        if pts is not None:
+            if not isinstance(pts, int) or isinstance(pts, bool) or not 0 <= pts <= MAX_POINTS:
+                raise AtlasError(f"points must be a whole number from 0 to {MAX_POINTS}")
+            row["points"] = pts
         if pct is not None:
             row["global_percent"] = float(pct)
         out.append(row)
+    return out
+
+
+def achievement_items(rows: list[Achievement]) -> list[dict[str, Any]]:
+    """Rows back to the item shape clean_achievements/set_achievements accept (used to snapshot for revert)."""
+    out = []
+    for a in rows:
+        item: dict[str, Any] = {"name": a.name, "description": a.description, "external_id": a.external_id,
+                                "hidden": a.hidden}
+        for field in ("icon_url", "locked_icon_url", "kind", "tier", "points", "global_percent"):
+            if getattr(a, field) is not None:
+                item[field] = getattr(a, field)
+        out.append(item)
     return out
 
 
@@ -126,12 +159,26 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
     _live(session, cid)
     source = norm_namespace(source)
     items = clean_achievements(items)
+    old = {a.norm_name: a for a in session.scalars(select(Achievement).where(
+        Achievement.canonical_id == cid, Achievement.source == source))}
     session.execute(delete(Achievement).where(Achievement.canonical_id == cid, Achievement.source == source))
+    session.flush()
     for i in items:
-        session.add(Achievement(
+        prev = old.get(_norm_name(i["name"]))
+        row = Achievement(
             canonical_id=cid, source=source, external_id=i["external_id"], name=i["name"],
             norm_name=_norm_name(i["name"]), description=i["description"], icon_url=i.get("icon_url"),
-            hidden=i["hidden"], global_percent=i.get("global_percent"), redistributable=redistributable))
+            locked_icon_url=i.get("locked_icon_url"), hidden=i["hidden"], kind=i.get("kind"), tier=i.get("tier"),
+            points=i.get("points"), global_percent=i.get("global_percent"), redistributable=redistributable)
+        if prev is not None:  # an unchanged image is not downloaded again
+            if prev.icon_url == row.icon_url:
+                row.icon_blob_hash, row.icon_fail_count = prev.icon_blob_hash, prev.icon_fail_count
+                row.icon_next_try_at = prev.icon_next_try_at
+            if prev.locked_icon_url == row.locked_icon_url:
+                row.locked_icon_blob_hash = prev.locked_icon_blob_hash
+                row.locked_icon_fail_count = prev.locked_icon_fail_count
+                row.locked_icon_next_try_at = prev.locked_icon_next_try_at
+        session.add(row)
     session.flush()
     if log and redistributable and ctx.settings.role == "authority":
         feed.append(session, ctx.identity, "achievements", {"canonical_id": cid, "source": source, "items": items})
@@ -144,21 +191,50 @@ def merged_artwork(session: Session, ctx: Ctx, cid: str) -> list[Artwork]:
     return rows
 
 
-def merged_achievements(session: Session, ctx: Ctx, cid: str) -> list[dict[str, Any]]:
+def _media(blob: str | None) -> str | None:
+    return f"/api/v2/media/{blob}" if blob else None
+
+
+def merged_achievements(session: Session, ctx: Ctx, cid: str, *,
+                        reveal: bool | set[str] = False) -> list[dict[str, Any]]:
+    """One entry per achievement name; highest-trust source first, later sources only fill gaps.
+
+    Hidden entries are redacted (no real name, description, icon or provider ids) unless `reveal` is True or
+    holds their id. A hidden flag from any source wins: one source knowing it is secret keeps it secret.
+    Icons are only ever our own verified copies (`/api/v2/media/<sha256>`); the origin URL is never handed out.
+    """
     rows = list(session.scalars(select(Achievement).where(Achievement.canonical_id == cid)))
-    rows.sort(key=lambda a: -ctx.settings.trust(a.source))
+    rows.sort(key=lambda a: (-ctx.settings.trust(a.source), a.id))
     merged: dict[str, dict[str, Any]] = {}
-    for a in rows:  # highest-trust source first; later sources only fill gaps
-        m = merged.setdefault(a.norm_name, {"name": a.name, "description": "", "icon_url": None, "hidden": a.hidden,
-                                           "global_percent": None, "external_ids": {}, "sources": []})
+    for a in rows:
+        m = merged.setdefault(a.norm_name, {
+            "id": a.id, "name": a.name, "description": "", "hidden": False, "kind": None, "tier": None,
+            "points": None, "global_percent": None, "icon_blob": None, "locked_icon_blob": None,
+            "external_ids": {}, "sources": []})
         m["description"] = m["description"] or a.description
-        m["icon_url"] = m["icon_url"] or a.icon_url
-        if m["global_percent"] is None:
-            m["global_percent"] = a.global_percent
+        m["hidden"] = m["hidden"] or a.hidden
+        for field in ("kind", "tier", "points", "global_percent"):
+            if m[field] is None:
+                m[field] = getattr(a, field)
+        m["icon_blob"] = m["icon_blob"] or a.icon_blob_hash
+        m["locked_icon_blob"] = m["locked_icon_blob"] or a.locked_icon_blob_hash
         if a.external_id:
             m["external_ids"].setdefault(a.source, a.external_id)
         m["sources"].append(a.source)
-    return sorted(merged.values(), key=lambda m: (m["global_percent"] is None, -(m["global_percent"] or 0), m["name"]))
+    out = []
+    for m in merged.values():
+        shown = not m["hidden"] or reveal is True or (isinstance(reveal, set) and m["id"] in reveal)
+        entry = {"id": m["id"], "hidden": m["hidden"], "revealed": bool(m["hidden"] and shown),
+                 "kind": m["kind"], "tier": m["tier"], "points": m["points"], "global_percent": m["global_percent"],
+                 "sources": m["sources"] if shown else []}
+        if shown:
+            entry.update(name=m["name"], description=m["description"], external_ids=m["external_ids"],
+                         icon_url=_media(m["icon_blob"]), locked_icon_url=_media(m["locked_icon_blob"]))
+        else:
+            entry.update(name=HIDDEN_NAME, description="", external_ids={}, icon_url=None, locked_icon_url=None)
+        out.append(entry)
+    return sorted(out, key=lambda m: (m["hidden"] and not m["revealed"], m["global_percent"] is None,
+                                      -(m["global_percent"] or 0), m["name"]))
 
 
 def move_facets(session: Session, src: str, dst: str) -> None:
