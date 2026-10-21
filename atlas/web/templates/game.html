@@ -51,6 +51,16 @@
 <p class="small muted">These are assigned to this game but this server has not downloaded and checked them, so they are not shown. They are listed as links and are not loaded, so viewing this page does not contact the source sites.</p>
 <ul>{% for a in pending_art %}<li>{{ a.kind|title }} · <a href="{{ a.url }}" rel="noopener noreferrer nofollow">{{ a.host or 'source' }}</a> <span class="muted small">· {{ a.state }} · from {{ a.source }}</span></li>{% endfor %}</ul></details>{% endif %}
 {% if p.user %}
+<details><summary>Link a store page or id</summary>
+<p class="small"><a href="/game/{{ g.id }}/links">Find it by name</a> in Steam, IGDB or RAWG (whichever this node has configured), or enter an id below.</p>
+<form class="card" method="post" action="/game/{{ g.id }}/links">{{ csrf(p.csrf) }}
+  <label for="lstore">Store</label><select id="lstore" name="store">{% for ns, s in stores.items() %}<option value="{{ ns }}">{{ s[0] }}</option>{% endfor %}<option value="other">Other (type its short name below)</option></select>
+  <label for="lother">Other store name <span class="hint">only if you chose Other, e.g. <code>humble</code></span></label><input id="lother" name="other" maxlength="50" pattern="[a-z0-9._-]*">
+  <label for="lident">Its id for this game <span class="hint">e.g. 620 for Steam, the slug from the store address for GOG or Epic</span></label><input id="lident" name="ident" required maxlength="256">
+  <label for="lnote">Source / note</label><textarea id="lnote" name="note" maxlength="2000"></textarea>
+  <p class="small muted">Linking is reviewed like other contributions. An id already used by another game is refused: ask a reviewer to merge the games.</p>
+  <p><button type="submit">Propose link</button></p>
+</form></details>
 <details><summary>Upload or suggest artwork</summary>
 <form class="card" method="post" action="/game/{{ g.id }}/artwork/upload" enctype="multipart/form-data">{{ csrf(p.csrf) }}
   <h3>Upload an image</h3>

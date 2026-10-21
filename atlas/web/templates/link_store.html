@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Link a store · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Link a store to <a href="/game/{{ g.id }}">{{ v.get('title') }}</a></h1>
+<p class="muted">Search a store by name and link the match. Linking is reviewed like other contributions; an id already used by another game is refused.</p>
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+{% if suggestions is not none %}
+<section class="card"><h2>Suggested matches</h2>
+{% if suggestions %}<p class="small muted">Found by searching for “{{ v.get('title') }}” in the providers this node has configured. Likely matches come first.</p>
+<ul class="data-list">{% for s in suggestions %}<li><form method="post" action="/game/{{ g.id }}/links">{{ csrf(p.csrf) }}<input type="hidden" name="store" value="{{ s.provider }}"><input type="hidden" name="ident" value="{{ s.external_id }}">
+<strong>{{ s.title }}</strong> <span class="muted small">{{ s.label }} · {{ s.platform or '' }} {{ s.release_date or '' }} · <code>{{ s.external_id }}</code></span>{% if s.likely %} <span class="tag">Likely match</span>{% endif %} <button type="submit">Link this</button></form></li>{% endfor %}</ul>
+{% else %}<p class="muted">No suggestions: this game is already linked to every searchable provider, or nothing matched its name. Search by hand below.</p>{% endif %}</section>
+{% endif %}
+{% if not names %}<div class="card">This node has no searchable providers configured (the administrator can set them up under Admin → Integrations). You can still <a href="/game/{{ g.id }}">enter a store id by hand</a> on the game page.</div>
+{% else %}
+<form class="card" method="get" action="/game/{{ g.id }}/links">
+  <div class="row">
+    <div><label for="provider">Store or database</label><select id="provider" name="provider">{% for n in names %}<option value="{{ n }}" {{ 'selected' if n == provider }}>{{ stores[n][0] if n in stores else n }}</option>{% endfor %}</select></div>
+    <div style="flex:1"><label for="q">Name</label><input id="q" type="search" name="q" value="{{ q }}" maxlength="200" required></div>
+    <div style="align-self:end"><button type="submit">Search</button></div>
+  </div>
+  <p class="small muted">GOG, Epic and TheGamesDB cannot be searched yet; for those, <a href="/game/{{ g.id }}">enter the id by hand</a>.</p>
+</form>
+{% if results is not none %}
+<h2>Results</h2>
+{% if results %}
+<ul class="data-list">{% for r in results %}<li><form method="post" action="/game/{{ g.id }}/links">{{ csrf(p.csrf) }}<input type="hidden" name="store" value="{{ provider }}"><input type="hidden" name="ident" value="{{ r.external_id }}">
+<strong>{{ r.title }}</strong> <span class="muted small">{{ r.platform or '' }} {{ r.release_date or '' }} · <code>{{ r.external_id }}</code></span> <button type="submit">Link this</button></form></li>{% endfor %}</ul>
+{% else %}<p class="muted">No matches.</p>{% endif %}
+{% endif %}
+{% endif %}
+{% endblock %}

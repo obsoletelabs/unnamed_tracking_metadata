@@ -518,6 +518,83 @@ def test_known_stores_link_only_safe_ids():
     assert integrations.store_link("unknown", "1") is None and integrations.store_name("unknown") == "unknown"
 
 
+def test_members_can_propose_store_links_from_a_game_page(site):
+    signup(site, "alice")  # the first account is the administrator, so the link applies immediately
+    t = token(site, f"/game/{site.gid}")
+    page = site.get(f"/game/{site.gid}").text
+    assert "Link a store page or id" in page and "GOG" in page
+    ok = site.post(f"/game/{site.gid}/links", data={"csrf": t, "store": "gog", "ident": "hades_gog", "note": "store"})
+    assert ok.status_code == 303 and "m=applied" in ok.headers["location"]
+    shown = site.get(f"/game/{site.gid}").text
+    assert 'href="https://www.gog.com/game/hades_gog"' in shown
+    other = site.post(f"/game/{site.gid}/links", data={"csrf": t, "store": "other", "other": "humble", "ident": "hades"})
+    assert other.status_code == 303
+    clash = site.post(f"/game/{site.gid}/links", data={"csrf": t, "store": "gog", "ident": "different"})
+    assert clash.status_code == 409
+    assert site.post(f"/game/{site.gid}/links", data={"csrf": "wrong", "store": "gog", "ident": "x"}).status_code == 403
+    plain = fresh(site)
+    assert plain.post(f"/game/{site.gid}/links", data={"csrf": "x", "store": "gog", "ident": "x"}).status_code in (303, 403)
+
+
+def test_members_can_link_a_store_by_searching_its_name(site):
+    from atlas.providers.base import ProviderResult
+
+    class Store:
+        name = "gogish"
+        redistributable = False
+        requests_per_minute = 600
+
+        def search(self, client, query):
+            return [ProviderResult(external_id="hades-gog", title="Hades (store)", platform="pc", release_date="2020-09-17")]
+
+        def fetch(self, client, external_id):
+            return None
+
+    site.st.providers.providers["gogish"] = Store()
+    assert site.get(f"/game/{site.gid}/links").status_code in (303, 401, 403)  # sign-in required
+    signup(site, "alice")
+    first = site.get(f"/game/{site.gid}/links")  # no search yet: the form is prefilled with the game's name
+    assert first.status_code == 200 and 'value="Hades"' in first.text and "gogish" in first.text
+    found = site.get(f"/game/{site.gid}/links", params={"provider": "gogish", "q": "hades"})
+    assert "Hades (store)" in found.text and "hades-gog" in found.text and "Link this" in found.text
+    t = token(site, f"/game/{site.gid}/links")
+    done = site.post(f"/game/{site.gid}/links", data={"csrf": t, "store": "gogish", "ident": "hades-gog"})
+    assert done.status_code == 303 and "m=applied" in done.headers["location"]
+    assert "hades-gog" in site.get(f"/game/{site.gid}").text
+
+
+def test_link_page_autosuggests_likely_stores_from_the_game_name(site):
+    from atlas.providers.base import ProviderResult
+
+    class Store:
+        name = "gogish"
+        redistributable = False
+        requests_per_minute = 600
+
+        def search(self, client, query):
+            return [ProviderResult(external_id="hades-2", title="Hades II", platform="pc", release_date="2024-05-06"),
+                    ProviderResult(external_id="hades-gog", title="Hades", platform="pc", release_date="2020-09-17")]
+
+        def fetch(self, client, external_id):
+            return None
+
+    site.st.base = site.st.base.model_copy(update={"steam_enabled": False})  # no live provider calls in tests
+    site.st.ctx.settings = site.st.ctx.settings.model_copy(update={"steam_enabled": False})
+    site.st.providers.providers.pop("steam", None)
+    site.st.providers.providers["gogish"] = Store()
+    signup(site, "alice")
+    page = site.get(f"/game/{site.gid}/links").text
+    assert "Suggested matches" in page and "Likely match" in page
+    assert page.index("hades-gog") < page.index("hades-2")  # the same-title, same-year match comes first
+    assert page.count('class="tag">Likely match') == 1  # Hades II is a different game
+    manual = site.get(f"/game/{site.gid}/links", params={"provider": "gogish", "q": "hades"}).text
+    assert "Suggested matches" not in manual  # an explicit search replaces the suggestions
+    site.post(f"/game/{site.gid}/links", data={"csrf": token(site, f"/game/{site.gid}/links"), "store": "gogish",
+                                               "ident": "hades-gog"})
+    assert "Suggested matches" in site.get(f"/game/{site.gid}/links").text
+    assert "hades-gog" not in site.get(f"/game/{site.gid}/links").text  # a store it is linked to is skipped
+
+
 def test_members_can_upload_artwork_files_and_admins_control_the_cache(site):
     from tests.test_media_facets import png
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -9,7 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 
-from .. import accounts, auth, custom, facets, feed, mail, proposals, service, social
+from .. import accounts, auth, custom, facets, feed, integrations, mail, proposals, service, social
 from .. import media as images
 from ..api.routes import _guard_upstream, media_response
 from ..merge import SCALAR_FIELDS, UNION_FIELDS
@@ -32,6 +33,7 @@ from ..models import (
     UserList,
 )
 from ..models import Page as PageRow
+from ..providers import ProviderError
 from ..service import AtlasError
 from . import CSP, templates
 from .deps import (
@@ -272,7 +274,8 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     return render(p, "game.html", g=g, v=g.view, explain=g.explain, key_art=key_art, shots=shots, **social_ctx,
                   lbl=labels_for(p, g.media_type), details=details,
                   mtype_label=(s.get(MediaType, g.media_type).label if s.get(MediaType, g.media_type) else g.media_type),
-                  pending_art=pending, art_total=len(art), art_cached=len(cached), art_kinds=facets.KINDS, activity=activity,
+                  pending_art=pending, stores=integrations.STORES, art_total=len(art), art_cached=len(cached),
+                  art_kinds=facets.KINDS, activity=activity,
                   achievements=facets.merged_achievements(s, ctx, g.id),
                   redirected_from=p.request.query_params.get("from"), **extra)
 
@@ -465,6 +468,67 @@ def propose_artwork(cid: str, p: Annotated[Page, Depends(user_form)], kind: Anno
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
+def suggest_links(p: Page, g: Any) -> list[dict[str, Any]]:
+    """Likely store matches for a game, found by its own name in every provider this node can search.
+
+    Stores the game is already linked to are skipped. A match is marked likely when the title is the same
+    (ignoring case and punctuation) and, where both are known, the release year agrees."""
+    throttle(p, f"link-suggest:{p.me.id}", 10, 60, "Too many searches")
+    title = str(g.view.get("title") or "")
+    year = str(g.view.get("release_date") or "")[:4]
+    linked = set(g.view.get("provider_ids") or {})
+    norm = re.compile(r"\W+")
+    out: list[dict[str, Any]] = []
+    for name in sorted(p.st.providers.providers):
+        if name in linked or not title:
+            continue
+        try:
+            found = [r.to_item() for r in p.st.providers.lookup(p.session, name, query=title)[:5]]
+        except ProviderError:
+            continue  # a provider that is down just has no suggestions
+        for item in found:
+            same = norm.sub(" ", item["title"].casefold()).strip() == norm.sub(" ", title.casefold()).strip()
+            item_year = str(item.get("release_date") or "")[:4]
+            likely = same and (not year or not item_year or year == item_year)
+            out.append({"provider": name, "label": integrations.store_name(name), "likely": likely, **item})
+    return sorted(out, key=lambda s: (not s["likely"], s["provider"]))[:12]
+
+
+@router.get("/game/{cid}/links", response_class=HTMLResponse)
+def link_by_search(cid: str, p: Annotated[Page, Depends(user_page)], provider: Annotated[str, Query(max_length=40)] = "",
+                   q: Annotated[str, Query(max_length=200)] = ""):
+    """Find this game in a store by name (with the node's configured providers) and link the match."""
+    g, _ = live_game(p, cid)
+    names = sorted(p.st.providers.providers)
+    query = q.strip() or ("" if provider else str(g.view.get("title") or ""))
+    results, error = None, None
+    suggestions = None
+    if not provider and not q.strip():
+        suggestions = suggest_links(p, g)
+    elif provider and query:
+        throttle(p, f"link-search:{p.me.id}", 30, 60, "Too many searches")
+        try:
+            results = [r.to_item() for r in p.st.providers.lookup(p.session, provider, query=query)[:15]]
+        except ProviderError as exc:
+            results, error = [], f"{provider} could not be searched: {exc}"
+    return render(p, "link_store.html", g=g, v=g.view, names=names, provider=provider or (names[0] if names else ""),
+                  q=query, results=results, error=error, stores=integrations.STORES, suggestions=suggestions)
+
+
+@router.post("/game/{cid}/links")
+def propose_store_link(cid: str, p: Annotated[Page, Depends(user_form)], store: Annotated[str, Form(max_length=50)],
+                       ident: Annotated[str, Form(max_length=256)], other: Annotated[str, Form(max_length=50)] = "",
+                       note: Annotated[str, Form()] = ""):
+    """Link a store id (Steam, GOG, Epic, TheGamesDB...) to an existing game; reviewed like other contributions."""
+    g, _ = live_game(p, cid)
+    namespace = (other if store == "other" else store).strip().lower()
+    try:
+        pr = proposals.create(p.session, p.st.ctx, p.me, "link_ids", g.id, {"provider_ids": {namespace: ident}}, note)
+    except AtlasError as exc:
+        raise HTTPException(409 if exc.code == "conflict" else 400, str(exc)) from exc
+    return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
+
+
 @router.post("/game/{cid}/artwork/upload")
 async def upload_artwork(cid: str, p: Annotated[Page, Depends(user_form)], file: Annotated[UploadFile, File()],
                          kind: Annotated[str, Form()], note: Annotated[str, Form()] = ""):
@@ -648,6 +712,9 @@ def _proposal_card(p: Page, r: Proposal) -> dict[str, Any]:
                 card["rows"].append((FIELD_LABELS.get(k, k), _show(cur.get(k)) if r.kind == "edit" else "", _show(v)))
     elif r.kind == "artwork":
         card["entries"] = [f"{i['kind'].replace('_', ' ')}: {i['url']}" for i in r.payload["items"]]
+    elif r.kind == "link_ids":
+        card["entries"] = [f"{integrations.store_name(ns)} ({ns}): {ident}"
+                           for ns, ident in r.payload["provider_ids"].items()]
     else:
         card["entries"] = [f"{i['name']}" + (f" — {i['description']}" if i.get("description") else "")
                          for i in r.payload["items"][:50]]

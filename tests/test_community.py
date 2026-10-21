@@ -249,3 +249,39 @@ def test_approved_community_edits_federate_but_pending_ones_do_not(session, ctx,
     session.commit()
     entries = feed.read(session, 0, 10)
     assert [e.kind for e in entries] == ["obs"] and entries[0].body["observation"]["source"] == "community"
+
+
+def test_store_id_link_proposal_applies_on_approval_conflicts_are_refused_and_revert_undoes_it(session, ctx, game):
+    from atlas.models import Crosswalk
+
+    admin = user(session, ctx.settings, "alice")
+    bob = user(session, ctx.settings, "bob")
+    p = proposals.create(session, ctx, bob, "link_ids", game, {"provider_ids": {"GOG": " hades_gog "}}, "store page")
+    assert p.status == "pending" and p.payload == {"provider_ids": {"gog": "hades_gog"}}
+    assert "gog" not in (view(session, game).get("provider_ids") or {})
+    proposals.review(session, ctx, admin, p.id, approve=True)
+    assert view(session, game)["provider_ids"]["gog"] == "hades_gog"
+    assert session.get(Crosswalk, ("gog", "hades_gog")).canonical_id == game
+    assert bob.reputation == proposals.REWARD["link_ids"]
+
+    # another game cannot claim the same id, and this game cannot silently swap a different id for the store
+    [other] = service.ingest(session, ctx, batch("igdb", [{"external_id": "2", "title": "Celeste"}]), system=True)
+    with pytest.raises(AtlasError, match="already linked to another game"):
+        proposals.create(session, ctx, bob, "link_ids", other.canonical_id, {"provider_ids": {"gog": "hades_gog"}})
+    with pytest.raises(AtlasError, match="already has gog id"):
+        proposals.create(session, ctx, bob, "link_ids", game, {"provider_ids": {"gog": "different"}})
+    # the same link again is harmless
+    again = proposals.create(session, ctx, bob, "link_ids", game, {"provider_ids": {"gog": "hades_gog"}})
+    assert again.status == "pending"
+
+    proposals.revert(session, ctx, admin, p.id, note="wrong game")
+    assert "gog" not in (view(session, game).get("provider_ids") or {})
+    assert session.get(Crosswalk, ("gog", "hades_gog")) is None
+
+
+@pytest.mark.parametrize("bad", [{}, {"": "1"}, {"Bad Store!": "1"}, {"gog": ""}, {"gog": "a b"}, {"gog": "x" * 257},
+                                 {f"s{i}": "1" for i in range(9)}, "gog:1", None])
+def test_store_id_link_validation(session, ctx, game, bad):
+    bob = user(session, ctx.settings, "bob")
+    with pytest.raises(AtlasError):
+        proposals.create(session, ctx, bob, "link_ids", game, {"provider_ids": bad})
