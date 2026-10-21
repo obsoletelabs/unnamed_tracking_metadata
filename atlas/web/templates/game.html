@@ -48,7 +48,16 @@
 {% if shots %}<div class="shots">{% for a in shots %}<a href="/media/{{ a.blob_hash }}"><img src="/media/{{ a.blob_hash }}" alt="{{ a.kind|replace('_', ' ') }}" loading="lazy"></a>{% endfor %}</div>{% endif %}
 <p class="muted small">{{ art_total }} image{{ '' if art_total == 1 else 's' }} known, {{ art_cached }} cached here. Images are shown only after this server has downloaded and checked them.</p>
 {% if p.user %}
-<details><summary>Suggest artwork</summary>
+<details><summary>Upload or suggest artwork</summary>
+<form class="card" method="post" action="/game/{{ g.id }}/artwork/upload" enctype="multipart/form-data">{{ csrf(p.csrf) }}
+  <h3>Upload an image</h3>
+  <label for="ukind">Type</label><select id="ukind" name="kind">{% for k in art_kinds %}<option value="{{ k }}">{{ k|replace('_', ' ') }}</option>{% endfor %}</select>
+  <label for="ufile">Image file <span class="hint">PNG, JPEG, WebP or GIF; checked before it is stored</span></label><input id="ufile" type="file" name="file" accept="image/png,image/jpeg,image/webp,image/gif" required>
+  <label for="unote">Source / note</label><textarea id="unote" name="note" maxlength="2000"></textarea>
+  <p class="small muted">By uploading you confirm you may share this image under the site's contribution licence.</p>
+  <p><button type="submit">Upload</button></p>
+</form>
+<h3>Or link an image</h3>
 <form class="card" method="post" action="/game/{{ g.id }}/artwork">{{ csrf(p.csrf) }}
   <label for="kind">Type</label><select id="kind" name="kind">{% for k in art_kinds %}<option value="{{ k }}">{{ k|replace('_', ' ') }}</option>{% endfor %}</select>
   <label for="url">Image address <span class="hint">https:// link to the image file</span></label><input id="url" type="url" name="url" required maxlength="1000" placeholder="https://">

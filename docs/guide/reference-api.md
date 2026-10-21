@@ -17,10 +17,11 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
+| `GET` | `/artwork/{art_id}/image` | read | One image: its cached bytes, or a redirect to the original public address while it is not cached. |
 | `GET` | `/games` | read | Search records by title (`q`, optional `type`, `limit`). Includes `custom` values. |
 | `GET` | `/games/{cid}` | read | One record. Follows merge redirects (`redirected_from`). ETag = id-version. |
 | `GET` | `/games/{cid}/achievements` | read | Merged achievement list: name, description, icon, hidden, global percent. No per-user progress. |
-| `GET` | `/games/{cid}/artwork` | read | Artwork by trust and priority, plus the best image per kind; `media_url` once cached. |
+| `GET` | `/games/{cid}/artwork` | read | Artwork by trust and priority, plus the best image per kind; `media_url` once cached, and `image_url` always. |
 | `GET` | `/games/{cid}/explain` | read | Which source and rule produced each field (provenance). |
 | `GET` | `/media/{digest}` | read | A cached, verified image. Immutable; `nosniff`. |
 | `POST` | `/resolve` | read | Batch (max `max_resolve`): store ids / titles to canonical ids with method and confidence. Read-only. |

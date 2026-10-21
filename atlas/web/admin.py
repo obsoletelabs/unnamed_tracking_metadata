@@ -204,6 +204,22 @@ def _field_state(p: Ctx, field: str) -> dict[str, Any]:
             "state": "Stored in the database" if stored else ("Set in the environment" if in_env else "Not set")}
 
 
+@router.post("/admin/media/retry")
+def media_retry(p: Annotated[Ctx, Depends(admin_form)]):
+    n = media.retry_pending(p.session)
+    p.session.add(AuditEntry(actor_id=p.me.id, action="media_retry", target="artwork", detail={"images": n}))
+    return go("/admin/integrations", "saved")
+
+
+@router.post("/admin/media/clear")
+def media_clear(p: Annotated[Ctx, Depends(admin_form)], confirm: Annotated[str, Form()] = ""):
+    if confirm != "clear":
+        raise HTTPException(400, "Type clear to confirm.")
+    n = media.clear_cache(p.session, p.st.ctx.settings)
+    p.session.add(AuditEntry(actor_id=p.me.id, action="media_clear", target="artwork", detail={"images": n}))
+    return go("/admin/integrations", "saved")
+
+
 @router.get("/admin/integrations", response_class=HTMLResponse)
 def integrations_page(p: Annotated[Ctx, Depends(admin_page)]):
     active = p.st.providers.providers
@@ -214,7 +230,8 @@ def integrations_page(p: Annotated[Ctx, Depends(admin_page)]):
         fields = [{"key": f, "label": label, **_field_state(p, f)} for f, label in (spec[1] if spec else ())]
         rows.append({**item, "active": item["name"] in active, "available": bool(item["needs"]), "fields": fields,
                      "failures": failures.get(item["name"], 0), "editable": spec is not None})
-    return render(p, "admin_integrations.html", rows=rows, docs=DOCS, can_store=secrets_box.available(p.st.base),
+    return render(p, "admin_integrations.html", rows=rows, art=media.stats(p.session),
+                  caching=p.st.ctx.settings.media_cache_enabled, docs=DOCS, can_store=secrets_box.available(p.st.base),
                   stores=integrations.STORES,
                   steam_on=p.st.ctx.settings.steam_enabled)
 

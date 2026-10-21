@@ -285,3 +285,44 @@ def test_upgrade_preserves_existing_rows(tmp_path):
     with engine.connect() as c:
         assert c.execute(text("SELECT media_type FROM canonical")).scalar() == "game"
     assert Canonical.__table__.c.media_type.server_default is not None
+
+
+def test_uploaded_image_is_cached_on_adoption_and_survives_clearing(session, ctx, resolver, tmp_path, maker):
+    cid = seed(session, ctx)
+    s = ctx.settings.model_copy(update={"media_dir": str(tmp_path), "public_url": "https://atlas.example"})
+    uctx = type(ctx)(s, ctx.identity)
+    data = png(8, 6)
+    digest = media.store(s, data, "png")
+    facets.set_artwork(session, uctx, cid, "community", [
+        {"kind": "key_art", "url": f"https://atlas.example/media/{digest}", "width": 8, "height": 6},
+        {"kind": "banner", "url": "https://img.test/other.png"}])
+    session.commit()
+    own, other = (session.scalars(select(Artwork).where(Artwork.kind == k)).one() for k in ("key_art", "banner"))
+    assert own.blob_hash == digest and own.content_type == "image/png" and own.size_bytes == len(data)
+    assert other.blob_hash is None  # a normal link still waits for the background download
+    assert media.cache_pending(maker, s, client_for(lambda _r: httpx.Response(200, content=png(5, 5)))) == 1
+    session.expire_all()
+    assert media.stats(session) == {"total": 2, "cached": 2, "failing": 0}
+    assert media.clear_cache(session, s) == 1  # only the downloaded one
+    session.commit()
+    session.expire_all()
+    own, other = (session.scalars(select(Artwork).where(Artwork.kind == k)).one() for k in ("key_art", "banner"))
+    assert own.blob_hash == digest and media.find_blob(s, digest) and other.blob_hash is None
+    other.fail_count, other.next_try_at = 3, media.now()
+    assert media.retry_pending(session) == 1 and other.fail_count == 0 and other.next_try_at is None
+
+
+def test_api_image_passes_uncached_clients_through_to_the_source(api):
+    body = {"connection": {"source_kind": "manual", "source": "manual", "source_scope": "ops"},
+            "observations": [{"external_id": "1", "title": "Hades", "release_date": "2020-09-17"}]}
+    cid = api.post("/api/v2/observations", json=body).json()["results"][0]["atlas"]["canonical_id"]
+    api.put(f"/api/v2/games/{cid}/artwork", json={"items": [{"kind": "key_art", "url": "https://img.test/c.png"}]})
+    item = api.get(f"/api/v2/games/{cid}/artwork").json()["results"][0]
+    assert item["cached"] is False and item["image_url"] == f"/api/v2/artwork/{item['id']}/image"
+    r = api.get(item["image_url"], follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == "https://img.test/c.png"
+    media.cache_pending(api.state.maker, api.settings, client_for(lambda _r: httpx.Response(200, content=png())))
+    cached = api.get(item["image_url"], follow_redirects=False)
+    assert cached.status_code == 200 and cached.headers["content-type"] == "image/png"
+    assert api.get("/api/v2/artwork/nope/image").status_code == 404
+    assert api.get(item["image_url"], headers={"Authorization": "Bearer nope"}).status_code in (401, 403)

@@ -3,11 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 
 from .. import accounts, auth, custom, facets, feed, mail, proposals, service, social
+from .. import media as images
 from ..api.routes import _guard_upstream, media_response
 from ..merge import SCALAR_FIELDS, UNION_FIELDS
 from ..models import (
@@ -438,6 +439,32 @@ def propose_artwork(cid: str, p: Annotated[Page, Depends(user_form)], kind: Anno
     try:
         pr = proposals.create(p.session, p.st.ctx, p.me, "artwork", g.id,
                               {"items": [{"kind": kind, "url": url.strip()}]}, note)
+    except AtlasError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
+
+
+@router.post("/game/{cid}/artwork/upload")
+async def upload_artwork(cid: str, p: Annotated[Page, Depends(user_form)], file: Annotated[UploadFile, File()],
+                         kind: Annotated[str, Form()], note: Annotated[str, Form()] = ""):
+    """Upload an image file instead of linking one. It is checked and stored here, then goes through review."""
+    g, _ = live_game(p, cid)
+    s = p.st.ctx.settings
+    data = await file.read(s.media_max_bytes + 1)
+    if len(data) > s.media_max_bytes:
+        raise HTTPException(400, f"Images may be at most {s.media_max_bytes // 1024 // 1024} MB.")
+    try:
+        ext, _ctype, w, h = images.validate_image(data, s)
+        digest = images.store(s, data, ext)
+    except images.MediaError as exc:
+        raise HTTPException(400, f"That is not a usable image: {exc}") from exc
+    except OSError as exc:
+        raise HTTPException(503, "This node cannot store images right now; the administrator should check "
+                            "ATLAS_MEDIA_DIR.") from exc
+    url = s.public_url.rstrip("/") + "/media/" + digest
+    try:
+        pr = proposals.create(p.session, p.st.ctx, p.me, "artwork", g.id,
+                              {"items": [{"kind": kind, "url": url, "width": w, "height": h}]}, note)
     except AtlasError as exc:
         raise HTTPException(400, str(exc)) from exc
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
