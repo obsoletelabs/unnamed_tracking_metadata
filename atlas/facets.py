@@ -8,8 +8,8 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import feed
-from .models import Achievement, Artwork, Canonical
+from . import feed, media
+from .models import Achievement, Artwork, Canonical, now
 from .normalize import norm_namespace
 from .service import AtlasError, Ctx, write_lock
 
@@ -121,6 +121,20 @@ def _live(session: Session, cid: str) -> Canonical:
     return row
 
 
+def adopt_local_blob(ctx: Ctx, art: Artwork) -> None:
+    """An image uploaded to this node is addressed by its own public /media/<sha256> URL: it is already cached.
+
+    Followers fetch the same URL from this node like any other image, so uploads federate without a special case."""
+    base = ctx.settings.public_url.rstrip("/") + "/media/"
+    if not art.url.startswith(base) or art.blob_hash:
+        return
+    found = media.find_blob(ctx.settings, art.url[len(base):])
+    if found is not None:
+        path, ctype = found
+        digest = art.url[len(base):]
+        art.blob_hash, art.content_type, art.size_bytes, art.cached_at = digest, ctype, path.stat().st_size, now()
+
+
 def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[dict[str, Any]], *,
                 redistributable: bool = False, log: bool = True) -> int:
     """Replace the artwork a source contributes to a record. Cached bytes survive for unchanged URLs."""
@@ -144,9 +158,11 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
                 Artwork.canonical_id == cid, Artwork.kind == i["kind"], Artwork.url == i["url"])).first()
             if clash:  # another source already lists this exact image; it keeps it
                 continue
-            session.add(Artwork(canonical_id=cid, source=source, kind=i["kind"], url=i["url"],
-                                priority=i["priority"], width=i.get("width"), height=i.get("height"),
-                                redistributable=redistributable))
+            art = Artwork(canonical_id=cid, source=source, kind=i["kind"], url=i["url"],
+                          priority=i["priority"], width=i.get("width"), height=i.get("height"),
+                          redistributable=redistributable)
+            adopt_local_blob(ctx, art)
+            session.add(art)
     session.flush()
     if log and redistributable and ctx.settings.role == "authority":
         feed.append(session, ctx.identity, "artwork", {"canonical_id": cid, "source": source, "items": items})

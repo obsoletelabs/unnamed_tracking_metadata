@@ -343,7 +343,9 @@ class AchievementsBody(BaseModel):
 def _art_out(a: Artwork) -> dict[str, Any]:
     return {"id": a.id, "kind": a.kind, "url": a.url, "width": a.width, "height": a.height, "source": a.source,
             "cached": a.blob_hash is not None,
-            "media_url": f"/api/v2/media/{a.blob_hash}" if a.blob_hash else None}
+            "media_url": f"/api/v2/media/{a.blob_hash}" if a.blob_hash else None,
+            # always usable: the cached bytes when we have them, else a redirect to the original source
+            "image_url": f"/api/v2/artwork/{a.id}/image"}
 
 
 @router.get("/games/{cid}/artwork", tags=["read"])
@@ -387,6 +389,23 @@ def put_achievements(cid: str, body: AchievementsBody, st: St, session: Sess,
     n = facets.set_achievements(session, st.ctx, cid, "curator", body.items,
                                 redistributable=st.ctx.settings.role == "authority")
     return {"count": n}
+
+
+@router.get("/artwork/{art_id}/image", tags=["read"])
+def get_artwork_image(art_id: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+    """Cached bytes when available; otherwise pass the client through to the image's original public address."""
+    from fastapi.responses import RedirectResponse
+
+    art = session.get(Artwork, art_id)
+    if art is None:
+        raise HTTPException(404, "no such image")
+    if art.blob_hash and media.find_blob(st.ctx.settings, art.blob_hash):
+        return media_response(st, art.blob_hash)
+    try:
+        media.check_url(art.url, st.ctx.settings)  # only ever send clients to plain public addresses
+    except media.MediaError:
+        raise HTTPException(404, "image is not available") from None
+    return RedirectResponse(art.url, status_code=307, headers={"Cache-Control": "private, max-age=300"})
 
 
 def media_response(st: AppState, digest: str):

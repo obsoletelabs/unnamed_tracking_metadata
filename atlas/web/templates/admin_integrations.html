@@ -25,6 +25,13 @@
 <p>Link its ids on a game page or have a plugin submit them.</p>
 {% endif %}
 </article>{% endfor %}</section>
+<section class="card"><h2>Artwork cache</h2>
+<p>Atlas downloads and checks artwork before serving it. {{ art.cached }} of {{ art.total }} images are cached{% if art.failing %}, {{ art.failing }} are failing and waiting to retry{% endif %}. Caching is currently <strong>{{ 'on' if caching else 'off' }}</strong>; switch it in <a href="/admin/settings">Settings</a>.</p>
+<form method="post" action="/admin/media/retry">{{ csrf(p.csrf) }}<button type="submit">Retry uncached images now</button></form>
+<form method="post" action="/admin/media/clear">{{ csrf(p.csrf) }}
+<label for="clear-confirm">Clear the cache: deletes downloaded provider images (uploads are kept). Type <code>clear</code> to confirm.</label>
+<input id="clear-confirm" name="confirm" type="text" required pattern="clear" autocomplete="off"> <button type="submit">Clear cached images</button></form>
+<p class="small muted">Clients can still request an uncached image through the API: <code>/api/v2/artwork/&lt;id&gt;/image</code> serves cached bytes, or redirects to the original public address.</p></section>
 <section class="card"><h2>Linking stores</h2>
 <p>Store ids are linked to a game as <code>namespace:id</code> (for example when adding a game, or by a plugin). These namespaces get a link to the store page on the game page:</p>
 <ul>{% for ns, s in stores.items() %}<li><code>{{ ns }}</code> · {{ s[0] }}{% if not s[1] %} <span class="muted">(id only, no public link)</span>{% endif %}</li>{% endfor %}</ul>
