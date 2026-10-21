@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Two-factor sign-in · {{ app_name }}{% endblock %}
+{% block content %}
+<div class="narrow card">
+<h1>Verify your sign-in</h1>
+<p>Enter the six-digit code from your authenticator, or one of your saved recovery codes.</p>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="/mfa">{{ csrf(p.csrf) }}
+<label for="code">Authenticator or recovery code</label><input id="code" name="code" type="text" autocomplete="one-time-code" required maxlength="64" autofocus>
+<p><button type="submit">Verify sign-in</button></p></form>
+<p class="small muted">Recovery codes work once. Resetting your password does not remove two-factor protection.</p>
+<form method="post" action="/logout">{{ csrf(p.csrf) }}<button class="secondary" type="submit">Cancel and sign out</button></form>
+</div>
+{% endblock %}

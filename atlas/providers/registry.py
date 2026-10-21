@@ -62,6 +62,11 @@ class Fetcher:
         self._budgets: dict[tuple[str, str], _Budget] = {}
         self._lock = threading.Lock()
         self._clock = clock
+        self._failure_counts: dict[str, int] = {}
+
+    def failure_counts(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._failure_counts)
 
     def _budget(self, p: Provider, kind: str = "fetch") -> _Budget:
         """Searches get a third of the budget so they cannot starve fetches."""
@@ -95,6 +100,8 @@ class Fetcher:
                 one = p.fetch(self.client, arg)
                 results = [one] if one else []
         except ProviderError:
+            with self._lock:
+                self._failure_counts[p.name] = self._failure_counts.get(p.name, 0) + 1
             b.failures += 1
             if b.failures >= 5:
                 b.open_until = self._clock() + 60

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .models import Token, User, now
 
-SCOPES = ("read", "contribute", "curate", "sync", "admin")
+SCOPES = ("read", "contribute", "curate", "sync", "metrics", "admin")
 PREFIX = "atl_"
 
 

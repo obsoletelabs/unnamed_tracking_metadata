@@ -9,7 +9,7 @@ from fastapi import Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from .. import accounts, ratelimit
+from .. import accounts, mfa, ratelimit
 from ..api.deps import AppState, get_session, state
 from ..models import User, UserSession
 
@@ -48,11 +48,13 @@ class Page:
 
     @property
     def can_review(self) -> bool:
-        return bool(self.user and accounts.can_review(self.st.ctx.settings, self.user))
+        return bool(self.user and accounts.can_review(self.st.ctx.settings, self.user)
+                    and mfa.access_allowed(self.session, self.st.ctx.settings, self.user, self.login))
 
     @property
     def is_admin(self) -> bool:
-        return bool(self.user and self.user.role == "admin")
+        return bool(self.user and self.user.role == "admin"
+                    and mfa.access_allowed(self.session, self.st.ctx.settings, self.user, self.login))
 
     @property
     def flash(self) -> str | None:
@@ -63,6 +65,16 @@ def page(request: Request, st: Annotated[AppState, Depends(state)],
          session: Annotated[Session, Depends(get_session, scope="function")]) -> Page:
     found = accounts.session_user(session, request.cookies.get(SESSION_COOKIE))
     if found:
+        user, login = found
+        if not mfa.access_allowed(session, st.ctx.settings, user, login):
+            from ..models import UserMfa
+
+            factor = session.get(UserMfa, user.id)
+            enrolled = bool(factor and factor.enabled_at)
+            allowed = ("/mfa", "/logout") if enrolled else ("/me/security", "/me/security/start",
+                                                          "/me/security/enable", "/logout")
+            if request.url.path not in allowed:
+                raise MfaRequired("/mfa" if enrolled else "/me/security")
         return Page(request, st, session, found[0], found[1], found[1].csrf)
     token = request.cookies.get(ANON_CSRF_COOKIE) or ""
     fresh = None
@@ -84,6 +96,11 @@ def csrf_form(p: Annotated[Page, Depends(page)], csrf: Annotated[str, Form()] = 
 
 class LoginRequired(Exception):
     pass
+
+
+class MfaRequired(Exception):
+    def __init__(self, target: str):
+        self.target = target
 
 
 def user_page(p: Annotated[Page, Depends(page)]) -> Page:
@@ -133,7 +150,10 @@ def throttle(p: Page, key: str, limit: int, window: int, what: str = "Too many a
 
 
 def go(url: str, flash: str | None = None, p: Page | None = None) -> RedirectResponse:
-    resp = RedirectResponse(url + (("&" if "?" in url else "?") + "m=" + flash if flash else ""), status_code=303)
+    target, anchor, fragment = url.partition("#")
+    if flash:
+        target += ("&" if "?" in target else "?") + "m=" + flash
+    resp = RedirectResponse(target + anchor + fragment, status_code=303)
     if p is not None and p.new_cookie:
         set_anon_cookie(resp, p)
     return resp

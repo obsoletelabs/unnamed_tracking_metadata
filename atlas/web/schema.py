@@ -28,7 +28,9 @@ def schema_home(p: Annotated[Ctx, Depends(admin_page)]):
         rows.append({"t": t, "fields": custom.fields_for(p.session, t.key),
                      "count": p.session.query(Canonical).filter(Canonical.media_type == t.key,
                                                                 Canonical.merged_into.is_(None)).count()})
-    return render(p, "admin_schema.html", rows=rows, kinds=custom.KINDS)
+    from ..custom_compat import renames
+
+    return render(p, "admin_schema.html", rows=rows, kinds=custom.KINDS, renamed_fields=renames(p.session))
 
 
 @router.post("/admin/schema/types")

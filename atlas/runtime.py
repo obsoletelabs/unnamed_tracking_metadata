@@ -81,6 +81,8 @@ REGISTRY: tuple[Spec, ...] = (
     S("max_follows", "Follows per user", "Community", "int", lo=1, hi=100_000),
     S("password_min_length", "Minimum password length", "Security", "int", lo=8, hi=64),
     S("session_ttl_days", "Sign-in lifetime (days)", "Security", "int", lo=1, hi=90),
+    S("require_mfa_for_privileged", "Require two-factor sign-in for reviewers and administrators", "Security", "bool",
+      "Includes reputation-based reviewers. Existing sessions must enrol or complete a second factor before continuing."),
     S("rate_limit_per_minute", "API requests per minute per token", "Security", "int", lo=1, hi=100_000),
     S("max_batch", "Largest observation batch", "Security", "int", lo=1, hi=5000),
     S("max_resolve", "Largest resolve batch", "Security", "int", lo=1, hi=5000),

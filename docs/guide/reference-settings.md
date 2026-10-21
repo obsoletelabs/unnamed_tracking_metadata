@@ -57,6 +57,7 @@ These can be changed live in **Admin → Settings** without restarting. Each cha
 | --- | --- | --- | --- |
 | **Minimum password length** (`password_min_length`) | number (8–64) | `10` |  |
 | **Sign-in lifetime (days)** (`session_ttl_days`) | number (1–90) | `14` |  |
+| **Require two-factor sign-in for reviewers and administrators** (`require_mfa_for_privileged`) | on/off | `False` | Includes reputation-based reviewers. Existing sessions must enrol or complete a second factor before continuing. |
 | **API requests per minute per token** (`rate_limit_per_minute`) | number (1–100000) | `600` |  |
 | **Largest observation batch** (`max_batch`) | number (1–5000) | `1000` |  |
 | **Largest resolve batch** (`max_resolve`) | number (1–5000) | `200` |  |

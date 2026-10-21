@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     max_resolve: int = Field(default=200, ge=1, le=5000)
     rate_limit_per_minute: int = Field(default=600, ge=1)
     max_body_bytes: int = Field(default=2_000_000, ge=1024)
+    json_logs: bool = False
+    metrics_enabled: bool = False
 
     # Providers (all optional)
     steam_enabled: bool = True
@@ -94,6 +96,7 @@ class Settings(BaseSettings):
     # Community
     registration: Literal["open", "closed"] = "open"
     session_ttl_days: int = Field(default=14, ge=1, le=90)
+    require_mfa_for_privileged: bool = False
     auto_approve_reputation: int = Field(default=50, ge=0)  # 0 disables auto-approval
     curator_reputation: int = Field(default=500, ge=0)  # reputation that grants review rights; 0 = manual grants only
     max_pending_proposals: int = Field(default=20, ge=1)

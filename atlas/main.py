@@ -5,18 +5,20 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Annotated
 from urllib.parse import quote
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
 from . import __version__, auth, backup, custom, mail, media, oidc, ratelimit, sync
-from .api.deps import AppState
+from .api.deps import AppState, get_session, require
 from .api.routes import router
 from .db import make_engine, make_sessionmaker, upgrade
+from .observability import RequestTelemetry, Stats, configure_logging
 from .pages import seed_pages
 from .providers import Fetcher, build_registry
 from .service import AtlasError, Ctx
@@ -26,9 +28,10 @@ from .web import STATIC_DIR, templates
 from .web.account import router as account_router
 from .web.admin import router as admin_router
 from .web.backups import router as backups_router
-from .web.deps import LoginRequired
+from .web.deps import LoginRequired, MfaRequired
 from .web.federation import router as federation_router
 from .web.importing import router as import_router
+from .web.mfa import router as mfa_router
 from .web.oidc import router as oidc_router
 from .web.routes import router as web_router
 from .web.routes import web_headers
@@ -184,10 +187,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.atlas = AppState(ctx=ctx, maker=maker, providers=Fetcher(settings, build_registry(settings)), base=settings,
                                  http=httpx.Client(timeout=15, trust_env=False))
     app.add_middleware(BodyLimit, limit=settings.max_body_bytes)
+    if settings.json_logs or settings.metrics_enabled:
+        stats = Stats()
+        app.state.observability = stats
+        if settings.json_logs:
+            configure_logging()
+        app.add_middleware(RequestTelemetry, state=app.state.atlas, stats=stats, json_logs=settings.json_logs)
+    if settings.metrics_enabled:
+        @app.get("/metrics", include_in_schema=False)
+        def metrics(session: Annotated[Session, Depends(get_session, scope="function")],
+                    _principal: Annotated[auth.Principal, Depends(require("metrics"))]):
+            return PlainTextResponse(stats.render(app.state.atlas, session),
+                                     media_type="text/plain; version=0.0.4", headers={"Cache-Control": "no-store"})
     app.include_router(router)
     app.include_router(web_router)
     app.include_router(admin_router)
     app.include_router(account_router)
+    app.include_router(mfa_router)
     app.include_router(schema_router)
     app.include_router(social_router)
     app.include_router(federation_router)
@@ -207,6 +223,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         target = request.url.path + (("?" + request.url.query) if request.url.query else "")
         return RedirectResponse("/login?next=" + quote(target, safe="/"), status_code=303)
 
+    @app.exception_handler(MfaRequired)
+    async def _mfa_required(_: Request, exc: MfaRequired):
+        return RedirectResponse(exc.target, status_code=303, headers={"Cache-Control": "no-store"})
+
     @app.exception_handler(HTTPException)
     async def _http_error(request: Request, exc: HTTPException):
         if request.url.path.startswith("/api/"):
@@ -222,6 +242,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(AtlasError)
     async def _atlas_error(_: Request, exc: AtlasError):
         return JSONResponse({"error": {"code": exc.code, "message": str(exc)}}, status_code=_STATUS.get(exc.code, 400))
+
+    @app.exception_handler(Exception)
+    async def _unexpected(request: Request, exc: Exception):
+        request_id = request.scope.get("atlas_request_id", "")
+        log.error("request failed", extra={"atlas_event": {"event": "http.error", "request_id": request_id,
+                  "node_id": ctx.identity.node_id, "error_type": type(exc).__name__}})
+        headers = {"X-Request-ID": request_id} if request_id else {}
+        error = HTTPException(500, "An internal error occurred. Please try again.", headers=headers)
+        return await _http_error(request, error)
 
     return app
 

@@ -474,6 +474,9 @@ def delete_account(session: Session, user: User) -> None:
     from .models import OidcAccess, OidcCode, OidcLink, Outbox
 
     old_name, old_email = user.username, user.email
+    from .models import UserMfa
+
+    session.execute(delete(UserMfa).where(UserMfa.user_id == user.id))
     accounts.end_all_sessions(session, user.id)
     session.execute(delete(Token).where(Token.user_id == user.id))
     session.execute(delete(OidcLink).where(OidcLink.user_id == user.id))

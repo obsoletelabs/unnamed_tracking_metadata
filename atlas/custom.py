@@ -47,11 +47,14 @@ def publish(session: Session, ctx: Ctx) -> None:
         feed.append(session, ctx.identity, "schema", snapshot(session))
 
 
-def apply_snapshot(session: Session, snap: dict[str, Any]) -> None:
+def apply_snapshot(session: Session, snap: dict[str, Any], node_id: str | None = None) -> None:
     """Mirror side: make the upstream-origin definitions equal to the snapshot; local ones always win.
 
     Every definition goes through the same validation as one typed into the admin UI; a bad entry is skipped (a
     misbehaving upstream must not be able to stall replication or plant markup in labels)."""
+    from .custom_compat import legacy_snapshot
+
+    snap = legacy_snapshot(session, snap)
     keep_t: set[str] = set()
     for t in snap.get("types", []) if isinstance(snap.get("types"), list) else []:
         try:
@@ -62,13 +65,19 @@ def apply_snapshot(session: Session, snap: dict[str, Any]) -> None:
         existing = session.get(MediaType, key)
         if existing is not None and existing.origin == "local":
             continue
+        if existing is not None and node_id and existing.origin_node not in (None, node_id):
+            continue  # another authority owns this shared schema name
         if existing is None:
-            existing = MediaType(key=key, origin="upstream")
+            existing = MediaType(key=key, origin="upstream", origin_node=node_id)
             session.add(existing)
+        elif node_id:
+            existing.origin_node = node_id
         existing.label, existing.enabled, existing.position, existing.labels = label, enabled, position, labels
         keep_t.add(key)
     session.flush()
     for t in session.scalars(select(MediaType).where(MediaType.origin == "upstream")).all():
+        if node_id and t.origin_node != node_id:
+            continue
         if t.key in keep_t:
             continue
         if session.scalars(select(Canonical.id).where(Canonical.media_type == t.key).limit(1)).first():
@@ -88,13 +97,20 @@ def apply_snapshot(session: Session, snap: dict[str, Any]) -> None:
                                                      FieldDef.key == c["key"])).first()
         if row is not None and row.origin == "local":
             continue
+        if row is not None and node_id and row.origin_node not in (None, node_id):
+            continue
         if row is None:
-            row = FieldDef(media_type=c["media_type"], key=c["key"], origin="upstream", kind=c["kind"], label="")
+            row = FieldDef(media_type=c["media_type"], key=c["key"], origin="upstream", origin_node=node_id,
+                           kind=c["kind"], label="")
             session.add(row)
+        elif node_id:
+            row.origin_node = node_id
         row.label, row.kind, row.choices, row.help = c["label"], c["kind"], c["choices"], c["help"]
         row.public, row.editable, row.position = c["public"], c["editable"], c["position"]
         keep_f.add((c["media_type"], c["key"]))
     for row in session.scalars(select(FieldDef).where(FieldDef.origin == "upstream")).all():
+        if node_id and row.origin_node != node_id:
+            continue
         if (row.media_type, row.key) not in keep_f:
             session.delete(row)
     session.flush()
@@ -311,9 +327,16 @@ def validate_value(f: FieldDef, raw: Any) -> Any:
 
 def clean_values(session: Session, media_type: str, values: dict[str, Any], *, editable_only: bool) -> dict[str, Any]:
     """Validate a {key: raw} mapping; unknown or non-editable keys are errors, empty values are dropped."""
+    from .custom_compat import key_for
+
     defs = {f.key: f for f in fields_for(session, media_type)}
     out: dict[str, Any] = {}
+    seen: set[str] = set()
     for key, raw in (values or {}).items():
+        key = key_for(session, media_type, key)
+        if key in seen:
+            raise AtlasError(f"custom field {key!r} was supplied twice through an old and new name")
+        seen.add(key)
         f = defs.get(key)
         if f is None:
             raise AtlasError(f"unknown field {key!r} for {media_type}")

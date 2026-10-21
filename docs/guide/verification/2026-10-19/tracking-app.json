@@ -1,0 +1,26 @@
+{
+  "started_at": "2026-10-19T06:20:17.598550+00:00",
+  "checks": [
+    "published signed package preview, explicit permissions, installation and a real healthy worker",
+    "ordinary host user inherits configuration without seeing the token or obtaining administrator access",
+    "real search, canonical/store identifiers, enrichment, selection and per-account session ownership",
+    "existing game refresh consumes Atlas while preserving manually locked fields",
+    "unreachable Atlas degrades metadata work without breaking local game reads or protected data"
+  ],
+  "package": "official.metadata-atlas-0.2.0.utp",
+  "package_sha256": "4f33d2744a2f14c43bb28c66cc5315b3025ac285d3c9cccd5b70112dc9c940fe",
+  "package_digest": "adee8c1d44b86f416722cd5b20332c9733c2b9bead6a365f2bcb8f28f03f307f",
+  "publisher_key_id": "unnamed-tracking-official-2026-10-07-v2",
+  "refresh_provider_label": "Library",
+  "canonical_id": "atlas:01m59d2vdwy1mjdv4a94c5bzmq",
+  "status": "passed",
+  "limits": [
+    "loopback/container HTTP; production TLS and browser layout not exercised",
+    "runtime uses the documented NONBUBBLE_ENV development fallback inside disposable containers",
+    "public artwork download, achievements and live external provider calls not exercised"
+  ],
+  "atlas_source_commit": "81a7ff2f6f48386c80855173403ce9a55520a632",
+  "host_commit": "5e0f61438e6905b51495b5c505ab925cb71ec6bb",
+  "plugins_commit": "c0b3be0cd33258d97472242d09fa603507200e03",
+  "host_database": "PostgreSQL 18.6"
+}

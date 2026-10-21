@@ -134,6 +134,28 @@ class SyncCursor(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class ReplicatedFeed(Base):
+    """Pinned original feed identity, retained so mirrors can relay without re-signing."""
+
+    __tablename__ = "replicated_feed"
+
+    node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    public_key: Mapped[str] = mapped_column(String(100))
+
+
+class ReplicatedChange(Base):
+    __tablename__ = "replicated_change"
+
+    node_id: Mapped[str] = mapped_column(ForeignKey("replicated_feed.node_id"), primary_key=True)
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    body: Mapped[dict[str, Any]] = mapped_column(JSON)
+    body_hash: Mapped[str] = mapped_column(String(64))
+    signature: Mapped[str] = mapped_column(String(128))
+    key_id: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class NodeState(Base):
     """Key/value node metadata (node id, signing key)."""
 
@@ -247,6 +269,20 @@ class UserSession(Base):
     csrf: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    mfa_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserMfa(Base):
+    __tablename__ = "user_mfa"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), primary_key=True)
+    secret_enc: Mapped[str] = mapped_column(Text)
+    setup_session_id: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    recovery_hashes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Proposal(Base):
@@ -353,6 +389,8 @@ class MediaType(Base):
 
     __tablename__ = "media_type"
 
+    origin_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     key: Mapped[str] = mapped_column(String(32), primary_key=True)
     label: Mapped[str] = mapped_column(String(60))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -363,6 +401,8 @@ class MediaType(Base):
 
 class FieldDef(Base):
     __tablename__ = "field_def"
+
+    origin_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
     media_type: Mapped[str] = mapped_column(ForeignKey("media_type.key"), index=True)

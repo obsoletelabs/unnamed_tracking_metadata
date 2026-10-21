@@ -11,6 +11,7 @@ import base64
 import hashlib
 import io
 import json
+import os
 import re
 import tarfile
 import tempfile
@@ -102,8 +103,12 @@ def create(settings: Settings, engine: Engine, out: Path, *, include_media: bool
         tmp = Path(tmp_name)
         if engine.dialect.name == "postgresql":
             conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+        elif engine.dialect.name == "sqlite":
+            conn.exec_driver_sql("BEGIN")  # sqlite3 legacy transaction mode does not begin for SELECTs
         revision = _revision(conn)
-        with tarfile.open(part, "w:gz") as tar:
+        # Protect signing keys and account data while the archive is being written too.
+        descriptor = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as output, tarfile.open(fileobj=output, mode="w:gz") as tar:
             for table in _tables():
                 path = tmp / f"{table.name}.jsonl"
                 n = 0

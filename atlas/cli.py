@@ -70,14 +70,39 @@ def cmd_token(args) -> int:
     return 0
 
 
+def cmd_recover_mirror(args) -> int:
+    from pathlib import Path
+
+    from . import backup, promotion
+
+    settings = get_settings()
+    if not args.old_authority_fenced:
+        print("recover-mirror: fence the old authority before cutover and confirm --old-authority-fenced",
+              file=sys.stderr)
+        return 2
+    engine = make_engine(settings.database_url)
+    try:
+        result = promotion.candidate(settings, engine, args.from_authority, args.confirm_mirror, Path(args.output))
+    except (promotion.PromotionError, backup.BackupError) as exc:
+        print(f"recover-mirror: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        engine.dispose()
+    print(json.dumps(result, indent=2))
+    print("Offline candidate only. Keep the archive private: it contains a new signing key. "
+          "Restore to an empty node, create fresh credentials and explicitly re-pin followers.", file=sys.stderr)
+    return 0
+
+
 def cmd_node(_) -> int:
     settings, maker = _maker()
     with maker() as session:
         ident = load_identity(session)
         session.commit()
-    pub = ident.public_b64
+    pub = ident.trust_public_b64
     print(f"node_id:    {ident.node_id}")
     print(f"public_key: {pub}")
+    print(f"signing_key_id: {ident.key_id}")
     print(f"mirrors trust this node with:\n  ATLAS_TRUSTED_KEYS='{json.dumps({ident.node_id: pub})}'")
     assert key_id_for(__import__("base64").b64decode(pub)) == ident.node_id
     return 0
@@ -161,9 +186,15 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--no-media", action="store_true", help="leave cached artwork out (it can be downloaded again)")
     b.add_argument("--force", action="store_true", help="restore: replace any data already in the database")
     b.set_defaults(fn=cmd_backup)
+    recovery = sub.add_parser("recover-mirror", help="build an offline authority candidate from one retained signed feed")
+    recovery.add_argument("--from-authority", required=True, help="independently verified original authority node ID")
+    recovery.add_argument("--confirm-mirror", required=True, help="exact source mirror node ID")
+    recovery.add_argument("--old-authority-fenced", action="store_true", help="confirm the old writer is fenced")
+    recovery.add_argument("--output", required=True, help="new private backup archive path; existing files are refused")
+    recovery.set_defaults(fn=cmd_recover_mirror)
     t = sub.add_parser("token")
     t.add_argument("--name", required=True)
-    t.add_argument("--scopes", required=True, help="comma separated: read,contribute,curate,sync,admin")
+    t.add_argument("--scopes", required=True, help="comma separated: " + ",".join(auth.SCOPES))
     t.add_argument("--days", type=int)
     t.set_defaults(fn=cmd_token)
     sub.add_parser("node").set_defaults(fn=cmd_node)

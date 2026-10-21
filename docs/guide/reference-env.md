@@ -57,6 +57,8 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_MAX_RESOLVE` | `200` | Largest `/resolve` batch. **live** |
 | `ATLAS_RATE_LIMIT_PER_MINUTE` | `600` | API requests per token per minute (unauthenticated callers get 60 per address). **live** |
 | `ATLAS_MAX_BODY_BYTES` | `2000000` | Largest request body accepted. |
+| `ATLAS_JSON_LOGS` | `false` | Opt-in structured request/application logs; no query, body or credential logging. |
+| `ATLAS_METRICS_ENABLED` | `false` | Enable `/metrics`; a `metrics`-scoped bearer token is required. |
 
 ## Providers
 
@@ -113,6 +115,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_EMAIL_VERIFICATION` | — | `off`, `optional` or `required`. Unset = by role: authorities require a confirmed address to contribute, other nodes do not. **live** |
 | `ATLAS_REGISTRATION` | `open` | `open` or `closed`. **live** |
 | `ATLAS_SESSION_TTL_DAYS` | `14` | Sign-in lifetime. **live** |
+| `ATLAS_REQUIRE_MFA_FOR_PRIVILEGED` | `false` | Require TOTP enrolment and verified sessions for reviewers and admins. **live** |
 | `ATLAS_AUTO_APPROVE_REPUTATION` | `50` | Reputation from which a user's changes apply immediately (0 disables). **live** |
 | `ATLAS_CURATOR_REPUTATION` | `500` | Reputation that grants review rights (0 = only people you promote). **live** |
 | `ATLAS_MAX_PENDING_PROPOSALS` | `20` | Pending proposals per user. **live** |

@@ -59,8 +59,8 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
-| `GET` | `/sync/changes` | sync | The signed change feed after `since` (replication). |
-| `GET` | `/sync/info` | read | This node's id, public key and role (what a peer pins). |
+| `GET` | `/sync/changes` | sync | Signed entries after `since`; optional `node_id` selects a retained original authority feed. |
+| `GET` | `/sync/info` | read | Stable trust root, current signer, signed successor proofs and available original feeds. |
 
 ## admin
 

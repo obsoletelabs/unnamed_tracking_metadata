@@ -1,0 +1,44 @@
+{
+  "started_at": "2026-10-19T06:20:00.693467+00:00",
+  "checks": [
+    "four real HTTP servers, distinct node identities and healthy readiness endpoints",
+    "mirror combines two independently pinned authorities",
+    "local follows both original authority feeds through a mirror; replay is idempotent",
+    "signing-key rotation preserves node identity and continues through a relay without re-pinning",
+    "ordinary-user browse/profile/export/read-only tokens; CSRF and admin/reviewer boundaries hold",
+    "ordinary-user private lists, follows, comments, reports, proposals, review and notifications work",
+    "accounts, session cookies, personal tokens and private profile data do not federate",
+    "one authority can fail and restart while other-authority updates and cached relay reads continue",
+    "live metrics require a dedicated scope and expose node synchronization state",
+    "ordinary-user deletion revokes personal credentials without deleting canonical games"
+  ],
+  "transport": "isolated loopback HTTP, development mode; production TLS is not exercised",
+  "nodes": [
+    {
+      "name": "authority-a",
+      "role": "authority",
+      "node_id": "b3a2cd4baae63c2f",
+      "database": "SQLite"
+    },
+    {
+      "name": "authority-b",
+      "role": "authority",
+      "node_id": "b820feba0fc2e3b8",
+      "database": "SQLite"
+    },
+    {
+      "name": "mirror",
+      "role": "mirror",
+      "node_id": "0c1381b6aea38a48",
+      "database": "SQLite"
+    },
+    {
+      "name": "local",
+      "role": "local",
+      "node_id": "42c7040c53398de4",
+      "database": "SQLite"
+    }
+  ],
+  "status": "passed",
+  "atlas_source_commit": "81a7ff2f6f48386c80855173403ce9a55520a632"
+}

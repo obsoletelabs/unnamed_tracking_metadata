@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Signing keys · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+<section class="card"><h2>Node identity and signing key</h2>
+<p>The node ID and trust anchor stay fixed. A signed successor entry lets upgraded followers verify new signing keys without manually trusting another node.</p>
+<dl class="facts"><dt>Node ID / trust fingerprint</dt><dd><code>{{ identity.node_id }}</code></dd>
+<dt>Trust anchor public key</dt><dd><code>{{ identity.trust_public_b64 }}</code></dd>
+<dt>Current signing key</dt><dd><code>{{ identity.key_id }}</code></dd>
+<dt>Current public key</dt><dd><code>{{ identity.public_b64 }}</code></dd></dl></section>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<section class="card"><h2>Rotate the signing key</h2>
+<p>Upgrade every follower first. Older clients reject successor keys and will stop syncing after rotation. Back up this node before continuing. This does not rotate OIDC keys or ATLAS_SECRET_KEY.</p>
+<p class="small muted">For a lost or compromised trust anchor, recover a verified backup or establish a new independently verified node identity. A successor cannot prove that a stolen old key was safe.</p>
+<form method="post" action="/admin/keys/rotate">{{ csrf(p.csrf) }}
+<label for="confirm-key">Type the current signing-key fingerprint to confirm</label><input id="confirm-key" name="confirm" type="text" required maxlength="16" pattern="[0-9a-f]{16}" autocomplete="off">
+<label for="key-password">Current password{% if not has_password %} (or a recent linked sign-in){% endif %}</label><input id="key-password" name="password" type="password" autocomplete="current-password" maxlength="200" {{ 'required' if has_password }}>
+<label><input type="checkbox" name="followers_upgraded" required> All followers have been upgraded to understand signing-key rotation.</label>
+<p><button type="submit" data-confirm="Rotate this node's signing key? Older followers will stop syncing.">Rotate signing key</button></p>
+</form></section>
+<section class="card"><h2>Rotation history</h2>
+{% if history %}<ul>{% for item in history %}<li>Entry {{ item.seq }}: <code>{{ item.key_id }}</code> → <code>{{ item.body.key_id }}</code></li>{% endfor %}</ul>
+{% else %}<p class="muted">No rotations. The original key is still active.</p>{% endif %}
+</section>
+{% endblock %}

@@ -73,7 +73,8 @@ def test_cli_commands_in_the_guide_exist():
 
     text = (GUIDE / "quickstart.md").read_text() + (GUIDE / "deployment.md").read_text()
     commands = set(re.findall(r"`atlas ([a-z-]+)", text))
-    parser_commands = {"serve", "migrate", "token", "node", "secret-key", "sync", "cache-media", "make-admin", "import-legacy"}
+    parser_commands = {"serve", "migrate", "backup", "recover-mirror", "token", "node", "secret-key", "sync",
+                       "cache-media", "make-admin", "import-legacy"}
     assert commands <= parser_commands
     assert parser_commands <= {name for name in dir(cli) if name.startswith("cmd_")} | {
         n.removeprefix("cmd_").replace("_", "-") for n in dir(cli) if n.startswith("cmd_")}

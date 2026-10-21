@@ -5,16 +5,17 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import __version__, auth, custom, facets, feed, importer, media, service
+from .. import __version__, auth, custom, facets, feed, importer, key_rotation, media, service
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
-from ..models import Artwork, Canonical, Lock, Observation, ReviewItem, SyncCursor, Token
+from ..models import Artwork, Canonical, Lock, Observation, ReplicatedChange, ReplicatedFeed, ReviewItem, SyncCursor, Token
 from ..normalize import norm_namespace
 from ..providers import ProviderError
 from ..resolve import find
 from ..service import AtlasError
+from ..signing import load_identity
 from .deps import AppState, get_session, require, state
 
 router = APIRouter(prefix="/api/v2")
@@ -388,19 +389,38 @@ def get_media(digest: str, st: St, _: Annotated[auth.Principal, Depends(require(
 # ---- federation ---------------------------------------------------------------------------------------
 
 @router.get("/sync/info", tags=["federation"])
-def sync_info(st: St, _: Annotated[auth.Principal, Depends(require("read"))]):
-    return {"node_id": st.ctx.identity.node_id, "public_key": st.ctx.identity.public_b64,
+def sync_info(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+    identity = load_identity(session)
+    feeds = [{"node_id": row.node_id, "public_key": row.public_key,
+              "rotations": key_rotation.trusted_history(session, row.node_id),
+              "signing_key_id": key_rotation.expected_key(row.node_id,
+                                key_rotation.trusted_history(session, row.node_id), 2**63 - 1),
+              "head": session.scalar(select(func.max(ReplicatedChange.seq))
+                                     .where(ReplicatedChange.node_id == row.node_id)) or 0}
+             for row in session.scalars(select(ReplicatedFeed).order_by(ReplicatedFeed.node_id))]
+    return {"node_id": identity.node_id, "public_key": identity.trust_public_b64,
+            "signing_key_id": identity.key_id, "rotations": key_rotation.own_history(session, identity.node_id),
             "role": st.ctx.settings.role, "kind": st.ctx.settings.kind(), "operator": st.ctx.settings.node_operator,
-            "contract": 1, "name": st.ctx.settings.app_name}
+            "contract": 1, "name": st.ctx.settings.app_name, "feeds": feeds}
 
 
 @router.get("/sync/changes", tags=["federation"])
-def sync_changes(session: Sess, _: Annotated[auth.Principal, Depends(require("sync"))],
-                 since: Annotated[int, Query(ge=0)] = 0, limit: Annotated[int, Query(ge=1, le=5000)] = 500):
-    rows = feed.read(session, since, limit)
-    return {"head": feed.head_seq(session), "entries": [
+def sync_changes(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("sync"))],
+                 since: Annotated[int, Query(ge=0)] = 0, limit: Annotated[int, Query(ge=1, le=5000)] = 500,
+                 node_id: Annotated[str | None, Query(max_length=64)] = None):
+    origin = node_id or st.ctx.identity.node_id
+    if origin == st.ctx.identity.node_id:
+        rows = feed.read(session, since, limit)
+        head = feed.head_seq(session)
+    else:
+        if session.get(ReplicatedFeed, node_id) is None:
+            raise HTTPException(404, "This node does not retain that authority's feed.")
+        rows = list(session.scalars(select(ReplicatedChange).where(ReplicatedChange.node_id == node_id,
+                            ReplicatedChange.seq > since).order_by(ReplicatedChange.seq).limit(limit)))
+        head = session.scalar(select(func.max(ReplicatedChange.seq)).where(ReplicatedChange.node_id == node_id)) or 0
+    return {"head": head, "entries": [
         {"seq": r.seq, "kind": r.kind, "body": r.body, "body_hash": r.body_hash, "signature": r.signature,
-         "key_id": r.key_id, "node_id": r.key_id, "created_at": r.created_at.isoformat()} for r in rows]}
+         "key_id": r.key_id, "node_id": origin, "created_at": r.created_at.isoformat()} for r in rows]}
 
 
 # ---- tokens -------------------------------------------------------------------------------------------
