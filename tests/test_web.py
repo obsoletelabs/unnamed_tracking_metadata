@@ -390,3 +390,14 @@ def test_curators_can_import_from_a_provider_with_media_and_achievements(site):
     assert "Celeste" in game and "Chapter 1 Cleared" in game
     plain = fresh(site)
     assert plain.post("/import", data={"csrf": "x", "provider": "fakeprov", "external_id": "77"}).status_code in (303, 403)
+
+
+def test_admin_integrations_page_shows_provider_status_without_secrets(site):
+    assert site.get("/admin/integrations").status_code in (303, 401, 403)
+    signup(site, "alice")  # the first account is the administrator
+    page = site.get("/admin/integrations")
+    assert page.status_code == 200
+    assert "Steam" in page.text and "Active" in page.text and "Not configured" in page.text
+    assert "ATLAS_IGDB_CLIENT_ID" in page.text and "Not configured" in page.text
+    assert "ATLAS_RAWG_API_KEY" in page.text and "GOG" in page.text
+    assert 'href="/admin/integrations"' in page.text

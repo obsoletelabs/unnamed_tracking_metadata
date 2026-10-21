@@ -180,3 +180,27 @@ def page_delete(slug: str, p: Annotated[Ctx, Depends(admin_form)]):
     p.session.delete(row)
     p.session.add(AuditEntry(actor_id=p.me.id, action="page_delete", target=slug, detail=None))
     return go("/admin/pages", "saved")
+
+
+# ---- integrations --------------------------------------------------------------------------------------
+
+DOCS = "https://github.com/obsoletelabs/unnamed_tracking_metadata/blob/v2/docs/guide"
+CATALOGUE = (
+    {"name": "steam", "label": "Steam", "gives": "Descriptions, genres, features, languages, artwork, achievements",
+     "needs": ["ATLAS_STEAM_ENABLED"], "optional": ["ATLAS_STEAM_API_KEY (achievement names)"]},
+    {"name": "igdb", "label": "IGDB", "gives": "Descriptions, genres, themes, scores, cross-store ids",
+     "needs": ["ATLAS_IGDB_CLIENT_ID", "ATLAS_IGDB_CLIENT_SECRET"], "optional": []},
+    {"name": "rawg", "label": "RAWG", "gives": "Descriptions, genres, tags, scores",
+     "needs": ["ATLAS_RAWG_API_KEY"], "optional": []},
+    {"name": "gog", "label": "GOG and other stores", "gives": "No built-in adapter yet; ids arrive from plugins "
+     "and curators", "needs": [], "optional": []},
+)
+
+
+@router.get("/admin/integrations", response_class=HTMLResponse)
+def integrations(p: Annotated[Ctx, Depends(admin_page)]):
+    active = p.st.providers.providers
+    failures = p.st.providers.failure_counts()
+    rows = [{**item, "active": item["name"] in active, "available": bool(item["needs"]),
+             "failures": failures.get(item["name"], 0)} for item in CATALOGUE]
+    return render(p, "admin_integrations.html", rows=rows, docs=DOCS)

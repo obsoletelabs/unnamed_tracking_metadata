@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Integrations · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+<section class="card"><h2>Metadata integrations</h2>
+<p>Providers that Atlas can import from. Keys and secrets are set as environment variables when the node starts, never stored in the database or shown here. See <a href="{{ docs }}/reference-env.md" rel="noopener">Environment variables</a> and <a href="{{ docs }}/administering.md" rel="noopener">Administering</a>.</p>
+{% for r in rows %}
+<article class="card"><h3>{{ r.label }} {% if r.active %}<span class="tag">Active</span>{% elif r.available %}<span class="tag">Not configured</span>{% else %}<span class="tag">No adapter yet</span>{% endif %}</h3>
+<p>{{ r.gives }}{% if r.failures %} <span class="muted">· {{ r.failures }} recent failure{{ '' if r.failures == 1 else 's' }}</span>{% endif %}</p>
+<p>{% if r.active %}<a href="/import?provider={{ r.name }}">Import a game</a>
+{% elif r.available %}To enable: set {% for v in r.needs %}<code>{{ v }}</code>{{ ' and ' if not loop.last }}{% endfor %} and restart Atlas.
+{% else %}Link its ids on a game page, or have a plugin submit them.{% endif %}
+{% if r.optional %}<br><span class="small muted">Optional: {{ r.optional|join(', ') }}</span>{% endif %}</p></article>{% endfor %}
+</section>
+{% endblock %}
