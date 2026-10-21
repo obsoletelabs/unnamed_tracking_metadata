@@ -8,6 +8,13 @@ recovery codes or private signing keys.
 
 From a source checkout with locked development dependencies:
 
+The checkout pins development and CI to Python 3.12 in `.python-version`, matching
+the Docker runtime. Keep that pin when running the locked development dependencies:
+the optional embedded PostgreSQL test helper currently provides a CPython 3.12
+wheel only. A newer Python preinstalled on a CI runner must not silently select a
+different test interpreter. The PostgreSQL service and all existing test/drill
+checks remain enabled.
+
 ```sh
 uv sync --frozen --extra dev
 uv run ruff check atlas tests tools
