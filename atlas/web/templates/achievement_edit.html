@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Edit achievements · {{ title }} · {{ app_name }}{% endblock %}
+{% block content %}
+<p><a href="/game/{{ g.id }}#achievements">← Back to {{ title }}</a></p>
+<h1>Edit achievements</h1>
+<p>You are editing the list <strong>this community</strong> contributes for {{ title }}: what you save replaces that list, in the order shown. Other sources (for example Steam) keep their own entries; where they have a value, theirs wins and yours fills the gaps, so an empty field means <em>nothing is assigned by you</em>. Nothing changes until you press <strong>Submit proposal</strong>, and it is reviewed like other contributions.</p>
+
+{% if diff %}
+<section class="card" aria-live="polite">
+<h2>What will change</h2>
+{% if diff.none %}<p>No change compared with the current list.</p>{% else %}
+<ul class="diff-list">
+{% for n in diff.added %}<li><ins>Add</ins> {{ n }}</li>{% endfor %}
+{% for n in diff.removed %}<li><del>Remove</del> {{ n }}</li>{% endfor %}
+{% for c in diff.changed %}<li><strong>{{ c.name }}</strong><ul>{% for f, old, new in c.deltas %}<li>{{ f }}: <del>{{ old }}</del> → <ins>{{ new }}</ins></li>{% endfor %}</ul></li>{% endfor %}
+{% if diff.reordered %}<li>The order changes.</li>{% endif %}
+</ul>{% endif %}
+</section>
+{% endif %}
+{% set bad = rows|selectattr('errors')|list %}
+{% if bad %}<p class="field-error" role="alert">{{ bad|length }} row{{ '' if bad|length == 1 else 's' }} need{{ 's' if bad|length == 1 }} fixing before you can preview.</p>{% endif %}
+
+<form method="post" action="/game/{{ g.id }}/achievements/edit" enctype="multipart/form-data" id="ach-form">{{ csrf(p.csrf) }}
+<div id="ach-rows">
+{% for r in rows %}{% include "_ach_row.html" %}{% endfor %}
+</div>
+<p><button type="submit" name="action" value="add" class="secondary" data-add-row {{ 'disabled' if rows|length >= max_rows }}>+ Add a row</button>
+<span class="small muted">Up to {{ max_rows }} rows.</span></p>
+<label for="ach-note">Source / note for reviewers</label><textarea id="ach-note" name="note" maxlength="2000">{{ note or '' }}</textarea>
+<p><button type="submit" name="action" value="preview">Preview changes</button>
+{% if can_submit %}<button type="submit" name="action" value="submit">Submit proposal</button>{% endif %}</p>
+{% if not can_submit %}<p class="small muted">Preview first: the proposal button appears once the changes have been checked.</p>{% endif %}
+</form>
+<template id="ach-row-template">{% set r = {'key': 'NEWKEY', 'name': '', 'description': '', 'kind': '', 'tier': '', 'points': '', 'hidden': False, 'icon_url': '', 'locked_icon_url': '', 'external_id': '', 'global_percent': '', 'errors': [], 'notes': [], 'inherited': {}, 'icon_blob': None, 'locked_blob': None} %}{% include "_ach_row.html" %}</template>
+
+<details class="card"><summary>Bulk import (one per line)</summary>
+<form method="post" action="/game/{{ g.id }}/achievements">{{ csrf(p.csrf) }}
+<label for="alist">One per line: <code>Name | Description | extras</code>. Extras, in any order: <code>progression</code> / <code>missable</code> / <code>win condition</code>, <code>bronze</code> / <code>silver</code> / <code>gold</code>, points (a number), <code>hidden</code>, an icon address (a second address is the locked icon). These are <em>added</em> to the list above.</label>
+<textarea id="alist" name="lines" required></textarea>
+<label for="anote2">Source / note</label><textarea id="anote2" name="note" maxlength="2000"></textarea>
+<p><button type="submit">Submit bulk import</button></p></form></details>
+
+<h2>From other sources</h2>
+{% if others %}
+<table class="achievements"><thead><tr><th>Name</th><th>Kind</th><th>Tier</th><th>Points</th><th>Sources</th></tr></thead><tbody>
+{% for m in others %}<tr><td>{{ m.name }}{% if m.hidden %} <span class="badge">hidden</span>{% endif %}</td><td>{{ (m.kind or '')|replace('_', ' ') }}</td><td>{{ m.tier or '' }}</td><td>{{ '' if m.points is none else m.points }}</td><td>{{ m.sources|join(', ') }}</td></tr>{% endfor %}
+</tbody></table>
+<p class="small muted">Read-only here. Hidden ones stay concealed; open them from the game page.</p>
+{% else %}<p class="muted">No other source has provided achievements for this game.</p>{% endif %}
+{% endblock %}

@@ -112,7 +112,10 @@ def _validate(session: Session, kind: str, canonical_id: str | None, payload: di
     if kind == "artwork":
         return {"items": facets.clean_artwork(payload.get("items") or [])}
     if kind == "achievements":
-        return {"items": facets.clean_achievements(payload.get("items") or [])}
+        body: dict[str, Any] = {"items": facets.clean_achievements(payload.get("items") or [])}
+        if payload.get("mode") == "replace":
+            body["mode"] = "replace"  # the community list becomes exactly these entries (removals included)
+        return body
     if kind == "artwork_default":
         art = session.get(Artwork, str(payload.get("artwork_id") or ""))
         if art is None or art.canonical_id != canonical_id:
@@ -231,7 +234,8 @@ def apply(session: Session, ctx: Ctx, p: Proposal) -> None:
                 Achievement.canonical_id == cid, Achievement.source == SOURCE)).all()
             old = facets.achievement_items(list(rows))
             p.previous = {"items": old}
-            facets.set_achievements(session, ctx, cid, SOURCE, old + p.payload["items"], redistributable=redistribute)
+            new = p.payload["items"] if p.payload.get("mode") == "replace" else old + p.payload["items"]
+            facets.set_achievements(session, ctx, cid, SOURCE, new, redistributable=redistribute, ordered=True)
     elif p.kind == "artwork_default":
         art = session.get(Artwork, p.payload["artwork_id"])
         if art is None or art.canonical_id != p.canonical_id:
@@ -302,7 +306,7 @@ def revert_applied(session: Session, ctx: Ctx, p: Proposal) -> None:
                            redistributable=ctx.settings.role == "authority")
     elif p.kind == "achievements":
         facets.set_achievements(session, ctx, p.canonical_id, SOURCE, prev.get("items", []),  # type: ignore[arg-type]
-                                redistributable=ctx.settings.role == "authority")
+                                redistributable=ctx.settings.role == "authority", ordered=True)
     else:
         raise AtlasError("this kind of proposal cannot be reverted; merge or edit the game instead", "conflict")
 
@@ -315,7 +319,8 @@ def can_auto_apply(ctx: Ctx, user: User) -> bool:
     return accounts.can_review(s, user) or trusted
 
 
-def _check_capacity(session: Session, settings, kind: str, cid: str, items: list[dict[str, Any]]) -> None:
+def _check_capacity(session: Session, settings, kind: str, cid: str, items: list[dict[str, Any]],
+                    replace: bool = False) -> None:
     """Refuse up front what could never be approved later, and bound what the server must fetch."""
     if kind == "artwork":
         have = session.scalar(select(func.count()).select_from(Artwork).where(
@@ -325,6 +330,8 @@ def _check_capacity(session: Session, settings, kind: str, cid: str, items: list
     else:
         have = session.scalar(select(func.count()).select_from(Achievement).where(
             Achievement.canonical_id == cid, Achievement.source == SOURCE)) or 0
+        if replace:
+            have = 0
         if have + len(items) > facets.MAX_ACH:
             raise AtlasError("this game already has the maximum number of community achievements")
 
@@ -347,7 +354,8 @@ def create(session: Session, ctx: Ctx, user: User, kind: str, canonical_id: str 
         canonical_id = None
     note = (note or "").strip()[:2000]
     if kind in ("artwork", "achievements"):
-        _check_capacity(session, s, kind, canonical_id, payload["items"])  # type: ignore[arg-type]
+        _check_capacity(session, s, kind, canonical_id, payload["items"],  # type: ignore[arg-type]
+                        replace=payload.get("mode") == "replace")
     pending = session.scalar(select(func.count()).select_from(Proposal).where(
         Proposal.proposer_id == user.id, Proposal.status == "pending"))
     if pending >= s.max_pending_proposals:

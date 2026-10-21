@@ -169,8 +169,20 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
     return len(items)
 
 
+def adopt_local_icons(ctx: Ctx, row: Achievement) -> None:
+    """An icon uploaded to this node is addressed by its own /media/<sha256> URL and is already stored."""
+    base = ctx.settings.public_url.rstrip("/") + "/media/"
+    for which in ("icon", "locked_icon"):
+        url = getattr(row, f"{which}_url")
+        if url and url.startswith(base) and not getattr(row, f"{which}_blob_hash"):
+            digest = url[len(base):]
+            if media.find_blob(ctx.settings, digest) is not None:
+                setattr(row, f"{which}_blob_hash", digest)
+
+
 def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: list[dict[str, Any]], *,
-                     redistributable: bool = False, log: bool = True) -> int:
+                     redistributable: bool = False, log: bool = True, ordered: bool = False) -> int:
+    """Replace what one source says. `ordered` keeps the given order (for lists people arranged by hand)."""
     write_lock(session)
     _live(session, cid)
     source = norm_namespace(source)
@@ -179,9 +191,10 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
         Achievement.canonical_id == cid, Achievement.source == source))}
     session.execute(delete(Achievement).where(Achievement.canonical_id == cid, Achievement.source == source))
     session.flush()
-    for i in items:
+    for index, i in enumerate(items):
         prev = old.get(_norm_name(i["name"]))
-        row = Achievement(
+        row = Achievement(position=index if ordered else None,
+
             canonical_id=cid, source=source, external_id=i["external_id"], name=i["name"],
             norm_name=_norm_name(i["name"]), description=i["description"], icon_url=i.get("icon_url"),
             locked_icon_url=i.get("locked_icon_url"), hidden=i["hidden"], kind=i.get("kind"), tier=i.get("tier"),
@@ -194,6 +207,7 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
                 row.locked_icon_blob_hash = prev.locked_icon_blob_hash
                 row.locked_icon_fail_count = prev.locked_icon_fail_count
                 row.locked_icon_next_try_at = prev.locked_icon_next_try_at
+        adopt_local_icons(ctx, row)
         session.add(row)
     session.flush()
     if log and redistributable and ctx.settings.role == "authority":
@@ -240,7 +254,9 @@ def merged_achievements(session: Session, ctx: Ctx, cid: str, *,
         m = merged.setdefault(a.norm_name, {
             "id": a.id, "name": a.name, "description": "", "hidden": False, "kind": None, "tier": None,
             "points": None, "global_percent": None, "icon_blob": None, "locked_icon_blob": None,
-            "external_ids": {}, "sources": []})
+            "position": None, "external_ids": {}, "sources": []})
+        if a.position is not None and (m["position"] is None or a.position < m["position"]):
+            m["position"] = a.position
         m["description"] = m["description"] or a.description
         m["hidden"] = m["hidden"] or a.hidden
         for field in ("kind", "tier", "points", "global_percent"):
@@ -263,7 +279,9 @@ def merged_achievements(session: Session, ctx: Ctx, cid: str, *,
         else:
             entry.update(name=HIDDEN_NAME, description="", external_ids={}, icon_url=None, locked_icon_url=None)
         out.append(entry)
-    return sorted(out, key=lambda m: (m["hidden"] and not m["revealed"], m["global_percent"] is None,
+    pos = {m["id"]: m["position"] for m in merged.values()}
+    return sorted(out, key=lambda m: (m["hidden"] and not m["revealed"], pos[m["id"]] is None,
+                                      pos[m["id"]] or 0, m["global_percent"] is None,
                                       -(m["global_percent"] or 0), m["name"]))
 
 

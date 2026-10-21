@@ -386,7 +386,7 @@ def get_achievements(cid: str, st: St, session: Sess, principal: Annotated[auth.
 def put_achievements(cid: str, body: AchievementsBody, st: St, session: Sess,
                      _: Annotated[auth.Principal, Depends(require("curate"))]):
     _guard_upstream(session, st, cid)
-    n = facets.set_achievements(session, st.ctx, cid, "curator", body.items,
+    n = facets.set_achievements(session, st.ctx, cid, "curator", body.items, ordered=True,
                                 redistributable=st.ctx.settings.role == "authority")
     return {"count": n}
 

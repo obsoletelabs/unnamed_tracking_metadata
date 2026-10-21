@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ a.name }} · {{ title }} · {{ app_name }}{% endblock %}
+{% block content %}
+<p><a href="/game/{{ g.id }}#achievements">← Back to {{ title }}</a></p>
+<article class="card">
+<h1>{{ a.name }}</h1>
+<p>{{ a.description or 'No description.' }}</p>
+<p>{% if a.hidden %}<span class="badge">hidden</span> {% endif %}{% if a.kind %}<span class="badge">{{ a.kind|replace('_', ' ') }}</span> {% endif %}{% if a.tier %}<span class="badge tier-{{ a.tier }}">{{ a.tier }}</span> {% endif %}{% if a.points is not none %}{{ a.points }} points {% endif %}{% if a.global_percent is not none %}· {{ '%.1f'|format(a.global_percent) }}% of players{% endif %}</p>
+{% if a.icon_url %}<p><img src="{{ a.icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="64" height="64"></p>{% endif %}
+</article>
+{% endblock %}

@@ -74,3 +74,59 @@ document.addEventListener("click", function (e) {
     if (tile) { tile.click(); }
   }
 })();
+
+// Hidden achievements: the real text is fetched only when a signed-in member asks for it.
+document.addEventListener("click", function (e) {
+  var b = e.target.closest("a[data-reveal]");
+  if (!b) { return; }
+  e.preventDefault();
+  fetch(b.getAttribute("data-reveal"), {credentials: "same-origin"}).then(function (r) {
+    if (!r.ok) { throw new Error("failed"); }
+    return r.json();
+  }).then(function (d) {
+    var row = b.closest("tr");
+    var name = row.querySelector("[data-hidden-name]");
+    if (name) { name.textContent = d.name; }
+    var cell = b.parentNode;
+    cell.textContent = d.description || "";
+  }).catch(function () { window.location.href = b.getAttribute("href"); });
+});
+
+// Achievement editor: add, remove and reorder rows in the browser (the page also works without this).
+(function () {
+  var rows = document.getElementById("ach-rows");
+  var tpl = document.getElementById("ach-row-template");
+  if (!rows || !tpl) { return; }
+  var counter = 0;
+  document.addEventListener("click", function (e) {
+    var add = e.target.closest("[data-add-row]");
+    if (add) {
+      e.preventDefault();
+      counter += 1;
+      var key = "j" + Date.now().toString(36) + counter;
+      var holder = document.createElement("div");
+      holder.innerHTML = tpl.innerHTML.split("NEWKEY").join(key);
+      var row = holder.firstElementChild;
+      rows.appendChild(row);
+      var first = row.querySelector("input[type=text], input:not([type])");
+      if (first) { first.focus(); }
+      return;
+    }
+    var mv = e.target.closest("[data-move]");
+    if (mv) {
+      var fs = mv.closest("[data-row]");
+      var other = mv.getAttribute("data-move") === "up" ? fs.previousElementSibling : fs.nextElementSibling;
+      if (other) { rows.insertBefore(mv.getAttribute("data-move") === "up" ? fs : other, mv.getAttribute("data-move") === "up" ? other : fs); mv.focus(); }
+    }
+  });
+  rows.addEventListener("change", function (e) {
+    var rm = e.target.closest("[data-remove]");
+    if (rm) { rm.closest("[data-row]").classList.toggle("removed", rm.checked); }
+  });
+  rows.addEventListener("input", function (e) {
+    if (e.target.name && e.target.name.indexOf("name.") === 0) {
+      var t = e.target.closest("[data-row]").querySelector(".ach-title");
+      if (t) { t.textContent = e.target.value || "New achievement"; }
+    }
+  });
+})();

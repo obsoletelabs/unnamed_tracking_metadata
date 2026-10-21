@@ -148,3 +148,21 @@ dialog#viewer::backdrop { background: rgba(0, 0, 0, .6); }
 .art-actions, .art-nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
 .art-actions button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 700; }
 .viewer-close { float: right; }
+
+.ach-row { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin: 0 0 12px; background: var(--surface); }
+.ach-row.has-errors { border-color: var(--danger); }
+.ach-row.removed { opacity: .5; }
+.ach-legend { font-weight: 600; padding: 0 6px; }
+.ach-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 14px; }
+.ach-wide { grid-column: 1 / -1; }
+.ach-icon-field { grid-column: span 2; min-width: 0; }
+.ach-icon-row { display: flex; gap: 10px; align-items: flex-start; }
+.ach-icon-row img { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; border: 1px solid var(--border); }
+.ach-icon-row .ach-ph { width: 48px; height: 48px; flex: none; }
+.ach-icon-row > div { flex: 1; min-width: 0; }
+.ach-tools { display: flex; gap: 10px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.field-error { color: var(--danger); font-weight: 600; margin: 4px 0; }
+.diff-list ins, .diff-list del { text-decoration: none; padding: 0 4px; border-radius: 3px; }
+.diff-list ins { background: color-mix(in srgb, var(--ok) 25%, transparent); }
+.diff-list del { background: color-mix(in srgb, var(--danger) 25%, transparent); text-decoration: line-through; }
+@media (max-width: 640px) { .ach-icon-field { grid-column: 1 / -1; } }

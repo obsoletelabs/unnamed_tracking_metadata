@@ -21,11 +21,22 @@ Achievements from different sources are merged by normalised name. The highest-t
 
 ## On the website
 
-The game page lists achievements with icon, kind, tier, points and global percentage. Hidden ones show as "Hidden achievement" with a `?` icon.
+The game page lists achievements with icon, kind, tier, points and global percentage, in the order editors gave them (then by rarity). Hidden ones are concealed: signed-out visitors see "Hidden achievement" and a *Sign in to reveal* link; signed-in members see a **Reveal (spoiler)** button that fetches the real name and description only when they click it.
 
 ![Achievements on a game page](img/achievements-desktop.png)
 
-Signed-in users add achievements as `Name | Description | extras`; extras are recognised by value in any order: `progression` / `missable` / `win condition`, `bronze` / `silver` / `gold`, a number (points), `hidden`, an icon address (a second address is the locked icon).
+### The editor
+
+![The achievement editor with a row that needs fixing](img/achievement-editor-desktop.png)
+
+Signed-in members use **Edit achievements** on the game page. Each achievement is a row with separate fields: name, description, kind and tier (selects), points, a *hidden* checkbox, and an unlocked and a locked icon (paste an address **or** upload a file; stored icons show a preview, addresses that are not downloaded yet say so and are never shown from the other site). Rows can be added, removed and moved up or down (without JavaScript: use *Add a row* and the *Remove this row* checkbox; reordering needs JavaScript).
+
+* **What is assigned and what is empty.** The editor edits the list *this community* contributes. Other sources (for example Steam) keep their own entries, and where they have a value theirs wins; yours only fills gaps. So an empty field means nothing is assigned by you, and where another source already provides a value the empty select or box says so ("from steam: gold"). Entries from other sources are listed read-only below the editor.
+* **Checks per row.** Each row reports its own problems (missing name, points that are not a number, bad addresses, images that are not images, duplicate names) and the page cannot be previewed until they are fixed.
+* **Preview before proposing.** *Preview changes* shows exactly what will be added, removed, changed (field by field, old and new) and whether the order changes. Only then does *Submit proposal* appear. Saving **replaces** the community list with the rows shown (removals included); it goes through the normal review, can be reverted, and is applied at once for reviewers and trusted members.
+![Preview of what will change](img/achievement-editor-preview.png)
+
+* **Bulk import.** The old one-per-line format (`Name | Description | extras`; extras in any order: `progression` / `missable` / `win condition`, `bronze` / `silver` / `gold`, a number, `hidden`, icon addresses) is still available under *Bulk import* in the editor. It only **adds** entries.
 
 ## Reading
 
@@ -47,14 +58,18 @@ Relative image paths are resolved against the Atlas base URL. Origin image addre
 
 ## Hidden achievements
 
-A hidden achievement is returned **redacted**: `name` is `"Hidden achievement"`, `description` is empty, no icon, no `external_ids`, `revealed: false`. Kind, tier, points and percentage stay, because they do not spoil anything. If *any* source marks an achievement hidden it stays hidden.
+Hidden achievements are viewable, but only by signed-in people and only on request, so spoilers are opt-in.
 
-To reveal, add `?reveal=all` or `?reveal=<id>,<id>` (Atlas ids). Atlas honours it only for a **signed-in user's personal token** or a token with the `curate` scope. Any other token, and the public website, still gets redacted rows. A client should ask for the ids the user has already unlocked, so spoilers are not fetched for achievements the user has not earned. Revealed rows have `revealed: true`.
+* **Anonymous visitors and the public site.** They only learn that a hidden achievement exists (and its kind, tier, points and rarity, which do not spoil anything). The page never contains the name, description, icon or provider ids.
+* **Signed-in members on the website.** The row is concealed; clicking **Reveal (spoiler)** requests `/game/<id>/achievements/<achievement id>` for that single entry. The request needs the member's session and is answered `Cache-Control: no-store`, so the text is not in the page source, not in shared caches and not sent to anonymous requests. (Without JavaScript the button opens a small page with the same text.)
+* **The API.** A hidden achievement is returned **redacted**: `name` is `"Hidden achievement"`, `description` is empty, no icon, no `external_ids`, `revealed: false`. To reveal, add `?reveal=all` or `?reveal=<id>,<id>` (Atlas ids). Atlas honours it only for a **signed-in user's personal token** or a token with the `curate` scope (or `admin`). Every other token (including a plain `read` token) still gets redacted rows, even if it sends `reveal`. A client should ask for the ids the user has already unlocked. Revealed rows have `revealed: true`. If *any* source marks an achievement hidden it stays hidden.
+
+Privacy tradeoff: this protects against crawlers, casual visitors and spoiler-averse readers, not against a determined member. Anyone can create an account (when registration is open) and then reveal any hidden achievement, exactly as they could with a personal token; reveal requests are not rate limited separately. Atlas has no notion of who has *unlocked* an achievement (it stores no progress), so it cannot restrict reveal to people who have earned it; the client decides which ids to ask for. Sites that want stricter secrecy can close registration or keep a game's secret achievements out of Atlas.
 
 ## Contributing
 
 * Curators: `PUT /api/v2/games/{id}/achievements` with `{"items": [...]}` replaces the curator source's list. Every field above (except `id`, `sources`, `external_ids`) can be sent; `external_id` is the id at that source; `icon_url` / `locked_icon_url` must be `http(s)` addresses and are downloaded by Atlas's artwork cache under the same safety rules (public addresses only, content-type and size checks).
-* Everyone signed in: **Add achievements** on the game page creates a proposal that goes through the normal review (reputation rules, revert).
+* Everyone signed in: **Edit achievements** on the game page (see [the editor](#the-editor)) creates a proposal that goes through the normal review (reputation rules, revert). Proposals can *replace* the community list (`{"items": [...], "mode": "replace"}`) or add to it.
 
 ## Host app contract
 
@@ -69,4 +84,4 @@ The Tracking App's Atlas plugin calls `GET /api/v2/games/{id}/achievements` (def
 | `kind`, `hidden`, `revealed`, `name`, `description`, `points` | same names |
 | `external_ids` | lets the app match a user's synced progress (Steam id, RetroAchievements id) to the entry |
 
-Entries that are hidden and not revealed are stored by the app as placeholders and not shown on shared surfaces. No per-user data is sent to Atlas. Reveal-by-id is available in Atlas for clients that want it; the app does not use it in this release.
+Entries that are hidden and not revealed are stored by the app as placeholders and not shown on shared surfaces. No per-user data is sent to Atlas. A client using a plain `read` key (the Atlas plugin's default) therefore sees only placeholders for hidden achievements; a key that is a signed-in user's personal token may send `reveal=<ids>`. Entries come back in the order editors arranged them.

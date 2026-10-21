@@ -271,6 +271,9 @@ def clear_cache(session: Session, settings: Settings) -> int:
     own = settings.public_url.rstrip("/") + "/media/"
     cached = session.scalars(select(Artwork).where(Artwork.blob_hash.is_not(None), ~Artwork.url.startswith(own))).all()
     keep = {a.blob_hash for a in session.scalars(select(Artwork).where(Artwork.url.startswith(own)))}
+    for ach in session.scalars(select(Achievement).where(
+            Achievement.icon_blob_hash.is_not(None) | Achievement.locked_icon_blob_hash.is_not(None))):
+        keep.update(h for h in (ach.icon_blob_hash, ach.locked_icon_blob_hash) if h)
     cleared = 0
     for art in cached:
         digest = art.blob_hash

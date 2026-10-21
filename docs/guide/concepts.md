@@ -50,7 +50,7 @@ A record has a **media type** (`game` is built in). An admin can add types (movi
 ## Artwork and achievements
 
 * **Artwork** is stored as references (kind, address, size). The server downloads an image only after safety checks and then serves its own copy by content hash; pages never hotlink a provider.
-* **Achievements** are the *list* for a game: name, description, icon, hidden flag, global unlock percentage. Never anyone's progress.
+* **Achievements** are the *list* for a game: name, description, kind, tier, points, icons, hidden flag, global unlock percentage. Never anyone's progress. See [Achievements](achievements.md).
 
 ## Nodes and roles
 
