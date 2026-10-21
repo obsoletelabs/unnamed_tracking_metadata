@@ -15,6 +15,18 @@ wheel only. A newer Python preinstalled on a CI runner must not silently select 
 different test interpreter. The PostgreSQL service and all existing test/drill
 checks remain enabled.
 
+The dependency floor includes Pillow 13.0 for its image-decoder security fixes and
+certifi 2026.10.19 for the updated CA bundle. Keep the committed lockfile when
+building the release, and run the dependency audit without suppressing advisories:
+
+```sh
+uv export --frozen --no-dev --no-emit-project -o /tmp/atlas-requirements.txt
+uvx pip-audit -r /tmp/atlas-requirements.txt --no-deps --disable-pip
+```
+
+See the [Pillow security release notes](https://pillow.readthedocs.io/en/stable/releasenotes/13.0.0.html)
+and [certifi release](https://github.com/certifi/python-certifi/releases/tag/2026.10.19).
+
 ```sh
 uv sync --frozen --extra dev
 uv run ruff check atlas tests tools

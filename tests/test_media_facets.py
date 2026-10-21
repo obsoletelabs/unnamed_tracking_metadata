@@ -70,6 +70,14 @@ def test_validate_image_rejects_non_images_and_bombs():
         media.validate_image(png(200, 200), build_settings(media_max_pixels=1000))
 
 
+@pytest.mark.parametrize("fmt, ext, content_type", [
+    ("PNG", "png", "image/png"), ("JPEG", "jpg", "image/jpeg"),
+    ("WEBP", "webp", "image/webp"), ("GIF", "gif", "image/gif"),
+])
+def test_supported_image_formats_remain_cacheable(fmt, ext, content_type):
+    assert media.validate_image(png(8, 6, fmt), build_settings()) == (ext, content_type, 8, 6)
+
+
 def client_for(handler):
     return httpx.Client(transport=httpx.MockTransport(handler))
 
