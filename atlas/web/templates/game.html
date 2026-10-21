@@ -47,6 +47,9 @@
 <h2>Artwork</h2>
 {% if shots %}<div class="shots">{% for a in shots %}<a href="/media/{{ a.blob_hash }}"><img src="/media/{{ a.blob_hash }}" alt="{{ a.kind|replace('_', ' ') }}" loading="lazy"></a>{% endfor %}</div>{% endif %}
 <p class="muted small">{{ art_total }} image{{ '' if art_total == 1 else 's' }} known, {{ art_cached }} cached here. Images are shown only after this server has downloaded and checked them.</p>
+{% if pending_art %}<details class="pending-art"><summary>{{ pending_art|length }} image{{ '' if pending_art|length == 1 else 's' }} not cached yet</summary>
+<p class="small muted">These are assigned to this game but this server has not downloaded and checked them, so they are not shown. They are listed as links and are not loaded, so viewing this page does not contact the source sites.</p>
+<ul>{% for a in pending_art %}<li>{{ a.kind|title }} · <a href="{{ a.url }}" rel="noopener noreferrer nofollow">{{ a.host or 'source' }}</a> <span class="muted small">· {{ a.state }} · from {{ a.source }}</span></li>{% endfor %}</ul></details>{% endif %}
 {% if p.user %}
 <details><summary>Upload or suggest artwork</summary>
 <form class="card" method="post" action="/game/{{ g.id }}/artwork/upload" enctype="multipart/form-data">{{ csrf(p.csrf) }}

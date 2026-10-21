@@ -49,6 +49,8 @@ Admin → Peers shows each peer's last error. Common ones: *not trusted* (the no
 
 ## Artwork doesn't show
 
+A game's page lists images that are assigned but not cached yet under **N images not cached yet**, as links to the source with the reason (waiting, failed and retrying, or caching switched off). They are deliberately links, not embedded images.
+
 Images appear only after Atlas has downloaded and checked them (a background pass about once a minute, or `atlas cache-media`). Failures back off automatically. The source must be a public address; sizes above `ATLAS_MEDIA_MAX_BYTES`, non-images and SVG are refused.
 
 ### `artwork cache failed: PermissionError` / `cannot write to ATLAS_MEDIA_DIR`

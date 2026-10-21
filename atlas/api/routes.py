@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import __version__, auth, custom, facets, feed, importer, key_rotation, media, service
+from .. import __version__, auth, custom, db, facets, feed, importer, key_rotation, media, service
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
 from ..models import Artwork, Canonical, Lock, Observation, ReplicatedChange, ReplicatedFeed, ReviewItem, SyncCursor, Token
 from ..normalize import norm_namespace
@@ -63,8 +63,13 @@ def health(st: St) -> dict[str, str]:
 
 
 @router.get("/ready", tags=["ops"])
-def ready(session: Sess) -> dict[str, str]:
+def ready(session: Sess, st: St, response: Response) -> dict[str, str]:
+    """Minimal on purpose (public): ready only when the database answers and its schema is current."""
     session.execute(select(1))
+    if db.schema_state(session, st.ctx.settings.database_url) == "behind":
+        response.status_code = 503
+        response.headers["Cache-Control"] = "no-store"
+        return {"status": "not_ready"}
     return {"status": "ready"}
 
 
@@ -72,7 +77,11 @@ def ready(session: Sess) -> dict[str, str]:
 def status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]) -> dict[str, Any]:
     cursors = {c.upstream: c.last_seq for c in session.scalars(select(SyncCursor))}
     return {"role": st.ctx.settings.role, "feed_head": feed.head_seq(session),
-            "upstream_cursors": cursors}
+            "upstream_cursors": cursors,
+            # the detail the public /ready deliberately leaves out
+            "checks": {"database": "ok", "schema": db.schema_state(session, st.ctx.settings.database_url),
+                       "media": "ok" if media.storage_problem(st.ctx.settings) is None else "unwritable",
+                       "provider_failures": st.providers.failure_counts()}}
 
 
 @router.get("/site", tags=["ops"])

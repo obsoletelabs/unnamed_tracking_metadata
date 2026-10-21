@@ -9,8 +9,13 @@ ATLAS_JSON_LOGS=true
 ATLAS_METRICS_ENABLED=true
 ```
 
-`/api/v2/health` checks process liveness; `/api/v2/ready` checks the database and returns 503
-when it is unavailable. These endpoints do not depend on external providers.
+`/api/v2/health` checks process liveness (and reports `media: ok|unwritable`); `/api/v2/ready` checks
+that the database answers **and its schema is at the newest migration**, and returns 503
+(`{"status":"not_ready"}`) otherwise, which is what an orchestrator should use to hold traffic during a
+rolling upgrade with `ATLAS_AUTO_MIGRATE=false`. Neither depends on external providers, and the public
+responses stay minimal on purpose. An administrator token gets the detail from `GET /api/v2/status`:
+`checks.database`, `checks.schema` (`current`, `behind` or `unknown`), `checks.media` and
+`checks.provider_failures`.
 
 With metrics enabled, `GET /metrics` accepts a dedicated token with the **metrics** scope
 or an administrator API token. A read, sync or personal token cannot scrape it. When disabled,

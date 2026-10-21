@@ -122,7 +122,7 @@ ENV_HELP: dict[str, tuple[str, str]] = {
 # One line per endpoint, kept here so the reference reads well. A test fails when an endpoint has no entry.
 SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/health"): "Liveness: the process is up.",
-    ("get", "/ready"): "Readiness: the database answers.",
+    ("get", "/ready"): "Readiness: the database answers and its schema is current (503 otherwise).",
     ("get", "/schema"): "Media types and custom fields this node describes (public ones only).",
     ("get", "/site"): "Name, theme, navigation, role, registration and email policy of this node.",
     ("get", "/games"): "Search records by title (`q`, optional `type`, `limit`). Includes `custom` values.",
