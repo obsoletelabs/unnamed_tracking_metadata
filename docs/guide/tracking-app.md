@@ -26,12 +26,12 @@ The plugin **`official.metadata-atlas`** adds Atlas as a metadata provider: sear
 
 `tests/test_tracking_app_contract.py` replays the exact requests the plugin makes (read-only token, search with case and punctuation differences, lookup by Atlas id, resolving a candidate that only has other providers' ids, artwork before and after caching, the tokenless public `/media/<sha256>` download) and pins every response field the plugin reads. An Atlas change that would break the app fails this test first.
 
-Known gaps on the app/plugin side, not in Atlas: the plugin maps `tags`, `features` and `platforms` but not Atlas's `genres`, `themes`, `languages`, scores or `custom` fields (including the multiplayer fields); the app's provider contract has no slot for achievements.
+Known gaps on the app/plugin side, not in Atlas: the plugin maps `tags`, `features` and `platforms` but not Atlas's `genres`, `themes`, `languages`, scores or `custom` fields (including the multiplayer fields).
 
 ### Limits to know
 
 * The app downloads artwork itself and refuses private addresses, so **artwork needs a publicly reachable Atlas**. Metadata works on a LAN.
-* Achievements are not part of the app's provider contract yet. Atlas serves the achievement *list* (`GET /games/{id}/achievements`); there is no per-user progress anywhere in Atlas.
+* Atlas serves the achievement *list* (`GET /games/{id}/achievements`, see [Achievements](achievements.md)); there is no per-user progress anywhere in Atlas. The app side reads it through the `achievements` metadata-provider operation.
 * Custom fields are available in the API (`custom`) but the app's metadata model has no slot for them.
 * The plugin sends no personal data: only titles, years and provider ids.
 

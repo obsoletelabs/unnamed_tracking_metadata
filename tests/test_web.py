@@ -201,7 +201,7 @@ def test_artwork_proposal_url_validation_and_media_only_after_cache(site):
     ok = site.post(f"/game/{site.gid}/artwork", data={"csrf": t, "kind": "key_art", "url": "https://img.test/c.png"})
     assert ok.status_code == 303
     page = site.get(f"/game/{site.gid}").text
-    assert "https://img.test/c.png" not in page  # never hotlinked: only cached images are displayed
+    assert 'src="https://img.test/c.png"' not in page  # never hotlinked: pending images are listed as links only
     assert "1 image known, 0 cached" in page
 
 
@@ -252,6 +252,52 @@ def test_personal_tokens_work_against_the_api_and_are_scoped(site):
     signup(other, "bob")
     t2 = token(other, "/me")
     assert other.post(f"/me/tokens/{tid}/revoke", data={"csrf": t2}).status_code == 404
+
+
+def test_hidden_achievements_reveal_only_for_signed_in_user_tokens(site):
+    admin = {"Authorization": "Bearer " + "b" * 40}
+    assert site.put(f"/api/v2/games/{site.gid}/achievements", headers=admin, json={"items": [
+        {"name": "Secret Ending", "description": "Spoiler", "hidden": True, "external_id": "S1"},
+        {"name": "Warm Up"}]}).status_code == 200
+    signup(site, "alice")
+    t = token(site, "/me")
+    secret = re.search(r"(atl_[A-Za-z0-9_-]+)", site.post(
+        "/me/tokens", data={"csrf": t, "name": "app", "scope": "read"}).text).group(1)
+    user = {"Authorization": "Bearer " + secret}
+    url = f"/api/v2/games/{site.gid}/achievements"
+    plain = site.get(url, headers=user).json()
+    assert plain["hidden_count"] == 1 and "Secret Ending" not in str(plain) and "Spoiler" not in str(plain)
+    hid = next(r["id"] for r in plain["results"] if r["hidden"])
+    assert site.get(f"{url}?reveal=all", headers=user).json()["results"][0]["name"] in ("Secret Ending", "Warm Up")
+    assert "Secret Ending" in str(site.get(f"{url}?reveal={hid}", headers=user).json())
+    assert "Warm Up" in str(site.get(f"{url}?reveal=nope", headers=user).json())
+    assert "Secret Ending" not in str(site.get(f"{url}?reveal=nope", headers=user).json())
+    # a plain read token (not a person's) cannot reveal; the public page redacts too
+    read_only = site.post("/api/v2/tokens", headers=admin, json={"name": "ro", "scopes": ["read"]}).json()["token"]
+    assert "Secret Ending" not in str(site.get(f"{url}?reveal=all", headers={"Authorization": "Bearer " + read_only}).json())
+    assert "Secret Ending" not in site.get(f"/game/{site.gid}").text
+
+
+def test_achievement_proposal_lines_accept_extras_in_any_order(site):
+    from fastapi import HTTPException
+
+    from atlas.web.routes import parse_achievement_line
+
+    assert parse_achievement_line("Escape | Leave | gold | win condition | 50 | hidden | https://i.test/a.png"
+                                  " | https://i.test/b.png") == {
+        "name": "Escape", "description": "Leave", "tier": "gold", "kind": "win_condition", "points": 50,
+        "hidden": True, "icon_url": "https://i.test/a.png", "locked_icon_url": "https://i.test/b.png"}
+    assert parse_achievement_line("Plain") == {"name": "Plain", "description": ""}
+    with pytest.raises(HTTPException):
+        parse_achievement_line("X | y | platinum")
+    signup(site, "alice")
+    t = token(site, f"/game/{site.gid}")
+    ok = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | gold | 5"})
+    assert ok.status_code == 303
+    bad = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | platinum"})
+    assert bad.status_code == 400
+    page = site.get(f"/game/{site.gid}")
+    assert page.status_code == 200 and "Add achievements" in page.text
 
 
 def test_password_change_signs_out_other_sessions(site):
@@ -392,6 +438,27 @@ def test_curators_can_import_from_a_provider_with_media_and_achievements(site):
     assert plain.post("/import", data={"csrf": "x", "provider": "fakeprov", "external_id": "77"}).status_code in (303, 403)
 
 
+def test_uncached_artwork_is_listed_as_links_never_embedded(site):
+    from sqlalchemy import select
+
+    from atlas import facets
+    from atlas.models import Artwork
+
+    ctx = site.st.ctx
+    with site.st.maker() as s:
+        facets.set_artwork(s, ctx, site.gid, "steam", [
+            {"kind": "key_art", "url": "https://cdn.example/pending.png"},
+            {"kind": "banner", "url": "https://cdn.example/failing.png"}])
+        s.scalars(select(Artwork).where(Artwork.kind == "banner")).one().fail_count = 2
+        s.commit()
+    off = site.get(f"/game/{site.gid}").text  # the fixture runs with caching switched off
+    assert "2 images not cached yet" in off and "Caching is switched off" in off
+    site.st.base = site.st.base.model_copy(update={"media_cache_enabled": True})
+    ctx.settings = ctx.settings.model_copy(update={"media_cache_enabled": True})
+    page = site.get(f"/game/{site.gid}").text
+    assert "Waiting to be downloaded" in page and "Download failed 2 times" in page
+    assert 'href="https://cdn.example/pending.png"' in page
+    assert "<img" not in page.split("not cached yet")[1].split("</details>")[0]  # a link, never an image
 def test_admin_integrations_page_shows_provider_status_without_secrets(site):
     assert site.get("/admin/integrations").status_code in (303, 401, 403)
     signup(site, "alice")  # the first account is the administrator

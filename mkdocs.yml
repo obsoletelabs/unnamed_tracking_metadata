@@ -59,6 +59,7 @@ nav:
       - Security: security.md
   - Integrations:
       - Tracking App: tracking-app.md
+      - Achievements: achievements.md
       - Extending: extending.md
   - Reference:
       - API: reference-api.md

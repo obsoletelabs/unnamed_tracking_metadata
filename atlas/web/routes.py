@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -112,6 +113,24 @@ def primary_art(p: Page, ids: list[str]) -> dict[str, str]:
     return out
 
 
+def pending_artwork(rows: list[Any], caching: bool) -> list[dict[str, Any]]:
+    """Images assigned to a game but not cached here, as text only: a source link and why it is waiting.
+
+    They are never embedded: the content security policy forbids loading third-party images, and a
+    hotlink would also tell the source site who is viewing the page."""
+    out = []
+    for a in rows[:50]:
+        host = urlsplit(a.url).hostname or ""
+        if not caching:
+            state = "Caching is switched off"
+        elif a.fail_count:
+            state = f"Download failed {a.fail_count} time{'' if a.fail_count == 1 else 's'}; retrying later"
+        else:
+            state = "Waiting to be downloaded and checked"
+        out.append({"kind": a.kind.replace("_", " "), "url": a.url, "host": host, "state": state, "source": a.source})
+    return out
+
+
 DEFAULT_LABELS = {"developer": "Developer", "publisher": "Publisher", "series": "Series", "release_date": "Released",
                   "genres": "Genres", "themes": "Themes", "tags": "Tags", "features": "Features", "platforms": "Platforms",
                   "languages": "Languages", "aliases": "Also known as", "age_rating": "Age rating", "website": "Website",
@@ -218,6 +237,7 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     cached = [a for a in art if a.blob_hash]
     key_art = next((a.blob_hash for a in cached if a.kind == "key_art"), None)
     shots = [a for a in cached if a.kind in ("screenshot", "hero", "banner")][:12]
+    pending = pending_artwork([a for a in art if not a.blob_hash], ctx.settings.media_cache_enabled)
     activity = []
     for pr in s.scalars(select(Proposal).where(Proposal.canonical_id == g.id, Proposal.status == "approved")
                         .order_by(Proposal.created_at.desc()).limit(10)):
@@ -250,7 +270,7 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     return render(p, "game.html", g=g, v=g.view, explain=g.explain, key_art=key_art, shots=shots, **social_ctx,
                   lbl=labels_for(p, g.media_type), details=details,
                   mtype_label=(s.get(MediaType, g.media_type).label if s.get(MediaType, g.media_type) else g.media_type),
-                  art_total=len(art), art_cached=len(cached), art_kinds=facets.KINDS, activity=activity,
+                  pending_art=pending, art_total=len(art), art_cached=len(cached), art_kinds=facets.KINDS, activity=activity,
                   achievements=facets.merged_achievements(s, ctx, g.id),
                   redirected_from=p.request.query_params.get("from"), **extra)
 
@@ -443,6 +463,29 @@ def propose_artwork(cid: str, p: Annotated[Page, Depends(user_form)], kind: Anno
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
+def parse_achievement_line(line: str) -> dict[str, Any]:
+    """`Name | Description | extras...`; extras are recognised by value, in any order: a kind, a tier, a whole
+    number (points), `hidden`, an http(s) address (icon) or a second one (locked icon)."""
+    name, _, rest = line.partition("|")
+    desc, _, extras = rest.partition("|")
+    item: dict[str, Any] = {"name": name.strip(), "description": desc.strip()}
+    for token in (t.strip() for t in extras.split("|")):
+        low = token.casefold().replace(" ", "_")
+        if low in facets.ACH_KINDS:
+            item["kind"] = low
+        elif low in facets.ACH_TIERS:
+            item["tier"] = low
+        elif low == "hidden":
+            item["hidden"] = True
+        elif token.isdigit():
+            item["points"] = int(token)
+        elif token.startswith(("http://", "https://")):
+            item["locked_icon_url" if "icon_url" in item else "icon_url"] = token
+        elif token:
+            raise HTTPException(400, f"Don't know what '{token[:40]}' means in: {name.strip()[:60]}")
+    return item
+
+
 @router.post("/game/{cid}/achievements")
 def propose_achievements(cid: str, p: Annotated[Page, Depends(user_form)],
                          lines_text: Annotated[str, Form(alias="lines", max_length=100000)],
@@ -450,8 +493,7 @@ def propose_achievements(cid: str, p: Annotated[Page, Depends(user_form)],
     g, _ = live_game(p, cid)
     items = []
     for line in lines(lines_text)[:200]:
-        name, _, desc = line.partition("|")
-        items.append({"name": name.strip(), "description": desc.strip()})
+        items.append(parse_achievement_line(line))
     try:
         pr = proposals.create(p.session, p.st.ctx, p.me, "achievements", g.id,
                               {"items": items}, note)

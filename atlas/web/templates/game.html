@@ -47,6 +47,9 @@
 <h2>Artwork</h2>
 {% if shots %}<div class="shots">{% for a in shots %}<a href="/media/{{ a.blob_hash }}"><img src="/media/{{ a.blob_hash }}" alt="{{ a.kind|replace('_', ' ') }}" loading="lazy"></a>{% endfor %}</div>{% endif %}
 <p class="muted small">{{ art_total }} image{{ '' if art_total == 1 else 's' }} known, {{ art_cached }} cached here. Images are shown only after this server has downloaded and checked them.</p>
+{% if pending_art %}<details class="pending-art"><summary>{{ pending_art|length }} image{{ '' if pending_art|length == 1 else 's' }} not cached yet</summary>
+<p class="small muted">These are assigned to this game but this server has not downloaded and checked them, so they are not shown. They are listed as links and are not loaded, so viewing this page does not contact the source sites.</p>
+<ul>{% for a in pending_art %}<li>{{ a.kind|title }} · <a href="{{ a.url }}" rel="noopener noreferrer nofollow">{{ a.host or 'source' }}</a> <span class="muted small">· {{ a.state }} · from {{ a.source }}</span></li>{% endfor %}</ul></details>{% endif %}
 {% if p.user %}
 <details><summary>Suggest artwork</summary>
 <form class="card" method="post" action="/game/{{ g.id }}/artwork">{{ csrf(p.csrf) }}
@@ -59,14 +62,19 @@
 
 <h2>Achievements</h2>
 {% if achievements %}
-<table><thead><tr><th>Name</th><th>Description</th><th>Global %</th></tr></thead><tbody>
-{% for a in achievements %}<tr><td>{{ a.name }}{% if a.hidden %} <span class="badge">hidden</span>{% endif %}</td><td>{{ a.description }}</td><td>{% if a.global_percent is not none %}{{ '%.1f'|format(a.global_percent) }}% {% if a.global_percent < 5 %}<span class="badge bad">ultra rare</span>{% elif a.global_percent < 15 %}<span class="badge warn">rare</span>{% elif a.global_percent >= 50 %}<span class="badge ok">common</span>{% endif %}{% endif %}</td></tr>{% endfor %}
+<table class="achievements"><thead><tr><th></th><th>Name</th><th>Description</th><th>Points</th><th>Global %</th></tr></thead><tbody>
+{% for a in achievements %}<tr>
+<td class="ach-icon">{% if a.icon_url %}<img src="{{ a.icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="40" height="40" loading="lazy">{% else %}<span class="ach-ph" aria-hidden="true">{{ '?' if a.hidden and not a.revealed else '★' }}</span>{% endif %}</td>
+<td>{{ a.name }}{% if a.hidden %} <span class="badge">hidden</span>{% endif %}{% if a.kind %} <span class="badge">{{ a.kind|replace('_', ' ') }}</span>{% endif %}{% if a.tier %} <span class="badge tier-{{ a.tier }}">{{ a.tier }}</span>{% endif %}</td>
+<td>{{ a.description }}</td>
+<td>{% if a.points is not none %}{{ a.points }}{% endif %}</td>
+<td>{% if a.global_percent is not none %}{{ '%.1f'|format(a.global_percent) }}% {% if a.global_percent < 5 %}<span class="badge bad">ultra rare</span>{% elif a.global_percent < 15 %}<span class="badge warn">rare</span>{% elif a.global_percent >= 50 %}<span class="badge ok">common</span>{% endif %}{% endif %}</td></tr>{% endfor %}
 </tbody></table>
 {% else %}<p class="muted">No achievements recorded.</p>{% endif %}
 {% if p.user %}
 <details><summary>Add achievements</summary>
 <form class="card" method="post" action="/game/{{ g.id }}/achievements">{{ csrf(p.csrf) }}
-  <label for="alist">One per line: <code>Name | Description</code></label><textarea id="alist" name="lines" required></textarea>
+  <label for="alist">One per line: <code>Name | Description | extras</code>. Extras, in any order: <code>progression</code> / <code>missable</code> / <code>win condition</code>, <code>bronze</code> / <code>silver</code> / <code>gold</code>, points (a number), <code>hidden</code>, an icon address (a second address is the locked icon). Hidden achievements stay hidden on this site and in the API.</label><textarea id="alist" name="lines" required></textarea>
   <label for="anote2">Source / note</label><textarea id="anote2" name="note" maxlength="2000"></textarea>
   <p><button type="submit">Submit</button></p>
 </form></details>
