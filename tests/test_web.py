@@ -413,3 +413,60 @@ def test_uncached_artwork_is_listed_as_links_never_embedded(site):
     assert "Waiting to be downloaded" in page and "Download failed 2 times" in page
     assert 'href="https://cdn.example/pending.png"' in page
     assert "<img" not in page.split("not cached yet")[1].split("</details>")[0]  # a link, never an image
+def test_admin_integrations_page_shows_provider_status_without_secrets(site):
+    assert site.get("/admin/integrations").status_code in (303, 401, 403)
+    signup(site, "alice")  # the first account is the administrator
+    page = site.get("/admin/integrations")
+    assert page.status_code == 200
+    assert "Steam" in page.text and "Active" in page.text and "Not configured" in page.text
+    assert "ATLAS_IGDB_CLIENT_ID" in page.text and "ATLAS_RAWG_API_KEY" in page.text and "GOG" in page.text
+    assert 'href="/admin/integrations"' in page.text
+    assert "ATLAS_SECRET_KEY" in page.text  # no key configured: the page says why it cannot store credentials
+
+
+def test_admin_can_store_provider_credentials_encrypted_and_providers_reload(site):
+    from sqlalchemy import select
+
+    from atlas import integrations, secrets_box
+    from atlas.models import AuditEntry, Setting
+
+    base = site.st.base.model_copy(update={"secret_key": "k" * 40})
+    site.st.base = base
+    signup(site, "alice")
+    assert "igdb" not in site.st.providers.providers
+    t = token(site, "/admin/integrations")
+    r = site.post("/admin/integrations/igdb", data={"csrf": t, "igdb_client_id": "client-123",
+                                                    "igdb_client_secret": "super-secret-value"})
+    assert r.status_code == 303, r.text
+    with site.st.maker() as s:
+        raw = s.get(Setting, integrations.PREFIX + "igdb_client_secret").value
+        assert "super-secret-value" not in raw and secrets_box.decrypt(base, raw) == "super-secret-value"
+        audit = s.scalars(select(AuditEntry).where(AuditEntry.action == "integration")).one()
+        assert audit.detail == {"fields": ["igdb_client_id", "igdb_client_secret"]}
+    page = site.get("/admin/integrations")  # refresh picks up the change and rebuilds the providers
+    assert "super-secret-value" not in page.text and "client-123" not in page.text
+    assert "Stored in the database" in page.text and "igdb" in site.st.providers.providers
+    # an empty box keeps the value; the checkbox removes it and the provider goes away
+    site.post("/admin/integrations/igdb", data={"csrf": t, "igdb_client_id": "", "igdb_client_secret": ""})
+    assert "igdb" in site.st.providers.providers
+    site.post("/admin/integrations/igdb", data={"csrf": t, "clear_igdb_client_id": "on", "clear_igdb_client_secret": "on"})
+    site.get("/admin/integrations")
+    assert "igdb" not in site.st.providers.providers
+
+
+def test_credentials_cannot_be_stored_without_a_secret_key_or_by_non_admins(site):
+    signup(site, "alice")
+    t = token(site, "/admin/integrations")
+    assert site.post("/admin/integrations/rawg", data={"csrf": t, "rawg_api_key": "abc"}).status_code == 400
+    assert site.post("/admin/integrations/nope", data={"csrf": t}).status_code == 404
+    plain = fresh(site)
+    assert plain.post("/admin/integrations/rawg", data={"csrf": "x", "rawg_api_key": "abc"}).status_code in (303, 401, 403)
+
+
+def test_known_stores_link_only_safe_ids():
+    from atlas import integrations
+
+    assert integrations.store_link("gog", "the_witcher_3") == "https://www.gog.com/game/the_witcher_3"
+    assert integrations.store_link("tgdb", "1234") == "https://thegamesdb.net/game.php?id=1234"
+    assert integrations.store_link("steam", "../evil") is None and integrations.store_link("itch", "x") is None
+    assert integrations.store_link("unknown", "1") is None and integrations.store_name("unknown") == "unknown"

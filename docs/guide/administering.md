@@ -30,6 +30,12 @@ Upload a PNG/JPEG/WebP/GIF (≤512 KB, ≤1024 px; checked and re-served from th
 
 **Admin → Pages** writes About, Rules, Help or anything else in **Markdown** (headings, lists, emphasis, links; raw HTML and images are ignored for safety). Pages can be drafts, ordered, and shown in the top menu. Three starter pages exist.
 
+## Integrations
+
+**Admin → Integrations** lists the metadata providers Atlas can import from (Steam, IGDB, RAWG): whether each is active, recent failures, and a form for its credentials. Credentials entered there are stored **encrypted in the database** (this needs `ATLAS_SECRET_KEY`, see [Environment variables](reference-env.md)), take effect immediately and override the environment values; leave a box empty to keep the current value, or tick *Remove* to fall back to the environment. Saved values are never displayed again, and the audit log records only which fields changed. Steam's public store API can be switched on or off there too.
+
+The page also lists the store namespaces Atlas links on game pages (`steam`, `gog`, `epic`, `tgdb`, `itch`, `igdb`, `rawg`): add ids as `namespace:id` lines when adding a game, or let a plugin submit them. GOG, Epic and TheGamesDB have no import adapter yet, so their ids are stored and linked but Atlas does not fetch data from them.
+
 ## Media types and custom fields
 
 **Admin → Fields.** A **media type** says what a record is (`game` is built in; add *movie*, *anime*, *tool*…). For each type you can:
@@ -40,6 +46,11 @@ Upload a PNG/JPEG/WebP/GIF (≤512 KB, ≤1024 px; checked and re-served from th
 ![Fields](img/05-admin-fields.png)
 
 Custom values appear on the page, in the contributor form and the API (`custom`), are merged by source trust like core fields, can be proposed, reviewed and reverted, and move with records when merged. A field's *kind* cannot change after creation (create a new field instead). Deleting a field deletes its values. A type that has records can only be **disabled**, not deleted.
+
+### Standard multiplayer fields
+
+Every authority and local node starts with three fields on `game`: `players_min` and `players_max` (numbers) and `crossplay` (`yes`, `no` or `partial`). They are added once, on first start after upgrading; delete or relabel them freely and they will not come back. Mirrors receive them from their upstream. Steam imports set `crossplay` to `yes` when the store lists *Cross-Platform Multiplayer* (Steam never states `no`, so nothing is guessed). Curators set the rest with `PUT /games/{cid}/custom`; clients such as a game-night plugin read them from `custom` in `GET /games` and `GET /games/{id}`. Other providers can fill these fields by returning `custom` values from their adapter; undefined fields are skipped.
+
 
 Authorities **replicate** their types and fields to mirrors and local nodes (Settings → *Adopt the upstream media types and fields*); a node's own definitions always win over an upstream one of the same name.
 
