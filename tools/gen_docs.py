@@ -30,7 +30,7 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                     "PostgreSQL for authorities and an explicit initial administrator."),
     "auto_migrate": ("Node", "Run database migrations on start. Default: on for SQLite, off otherwise. With several replicas "
                      "set `false` and run `atlas migrate` as a job."),
-    "secret_key": ("Node", "Encrypts secrets stored in the database (peer tokens, OIDC client secrets). Generate one with "
+    "secret_key": ("Node", "Encrypts secrets stored in the database (peer tokens, OIDC client secrets, provider credentials entered in Admin → Integrations). Generate one with "
                    "`atlas secret-key`. Losing it makes those secrets unreadable."),
     "bootstrap_admin_token": ("Node", "32+ random characters. Becomes an admin API token while set; removing it revokes it. "
                               "Use it to create the first real tokens."),
@@ -59,11 +59,11 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "max_resolve": ("Limits", "Largest `/resolve` batch."),
     "rate_limit_per_minute": ("Limits", "API requests per token per minute (unauthenticated callers get 60 per address)."),
     "max_body_bytes": ("Limits", "Largest request body accepted."),
-    "steam_enabled": ("Providers", "Use Steam's public store API."),
-    "rawg_api_key": ("Providers", "Enables the RAWG provider."),
-    "igdb_client_id": ("Providers", "Twitch client id; with the secret enables the IGDB provider."),
-    "igdb_client_secret": ("Providers", "Twitch client secret for IGDB."),
-    "steam_api_key": ("Providers", "Steam Web API key. Without it achievements have global percentages only (no names)."),
+    "steam_enabled": ("Providers", "Use Steam's public store API. Can also be switched in [Admin → Integrations](administering.md#integrations)."),
+    "rawg_api_key": ("Providers", "Enables the RAWG provider. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value."),
+    "igdb_client_id": ("Providers", "Twitch client id; with the secret enables the IGDB provider. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value."),
+    "igdb_client_secret": ("Providers", "Twitch client secret for IGDB. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value."),
+    "steam_api_key": ("Providers", "Steam Web API key. Without it achievements have global percentages only (no names). Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value."),
     "provider_ttl_seconds": ("Providers", "How long a provider answer is cached."),
     "provider_negative_ttl_seconds": ("Providers", "How long “not found” is cached."),
     "media_dir": ("Artwork", "Directory for cached images (content-addressed). Mount a volume here."),

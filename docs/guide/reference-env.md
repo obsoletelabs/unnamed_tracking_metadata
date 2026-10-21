@@ -16,7 +16,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_NODE_OPERATOR` | — | Who runs this node. Editable in Admin → Settings. **live** |
 | `ATLAS_INITIAL_ADMIN` | — | Username that becomes the website administrator when it registers. If unset, the first account to register is the administrator (production with open registration refuses to start without it). |
 | `ATLAS_BOOTSTRAP_ADMIN_TOKEN` | — | 32+ random characters. Becomes an admin API token while set; removing it revokes it. Use it to create the first real tokens. |
-| `ATLAS_SECRET_KEY` | — | Encrypts secrets stored in the database (peer tokens, OIDC client secrets). Generate one with `atlas secret-key`. Losing it makes those secrets unreadable. |
+| `ATLAS_SECRET_KEY` | — | Encrypts secrets stored in the database (peer tokens, OIDC client secrets, provider credentials entered in Admin → Integrations). Generate one with `atlas secret-key`. Losing it makes those secrets unreadable. |
 | `ATLAS_AUTO_MIGRATE` | — | Run database migrations on start. Default: on for SQLite, off otherwise. With several replicas set `false` and run `atlas migrate` as a job. |
 
 ## Backups
@@ -64,13 +64,13 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `ATLAS_STEAM_ENABLED` | `true` | Use Steam's public store API. |
-| `ATLAS_RAWG_API_KEY` | — | Enables the RAWG provider. |
-| `ATLAS_IGDB_CLIENT_ID` | — | Twitch client id; with the secret enables the IGDB provider. |
-| `ATLAS_IGDB_CLIENT_SECRET` | — | Twitch client secret for IGDB. |
+| `ATLAS_STEAM_ENABLED` | `true` | Use Steam's public store API. Can also be switched in [Admin → Integrations](administering.md#integrations). |
+| `ATLAS_RAWG_API_KEY` | — | Enables the RAWG provider. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value. |
+| `ATLAS_IGDB_CLIENT_ID` | — | Twitch client id; with the secret enables the IGDB provider. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value. |
+| `ATLAS_IGDB_CLIENT_SECRET` | — | Twitch client secret for IGDB. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value. |
 | `ATLAS_PROVIDER_TTL_SECONDS` | `604800` | How long a provider answer is cached. |
 | `ATLAS_PROVIDER_NEGATIVE_TTL_SECONDS` | `86400` | How long “not found” is cached. |
-| `ATLAS_STEAM_API_KEY` | — | Steam Web API key. Without it achievements have global percentages only (no names). |
+| `ATLAS_STEAM_API_KEY` | — | Steam Web API key. Without it achievements have global percentages only (no names). Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value. |
 
 ## Artwork
 

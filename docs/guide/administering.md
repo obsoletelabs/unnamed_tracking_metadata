@@ -32,7 +32,9 @@ Upload a PNG/JPEG/WebP/GIF (≤512 KB, ≤1024 px; checked and re-served from th
 
 ## Integrations
 
-**Admin → Integrations** lists the metadata providers Atlas can import from (Steam, IGDB, RAWG), whether each is active, recent failures, and the environment variables that switch an inactive one on. It is read-only on purpose: keys and secrets are supplied as environment variables when the node starts (see [Environment variables](reference-env.md)) and are never stored in the database or shown in a page. GOG and other stores have no built-in adapter yet; their ids are linked by plugins and curators on the game page.
+**Admin → Integrations** lists the metadata providers Atlas can import from (Steam, IGDB, RAWG): whether each is active, recent failures, and a form for its credentials. Credentials entered there are stored **encrypted in the database** (this needs `ATLAS_SECRET_KEY`, see [Environment variables](reference-env.md)), take effect immediately and override the environment values; leave a box empty to keep the current value, or tick *Remove* to fall back to the environment. Saved values are never displayed again, and the audit log records only which fields changed. Steam's public store API can be switched on or off there too.
+
+The page also lists the store namespaces Atlas links on game pages (`steam`, `gog`, `epic`, `tgdb`, `itch`, `igdb`, `rawg`): add ids as `namespace:id` lines when adding a game, or let a plugin submit them. GOG, Epic and TheGamesDB have no import adapter yet, so their ids are stored and linked but Atlas does not fetch data from them.
 
 ## Media types and custom fields
 
