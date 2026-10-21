@@ -124,3 +124,12 @@ pre.mail { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--sur
 details.inline { display: inline; } details.inline > form, details.inline > .card { margin-top: 6px; }
 .card.unread { border-color: var(--accent); }
 .side-col h2:first-child, .main-col h2:first-child { margin-top: 0; }
+
+.achievements td { vertical-align: middle; }
+.ach-icon { width: 48px; }
+.ach-icon img, .ach-ph { display: inline-flex; width: 40px; height: 40px; border-radius: 6px; object-fit: cover; align-items: center;
+  justify-content: center; background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); }
+.badge.tier-gold { color: var(--warn); border-color: var(--warn); } .badge.tier-silver { color: var(--muted); }
+.badge.tier-bronze { color: var(--accent); border-color: var(--accent); }
+@media (max-width: 640px) { .achievements th:nth-child(4), .achievements td:nth-child(4) { display: none; } }
+.achievements { display: block; overflow-x: auto; }

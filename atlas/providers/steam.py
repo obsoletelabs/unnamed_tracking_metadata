@@ -63,8 +63,9 @@ class Steam:
                 continue
             row = {"name": a["displayName"], "external_id": a.get("name", ""), "hidden": bool(a.get("hidden")),
                    "description": a.get("description", "")}
-            if a.get("icon"):
-                row["icon_url"] = a["icon"]
+            for key, field in (("icon", "icon_url"), ("icongray", "locked_icon_url")):
+                if str(a.get(key, "")).startswith("https://"):
+                    row[field] = a[key]
             if a.get("name") in pct:
                 row["global_percent"] = min(100.0, max(0.0, pct[a["name"]]))
             out.append(row)

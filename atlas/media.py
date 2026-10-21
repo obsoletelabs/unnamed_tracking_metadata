@@ -17,7 +17,7 @@ from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import Artwork, now
+from .models import Achievement, Artwork, now
 from .settings import Settings
 
 FORMATS = {"PNG": ("png", "image/png"), "JPEG": ("jpg", "image/jpeg"), "WEBP": ("webp", "image/webp"),
@@ -203,6 +203,45 @@ def cache_pending(maker: sessionmaker[Session], settings: Settings, client: http
             for art in rows:
                 done += cache_one(session, settings, art, own)
                 session.commit()
+        done += cache_pending_achievement_icons(maker, settings, own)
+    finally:
+        if client is None:
+            own.close()
+    return done
+
+
+def cache_achievement_icon(settings: Settings, ach: Achievement, which: str, client: httpx.Client) -> bool:
+    """Fetch one achievement image ("icon" or "locked_icon") through the same SSRF-safe, validated store."""
+    url = getattr(ach, f"{which}_url")
+    try:
+        data = _request(client, url, settings)
+        digest = store(settings, data, validate_image(data, settings)[0])
+    except MediaError:
+        fails = getattr(ach, f"{which}_fail_count") + 1
+        setattr(ach, f"{which}_fail_count", fails)
+        setattr(ach, f"{which}_next_try_at", now() + timedelta(minutes=min(60 * 24 * 7, 5 * 2 ** min(fails, 12))))
+        return False
+    setattr(ach, f"{which}_blob_hash", digest)
+    setattr(ach, f"{which}_fail_count", 0)
+    setattr(ach, f"{which}_next_try_at", None)
+    return True
+
+
+def cache_pending_achievement_icons(maker: sessionmaker[Session], settings: Settings,
+                                    client: httpx.Client | None = None) -> int:
+    done = 0
+    own = client or httpx.Client(trust_env=False)
+    try:
+        with maker() as session:
+            for which in ("icon", "locked_icon"):
+                url, blob = getattr(Achievement, f"{which}_url"), getattr(Achievement, f"{which}_blob_hash")
+                retry = getattr(Achievement, f"{which}_next_try_at")
+                rows = session.scalars(select(Achievement).where(
+                    url.is_not(None), blob.is_(None), (retry.is_(None)) | (retry <= now())
+                ).order_by(Achievement.id).limit(settings.media_cache_batch)).all()
+                for ach in rows:
+                    done += cache_achievement_icon(settings, ach, which, own)
+                    session.commit()
     finally:
         if client is None:
             own.close()

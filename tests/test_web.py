@@ -254,6 +254,52 @@ def test_personal_tokens_work_against_the_api_and_are_scoped(site):
     assert other.post(f"/me/tokens/{tid}/revoke", data={"csrf": t2}).status_code == 404
 
 
+def test_hidden_achievements_reveal_only_for_signed_in_user_tokens(site):
+    admin = {"Authorization": "Bearer " + "b" * 40}
+    assert site.put(f"/api/v2/games/{site.gid}/achievements", headers=admin, json={"items": [
+        {"name": "Secret Ending", "description": "Spoiler", "hidden": True, "external_id": "S1"},
+        {"name": "Warm Up"}]}).status_code == 200
+    signup(site, "alice")
+    t = token(site, "/me")
+    secret = re.search(r"(atl_[A-Za-z0-9_-]+)", site.post(
+        "/me/tokens", data={"csrf": t, "name": "app", "scope": "read"}).text).group(1)
+    user = {"Authorization": "Bearer " + secret}
+    url = f"/api/v2/games/{site.gid}/achievements"
+    plain = site.get(url, headers=user).json()
+    assert plain["hidden_count"] == 1 and "Secret Ending" not in str(plain) and "Spoiler" not in str(plain)
+    hid = next(r["id"] for r in plain["results"] if r["hidden"])
+    assert site.get(f"{url}?reveal=all", headers=user).json()["results"][0]["name"] in ("Secret Ending", "Warm Up")
+    assert "Secret Ending" in str(site.get(f"{url}?reveal={hid}", headers=user).json())
+    assert "Warm Up" in str(site.get(f"{url}?reveal=nope", headers=user).json())
+    assert "Secret Ending" not in str(site.get(f"{url}?reveal=nope", headers=user).json())
+    # a plain read token (not a person's) cannot reveal; the public page redacts too
+    read_only = site.post("/api/v2/tokens", headers=admin, json={"name": "ro", "scopes": ["read"]}).json()["token"]
+    assert "Secret Ending" not in str(site.get(f"{url}?reveal=all", headers={"Authorization": "Bearer " + read_only}).json())
+    assert "Secret Ending" not in site.get(f"/game/{site.gid}").text
+
+
+def test_achievement_proposal_lines_accept_extras_in_any_order(site):
+    from fastapi import HTTPException
+
+    from atlas.web.routes import parse_achievement_line
+
+    assert parse_achievement_line("Escape | Leave | gold | win condition | 50 | hidden | https://i.test/a.png"
+                                  " | https://i.test/b.png") == {
+        "name": "Escape", "description": "Leave", "tier": "gold", "kind": "win_condition", "points": 50,
+        "hidden": True, "icon_url": "https://i.test/a.png", "locked_icon_url": "https://i.test/b.png"}
+    assert parse_achievement_line("Plain") == {"name": "Plain", "description": ""}
+    with pytest.raises(HTTPException):
+        parse_achievement_line("X | y | platinum")
+    signup(site, "alice")
+    t = token(site, f"/game/{site.gid}")
+    ok = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | gold | 5"})
+    assert ok.status_code == 303
+    bad = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | platinum"})
+    assert bad.status_code == 400
+    page = site.get(f"/game/{site.gid}")
+    assert page.status_code == 200 and "Add achievements" in page.text
+
+
 def test_password_change_signs_out_other_sessions(site):
     signup(site, "alice")
     second = fresh(site)
@@ -515,3 +561,35 @@ def test_members_can_link_a_store_by_searching_its_name(site):
     done = site.post(f"/game/{site.gid}/links", data={"csrf": t, "store": "gogish", "ident": "hades-gog"})
     assert done.status_code == 303 and "m=applied" in done.headers["location"]
     assert "hades-gog" in site.get(f"/game/{site.gid}").text
+
+
+def test_link_page_autosuggests_likely_stores_from_the_game_name(site):
+    from atlas.providers.base import ProviderResult
+
+    class Store:
+        name = "gogish"
+        redistributable = False
+        requests_per_minute = 600
+
+        def search(self, client, query):
+            return [ProviderResult(external_id="hades-2", title="Hades II", platform="pc", release_date="2024-05-06"),
+                    ProviderResult(external_id="hades-gog", title="Hades", platform="pc", release_date="2020-09-17")]
+
+        def fetch(self, client, external_id):
+            return None
+
+    site.st.base = site.st.base.model_copy(update={"steam_enabled": False})  # no live provider calls in tests
+    site.st.ctx.settings = site.st.ctx.settings.model_copy(update={"steam_enabled": False})
+    site.st.providers.providers.pop("steam", None)
+    site.st.providers.providers["gogish"] = Store()
+    signup(site, "alice")
+    page = site.get(f"/game/{site.gid}/links").text
+    assert "Suggested matches" in page and "Likely match" in page
+    assert page.index("hades-gog") < page.index("hades-2")  # the same-title, same-year match comes first
+    assert page.count('class="tag">Likely match') == 1  # Hades II is a different game
+    manual = site.get(f"/game/{site.gid}/links", params={"provider": "gogish", "q": "hades"}).text
+    assert "Suggested matches" not in manual  # an explicit search replaces the suggestions
+    site.post(f"/game/{site.gid}/links", data={"csrf": token(site, f"/game/{site.gid}/links"), "store": "gogish",
+                                               "ident": "hades-gog"})
+    assert "Suggested matches" in site.get(f"/game/{site.gid}/links").text
+    assert "hades-gog" not in site.get(f"/game/{site.gid}/links").text  # a store it is linked to is skipped

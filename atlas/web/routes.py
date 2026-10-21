@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -465,6 +466,32 @@ def propose_artwork(cid: str, p: Annotated[Page, Depends(user_form)], kind: Anno
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
+def suggest_links(p: Page, g: Any) -> list[dict[str, Any]]:
+    """Likely store matches for a game, found by its own name in every provider this node can search.
+
+    Stores the game is already linked to are skipped. A match is marked likely when the title is the same
+    (ignoring case and punctuation) and, where both are known, the release year agrees."""
+    throttle(p, f"link-suggest:{p.me.id}", 10, 60, "Too many searches")
+    title = str(g.view.get("title") or "")
+    year = str(g.view.get("release_date") or "")[:4]
+    linked = set(g.view.get("provider_ids") or {})
+    norm = re.compile(r"\W+")
+    out: list[dict[str, Any]] = []
+    for name in sorted(p.st.providers.providers):
+        if name in linked or not title:
+            continue
+        try:
+            found = [r.to_item() for r in p.st.providers.lookup(p.session, name, query=title)[:5]]
+        except ProviderError:
+            continue  # a provider that is down just has no suggestions
+        for item in found:
+            same = norm.sub(" ", item["title"].casefold()).strip() == norm.sub(" ", title.casefold()).strip()
+            item_year = str(item.get("release_date") or "")[:4]
+            likely = same and (not year or not item_year or year == item_year)
+            out.append({"provider": name, "label": integrations.store_name(name), "likely": likely, **item})
+    return sorted(out, key=lambda s: (not s["likely"], s["provider"]))[:12]
+
+
 @router.get("/game/{cid}/links", response_class=HTMLResponse)
 def link_by_search(cid: str, p: Annotated[Page, Depends(user_page)], provider: Annotated[str, Query(max_length=40)] = "",
                    q: Annotated[str, Query(max_length=200)] = ""):
@@ -473,14 +500,17 @@ def link_by_search(cid: str, p: Annotated[Page, Depends(user_page)], provider: A
     names = sorted(p.st.providers.providers)
     query = q.strip() or ("" if provider else str(g.view.get("title") or ""))
     results, error = None, None
-    if provider and query:
+    suggestions = None
+    if not provider and not q.strip():
+        suggestions = suggest_links(p, g)
+    elif provider and query:
         throttle(p, f"link-search:{p.me.id}", 30, 60, "Too many searches")
         try:
             results = [r.to_item() for r in p.st.providers.lookup(p.session, provider, query=query)[:15]]
         except ProviderError as exc:
             results, error = [], f"{provider} could not be searched: {exc}"
     return render(p, "link_store.html", g=g, v=g.view, names=names, provider=provider or (names[0] if names else ""),
-                  q=query, results=results, error=error, stores=integrations.STORES)
+                  q=query, results=results, error=error, stores=integrations.STORES, suggestions=suggestions)
 
 
 @router.post("/game/{cid}/links")
@@ -497,6 +527,29 @@ def propose_store_link(cid: str, p: Annotated[Page, Depends(user_form)], store: 
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
+def parse_achievement_line(line: str) -> dict[str, Any]:
+    """`Name | Description | extras...`; extras are recognised by value, in any order: a kind, a tier, a whole
+    number (points), `hidden`, an http(s) address (icon) or a second one (locked icon)."""
+    name, _, rest = line.partition("|")
+    desc, _, extras = rest.partition("|")
+    item: dict[str, Any] = {"name": name.strip(), "description": desc.strip()}
+    for token in (t.strip() for t in extras.split("|")):
+        low = token.casefold().replace(" ", "_")
+        if low in facets.ACH_KINDS:
+            item["kind"] = low
+        elif low in facets.ACH_TIERS:
+            item["tier"] = low
+        elif low == "hidden":
+            item["hidden"] = True
+        elif token.isdigit():
+            item["points"] = int(token)
+        elif token.startswith(("http://", "https://")):
+            item["locked_icon_url" if "icon_url" in item else "icon_url"] = token
+        elif token:
+            raise HTTPException(400, f"Don't know what '{token[:40]}' means in: {name.strip()[:60]}")
+    return item
+
+
 @router.post("/game/{cid}/achievements")
 def propose_achievements(cid: str, p: Annotated[Page, Depends(user_form)],
                          lines_text: Annotated[str, Form(alias="lines", max_length=100000)],
@@ -504,8 +557,7 @@ def propose_achievements(cid: str, p: Annotated[Page, Depends(user_form)],
     g, _ = live_game(p, cid)
     items = []
     for line in lines(lines_text)[:200]:
-        name, _, desc = line.partition("|")
-        items.append({"name": name.strip(), "description": desc.strip()})
+        items.append(parse_achievement_line(line))
     try:
         pr = proposals.create(p.session, p.st.ctx, p.me, "achievements", g.id,
                               {"items": items}, note)
