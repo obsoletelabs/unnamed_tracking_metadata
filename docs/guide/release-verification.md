@@ -181,3 +181,31 @@ TLS, load, Proxmox or downstream image-delivery claims described above.
 including the integrated tab opened by the operator. No new UI screenshots were captured.
 Review account security/enrollment/challenge, Signing keys, the custom-field rename warning
 and relay selection at desktop and narrow widths before removing the PR's draft status.
+
+## 21 October 2026 consent verification
+
+Consent source `4665d51` passed **56 OIDC and web tests** against disposable SQLite
+and PostgreSQL fixtures. The preceding consent-policy implementation passed the
+full **434-test** suite; the later change adjusts only consent layout. Ruff passed.
+
+A disposable regular member used the actual browser-rendered consent form in the
+integrated Chromium browser. **Cancel** reached a separate callback origin with
+`access_denied`; **Allow** reached it with an authorization code. Neither action
+reported a CSP error. This verifies the native form and cross-origin return, not
+a complete Tracking App token exchange or production sign-in.
+
+| Viewport | Result |
+| --- | --- |
+| 1280 × 720 | Card centered between the real header and footer |
+| 390 × 844 | Card centered in the available space; wrapped navigation and all actions visible |
+| 1280 × 360 | Page scrolls naturally; Cancel remained reachable and completed the return |
+
+The synthetic callback origin was `localhost:18783`, separate from the provider
+at `localhost:18782`. Viewport overrides were reset and test tabs closed afterward.
+No production credentials or settings were changed.
+
+![Centered desktop consent](assets/oidc/consent-centered-desktop.png)
+
+![Centered phone consent](assets/oidc/consent-centered-mobile.png)
+
+![Successful browser return to the synthetic callback](assets/oidc/consent-allowed-callback.png)
