@@ -56,8 +56,10 @@ def _guard_upstream(session: Session, st: AppState, cid: str) -> None:
 # ---- health -------------------------------------------------------------------------------------------
 
 @router.get("/health", tags=["ops"])
-def health() -> dict[str, str]:
-    return {"status": "ok", "version": __version__}
+def health(st: St) -> dict[str, str]:
+    # Liveness stays "ok" (the process serves); "media" tells operators artwork cannot be stored.
+    return {"status": "ok", "version": __version__,
+            "media": "ok" if media.storage_problem(st.ctx.settings) is None else "unwritable"}
 
 
 @router.get("/ready", tags=["ops"])

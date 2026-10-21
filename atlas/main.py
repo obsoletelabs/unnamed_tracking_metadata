@@ -111,6 +111,9 @@ def _cache_media(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) 
         settings = ctx.settings
         try:
             cached = media.cache_pending(maker, settings) if settings.media_cache_enabled else 0
+        except media.MediaStorageError as exc:
+            log.warning("artwork cache cannot store images: %s", exc)
+            cached = 0
         except Exception as exc:
             log.warning("artwork cache failed: %s", type(exc).__name__)
             cached = 0
@@ -178,10 +181,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         custom.seed(s)
         s.commit()
     ctx = Ctx(settings, identity)
+    with maker() as s:
+        custom.seed_multiplayer(s, ctx)
+        s.commit()
     stop = threading.Event()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if (problem := media.storage_problem(ctx.settings)):
+            log.warning("artwork cannot be cached until this is fixed: %s", problem)
         threading.Thread(target=_housekeeping, args=(maker, ctx, stop), daemon=True,
                          name="atlas-housekeeping").start()
         threading.Thread(target=_cache_media, args=(maker, ctx, stop), daemon=True, name="atlas-media").start()
