@@ -30,6 +30,12 @@ Upload a PNG/JPEG/WebP/GIF (≤512 KB, ≤1024 px; checked and re-served from th
 
 **Admin → Pages** writes About, Rules, Help or anything else in **Markdown** (headings, lists, emphasis, links; raw HTML and images are ignored for safety). Pages can be drafts, ordered, and shown in the top menu. Three starter pages exist.
 
+## Integrations
+
+**Admin → Integrations** lists the metadata providers Atlas can import from (Steam, IGDB, RAWG): whether each is active, recent failures, and a form for its credentials. Credentials entered there are stored **encrypted in the database** (this needs `ATLAS_SECRET_KEY`, see [Environment variables](reference-env.md)), take effect immediately and override the environment values; leave a box empty to keep the current value, or tick *Remove* to fall back to the environment. Saved values are never displayed again, and the audit log records only which fields changed. Steam's public store API can be switched on or off there too.
+
+The page also lists the store namespaces Atlas links on game pages (`steam`, `gog`, `epic`, `tgdb`, `itch`, `igdb`, `rawg`): add ids as `namespace:id` lines when adding a game, or let a plugin submit them. GOG, Epic and TheGamesDB have no import adapter yet, so their ids are stored and linked but Atlas does not fetch data from them.
+
 ## Media types and custom fields
 
 **Admin → Fields.** A **media type** says what a record is (`game` is built in; add *movie*, *anime*, *tool*…). For each type you can:

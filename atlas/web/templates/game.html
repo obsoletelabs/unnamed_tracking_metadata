@@ -26,7 +26,7 @@
       {% if v.get('aliases') %}<dt>{{ lbl.aliases }}</dt><dd>{{ v.aliases|join(', ') }}</dd>{% endif %}
       {% for d in details %}<dt>{{ d.f.label }}</dt><dd>{% if d.f.kind == 'list' %}{{ chips(d.value) }}{% elif d.f.kind == 'url' %}<a href="{{ d.value }}" rel="noopener noreferrer nofollow">{{ d.value }}</a>{% elif d.f.kind == 'bool' %}{{ 'Yes' if d.value else 'No' }}{% else %}{{ d.value }}{% endif %}</dd>{% endfor %}
       {% if mtype_label and g.media_type != 'game' %}<dt>Type</dt><dd>{{ mtype_label }}</dd>{% endif %}
-      <dt>Identifiers</dt><dd><code>{{ g.id }}</code>{% for ns, ident in (v.get('provider_ids') or {}).items() %}<br>{{ ns }}: {% if ns == 'steam' and ident.isdigit() %}<a href="https://store.steampowered.com/app/{{ ident }}" rel="noopener noreferrer nofollow">{{ ident }}</a>{% else %}{{ ident }}{% endif %}{% endfor %}</dd>
+      <dt>Identifiers</dt><dd><code>{{ g.id }}</code>{% for ns, ident in (v.get('provider_ids') or {}).items() %}<br>{{ store_name(ns) }}: {% set link = store_link(ns, ident) %}{% if link %}<a href="{{ link }}" rel="noopener noreferrer nofollow">{{ ident }}</a>{% else %}{{ ident }}{% endif %}{% endfor %}</dd>
     </dl>
     {% if v.get('description') %}<p>{{ v.description }}</p>{% endif %}
     <div class="actions-bar">

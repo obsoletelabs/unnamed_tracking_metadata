@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Resp
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
-from .. import media, pages, runtime
+from .. import integrations, media, pages, runtime, secrets_box
 from ..models import AuditEntry, Page, Setting
 from .deps import Page as Ctx
 from .deps import admin_form, admin_page, go, page
@@ -180,3 +180,85 @@ def page_delete(slug: str, p: Annotated[Ctx, Depends(admin_form)]):
     p.session.delete(row)
     p.session.add(AuditEntry(actor_id=p.me.id, action="page_delete", target=slug, detail=None))
     return go("/admin/pages", "saved")
+
+
+# ---- integrations --------------------------------------------------------------------------------------
+
+DOCS = "https://github.com/obsoletelabs/unnamed_tracking_metadata/blob/v2/docs/guide"
+CATALOGUE = (
+    {"name": "steam", "label": "Steam", "gives": "Descriptions, genres, features, languages, artwork, achievements",
+     "needs": ["ATLAS_STEAM_ENABLED"], "optional": ["ATLAS_STEAM_API_KEY (achievement names)"]},
+    {"name": "igdb", "label": "IGDB", "gives": "Descriptions, genres, themes, scores, cross-store ids",
+     "needs": ["ATLAS_IGDB_CLIENT_ID", "ATLAS_IGDB_CLIENT_SECRET"], "optional": []},
+    {"name": "rawg", "label": "RAWG", "gives": "Descriptions, genres, tags, scores",
+     "needs": ["ATLAS_RAWG_API_KEY"], "optional": []},
+    {"name": "gog", "label": "GOG and other stores", "gives": "No built-in adapter yet; ids arrive from plugins "
+     "and curators", "needs": [], "optional": []},
+)
+
+
+def _field_state(p: Ctx, field: str) -> dict[str, Any]:
+    stored = p.session.get(Setting, integrations.PREFIX + field) is not None
+    in_env = bool(getattr(p.st.base, field, None))
+    return {"stored": stored, "env": in_env,
+            "state": "Stored in the database" if stored else ("Set in the environment" if in_env else "Not set")}
+
+
+@router.get("/admin/integrations", response_class=HTMLResponse)
+def integrations_page(p: Annotated[Ctx, Depends(admin_page)]):
+    active = p.st.providers.providers
+    failures = p.st.providers.failure_counts()
+    rows = []
+    for item in CATALOGUE:
+        spec = integrations.PROVIDERS.get(item["name"])
+        fields = [{"key": f, "label": label, **_field_state(p, f)} for f, label in (spec[1] if spec else ())]
+        rows.append({**item, "active": item["name"] in active, "available": bool(item["needs"]), "fields": fields,
+                     "failures": failures.get(item["name"], 0), "editable": spec is not None})
+    return render(p, "admin_integrations.html", rows=rows, docs=DOCS, can_store=secrets_box.available(p.st.base),
+                  stores=integrations.STORES,
+                  steam_on=p.st.ctx.settings.steam_enabled)
+
+
+@router.post("/admin/integrations/{name}")
+async def integrations_save(name: str, request: Request, p: Annotated[Ctx, Depends(admin_form)]):
+    spec = integrations.PROVIDERS.get(name)
+    if spec is None:
+        raise HTTPException(404, "Unknown provider.")
+    form = await request.form()
+    changed: list[str] = []
+    for field, _label in spec[1]:
+        key = integrations.PREFIX + field
+        value = str(form.get(field, "")).strip()
+        row = p.session.get(Setting, key)
+        if form.get("clear_" + field) == "on":
+            if row is not None:
+                p.session.delete(row)
+                changed.append(field)
+            continue
+        if not value:
+            continue
+        if len(value) > 300 or any(ord(c) < 32 for c in value):
+            raise HTTPException(400, "Credentials are at most 300 characters, on one line.")
+        if not secrets_box.available(p.st.base):
+            raise HTTPException(400, "Set ATLAS_SECRET_KEY (see `atlas secret-key`) before storing credentials here.")
+        token = secrets_box.encrypt(p.st.base, value)
+        if row is None:
+            p.session.add(Setting(key=key, value=token, updated_by=p.me.id))
+        else:
+            row.value, row.updated_by = token, p.me.id
+        changed.append(field)
+    if name == "steam":
+        key = integrations.PREFIX + "steam_enabled"
+        wanted = form.get("steam_enabled") == "on"
+        row = p.session.get(Setting, key)
+        if (row.value if row is not None else p.st.base.steam_enabled) != wanted:
+            if row is None:
+                p.session.add(Setting(key=key, value=wanted, updated_by=p.me.id))
+            else:
+                row.value, row.updated_by = wanted, p.me.id
+            changed.append("steam_enabled")
+    if changed:  # field names only, never values
+        p.session.add(AuditEntry(actor_id=p.me.id, action="integration", target=name, detail={"fields": changed}))
+    p.session.flush()
+    p.st.refresh(p.session, force=True)
+    return go("/admin/integrations", "saved" if changed else "nochange")

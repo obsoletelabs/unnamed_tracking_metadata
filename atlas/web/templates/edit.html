@@ -9,7 +9,7 @@
   {{ csrf(p.csrf) }}{% if new %}<input type="hidden" name="media_type" value="{{ mtype }}">{% endif %}
   {% include "_fields.html" %}
   {% if new %}
-  <label for="provider_ids">Known store IDs <span class="hint">one per line, e.g. <code>steam:620</code></span></label>
+  <label for="provider_ids">Known store IDs <span class="hint">one per line, e.g. <code>steam:620</code>, <code>gog:the_witcher_3</code>, <code>epic:slug</code>, <code>tgdb:1234</code></span></label>
   <textarea id="provider_ids" name="provider_ids">{{ ids_text|default('') }}</textarea>
   {% endif %}
   <label for="note">Source / note for reviewers <span class="hint">link to the store page or announcement</span></label>

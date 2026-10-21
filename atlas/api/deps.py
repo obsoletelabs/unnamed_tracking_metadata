@@ -35,6 +35,7 @@ class AppState:
             fresh = runtime.effective(self.base, runtime.load(session))
             self.ctx.settings = fresh
             self.providers.settings = fresh
+            self.providers.rebuild(fresh)
 
 
 def state(request: Request) -> AppState:
