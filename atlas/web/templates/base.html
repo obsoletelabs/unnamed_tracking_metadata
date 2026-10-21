@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="/theme.css">
 <script src="/static/app.js" defer></script>
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
 <header class="site"><div class="wrap">
   <a class="brand" href="/">{% if s.logo_hash %}<img src="/media/{{ s.logo_hash }}" alt="">{% endif %}{{ app_name }}</a>
   <span class="node-badge {{ s.kind() }}" title="This node is {{ 'an' if s.kind() == 'official' else 'a' }} {{ s.kind() }} Atlas node{% if s.node_operator %}, run by {{ s.node_operator }}{% endif %}">{{ s.kind() }}</span>
