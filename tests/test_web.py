@@ -278,6 +278,28 @@ def test_hidden_achievements_reveal_only_for_signed_in_user_tokens(site):
     assert "Secret Ending" not in site.get(f"/game/{site.gid}").text
 
 
+def test_achievement_proposal_lines_accept_extras_in_any_order(site):
+    from fastapi import HTTPException
+
+    from atlas.web.routes import parse_achievement_line
+
+    assert parse_achievement_line("Escape | Leave | gold | win condition | 50 | hidden | https://i.test/a.png"
+                                  " | https://i.test/b.png") == {
+        "name": "Escape", "description": "Leave", "tier": "gold", "kind": "win_condition", "points": 50,
+        "hidden": True, "icon_url": "https://i.test/a.png", "locked_icon_url": "https://i.test/b.png"}
+    assert parse_achievement_line("Plain") == {"name": "Plain", "description": ""}
+    with pytest.raises(HTTPException):
+        parse_achievement_line("X | y | platinum")
+    signup(site, "alice")
+    t = token(site, f"/game/{site.gid}")
+    ok = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | gold | 5"})
+    assert ok.status_code == 303
+    bad = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | platinum"})
+    assert bad.status_code == 400
+    page = site.get(f"/game/{site.gid}")
+    assert page.status_code == 200 and "Add achievements" in page.text
+
+
 def test_password_change_signs_out_other_sessions(site):
     signup(site, "alice")
     second = fresh(site)
