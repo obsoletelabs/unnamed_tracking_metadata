@@ -294,6 +294,7 @@ def client_toggle(cid: str, p: Annotated[Ctx, Depends(admin_form)]):
     if row is None:
         raise HTTPException(404, "No such client.")
     row.enabled = not row.enabled
+    accounts.audit(p.session, p.me.id, "oidc_client_toggle", row.client_id, {"enabled": row.enabled})
     return go("/admin/oidc", "saved")
 
 

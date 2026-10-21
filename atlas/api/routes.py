@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import __version__, auth, custom, db, facets, feed, importer, key_rotation, media, service
+from .. import __version__, accounts, auth, custom, db, facets, feed, importer, key_rotation, media, service
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
 from ..models import Artwork, Canonical, Lock, Observation, ReplicatedChange, ReplicatedFeed, ReviewItem, SyncCursor, Token
 from ..normalize import norm_namespace
@@ -471,11 +471,13 @@ class TokenBody(BaseModel):
 
 
 @router.post("/tokens", tags=["admin"], status_code=201)
-def token_create(body: TokenBody, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]):
+def token_create(body: TokenBody, session: Sess, who: Annotated[auth.Principal, Depends(require("admin"))]):
     try:
         row, secret = auth.create_token(session, body.name, body.scopes, body.expires_in_days)
     except ValueError as exc:
         raise AtlasError(str(exc)) from exc
+    # The actor is a token, not a user: record which one (never the secret).
+    accounts.audit(session, None, "token_create", row.id, {"scopes": row.scopes, "via": "api", "by_token": who.token_id})
     return {"id": row.id, "name": row.name, "scopes": row.scopes, "token": secret,
             "expires_at": row.expires_at.isoformat() if row.expires_at else None}
 
@@ -489,11 +491,12 @@ def token_list(session: Sess, _: Annotated[auth.Principal, Depends(require("admi
 
 
 @router.delete("/tokens/{tid}", tags=["admin"], status_code=204)
-def token_revoke(tid: str, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]):
+def token_revoke(tid: str, session: Sess, who: Annotated[auth.Principal, Depends(require("admin"))]):
     row = session.get(Token, tid)
     if row is None:
         raise AtlasError("unknown token", "not_found")
     row.revoked_at = datetime.now(row.created_at.tzinfo)
+    accounts.audit(session, None, "token_revoke", tid, {"via": "api", "by_token": who.token_id})
     return Response(status_code=204)
 
 

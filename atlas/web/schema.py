@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 
-from .. import custom
+from .. import accounts, custom
 from ..models import Canonical, MediaType
 from ..service import AtlasError
 from .deps import Page as Ctx
@@ -42,6 +42,7 @@ def type_save(p: Annotated[Ctx, Depends(admin_form)], f: Annotated[dict[str, str
     except (AtlasError, ValueError) as exc:
         p.session.rollback()
         raise (_err(exc) if isinstance(exc, AtlasError) else HTTPException(400, "Order must be a number.")) from exc
+    accounts.audit(p.session, p.me.id, "schema_type_save", f.get("key", "")[:64])
     return go("/admin/schema", "saved")
 
 
@@ -51,6 +52,7 @@ def type_delete(key: str, p: Annotated[Ctx, Depends(admin_form)]):
         custom.delete_type(p.session, p.st.ctx, key)
     except AtlasError as exc:
         raise _err(exc) from exc
+    accounts.audit(p.session, p.me.id, "schema_type_delete", key[:64])
     return go("/admin/schema", "saved")
 
 
@@ -85,6 +87,7 @@ def field_save(mtype: str, p: Annotated[Ctx, Depends(admin_form)], f: Annotated[
     except (AtlasError, ValueError) as exc:
         p.session.rollback()
         raise (_err(exc) if isinstance(exc, AtlasError) else HTTPException(400, "Order must be a number.")) from exc
+    accounts.audit(p.session, p.me.id, "schema_field_save", f"{mtype}/{f.get('key', '')}"[:64])
     return go(f"/admin/schema/{mtype}", "saved")
 
 
@@ -94,4 +97,5 @@ def field_delete(mtype: str, key: str, p: Annotated[Ctx, Depends(admin_form)]):
         custom.delete_field(p.session, p.st.ctx, mtype, key)
     except AtlasError as exc:
         raise _err(exc) from exc
+    accounts.audit(p.session, p.me.id, "schema_field_delete", f"{mtype}/{key}"[:64])
     return go(f"/admin/schema/{mtype}", "saved")
