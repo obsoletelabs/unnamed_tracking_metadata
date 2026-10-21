@@ -443,6 +443,29 @@ def propose_artwork(cid: str, p: Annotated[Page, Depends(user_form)], kind: Anno
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
+def parse_achievement_line(line: str) -> dict[str, Any]:
+    """`Name | Description | extras...`; extras are recognised by value, in any order: a kind, a tier, a whole
+    number (points), `hidden`, an http(s) address (icon) or a second one (locked icon)."""
+    name, _, rest = line.partition("|")
+    desc, _, extras = rest.partition("|")
+    item: dict[str, Any] = {"name": name.strip(), "description": desc.strip()}
+    for token in (t.strip() for t in extras.split("|")):
+        low = token.casefold().replace(" ", "_")
+        if low in facets.ACH_KINDS:
+            item["kind"] = low
+        elif low in facets.ACH_TIERS:
+            item["tier"] = low
+        elif low == "hidden":
+            item["hidden"] = True
+        elif token.isdigit():
+            item["points"] = int(token)
+        elif token.startswith(("http://", "https://")):
+            item["locked_icon_url" if "icon_url" in item else "icon_url"] = token
+        elif token:
+            raise HTTPException(400, f"Don't know what '{token[:40]}' means in: {name.strip()[:60]}")
+    return item
+
+
 @router.post("/game/{cid}/achievements")
 def propose_achievements(cid: str, p: Annotated[Page, Depends(user_form)],
                          lines_text: Annotated[str, Form(alias="lines", max_length=100000)],
@@ -450,8 +473,7 @@ def propose_achievements(cid: str, p: Annotated[Page, Depends(user_form)],
     g, _ = live_game(p, cid)
     items = []
     for line in lines(lines_text)[:200]:
-        name, _, desc = line.partition("|")
-        items.append({"name": name.strip(), "description": desc.strip()})
+        items.append(parse_achievement_line(line))
     try:
         pr = proposals.create(p.session, p.st.ctx, p.me, "achievements", g.id,
                               {"items": items}, note)

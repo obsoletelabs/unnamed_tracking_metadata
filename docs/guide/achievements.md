@@ -19,6 +19,14 @@ Atlas keeps the **list** of achievements for a game: what exists, how rare it is
 
 Achievements from different sources are merged by normalised name. The highest-trust source wins each field; lower ones only fill gaps. A provider id is never assumed to match another provider's achievement with a different name.
 
+## On the website
+
+The game page lists achievements with icon, kind, tier, points and global percentage. Hidden ones show as "Hidden achievement" with a `?` icon.
+
+![Achievements on a game page](img/achievements-desktop.png)
+
+Signed-in users add achievements as `Name | Description | extras`; extras are recognised by value in any order: `progression` / `missable` / `win condition`, `bronze` / `silver` / `gold`, a number (points), `hidden`, an icon address (a second address is the locked icon).
+
 ## Reading
 
 `GET /api/v2/games/{id}/achievements` (scope `read`):
