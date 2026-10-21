@@ -1,0 +1,33 @@
+{% from "macros.html" import csrf %}
+<article class="art-panel" data-art-id="{{ a.id }}">
+<header><h2>{{ a.label }} · {{ title }}</h2>
+<p class="muted small">Image {{ pos }} of {{ count }}{% if a.preferred %} · <span class="badge ok">default</span>{% endif %}</p></header>
+{% if message %}<p class="flash" role="status">{{ message }}</p>{% endif %}
+<div class="art-stage"><img src="/media/{{ a.blob }}" alt="{{ a.label }} from {{ a.source }}"></div>
+<dl class="facts small">
+<dt>Source</dt><dd>{{ a.source }}{% if a.host %} · <a href="{{ a.url }}" rel="noopener noreferrer nofollow">{{ a.host }}</a>{% endif %}</dd>
+<dt>Status</dt><dd>{{ a.state }}</dd>
+{% if a.width and a.height %}<dt>Size</dt><dd>{{ a.width }} × {{ a.height }}{% if a.type %} · {{ a.type }}{% endif %}{% if a.size %} · {{ (a.size / 1024)|round|int }} KB{% endif %}</dd>{% endif %}
+<dt>Votes</dt><dd>▲ {{ a.up }} up · ▼ {{ a.down }} down{% if a.mine %} · your vote: {{ 'up' if a.mine > 0 else 'down' }}{% endif %}</dd>
+</dl>
+<div class="art-actions">
+{% if p.user %}
+{% if can_vote %}
+<form method="post" action="/game/{{ g.id }}/artwork/{{ a.id }}/vote" data-panel-form class="inline">{{ csrf(p.csrf) }}
+<button name="value" value="up" class="secondary small" aria-pressed="{{ 'true' if a.mine > 0 else 'false' }}" type="submit">▲ Upvote</button>
+<button name="value" value="down" class="secondary small" aria-pressed="{{ 'true' if a.mine < 0 else 'false' }}" type="submit">▼ Downvote</button>
+{% if a.mine %}<button name="value" value="clear" class="ghost small" type="submit">Clear my vote</button>{% endif %}</form>
+{% else %}<p class="small muted">Confirm your email address to vote (see your profile).</p>{% endif %}
+{% if not a.preferred %}
+<form method="post" action="/game/{{ g.id }}/artwork/{{ a.id }}/default" data-panel-form class="inline">{{ csrf(p.csrf) }}
+<button class="small" type="submit">Propose as default {{ a.label|lower }}</button></form>
+<p class="small muted">Votes are opinions only. A default is changed by a proposal that goes through review like other artwork changes.</p>
+{% endif %}
+{% else %}<p class="small"><a href="/login?next=/game/{{ g.id }}/artwork/{{ a.id }}">Sign in</a> to vote or propose a default.</p>{% endif %}
+</div>
+<nav class="art-nav" aria-label="Neighbouring images">
+{% if prev_id %}<a class="btn ghost small" rel="prev" data-nav="prev" href="/game/{{ g.id }}/artwork/{{ prev_id }}">← Previous</a>{% endif %}
+{% if next_id %}<a class="btn ghost small" rel="next" data-nav="next" href="/game/{{ g.id }}/artwork/{{ next_id }}">Next →</a>{% endif %}
+<a class="btn ghost small" href="/media/{{ a.blob }}" target="_blank" rel="noopener">Open image file</a>
+</nav>
+</article>

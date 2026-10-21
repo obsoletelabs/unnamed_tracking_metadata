@@ -16,6 +16,16 @@ A phone-sized screen works the same way; the site follows your system's light or
 
 ## Suggesting changes
 
+## Browsing artwork
+
+![Artwork grouped by type](img/gallery-desktop.png)
+
+![The in-page viewer](img/gallery-viewer-desktop.png)
+
+The **Artwork** section of a game page shows every image this server has downloaded and checked, grouped by type (cover, banner, hero, logo, icon, screenshots, poster) with the default first. Click an image to open it in a viewer on the same page: you see its source, status, size and votes; the arrow keys (or the Previous / Next buttons) move between images of the same type, **Esc** closes it and returns focus to where you were. Without JavaScript each image opens on its own page with the same details. Images that are assigned but not downloaded yet are listed below as text and are never loaded.
+
+Signed-in members with a confirmed email can **upvote or downvote** an image and **propose it as the default** for its type. Votes are opinions shown next to the image: they never reorder or replace anything by themselves. A default change is a proposal that goes through the same review as other artwork changes (applied at once for reviewers and trusted members, reviewable and revertable, no reputation reward). The default is local to the server you are using and is not published to other nodes.
+
 On a game page choose **Suggest an edit**. You can change core fields and any **custom fields** the administrators defined, and add a source or note for reviewers (link the store page or announcement: it speeds review). *Add game* proposes a new record; *Suggest artwork* and *Add achievements* are on the game page.
 
 ![The edit form, with admin-defined fields](img/06-edit-form-custom-fields.png)

@@ -498,7 +498,9 @@ def delete_account(session: Session, user: User) -> None:
                                                                          & (Follow.target_id == user.id))))
     session.execute(delete(Notification).where(Notification.user_id == user.id))
     session.execute(update(Comment).where(Comment.user_id == user.id).values(body="", status="deleted"))
-    from .models import EmailToken
+    from .models import ArtworkVote, EmailToken
+
+    session.execute(delete(ArtworkVote).where(ArtworkVote.user_id == user.id))
 
     session.execute(delete(EmailToken).where(EmailToken.user_id == user.id))
     user.username = "deleted-" + secrets.token_hex(4)

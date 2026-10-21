@@ -201,9 +201,23 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
     return len(items)
 
 
+def set_preferred_artwork(session: Session, art: Artwork, restore: list[str] | None = None) -> None:
+    """Make `art` the default of its kind on its game (or, on revert, put the previous defaults back)."""
+    write_lock(session)
+    for other in session.scalars(select(Artwork).where(Artwork.canonical_id == art.canonical_id,
+                                                       Artwork.kind == art.kind, Artwork.preferred.is_(True))):
+        other.preferred = False
+    if restore is None:
+        art.preferred = True
+    else:
+        for other in session.scalars(select(Artwork).where(Artwork.id.in_(restore))):
+            other.preferred = True
+    session.flush()
+
+
 def merged_artwork(session: Session, ctx: Ctx, cid: str) -> list[Artwork]:
     rows = list(session.scalars(select(Artwork).where(Artwork.canonical_id == cid)))
-    rows.sort(key=lambda a: (-ctx.settings.trust(a.source), a.priority, a.created_at))
+    rows.sort(key=lambda a: (not a.preferred, -ctx.settings.trust(a.source), a.priority, a.created_at))
     return rows
 
 
@@ -260,7 +274,7 @@ def move_facets(session: Session, src: str, dst: str) -> None:
         if (a.kind, a.url) in have_art:
             session.delete(a)
         else:
-            a.canonical_id = dst
+            a.canonical_id, a.preferred = dst, False  # the survivor keeps its own defaults
     have_ach = {(a.source, a.norm_name) for a in session.scalars(
         select(Achievement).where(Achievement.canonical_id == dst))}
     for a in session.scalars(select(Achievement).where(Achievement.canonical_id == src)).all():

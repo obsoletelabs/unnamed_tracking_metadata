@@ -24,7 +24,7 @@ FLASH = {
     "token": "Token created. Copy it now; it will not be shown again.", "revoked": "Token revoked.",
     "password": "Password changed. Other sessions were signed out.", "bye": "Signed out.",
     "verified": "Your email address is confirmed.", "mailsent": "We sent you an email. Check your inbox.",
-    "reset": "Your password was changed. Sign in with the new one.",
+    "voted": "Vote saved.", "reset": "Your password was changed. Sign in with the new one.",
 }
 
 

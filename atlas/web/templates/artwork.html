@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}{{ a.label }} · {{ title }} · {{ app_name }}{% endblock %}
+{% block content %}
+<p><a href="/game/{{ g.id }}#g-{{ a.kind }}">← Back to {{ title }}</a></p>
+{% include "_art_panel.html" %}
+{% endblock %}

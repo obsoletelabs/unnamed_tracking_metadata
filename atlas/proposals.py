@@ -17,8 +17,8 @@ from .service import AtlasError, Ctx, ingest, write_lock
 
 SOURCE = "community"
 SCOPE = "atlas"
-KINDS = ("edit", "new_game", "artwork", "achievements", "link_ids")
-REWARD = {"edit": 5, "new_game": 10, "artwork": 3, "achievements": 5, "link_ids": 2}
+KINDS = ("edit", "new_game", "artwork", "achievements", "link_ids", "artwork_default")
+REWARD = {"edit": 5, "new_game": 10, "artwork": 3, "achievements": 5, "link_ids": 2, "artwork_default": 0}
 REJECT_PENALTY = -2
 REVERT_PENALTY = -10
 SCALAR = {"title": 500, "description": 20000, "developer": 200, "publisher": 200, "series": 200, "age_rating": 50,
@@ -113,6 +113,13 @@ def _validate(session: Session, kind: str, canonical_id: str | None, payload: di
         return {"items": facets.clean_artwork(payload.get("items") or [])}
     if kind == "achievements":
         return {"items": facets.clean_achievements(payload.get("items") or [])}
+    if kind == "artwork_default":
+        art = session.get(Artwork, str(payload.get("artwork_id") or ""))
+        if art is None or art.canonical_id != canonical_id:
+            raise AtlasError("that image does not belong to this game", "not_found")
+        if art.blob_hash is None:
+            raise AtlasError("only an image this server has already downloaded and checked can be the default")
+        return {"artwork_id": art.id, "kind": art.kind}
     if kind == "link_ids":
         return {"provider_ids": _clean_links(session, canonical_id, payload.get("provider_ids"))}
     raise AtlasError(f"kind must be one of {KINDS}")
@@ -225,6 +232,13 @@ def apply(session: Session, ctx: Ctx, p: Proposal) -> None:
             old = facets.achievement_items(list(rows))
             p.previous = {"items": old}
             facets.set_achievements(session, ctx, cid, SOURCE, old + p.payload["items"], redistributable=redistribute)
+    elif p.kind == "artwork_default":
+        art = session.get(Artwork, p.payload["artwork_id"])
+        if art is None or art.canonical_id != p.canonical_id:
+            raise AtlasError("the image no longer exists", "not_found")
+        p.previous = {"preferred": [a.id for a in session.scalars(select(Artwork).where(
+            Artwork.canonical_id == art.canonical_id, Artwork.kind == art.kind, Artwork.preferred.is_(True)))]}
+        facets.set_preferred_artwork(session, art)
     elif p.kind == "link_ids":
         cid = p.canonical_id
         if cid is None or session.get(Canonical, cid) is None:
@@ -279,6 +293,10 @@ def revert_applied(session: Session, ctx: Ctx, p: Proposal) -> None:
                 cur.is_current = False
             from .service import rebuild
             rebuild(session, ctx, p.canonical_id)  # type: ignore[arg-type]
+    elif p.kind == "artwork_default":
+        art = session.get(Artwork, p.payload["artwork_id"])
+        if art is not None:
+            facets.set_preferred_artwork(session, art, restore=prev.get("preferred", []))
     elif p.kind == "artwork":
         facets.set_artwork(session, ctx, p.canonical_id, SOURCE, prev.get("items", []),  # type: ignore[arg-type]
                            redistributable=ctx.settings.role == "authority")
