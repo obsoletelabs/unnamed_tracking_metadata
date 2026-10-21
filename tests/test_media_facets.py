@@ -326,3 +326,50 @@ def test_api_image_passes_uncached_clients_through_to_the_source(api):
     assert cached.status_code == 200 and cached.headers["content-type"] == "image/png"
     assert api.get("/api/v2/artwork/nope/image").status_code == 404
     assert api.get(item["image_url"], headers={"Authorization": "Bearer nope"}).status_code in (401, 403)
+
+
+def test_unwritable_media_dir_is_reported_and_does_not_penalise_artwork(
+        session, ctx, resolver, tmp_path, maker, monkeypatch):
+    cid = seed(session, ctx)
+    s = ctx.settings.model_copy(update={"media_dir": str(tmp_path)})
+    facets.set_artwork(session, ctx, cid, "steam", [{"kind": "key_art", "url": "https://img.test/good.png"}])
+    session.commit()
+
+    def refuse(*_a, **_k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(media.Path, "mkdir", refuse)
+    with pytest.raises(media.MediaStorageError, match="ATLAS_MEDIA_DIR"):
+        media.cache_pending(maker, s, client_for(lambda _: httpx.Response(200, content=png())))
+    session.expire_all()
+    art = session.scalars(select(Artwork)).one()
+    # The image is fine; the node's storage is not. It must stay eligible for the next pass.
+    assert art.blob_hash is None and art.fail_count == 0 and art.next_try_at is None
+
+
+def test_storage_problem_detects_unwritable_directory(tmp_path):
+    assert media.storage_problem(build_settings(media_dir=str(tmp_path / "new" / "dir"))) is None
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    assert "ATLAS_MEDIA_DIR" in media.storage_problem(build_settings(media_dir=str(blocker / "media")))
+
+
+def test_worker_logs_an_actionable_storage_message(monkeypatch, maker, ctx, caplog):
+    from .test_media_worker import StopAfterWaits
+
+    def broken(*_):
+        raise media.MediaStorageError("cannot write to ATLAS_MEDIA_DIR (/media)")
+
+    monkeypatch.setattr(media, "cache_pending", broken)
+    main._cache_media(maker, ctx, StopAfterWaits(1))
+    assert "ATLAS_MEDIA_DIR" in caplog.text
+
+
+def test_health_reports_media_storage(tmp_path, resolver):
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    s = build_settings(database_url=f"sqlite:///{tmp_path}/h.db", media_dir=str(blocker / "media"),
+                       media_cache_enabled=False)
+    with TestClient(main.create_app(s)) as c:
+        body = c.get("/api/v2/health").json()
+    assert body["status"] == "ok" and body["media"] == "unwritable"

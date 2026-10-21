@@ -76,7 +76,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `ATLAS_MEDIA_DIR` | `./media` | Directory for cached images (content-addressed). Mount a volume here. |
+| `ATLAS_MEDIA_DIR` | `./media` | Directory for cached images (content-addressed). Mount a volume here; it must be writable by the user Atlas runs as (uid 10001 in the official image). See [Troubleshooting](troubleshooting.md#artwork-doesnt-show). |
 | `ATLAS_MEDIA_CACHE_ENABLED` | `true` | Download and verify artwork in the background. Editable in Admin → Settings. **live** |
 | `ATLAS_MEDIA_MAX_BYTES` | `10485760` | Largest image accepted (bytes). **live** |
 | `ATLAS_MEDIA_MAX_PIXELS` | `40000000` | Largest image by pixel count (decompression-bomb guard). |

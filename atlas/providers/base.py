@@ -23,6 +23,7 @@ class ProviderResult:
     release_date: str | None = None
     provider_ids: dict[str, str] = field(default_factory=dict)
     facts: dict[str, Any] = field(default_factory=dict)
+    custom: dict[str, Any] = field(default_factory=dict)  # values for admin-defined fields, e.g. crossplay
     artwork: list[dict[str, Any]] = field(default_factory=list)
     achievements: list[dict[str, Any]] = field(default_factory=list)
 

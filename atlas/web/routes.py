@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -455,7 +456,9 @@ async def upload_artwork(cid: str, p: Annotated[Page, Depends(user_form)], file:
         raise HTTPException(400, f"Images may be at most {s.media_max_bytes // 1024 // 1024} MB.")
     try:
         ext, _ctype, w, h = images.validate_image(data, s)
-        digest = images.store(s, data, ext)
+        digest = hashlib.sha256(data).hexdigest()
+        already_stored = images.find_blob(s, digest) is not None
+        images.store(s, data, ext)
     except images.MediaError as exc:
         raise HTTPException(400, f"That is not a usable image: {exc}") from exc
     except OSError as exc:
@@ -466,6 +469,10 @@ async def upload_artwork(cid: str, p: Annotated[Page, Depends(user_form)], file:
         pr = proposals.create(p.session, p.st.ctx, p.me, "artwork", g.id,
                               {"items": [{"kind": kind, "url": url, "width": w, "height": h}]}, note)
     except AtlasError as exc:
+        if not already_stored:  # a refused proposal (limits, unverified email...) must not leave a file behind
+            found = images.find_blob(s, digest)
+            if found is not None:
+                found[0].unlink(missing_ok=True)
         raise HTTPException(400, str(exc)) from exc
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 

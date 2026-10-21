@@ -31,6 +31,10 @@ class MediaError(Exception):
     pass
 
 
+class MediaStorageError(Exception):
+    """The node cannot write to its own media directory. This is an operator problem, not a bad image."""
+
+
 _TUNNELS = [ipaddress.ip_network(n) for n in ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "2001::/32")]
 
 
@@ -124,19 +128,38 @@ def blob_path(settings: Settings, digest: str, ext: str) -> Path:
     return Path(settings.media_dir) / digest[:2] / f"{digest}.{ext}"
 
 
+def storage_problem(settings: Settings) -> str | None:
+    """None when the media directory exists (or can be created) and is writable, else an actionable message."""
+    root = Path(settings.media_dir)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=root, suffix=".probe")
+        os.close(fd)
+        os.unlink(tmp)
+    except OSError as exc:
+        return (f"cannot write to ATLAS_MEDIA_DIR ({settings.media_dir}): {type(exc).__name__}. "
+                "The directory must be writable by the user Atlas runs as (uid 10001 in the official image).")
+    return None
+
+
 def store(settings: Settings, data: bytes, ext: str) -> str:
     digest = hashlib.sha256(data).hexdigest()
     path = blob_path(settings, digest, ext)
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".part")
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(data)
-            os.replace(tmp, path)
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
+    try:
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".part")
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+                os.replace(tmp, path)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+    except OSError as exc:
+        raise MediaStorageError(
+            f"cannot write to ATLAS_MEDIA_DIR ({settings.media_dir}): {type(exc).__name__}. "
+            "The directory must be writable by the user Atlas runs as (uid 10001 in the official image).") from exc
     return digest
 
 

@@ -151,8 +151,12 @@ def cmd_cache_media(_) -> int:
 
     settings, maker = _maker()
     total = 0
-    while (n := media.cache_pending(maker, settings)):
-        total += n
+    try:
+        while (n := media.cache_pending(maker, settings)):
+            total += n
+    except media.MediaStorageError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     print(f"cached {total} images")
     return 0
 

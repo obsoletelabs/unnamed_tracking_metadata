@@ -477,3 +477,17 @@ def test_members_can_upload_artwork_files_and_admins_control_the_cache(site):
     assert site.post("/admin/media/clear", data={"csrf": t, "confirm": "clear"}).status_code == 303
     assert "1 of 1 images are cached" in site.get("/admin/integrations").text  # uploads survive the clear
     assert fresh(site).post("/admin/media/clear", data={"csrf": "x", "confirm": "clear"}).status_code in (303, 403)
+
+
+def test_a_refused_upload_leaves_no_stored_file_behind(site):
+    from tests.test_media_facets import png
+
+    signup(site, "alice")
+    site.st.ctx.settings = site.st.ctx.settings.model_copy(update={"max_pending_proposals": 0})
+    t = token(site, f"/game/{site.gid}")
+    before = sorted(p.name for p in __import__("pathlib").Path(site.st.ctx.settings.media_dir).rglob("*") if p.is_file())
+    refused = site.post(f"/game/{site.gid}/artwork/upload", data={"csrf": t, "kind": "key_art"},
+                        files={"file": ("c.png", png(21, 22), "image/png")})
+    assert refused.status_code in (400, 409)
+    after = sorted(p.name for p in __import__("pathlib").Path(site.st.ctx.settings.media_dir).rglob("*") if p.is_file())
+    assert after == before  # nothing was left on disk for a proposal that was never created
