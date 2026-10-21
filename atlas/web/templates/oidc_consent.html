@@ -2,7 +2,7 @@
 {% from "macros.html" import csrf %}
 {% block title %}Allow sign-in · {{ app_name }}{% endblock %}
 {% block content %}
-<div class="narrow card">
+<div class="consent-layout"><div class="narrow card consent-card">
 <h1>Sign in to {{ client.name }}?</h1>
 <p><strong>{{ client.name }}</strong> is asking to sign you in with your <strong>{{ app_name }}</strong> account (<strong>{{ p.user.username }}</strong>).</p>
 <p class="small muted">It will receive:</p>
@@ -12,5 +12,6 @@
   {% for k, v in params.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
   <button name="decision" value="allow" type="submit">Allow</button> <button class="secondary" name="decision" value="deny" type="submit">Cancel</button>
 </form>
+</div>
 </div>
 {% endblock %}

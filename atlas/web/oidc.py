@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import re
 from typing import Annotated
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -17,6 +17,7 @@ from ..api.deps import AppState, get_session, state
 from ..ids import ulid
 from ..models import OidcAccess, OidcClient, OidcIssuer, OidcLink, User
 from ..service import AtlasError
+from . import CSP
 from .deps import (
     SESSION_COOKIE,
     admin_form,
@@ -66,6 +67,22 @@ def _params(source) -> dict[str, str]:
     return {k: str(source.get(k, ""))[:600] for k in AUTH_KEYS}
 
 
+def _consent_response(response, redirect_uri: str):
+    """Allow the selected, already validated client origin through the form redirect.
+
+    Browsers also enforce form-action on the POST's redirect response. Other pages
+    keep the site's self-only policy; authorization still requires the exact URI
+    registered for this client. Quoting the authority prevents CSP source injection.
+    """
+    parts = urlsplit(redirect_uri)
+    origin = parts.scheme + "://" + quote(parts.netloc, safe=":[]")
+    response.headers["Content-Security-Policy"] = CSP.replace(
+        "form-action 'self';", f"form-action 'self' {origin};", 1)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
 @router.get("/oidc/authorize", response_class=HTMLResponse)
 def authorize(request: Request, p: Annotated[Ctx, Depends(user_page)]):
     _provider_on(p)
@@ -74,7 +91,8 @@ def authorize(request: Request, p: Annotated[Ctx, Depends(user_page)]):
         client, scope = oidc.check_authorize(p.session, params)
     except AtlasError as exc:
         raise HTTPException(400, f"Cannot sign you in: {exc}") from exc
-    return render(p, "oidc_consent.html", client=client, params=params, scopes=scope.split())
+    return _consent_response(
+        render(p, "oidc_consent.html", client=client, params=params, scopes=scope.split()), params["redirect_uri"])
 
 
 @router.post("/oidc/authorize")
@@ -94,7 +112,8 @@ async def authorize_decide(request: Request, p: Annotated[Ctx, Depends(user_form
         accounts.audit(p.session, p.me.id, "oidc_consent", client.client_id)
     if params["state"]:
         q["state"] = params["state"]
-    return RedirectResponse(params["redirect_uri"] + sep + urlencode(q), status_code=303)
+    return _consent_response(
+        RedirectResponse(params["redirect_uri"] + sep + urlencode(q), status_code=303), params["redirect_uri"])
 
 
 @router.get("/me/apps", response_class=HTMLResponse)

@@ -91,6 +91,8 @@ dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px;
 .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--gap); }
 form.card, .card > form { max-width: 900px; }
 .narrow { max-width: 440px; margin: 0 auto; }
+.consent-layout { min-height: calc(100vh - 13rem); display: grid; align-items: center; }
+.consent-card { width: 100%; }
 details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .sr { position: absolute; left: -9999px; }
 .row { display: flex; gap: 8px; }

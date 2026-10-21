@@ -17,6 +17,50 @@ from .test_web import PW, fresh, login, signup, token  # noqa: F401
 PROVIDER = "http://central.test"
 NODE = "http://localhost:8000"
 
+@pytest.mark.parametrize("decision", ["allow", "deny"])
+def test_consent_form_can_return_only_to_the_validated_client(world, decision):
+    redirect = "https://tracking.example.test/api/auth/oidc/callback/atlas"
+    other = "https://other.example.test/callback"
+    with world.p_app.state.atlas.maker() as session:
+        client, _secret = oidc.create_client(session, "Tracking App", [redirect, other])
+        session.commit()
+        client_id = client.client_id
+    params = {
+        "response_type": "code", "client_id": client_id, "redirect_uri": redirect,
+        "scope": "openid profile email", "state": "tracking-state", "nonce": "tracking-nonce",
+        "code_challenge": "a" * 43, "code_challenge_method": "S256",
+    }
+    consent = world.provider.get("/oidc/authorize", params=params)
+    assert consent.status_code == 200
+    directives = dict(
+        (entry.strip().split()[0], entry.strip().split()[1:])
+        for entry in consent.headers["content-security-policy"].split(";") if entry.strip()
+    )
+    assert directives["form-action"] == ["'self'", "https://tracking.example.test"]
+    assert "https://other.example.test" not in consent.headers["content-security-policy"]
+    assert directives["default-src"] == ["'none'"]
+    assert consent.headers["cache-control"] == "no-store"
+    assert consent.headers["referrer-policy"] == "no-referrer"
+    fields = dict(re.findall(r'<input type="hidden" name="(\w+)" value="([^"]*)"', consent.text))
+    back = world.provider.post("/oidc/authorize", data={**fields, "decision": decision})
+    assert back.status_code == 303
+    result = urlsplit(back.headers["location"])
+    assert result.netloc == "tracking.example.test"
+    assert parse_qs(result.query)["state"] == ["tracking-state"]
+    assert ("code" in parse_qs(result.query)) is (decision == "allow")
+    assert ("error" in parse_qs(result.query)) is (decision == "deny")
+    # An unrelated page keeps the default form policy.
+    ordinary = world.provider.get("/me")
+    form_policy = ordinary.headers["content-security-policy"].split("form-action ", 1)[1].split(";", 1)[0]
+    assert form_policy == "'self'"
+    # Rejected destinations and failed CSRF checks never get the callback allowance.
+    invalid = world.provider.get("/oidc/authorize", params={**params, "redirect_uri": other + "/unregistered"})
+    assert invalid.status_code == 400
+    assert "form-action 'self';" in invalid.headers["content-security-policy"]
+    invalid = world.provider.post("/oidc/authorize", data={**fields, "csrf": "invalid", "decision": decision})
+    assert invalid.status_code == 403
+    assert "form-action 'self';" in invalid.headers["content-security-policy"]
+
 
 class World:
     """A provider (authority) and a relying party (user node) wired together in-process."""

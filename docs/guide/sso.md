@@ -114,11 +114,14 @@ How accounts are connected:
 | `invalid_grant` | Code reused, expired (5 min), redirect changed between steps, or PKCE verifier wrong. A reused code also revokes its tokens. |
 | Provider button missing on your node | Provider disabled, or `Accept sign-ins` entry is switched off. |
 | “External sign-in is not enabled for this account” | Allow the user (user list) or tick *Every user…* on the provider. |
+| Allow and Cancel stay on the consent screen | Update Atlas to include the consent form-policy fix. If a reverse proxy supplies its own Content-Security-Policy, its `form-action` must also permit the registered callback origin; a second, self-only policy still blocks the return. |
+| Metadata or artwork API requests return 401/403 after a successful sign-in | OIDC tokens authorize sign-in/UserInfo only. Configure a separate Atlas API token with `read` scope in the metadata provider; an active member can create one under **My account → API tokens**. |
 
 ## Security notes
 
 * Redirect addresses are exact-match, and an error for an unregistered address is shown on Atlas, never redirected to an unvetted site.
 * A person must **consent** each time. The consent screen names the application and what it receives.
+* Only a validated consent request permits the selected application's callback origin in the form policy. Other registered applications, rejected requests and ordinary pages keep the default policy. Consent pages and their return redirects are not cached and send no referrer.
 * Codes are single use and are burned by any attempt; replaying one revokes the tokens it produced.
 * ID tokens from other Atlas nodes are verified against the key you pinned, with issuer, audience, nonce, expiry and issued-at checks; `alg: none` and algorithm-confusion attempts are rejected (all tested).
 * Rotating the RSA signing key is not yet a one-click action.
