@@ -261,6 +261,7 @@ class Achievement(Base):
     locked_icon_blob_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     locked_icon_fail_count: Mapped[int] = mapped_column(Integer, default=0)
     locked_icon_next_try_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    position: Mapped[int | None] = mapped_column(Integer, nullable=True)  # order chosen by people (curator/community)
 
     __table_args__ = (UniqueConstraint("canonical_id", "source", "norm_name", name="uq_achievement"),)
 

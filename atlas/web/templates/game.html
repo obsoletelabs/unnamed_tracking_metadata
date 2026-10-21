@@ -89,25 +89,18 @@
 </form></details>
 {% endif %}
 
-<h2>Achievements</h2>
+<h2 id="achievements">Achievements</h2>
 {% if achievements %}
 <table class="achievements"><thead><tr><th></th><th>Name</th><th>Description</th><th>Points</th><th>Global %</th></tr></thead><tbody>
-{% for a in achievements %}<tr>
-<td class="ach-icon">{% if a.icon_url %}<img src="{{ a.icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="40" height="40" loading="lazy">{% else %}<span class="ach-ph" aria-hidden="true">{{ '?' if a.hidden and not a.revealed else '★' }}</span>{% endif %}</td>
-<td>{{ a.name }}{% if a.hidden %} <span class="badge">hidden</span>{% endif %}{% if a.kind %} <span class="badge">{{ a.kind|replace('_', ' ') }}</span>{% endif %}{% if a.tier %} <span class="badge tier-{{ a.tier }}">{{ a.tier }}</span>{% endif %}</td>
-<td>{{ a.description }}</td>
+{% for a in achievements %}{% set concealed = a.hidden and not a.revealed %}<tr>
+<td class="ach-icon">{% if a.icon_url %}<img src="{{ a.icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="40" height="40" loading="lazy">{% else %}<span class="ach-ph" aria-hidden="true">{{ '?' if concealed else '★' }}</span>{% endif %}</td>
+<td>{% if concealed %}<span data-hidden-name>Hidden achievement</span> <span class="badge">hidden</span>{% else %}{{ a.name }}{% if a.hidden %} <span class="badge">hidden</span>{% endif %}{% endif %}{% if a.kind %} <span class="badge">{{ a.kind|replace('_', ' ') }}</span>{% endif %}{% if a.tier %} <span class="badge tier-{{ a.tier }}">{{ a.tier }}</span>{% endif %}</td>
+<td>{% if concealed %}{% if p.user %}<a class="btn ghost small" href="/game/{{ g.id }}/achievements/{{ a.id }}" data-reveal="/game/{{ g.id }}/achievements/{{ a.id }}?json=1" aria-label="Reveal this hidden achievement (may spoil the game)">Reveal (spoiler)</a>{% else %}<a class="small" href="/login?next=/game/{{ g.id }}/achievements/{{ a.id }}">Sign in to reveal</a>{% endif %}{% else %}{{ a.description }}{% endif %}</td>
 <td>{% if a.points is not none %}{{ a.points }}{% endif %}</td>
 <td>{% if a.global_percent is not none %}{{ '%.1f'|format(a.global_percent) }}% {% if a.global_percent < 5 %}<span class="badge bad">ultra rare</span>{% elif a.global_percent < 15 %}<span class="badge warn">rare</span>{% elif a.global_percent >= 50 %}<span class="badge ok">common</span>{% endif %}{% endif %}</td></tr>{% endfor %}
 </tbody></table>
 {% else %}<p class="muted">No achievements recorded.</p>{% endif %}
-{% if p.user %}
-<details><summary>Add achievements</summary>
-<form class="card" method="post" action="/game/{{ g.id }}/achievements">{{ csrf(p.csrf) }}
-  <label for="alist">One per line: <code>Name | Description | extras</code>. Extras, in any order: <code>progression</code> / <code>missable</code> / <code>win condition</code>, <code>bronze</code> / <code>silver</code> / <code>gold</code>, points (a number), <code>hidden</code>, an icon address (a second address is the locked icon). Hidden achievements stay hidden on this site and in the API.</label><textarea id="alist" name="lines" required></textarea>
-  <label for="anote2">Source / note</label><textarea id="anote2" name="note" maxlength="2000"></textarea>
-  <p><button type="submit">Submit</button></p>
-</form></details>
-{% endif %}
+{% if p.user %}<p><a class="btn secondary" href="/game/{{ g.id }}/achievements/edit">Edit achievements</a></p>{% else %}<p class="small"><a href="/login?next=/game/{{ g.id }}/achievements/edit">Sign in</a> to add or edit achievements.</p>{% endif %}
 
 </div>
 <aside class="side-col">

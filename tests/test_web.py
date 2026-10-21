@@ -297,7 +297,7 @@ def test_achievement_proposal_lines_accept_extras_in_any_order(site):
     bad = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | platinum"})
     assert bad.status_code == 400
     page = site.get(f"/game/{site.gid}")
-    assert page.status_code == 200 and "Add achievements" in page.text
+    assert page.status_code == 200 and "Edit achievements" in page.text
 
 
 def test_password_change_signs_out_other_sessions(site):
@@ -728,3 +728,117 @@ def test_default_image_goes_through_review_and_can_be_reverted(site):
         assert s.get(Artwork, second).preferred is False
     bad = bob.post(f"/game/{site.gid}/artwork/nope/default", data={"csrf": t})
     assert bad.status_code == 404
+
+
+def _ach_form(t, rows, action="preview", **extra):
+    """Editor form data for rows given as {key: {field: value}}, in order."""
+    data = {"csrf": t, "action": action, "row": list(rows), **extra}
+    for key, fields in rows.items():
+        for name, value in fields.items():
+            data[f"{name}.{key}"] = value
+    return data
+
+
+def test_achievement_editor_validates_each_row_previews_and_submits(site):
+    from atlas.models import Achievement
+
+    anon = fresh(site)
+    assert anon.get(f"/game/{site.gid}/achievements/edit").status_code == 303
+    signup(site, "alice")  # administrator: applies at once
+    page = site.get(f"/game/{site.gid}/achievements/edit")
+    assert page.status_code == 200 and "Preview changes" in page.text and 'value="submit"' not in page.text
+    t = token(site, f"/game/{site.gid}/achievements/edit")
+    url = f"/game/{site.gid}/achievements/edit"
+    bad = site.post(url, data=_ach_form(t, {
+        "a": {"name": "Escape", "points": "lots", "kind": "win_condition"},
+        "b": {"name": "", "description": "no name", "tier": "gold"},
+        "c": {"name": "escape", "description": "same name"}, "d": {}}))
+    assert bad.status_code == 400
+    text = unescape(bad.text)
+    assert "Points must be a whole number." in text and "A name is required." in text
+    assert "Another row already has this name." in text and "3 rows need fixing" in text
+    assert 'value="submit"' not in text
+    ok = site.post(url, data=_ach_form(t, {
+        "a": {"name": "Escape", "description": "Leave", "kind": "progression", "tier": "bronze", "points": "10"},
+        "b": {"name": "Secret", "description": "Spoiler", "hidden": "1"}, "blank": {}}))
+    assert ok.status_code == 200 and 'value="submit"' in ok.text and "What will change" in ok.text
+    assert "<ins>Add</ins> Escape" in ok.text and "<ins>Add</ins> Secret" in ok.text
+    with site.st.maker() as s:
+        assert s.scalars(select(Achievement)).first() is None  # a preview changes nothing
+    done = site.post(url, data=_ach_form(t, {
+        "a": {"name": "Escape", "description": "Leave", "kind": "progression", "tier": "bronze", "points": "10"},
+        "b": {"name": "Secret", "description": "Spoiler", "hidden": "1"}}, action="submit", note="from the manual"))
+    assert done.status_code == 303 and "m=applied" in done.headers["location"]
+    with site.st.maker() as s:
+        rows = {a.name: a for a in s.scalars(select(Achievement))}
+        assert rows["Escape"].points == 10 and rows["Escape"].kind == "progression" and rows["Secret"].hidden
+        assert (rows["Escape"].position, rows["Secret"].position) == (0, 1)
+    # editing: remove a row, then reorder and change fields; the diff names each change
+    gone = site.post(url, data=_ach_form(t, {
+        "x": {"name": "Secret", "description": "Spoiler", "hidden": "1"},
+        "y": {"name": "Escape", "description": "Leave the house", "remove": "1"}}))
+    assert "<del>Remove</del> Escape" in gone.text
+    change = site.post(url, data=_ach_form(t, {
+        "x": {"name": "Secret", "description": "Spoiler", "hidden": "1"},
+        "y": {"name": "Escape", "description": "Leave the house", "kind": "progression", "tier": "gold", "points": "10"}}))
+    assert "Description: <del>Leave</del> → <ins>Leave the house</ins>" in change.text
+    assert "Tier: <del>bronze</del> → <ins>gold</ins>" in change.text and "The order changes." in change.text
+    same_rows = {"x": {"name": "Secret", "description": "Spoiler", "hidden": "1"},
+                 "y": {"name": "Escape", "description": "Leave the house", "kind": "progression", "tier": "gold",
+                       "points": "10"}}
+    assert site.post(url, data=_ach_form(t, same_rows, action="submit")).status_code == 303
+    listed = site.get(f"/api/v2/games/{site.gid}/achievements", headers={"Authorization": "Bearer " + "b" * 40}).json()
+    assert listed["results"][0]["name"] == "Escape"  # hidden ones are listed last, redacted
+    with site.st.maker() as s:
+        assert s.scalars(select(Achievement).where(Achievement.name == "Escape")).one().position == 1
+    # a submission that changes nothing is not turned into a proposal
+    same = site.post(url, data=_ach_form(t, same_rows, action="submit"))
+    assert same.status_code == 200 and "No change compared" in same.text
+
+
+def test_achievement_editor_accepts_uploaded_icons_and_refuses_non_images(site):
+    from atlas.models import Achievement
+    from tests.test_media_facets import png
+
+    signup(site, "alice")
+    t = token(site, f"/game/{site.gid}/achievements/edit")
+    url = f"/game/{site.gid}/achievements/edit"
+    refused = site.post(url, data=_ach_form(t, {"a": {"name": "Escape"}}),
+                        files={"icon_file.a": ("x.png", b"<html>no</html>", "image/png")})
+    assert refused.status_code == 400 and "not a usable image" in unescape(refused.text)
+    ok = site.post(url, data=_ach_form(t, {"a": {"name": "Escape"}}, action="submit"),
+                   files={"icon_file.a": ("i.png", png(32, 32), "image/png"),
+                          "locked_file.a": ("l.png", png(33, 33), "image/png")})
+    assert ok.status_code == 303
+    with site.st.maker() as s:
+        row = s.scalars(select(Achievement)).one()
+        assert row.icon_blob_hash and row.locked_icon_blob_hash  # our own copies, no download needed
+    shown = site.get(f"/game/{site.gid}").text
+    assert f"/media/{row.icon_blob_hash}" in shown
+    editor = site.get(url).text
+    assert "Stored on this server." in editor and f"/media/{row.icon_blob_hash}" in editor
+
+
+def test_hidden_achievements_are_revealed_on_click_for_signed_in_members_only(site):
+    admin = {"Authorization": "Bearer " + "b" * 40}
+    assert site.put(f"/api/v2/games/{site.gid}/achievements", headers=admin, json={"items": [
+        {"name": "Secret Ending", "description": "Spoiler text", "hidden": True}, {"name": "Warm Up"}]}).status_code == 200
+    hid = next(r["id"] for r in site.get(f"/api/v2/games/{site.gid}/achievements", headers=admin).json()["results"]
+               if r["hidden"])
+    anon = fresh(site)
+    page = anon.get(f"/game/{site.gid}").text
+    assert "Hidden achievement" in page and "Secret Ending" not in page and "Spoiler text" not in page
+    assert "Sign in to reveal" in page
+    denied = anon.get(f"/game/{site.gid}/achievements/{hid}?json=1")
+    assert denied.status_code == 401 and denied.headers["cache-control"] == "no-store" and "Secret" not in denied.text
+    assert anon.get(f"/game/{site.gid}/achievements/{hid}").status_code == 303  # to the sign-in page
+    signup(site, "alice")
+    member_page = site.get(f"/game/{site.gid}").text
+    assert "Secret Ending" not in member_page and "Spoiler text" not in member_page  # concealed until asked
+    assert 'data-reveal="/game/' in member_page
+    got = site.get(f"/game/{site.gid}/achievements/{hid}?json=1")
+    assert got.json() == {"name": "Secret Ending", "description": "Spoiler text"}
+    assert got.headers["cache-control"] == "no-store"
+    html = site.get(f"/game/{site.gid}/achievements/{hid}")
+    assert "Spoiler text" in html.text and "no-store" in html.headers["cache-control"]
+    assert site.get(f"/game/{site.gid}/achievements/nope?json=1").status_code == 404

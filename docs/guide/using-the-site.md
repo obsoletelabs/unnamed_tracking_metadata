@@ -26,7 +26,7 @@ The **Artwork** section of a game page shows every image this server has downloa
 
 Signed-in members with a confirmed email can **upvote or downvote** an image and **propose it as the default** for its type. Votes are opinions shown next to the image: they never reorder or replace anything by themselves. A default change is a proposal that goes through the same review as other artwork changes (applied at once for reviewers and trusted members, reviewable and revertable, no reputation reward). The default is local to the server you are using and is not published to other nodes.
 
-On a game page choose **Suggest an edit**. You can change core fields and any **custom fields** the administrators defined, and add a source or note for reviewers (link the store page or announcement: it speeds review). *Add game* proposes a new record; *Suggest artwork* and *Add achievements* are on the game page.
+On a game page choose **Suggest an edit**. You can change core fields and any **custom fields** the administrators defined, and add a source or note for reviewers (link the store page or announcement: it speeds review). *Add game* proposes a new record; *Suggest artwork* and *Edit achievements* are on the game page; see [Achievements](achievements.md).
 
 ![The edit form, with admin-defined fields](img/06-edit-form-custom-fields.png)
 

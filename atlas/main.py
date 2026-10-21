@@ -26,6 +26,7 @@ from .settings import Settings, get_settings
 from .signing import load_identity
 from .web import STATIC_DIR, templates
 from .web.account import router as account_router
+from .web.achievements import router as achievements_router
 from .web.admin import router as admin_router
 from .web.backups import router as backups_router
 from .web.deps import LoginRequired, MfaRequired
@@ -219,6 +220,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return PlainTextResponse(stats.render(app.state.atlas, session),
                                      media_type="text/plain; version=0.0.4", headers={"Cache-Control": "no-store"})
     app.include_router(router)
+    app.include_router(achievements_router)
     app.include_router(web_router)
     app.include_router(admin_router)
     app.include_router(account_router)
