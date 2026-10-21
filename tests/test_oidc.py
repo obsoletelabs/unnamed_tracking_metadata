@@ -494,6 +494,11 @@ def test_admin_pages_register_clients_and_manage_issuers(tmp_path):
             assert secret not in row.secret_hash and row.secret_hash == oidc.sha(secret)  # only the hash is stored
         assert secret not in w.provider.get("/admin/oidc").text
         assert w.provider.post(f"/admin/oidc/clients/{cid}/toggle", data={"csrf": t}).status_code == 303
+        with w.p_app.state.atlas.maker() as s:
+            from atlas.models import AuditEntry
+
+            toggled = s.scalars(select(AuditEntry).where(AuditEntry.action == "oidc_client_toggle")).one()
+            assert toggled.target == cid and toggled.detail == {"enabled": False}  # an audited administrator action
         assert oidc.authenticate_client(w.p_app.state.atlas.maker(), cid, secret) is None if False else True
         bob = fresh(type("S", (), {"st_app": w.p_app}))
         signup(bob, "bob")
