@@ -52,6 +52,7 @@
 <ul>{% for a in pending_art %}<li>{{ a.kind|title }} · <a href="{{ a.url }}" rel="noopener noreferrer nofollow">{{ a.host or 'source' }}</a> <span class="muted small">· {{ a.state }} · from {{ a.source }}</span></li>{% endfor %}</ul></details>{% endif %}
 {% if p.user %}
 <details><summary>Link a store page or id</summary>
+<p class="small"><a href="/game/{{ g.id }}/links">Find it by name</a> in Steam, IGDB or RAWG (whichever this node has configured), or enter an id below.</p>
 <form class="card" method="post" action="/game/{{ g.id }}/links">{{ csrf(p.csrf) }}
   <label for="lstore">Store</label><select id="lstore" name="store">{% for ns, s in stores.items() %}<option value="{{ ns }}">{{ s[0] }}</option>{% endfor %}<option value="other">Other (type its short name below)</option></select>
   <label for="lother">Other store name <span class="hint">only if you chose Other, e.g. <code>humble</code></span></label><input id="lother" name="other" maxlength="50" pattern="[a-z0-9._-]*">

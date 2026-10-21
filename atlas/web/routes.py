@@ -30,6 +30,7 @@ from ..models import (
     UserList,
 )
 from ..models import Page as PageRow
+from ..providers import ProviderError
 from ..service import AtlasError
 from . import CSP, templates
 from .deps import (
@@ -462,6 +463,24 @@ def propose_artwork(cid: str, p: Annotated[Page, Depends(user_form)], kind: Anno
     except AtlasError as exc:
         raise HTTPException(400, str(exc)) from exc
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
+
+
+@router.get("/game/{cid}/links", response_class=HTMLResponse)
+def link_by_search(cid: str, p: Annotated[Page, Depends(user_page)], provider: Annotated[str, Query(max_length=40)] = "",
+                   q: Annotated[str, Query(max_length=200)] = ""):
+    """Find this game in a store by name (with the node's configured providers) and link the match."""
+    g, _ = live_game(p, cid)
+    names = sorted(p.st.providers.providers)
+    query = q.strip() or ("" if provider else str(g.view.get("title") or ""))
+    results, error = None, None
+    if provider and query:
+        throttle(p, f"link-search:{p.me.id}", 30, 60, "Too many searches")
+        try:
+            results = [r.to_item() for r in p.st.providers.lookup(p.session, provider, query=query)[:15]]
+        except ProviderError as exc:
+            results, error = [], f"{provider} could not be searched: {exc}"
+    return render(p, "link_store.html", g=g, v=g.view, names=names, provider=provider or (names[0] if names else ""),
+                  q=query, results=results, error=error, stores=integrations.STORES)
 
 
 @router.post("/game/{cid}/links")

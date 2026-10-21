@@ -488,3 +488,30 @@ def test_members_can_propose_store_links_from_a_game_page(site):
     assert site.post(f"/game/{site.gid}/links", data={"csrf": "wrong", "store": "gog", "ident": "x"}).status_code == 403
     plain = fresh(site)
     assert plain.post(f"/game/{site.gid}/links", data={"csrf": "x", "store": "gog", "ident": "x"}).status_code in (303, 403)
+
+
+def test_members_can_link_a_store_by_searching_its_name(site):
+    from atlas.providers.base import ProviderResult
+
+    class Store:
+        name = "gogish"
+        redistributable = False
+        requests_per_minute = 600
+
+        def search(self, client, query):
+            return [ProviderResult(external_id="hades-gog", title="Hades (store)", platform="pc", release_date="2020-09-17")]
+
+        def fetch(self, client, external_id):
+            return None
+
+    site.st.providers.providers["gogish"] = Store()
+    assert site.get(f"/game/{site.gid}/links").status_code in (303, 401, 403)  # sign-in required
+    signup(site, "alice")
+    first = site.get(f"/game/{site.gid}/links")  # no search yet: the form is prefilled with the game's name
+    assert first.status_code == 200 and 'value="Hades"' in first.text and "gogish" in first.text
+    found = site.get(f"/game/{site.gid}/links", params={"provider": "gogish", "q": "hades"})
+    assert "Hades (store)" in found.text and "hades-gog" in found.text and "Link this" in found.text
+    t = token(site, f"/game/{site.gid}/links")
+    done = site.post(f"/game/{site.gid}/links", data={"csrf": t, "store": "gogish", "ident": "hades-gog"})
+    assert done.status_code == 303 and "m=applied" in done.headers["location"]
+    assert "hades-gog" in site.get(f"/game/{site.gid}").text
