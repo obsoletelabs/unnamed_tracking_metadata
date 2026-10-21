@@ -51,6 +51,18 @@ Admin → Peers shows each peer's last error. Common ones: *not trusted* (the no
 
 Images appear only after Atlas has downloaded and checked them (a background pass about once a minute, or `atlas cache-media`). Failures back off automatically. The source must be a public address; sizes above `ATLAS_MEDIA_MAX_BYTES`, non-images and SVG are refused.
 
+### `artwork cache failed: PermissionError` / `cannot write to ATLAS_MEDIA_DIR`
+
+Atlas runs as user `10001` and cannot write to `ATLAS_MEDIA_DIR`, so nothing can be cached. The image is fine, so its retry counter is not advanced and it is cached as soon as the directory is fixed. `/api/v2/health` reports `"media": "unwritable"`, and Atlas logs the same message at start-up and on every pass.
+
+Volumes created by an older image, or bind mounts, are owned by `root`. Fix the ownership once (for the named volume `atlas_media` of the authority example; check `docker volume ls`):
+
+```sh
+docker run --rm -v atlas_media:/media alpine chown -R 10001 /media
+```
+
+For a bind mount, `chown -R 10001 <host folder>`. Volumes created fresh from the current official image are already correct. The setting is documented in [Environment variables](reference-env.md).
+
 ## The API says 401/403/429
 
 401: missing or invalid token (or the owner is suspended). 403: the token lacks the scope (see [API reference](reference-api.md)). 429: rate limit; obey `Retry-After`.

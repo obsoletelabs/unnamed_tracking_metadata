@@ -66,7 +66,8 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "steam_api_key": ("Providers", "Steam Web API key. Without it achievements have global percentages only (no names)."),
     "provider_ttl_seconds": ("Providers", "How long a provider answer is cached."),
     "provider_negative_ttl_seconds": ("Providers", "How long “not found” is cached."),
-    "media_dir": ("Artwork", "Directory for cached images (content-addressed). Mount a volume here."),
+    "media_dir": ("Artwork", "Directory for cached images (content-addressed). Mount a volume here; it must be writable by the user Atlas runs as "
+                  "(uid 10001 in the official image). See [Troubleshooting](troubleshooting.md#artwork-doesnt-show)."),
     "media_cache_enabled": ("Artwork", "Download and verify artwork in the background. Editable in Admin → Settings."),
     "media_max_bytes": ("Artwork", "Largest image accepted (bytes)."),
     "media_max_pixels": ("Artwork", "Largest image by pixel count (decompression-bomb guard)."),
