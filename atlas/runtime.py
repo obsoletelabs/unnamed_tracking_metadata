@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import integrations
 from .models import AuditEntry, Setting, now
 from .settings import Settings
 
@@ -191,9 +192,9 @@ def effective(base: Settings, overrides: dict[str, Any]) -> Settings:
     """The environment settings with the admin's overrides applied (invalid leftovers are ignored)."""
     update = {k: to_attr(BY_KEY[k], v) if k in BY_KEY else v for k, v in overrides.items()
               if k in BY_KEY or k in EXTRA}
-    if not update:
+    merged = integrations.apply(base.model_copy(update=update) if update else base, overrides)
+    if merged is base:
         return base
-    merged = base.model_copy(update=update)
     try:
         return _check(merged)
     except ValueError:
