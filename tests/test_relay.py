@@ -11,6 +11,8 @@ from atlas.signing import verify
 
 from .conftest import batch, build_settings
 
+STANDARD = {key for key, *_ in custom.MULTIPLAYER_FIELDS}  # seeded on every non-mirror node
+
 
 def node(tmp_path, name, role):
     app = main.create_app(build_settings(database_url=f"sqlite:///{tmp_path}/{name}.db", role=role,
@@ -53,7 +55,7 @@ def test_two_authorities_relay_to_an_offline_capable_downstream(tmp_path):
     aid, bid = publish(a[2], "Authority Alpha", "alpha_note"), publish(b[2], "Authority Beta", "beta_note")
     assert pull(mirror[2], a) > 0 and pull(mirror[2], b) > 0
     with mirror[2].maker() as session:
-        assert {f.key for f in session.scalars(select(FieldDef))} == {"alpha_note", "beta_note"}
+        assert {f.key for f in session.scalars(select(FieldDef))} - STANDARD == {"alpha_note", "beta_note"}
         assert {f.origin_node for f in session.scalars(select(FieldDef))} == {
             a[2].ctx.identity.node_id, b[2].ctx.identity.node_id}
     assert pull(local[2], mirror, a[2].ctx.identity) > 0

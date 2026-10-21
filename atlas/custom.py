@@ -49,7 +49,11 @@ def seed_multiplayer(session: Session, ctx: Ctx) -> None:
     for position, (key, label, kind, choices, help_text) in enumerate(MULTIPLAYER_FIELDS):
         exists = session.scalars(select(FieldDef.id).where(FieldDef.media_type == "game", FieldDef.key == key)).first()
         if exists is None:
-            save_field(session, ctx, "game", key, label, kind, choices=choices, help=help_text, position=50 + position)
+            # Written directly, not through save_field: seeding must not append to the change feed. Followers
+            # carry identical definitions of their own, and the next schema change publishes them with the rest.
+            c = check_field("game", key, label, kind, choices, help_text, True, True, 50 + position)
+            session.add(FieldDef(media_type="game", origin="local", key=c["key"], label=c["label"], kind=c["kind"],
+                                 choices=c["choices"], help=c["help"], public=True, editable=True, position=c["position"]))
     session.add(Setting(key=_MULTIPLAYER_SEEDED, value=True))
     session.flush()
 
