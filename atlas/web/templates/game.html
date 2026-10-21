@@ -45,7 +45,17 @@
 
 <div class="main-col">
 <h2>Artwork</h2>
-{% if shots %}<div class="shots">{% for a in shots %}<a href="/media/{{ a.blob_hash }}"><img src="/media/{{ a.blob_hash }}" alt="{{ a.kind|replace('_', ' ') }}" loading="lazy"></a>{% endfor %}</div>{% endif %}
+{% for grp in gallery %}
+<section class="gallery-group" aria-labelledby="g-{{ grp.kind }}">
+<h3 id="g-{{ grp.kind }}">{{ grp.label }} <span class="muted small">{{ grp.images|length }}</span></h3>
+<ul class="gallery kind-{{ grp.kind }}">{% for a in grp.images %}
+<li><a class="art-tile" href="/game/{{ g.id }}/artwork/{{ a.id }}" data-viewer>
+<img src="/media/{{ a.blob }}" alt="{{ a.label }}{{ ' (default)' if a.preferred }} from {{ a.source }}" loading="lazy">
+{% if a.preferred %}<span class="badge ok art-flag">default</span>{% endif %}
+{% if a.up or a.down %}<span class="art-votes" aria-label="{{ a.up }} up, {{ a.down }} down">▲{{ a.up }} ▼{{ a.down }}</span>{% endif %}
+</a></li>{% endfor %}</ul></section>
+{% endfor %}
+<dialog id="viewer" aria-label="Image viewer"><div id="viewer-body"></div></dialog>
 <p class="muted small">{{ art_total }} image{{ '' if art_total == 1 else 's' }} known, {{ art_cached }} cached here. Images are shown only after this server has downloaded and checked them.</p>
 {% if pending_art %}<details class="pending-art"><summary>{{ pending_art|length }} image{{ '' if pending_art|length == 1 else 's' }} not cached yet</summary>
 <p class="small muted">These are assigned to this game but this server has not downloaded and checked them, so they are not shown. They are listed as links and are not loaded, so viewing this page does not contact the source sites.</p>

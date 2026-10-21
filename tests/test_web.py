@@ -635,3 +635,96 @@ def test_a_refused_upload_leaves_no_stored_file_behind(site):
     assert refused.status_code in (400, 409)
     after = sorted(p.name for p in __import__("pathlib").Path(site.st.ctx.settings.media_dir).rglob("*") if p.is_file())
     assert after == before  # nothing was left on disk for a proposal that was never created
+
+
+def _upload(client, gid, kind, w=30, h=40):
+    from tests.test_media_facets import png
+
+    t = token(client, f"/game/{gid}")
+    r = client.post(f"/game/{gid}/artwork/upload", data={"csrf": t, "kind": kind},
+                    files={"file": (f"{kind}{w}.png", png(w, h), "image/png")})
+    assert r.status_code == 303, r.text
+
+
+def test_gallery_groups_images_by_kind_and_opens_each_in_a_viewer(site):
+    from atlas.models import Artwork
+
+    signup(site, "alice")  # administrator: uploads apply at once
+    _upload(site, site.gid, "key_art", 30, 40)
+    _upload(site, site.gid, "screenshot", 64, 36)
+    _upload(site, site.gid, "screenshot", 65, 36)
+    page = site.get(f"/game/{site.gid}").text
+    assert 'id="g-key_art"' in page and 'id="g-screenshot"' in page and page.count("data-viewer") == 3
+    assert page.index("g-key_art") < page.index("g-screenshot")  # cover before screenshots
+    with site.st.maker() as s:
+        shot = s.scalars(select(Artwork).where(Artwork.kind == "screenshot")).first()
+    full = site.get(f"/game/{site.gid}/artwork/{shot.id}")
+    assert full.status_code == 200 and "Downloaded and checked" in full.text and "Image 1 of 2" in full.text
+    frag = site.get(f"/game/{site.gid}/artwork/{shot.id}?panel=1")
+    assert "<html" not in frag.text and "art-panel" in frag.text and frag.headers["cache-control"] == "private, no-store"
+    anon = fresh(site).get(f"/game/{site.gid}/artwork/{shot.id}?panel=1")
+    assert anon.status_code == 200 and "Sign in" in anon.text and "/vote" not in anon.text
+    assert site.get(f"/game/{site.gid}/artwork/nope").status_code == 404
+
+
+def test_members_vote_and_votes_are_opinions_only(site):
+    from atlas.models import Artwork, ArtworkVote
+
+    signup(site, "alice")
+    _upload(site, site.gid, "key_art", 30, 40)
+    _upload(site, site.gid, "key_art", 31, 40)
+    with site.st.maker() as s:
+        first, second = [a.id for a in s.scalars(select(Artwork).order_by(Artwork.created_at, Artwork.id))]
+    bob = fresh(site)
+    signup(bob, "bob")
+    url = f"/game/{site.gid}/artwork/{second}/vote"
+    assert fresh(site).post(url, data={"csrf": "x", "value": "up"}).status_code in (303, 403)
+    t = token(bob, f"/game/{site.gid}")
+    assert bob.post(url, data={"csrf": t, "value": "sideways"}).status_code == 400
+    assert bob.post(url, data={"csrf": t, "value": "up"}).status_code == 303
+    assert bob.post(url, data={"csrf": t, "value": "down"}).status_code == 303  # changing a vote replaces it
+    with site.st.maker() as s:
+        assert [v.value for v in s.scalars(select(ArtworkVote))] == [-1]
+    assert "▼ 1 down" in bob.get(f"/game/{site.gid}/artwork/{second}").text
+    assert bob.post(url, data={"csrf": t, "value": "clear"}).status_code == 303
+    with site.st.maker() as s:
+        assert s.scalars(select(ArtworkVote)).first() is None
+    # the order of images is not decided by votes
+    bob.post(url, data={"csrf": t, "value": "up"})
+    ids = re.findall(r'/artwork/([0-9A-Za-z]{26})"', site.get(f"/game/{site.gid}").text)
+    assert ids[0] == first
+    from atlas import social
+
+    with site.st.maker() as s:  # deleting an account removes the person's votes
+        social.delete_account(s, s.scalars(select(User).where(User.username == "bob")).one())
+        s.commit()
+        assert s.scalars(select(ArtworkVote)).first() is None
+
+
+def test_default_image_goes_through_review_and_can_be_reverted(site):
+    from atlas.models import Artwork
+
+    signup(site, "alice")  # administrator
+    _upload(site, site.gid, "key_art", 30, 40)
+    _upload(site, site.gid, "key_art", 31, 40)
+    with site.st.maker() as s:
+        first, second = [a.id for a in s.scalars(select(Artwork).order_by(Artwork.created_at, Artwork.id))]
+    bob = fresh(site)
+    signup(bob, "bob")
+    t = token(bob, f"/game/{site.gid}")
+    r = bob.post(f"/game/{site.gid}/artwork/{second}/default", data={"csrf": t})
+    assert r.status_code == 303 and "m=proposed" in r.headers["location"]  # a new member needs review
+    with site.st.maker() as s:
+        assert s.get(Artwork, second).preferred is False
+        pid = s.scalars(select(Proposal).where(Proposal.kind == "artwork_default")).one().id
+    ta = token(site, "/review")
+    assert site.post(f"/review/{pid}", data={"csrf": ta, "decision": "approve"}).status_code == 303
+    with site.st.maker() as s:
+        assert s.get(Artwork, second).preferred is True and s.get(Artwork, first).preferred is False
+    page = site.get(f"/game/{site.gid}").text
+    assert page.index(second) < page.index(first) and "default" in page
+    assert site.post(f"/review/{pid}/revert", data={"csrf": token(site, "/review")}).status_code == 303
+    with site.st.maker() as s:
+        assert s.get(Artwork, second).preferred is False
+    bad = bob.post(f"/game/{site.gid}/artwork/nope/default", data={"csrf": t})
+    assert bad.status_code == 404

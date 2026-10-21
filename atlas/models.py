@@ -219,8 +219,21 @@ class Artwork(Base):
     fail_count: Mapped[int] = mapped_column(Integer, default=0)
     next_try_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    # the community's chosen default for its kind on this game (set through a reviewed proposal); local to this node
+    preferred: Mapped[bool] = mapped_column(Boolean, default=False)
 
     __table_args__ = (UniqueConstraint("canonical_id", "kind", "url", name="uq_artwork"),)
+
+
+class ArtworkVote(Base):
+    """A member's up or down vote on one image. Advisory: it never changes what is shown by itself."""
+
+    __tablename__ = "artwork_vote"
+
+    artwork_id: Mapped[str] = mapped_column(ForeignKey("artwork.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True, index=True)
+    value: Mapped[int] = mapped_column(Integer)  # 1 or -1
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Achievement(Base):

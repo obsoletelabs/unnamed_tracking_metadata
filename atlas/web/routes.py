@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from .. import accounts, auth, custom, facets, feed, integrations, mail, proposals, service, social
 from .. import media as images
@@ -16,6 +16,7 @@ from ..api.routes import _guard_upstream, media_response
 from ..merge import SCALAR_FIELDS, UNION_FIELDS
 from ..models import (
     Artwork,
+    ArtworkVote,
     AuditEntry,
     Canonical,
     Follow,
@@ -115,6 +116,51 @@ def primary_art(p: Page, ids: list[str]) -> dict[str, str]:
     for a in ranked:
         out.setdefault(a.canonical_id, a.blob_hash)
     return out
+
+
+ART_LABELS = {"key_art": "Cover", "banner": "Banner", "hero": "Hero", "logo": "Logo", "icon": "Icon",
+              "screenshot": "Screenshots", "poster": "Poster"}
+
+
+def artwork_view(p: Page, a: Any, votes: dict[str, tuple[int, int]], mine: dict[str, int]) -> dict[str, Any]:
+    up, down = votes.get(a.id, (0, 0))
+    if a.blob_hash:
+        state = "Downloaded and checked on this server"
+    elif not p.st.ctx.settings.media_cache_enabled:
+        state = "Caching is switched off"
+    elif a.fail_count:
+        state = f"Download failed {a.fail_count} time{'' if a.fail_count == 1 else 's'}; retrying later"
+    else:
+        state = "Waiting to be downloaded and checked"
+    return {"id": a.id, "kind": a.kind, "label": ART_LABELS.get(a.kind, a.kind), "blob": a.blob_hash, "url": a.url,
+            "host": urlsplit(a.url).hostname or "", "width": a.width, "height": a.height, "source": a.source,
+            "state": state, "preferred": a.preferred, "up": up, "down": down, "mine": mine.get(a.id, 0),
+            "size": a.size_bytes, "type": a.content_type}
+
+
+def artwork_votes(p: Page, ids: list[str]) -> tuple[dict[str, tuple[int, int]], dict[str, int]]:
+    if not ids:
+        return {}, {}
+    s = p.session
+    votes = {i: (int(up or 0), int(down or 0)) for i, up, down in s.execute(
+        select(ArtworkVote.artwork_id, func.sum(case((ArtworkVote.value > 0, 1), else_=0)),
+               func.sum(case((ArtworkVote.value < 0, 1), else_=0))).where(ArtworkVote.artwork_id.in_(ids))
+        .group_by(ArtworkVote.artwork_id))}
+    mine = {}
+    if p.user:
+        mine = {r.artwork_id: r.value for r in s.scalars(select(ArtworkVote).where(
+            ArtworkVote.user_id == p.user.id, ArtworkVote.artwork_id.in_(ids)))}
+    return votes, mine
+
+
+def build_gallery(p: Page, art: list[Any]) -> list[dict[str, Any]]:
+    """The game's cached images grouped by kind, default first. Uncached ones are listed separately as text."""
+    votes, mine = artwork_votes(p, [a.id for a in art if a.blob_hash])
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for a in art:
+        if a.blob_hash:
+            groups.setdefault(a.kind, []).append(artwork_view(p, a, votes, mine))
+    return [{"kind": k, "label": ART_LABELS.get(k, k), "images": groups[k]} for k in facets.KINDS if k in groups]
 
 
 def pending_artwork(rows: list[Any], caching: bool) -> list[dict[str, Any]]:
@@ -240,7 +286,7 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     art = facets.merged_artwork(s, ctx, g.id)
     cached = [a for a in art if a.blob_hash]
     key_art = next((a.blob_hash for a in cached if a.kind == "key_art"), None)
-    shots = [a for a in cached if a.kind in ("screenshot", "hero", "banner")][:12]
+    gallery = build_gallery(p, art)
     pending = pending_artwork([a for a in art if not a.blob_hash], ctx.settings.media_cache_enabled)
     activity = []
     for pr in s.scalars(select(Proposal).where(Proposal.canonical_id == g.id, Proposal.status == "approved")
@@ -271,7 +317,7 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
                                                 .order_by(UserList.created_at)))
         social_ctx["in_lists"] = {i.list_id for i in s.scalars(select(ListItem).where(ListItem.canonical_id == g.id))}
         social_ctx["can_comment"] = mail.is_verified(ctx.settings, p.user)
-    return render(p, "game.html", g=g, v=g.view, explain=g.explain, key_art=key_art, shots=shots, **social_ctx,
+    return render(p, "game.html", g=g, v=g.view, explain=g.explain, key_art=key_art, gallery=gallery, **social_ctx,
                   lbl=labels_for(p, g.media_type), details=details,
                   mtype_label=(s.get(MediaType, g.media_type).label if s.get(MediaType, g.media_type) else g.media_type),
                   pending_art=pending, stores=integrations.STORES, art_total=len(art), art_cached=len(cached),
@@ -529,6 +575,67 @@ def propose_store_link(cid: str, p: Annotated[Page, Depends(user_form)], store: 
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
+def _artwork_of(p: Page, cid: str, aid: str) -> tuple[Any, Any]:
+    g, _ = live_game(p, cid)
+    art = p.session.get(Artwork, aid)
+    if art is None or art.canonical_id != g.id or art.blob_hash is None:
+        raise HTTPException(404, "No such image.")
+    return g, art
+
+
+def _panel_ctx(p: Page, g: Any, art: Any) -> dict[str, Any]:
+    votes, mine = artwork_votes(p, [art.id])
+    kind_items = [a for a in facets.merged_artwork(p.session, p.st.ctx, g.id) if a.kind == art.kind and a.blob_hash]
+    ids = [a.id for a in kind_items]
+    pos = ids.index(art.id)
+    return {"g": g, "a": artwork_view(p, art, votes, mine), "title": g.view.get("title"),
+            "prev_id": ids[pos - 1] if pos > 0 else None, "next_id": ids[pos + 1] if pos + 1 < len(ids) else None,
+            "pos": pos + 1, "count": len(ids), "can_vote": bool(p.user and mail.is_verified(p.st.ctx.settings, p.user)),
+            "message": p.request.query_params.get("m")}
+
+
+@router.get("/game/{cid}/artwork/{aid}", response_class=HTMLResponse)
+def artwork_viewer(cid: str, aid: str, p: Annotated[Page, Depends(page)], panel: int = 0):
+    """One image with its source, status, votes and actions. `?panel=1` is the fragment shown in the in-page viewer."""
+    g, art = _artwork_of(p, cid, aid)
+    ctx = _panel_ctx(p, g, art)
+    if panel:
+        resp = templates.TemplateResponse(p.request, "_art_panel.html", {"p": p, **ctx})
+        resp.headers["Cache-Control"] = "private, no-store"
+        return resp
+    return render(p, "artwork.html", **ctx)
+
+
+@router.post("/game/{cid}/artwork/{aid}/vote")
+def vote_artwork(cid: str, aid: str, p: Annotated[Page, Depends(user_form)], value: Annotated[str, Form()]):
+    """Up, down or clear. Needs the same verified email as commenting; it only records an opinion."""
+    g, art = _artwork_of(p, cid, aid)
+    if value not in ("up", "down", "clear"):
+        raise HTTPException(400, "Choose up, down or clear.")
+    if not mail.is_verified(p.st.ctx.settings, p.me):
+        raise HTTPException(403, "Confirm your email address before voting (see your profile).")
+    row = p.session.get(ArtworkVote, (art.id, p.me.id))
+    if value == "clear":
+        if row is not None:
+            p.session.delete(row)
+    elif row is None:
+        p.session.add(ArtworkVote(artwork_id=art.id, user_id=p.me.id, value=1 if value == "up" else -1))
+    else:
+        row.value = 1 if value == "up" else -1
+    return go(f"/game/{g.id}/artwork/{art.id}", "voted")
+
+
+@router.post("/game/{cid}/artwork/{aid}/default")
+def propose_default_artwork(cid: str, aid: str, p: Annotated[Page, Depends(user_form)], note: Annotated[str, Form()] = ""):
+    """Propose this image as the default of its kind. Reviewed like any other artwork change."""
+    g, art = _artwork_of(p, cid, aid)
+    try:
+        pr = proposals.create(p.session, p.st.ctx, p.me, "artwork_default", g.id, {"artwork_id": art.id}, note)
+    except AtlasError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return go(f"/game/{g.id}/artwork/{art.id}", "applied" if pr.auto_applied else "proposed")
+
+
 @router.post("/game/{cid}/artwork/upload")
 async def upload_artwork(cid: str, p: Annotated[Page, Depends(user_form)], file: Annotated[UploadFile, File()],
                          kind: Annotated[str, Form()], note: Annotated[str, Form()] = ""):
@@ -712,6 +819,9 @@ def _proposal_card(p: Page, r: Proposal) -> dict[str, Any]:
                 card["rows"].append((FIELD_LABELS.get(k, k), _show(cur.get(k)) if r.kind == "edit" else "", _show(v)))
     elif r.kind == "artwork":
         card["entries"] = [f"{i['kind'].replace('_', ' ')}: {i['url']}" for i in r.payload["items"]]
+    elif r.kind == "artwork_default":
+        card["entries"] = [f"Make this the default {r.payload['kind'].replace('_', ' ')}: "
+                           f"{p.st.ctx.settings.public_url.rstrip('/')}/game/{r.canonical_id}/artwork/{r.payload['artwork_id']}"]
     elif r.kind == "link_ids":
         card["entries"] = [f"{integrations.store_name(ns)} ({ns}): {ident}"
                            for ns, ident in r.payload["provider_ids"].items()]

@@ -342,7 +342,7 @@ class AchievementsBody(BaseModel):
 
 def _art_out(a: Artwork) -> dict[str, Any]:
     return {"id": a.id, "kind": a.kind, "url": a.url, "width": a.width, "height": a.height, "source": a.source,
-            "cached": a.blob_hash is not None,
+            "preferred": a.preferred, "cached": a.blob_hash is not None,
             "media_url": f"/api/v2/media/{a.blob_hash}" if a.blob_hash else None,
             # always usable: the cached bytes when we have them, else a redirect to the original source
             "image_url": f"/api/v2/artwork/{a.id}/image"}
