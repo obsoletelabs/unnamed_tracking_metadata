@@ -11,13 +11,14 @@ from sqlalchemy.orm import Session
 
 from . import accounts, custom, facets, mail, social
 from .contract import ObservationBatchV1
-from .models import Achievement, Artwork, Canonical, Observation, Proposal, ReputationEvent, User, now
+from .models import Achievement, Artwork, Canonical, Crosswalk, Observation, Proposal, ReputationEvent, User, now
+from .resolve import follow
 from .service import AtlasError, Ctx, ingest, write_lock
 
 SOURCE = "community"
 SCOPE = "atlas"
-KINDS = ("edit", "new_game", "artwork", "achievements")
-REWARD = {"edit": 5, "new_game": 10, "artwork": 3, "achievements": 5}
+KINDS = ("edit", "new_game", "artwork", "achievements", "link_ids")
+REWARD = {"edit": 5, "new_game": 10, "artwork": 3, "achievements": 5, "link_ids": 2}
 REJECT_PENALTY = -2
 REVERT_PENALTY = -10
 SCALAR = {"title": 500, "description": 20000, "developer": 200, "publisher": 200, "series": 200, "age_rating": 50,
@@ -112,7 +113,32 @@ def _validate(session: Session, kind: str, canonical_id: str | None, payload: di
         return {"items": facets.clean_artwork(payload.get("items") or [])}
     if kind == "achievements":
         return {"items": facets.clean_achievements(payload.get("items") or [])}
+    if kind == "link_ids":
+        return {"provider_ids": _clean_links(session, canonical_id, payload.get("provider_ids"))}
     raise AtlasError(f"kind must be one of {KINDS}")
+
+
+def _clean_links(session: Session, cid: str | None, ids: Any) -> dict[str, str]:
+    """Store ids to link to an existing game; refuse what would contradict the records already there."""
+    if not isinstance(ids, dict) or not 1 <= len(ids) <= 8:
+        raise AtlasError("give between one and eight store ids, each as store and id")
+    out: dict[str, str] = {}
+    for key, value in ids.items():
+        ns = str(key).strip().lower()
+        ident = value.strip() if isinstance(value, str) else ""
+        if not re.fullmatch(r"[a-z0-9._-]{1,50}", ns) or not 0 < len(ident) <= 256 or any(c.isspace() for c in ident):
+            raise AtlasError("a store name uses a-z, 0-9, '.', '_' or '-'; an id has no spaces and at most 256 characters")
+        mapped = session.get(Crosswalk, (ns, ident))
+        if mapped is not None and follow(session, mapped.canonical_id) != cid:
+            raise AtlasError(f"{ns}:{ident} is already linked to another game; ask a reviewer to merge the two games",
+                             "conflict")
+        row = session.get(Canonical, cid) if cid else None
+        have = (row.view.get("provider_ids") or {}).get(ns) if row is not None else None
+        if have and have != ident:
+            raise AtlasError(f"this game already has {ns} id {have}; propose a correction through an edit instead",
+                             "conflict")
+        out[ns] = ident
+    return out
 
 
 # ---- applying -----------------------------------------------------------------------------------------
@@ -201,6 +227,20 @@ def apply(session: Session, ctx: Ctx, p: Proposal) -> None:
                     **({"global_percent": a.global_percent} if a.global_percent is not None else {})} for a in rows]
             p.previous = {"items": old}
             facets.set_achievements(session, ctx, cid, SOURCE, old + p.payload["items"], redistributable=redistribute)
+    elif p.kind == "link_ids":
+        cid = p.canonical_id
+        if cid is None or session.get(Canonical, cid) is None:
+            raise AtlasError("the game no longer exists", "not_found")
+        _clean_links(session, cid, p.payload["provider_ids"])  # re-check: the world may have changed since review
+        cur = _community_obs(session, cid)
+        before = dict(cur.payload) if cur else None
+        new = {k: v for k, v in p.payload["provider_ids"].items()
+               if session.get(Crosswalk, (k, v)) is None}  # only rows this proposal creates are undone on revert
+        reported = dict(before or {})
+        reported.setdefault("title", session.get(Canonical, cid).view.get("title") or "Untitled")
+        reported["provider_ids"] = {**(reported.get("provider_ids") or {}), **p.payload["provider_ids"]}
+        p.previous = {"payload": before, "added": [[k, v] for k, v in new.items()]}
+        _ingest_community(session, ctx, cid, reported)
     else:  # pragma: no cover - validated earlier
         raise AtlasError("unknown proposal kind")
 
@@ -226,6 +266,21 @@ def revert_applied(session: Session, ctx: Ctx, p: Proposal) -> None:
                 cur.is_current = False
                 from .service import rebuild
                 rebuild(session, ctx, p.canonical_id)  # type: ignore[arg-type]
+    elif p.kind == "link_ids":
+        for ns, ident in prev.get("added", []):
+            row = session.get(Crosswalk, (ns, ident))
+            if row is not None and follow(session, row.canonical_id) == p.canonical_id:
+                session.delete(row)
+        session.flush()
+        before = prev.get("payload")
+        if before:
+            _ingest_community(session, ctx, p.canonical_id, before)  # type: ignore[arg-type]
+        else:
+            cur = _community_obs(session, p.canonical_id)  # type: ignore[arg-type]
+            if cur:
+                cur.is_current = False
+            from .service import rebuild
+            rebuild(session, ctx, p.canonical_id)  # type: ignore[arg-type]
     elif p.kind == "artwork":
         facets.set_artwork(session, ctx, p.canonical_id, SOURCE, prev.get("items", []),  # type: ignore[arg-type]
                            redistributable=ctx.settings.role == "authority")

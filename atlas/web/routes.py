@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 
-from .. import accounts, auth, custom, facets, feed, mail, proposals, service, social
+from .. import accounts, auth, custom, facets, feed, integrations, mail, proposals, service, social
 from ..api.routes import _guard_upstream, media_response
 from ..merge import SCALAR_FIELDS, UNION_FIELDS
 from ..models import (
@@ -250,7 +250,8 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     return render(p, "game.html", g=g, v=g.view, explain=g.explain, key_art=key_art, shots=shots, **social_ctx,
                   lbl=labels_for(p, g.media_type), details=details,
                   mtype_label=(s.get(MediaType, g.media_type).label if s.get(MediaType, g.media_type) else g.media_type),
-                  art_total=len(art), art_cached=len(cached), art_kinds=facets.KINDS, activity=activity,
+                  stores=integrations.STORES, art_total=len(art), art_cached=len(cached), art_kinds=facets.KINDS,
+                  activity=activity,
                   achievements=facets.merged_achievements(s, ctx, g.id),
                   redirected_from=p.request.query_params.get("from"), **extra)
 
@@ -443,6 +444,20 @@ def propose_artwork(cid: str, p: Annotated[Page, Depends(user_form)], kind: Anno
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
+@router.post("/game/{cid}/links")
+def propose_store_link(cid: str, p: Annotated[Page, Depends(user_form)], store: Annotated[str, Form(max_length=50)],
+                       ident: Annotated[str, Form(max_length=256)], other: Annotated[str, Form(max_length=50)] = "",
+                       note: Annotated[str, Form()] = ""):
+    """Link a store id (Steam, GOG, Epic, TheGamesDB...) to an existing game; reviewed like other contributions."""
+    g, _ = live_game(p, cid)
+    namespace = (other if store == "other" else store).strip().lower()
+    try:
+        pr = proposals.create(p.session, p.st.ctx, p.me, "link_ids", g.id, {"provider_ids": {namespace: ident}}, note)
+    except AtlasError as exc:
+        raise HTTPException(409 if exc.code == "conflict" else 400, str(exc)) from exc
+    return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
+
+
 @router.post("/game/{cid}/achievements")
 def propose_achievements(cid: str, p: Annotated[Page, Depends(user_form)],
                          lines_text: Annotated[str, Form(alias="lines", max_length=100000)],
@@ -572,6 +587,9 @@ def _proposal_card(p: Page, r: Proposal) -> dict[str, Any]:
                 card["rows"].append((FIELD_LABELS.get(k, k), _show(cur.get(k)) if r.kind == "edit" else "", _show(v)))
     elif r.kind == "artwork":
         card["entries"] = [f"{i['kind'].replace('_', ' ')}: {i['url']}" for i in r.payload["items"]]
+    elif r.kind == "link_ids":
+        card["entries"] = [f"{integrations.store_name(ns)} ({ns}): {ident}"
+                           for ns, ident in r.payload["provider_ids"].items()]
     else:
         card["entries"] = [f"{i['name']}" + (f" — {i['description']}" if i.get("description") else "")
                          for i in r.payload["items"][:50]]

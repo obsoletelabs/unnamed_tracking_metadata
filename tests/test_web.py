@@ -449,3 +449,21 @@ def test_known_stores_link_only_safe_ids():
     assert integrations.store_link("tgdb", "1234") == "https://thegamesdb.net/game.php?id=1234"
     assert integrations.store_link("steam", "../evil") is None and integrations.store_link("itch", "x") is None
     assert integrations.store_link("unknown", "1") is None and integrations.store_name("unknown") == "unknown"
+
+
+def test_members_can_propose_store_links_from_a_game_page(site):
+    signup(site, "alice")  # the first account is the administrator, so the link applies immediately
+    t = token(site, f"/game/{site.gid}")
+    page = site.get(f"/game/{site.gid}").text
+    assert "Link a store page or id" in page and "GOG" in page
+    ok = site.post(f"/game/{site.gid}/links", data={"csrf": t, "store": "gog", "ident": "hades_gog", "note": "store"})
+    assert ok.status_code == 303 and "m=applied" in ok.headers["location"]
+    shown = site.get(f"/game/{site.gid}").text
+    assert 'href="https://www.gog.com/game/hades_gog"' in shown
+    other = site.post(f"/game/{site.gid}/links", data={"csrf": t, "store": "other", "other": "humble", "ident": "hades"})
+    assert other.status_code == 303
+    clash = site.post(f"/game/{site.gid}/links", data={"csrf": t, "store": "gog", "ident": "different"})
+    assert clash.status_code == 409
+    assert site.post(f"/game/{site.gid}/links", data={"csrf": "wrong", "store": "gog", "ident": "x"}).status_code == 403
+    plain = fresh(site)
+    assert plain.post(f"/game/{site.gid}/links", data={"csrf": "x", "store": "gog", "ident": "x"}).status_code in (303, 403)

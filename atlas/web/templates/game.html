@@ -48,6 +48,15 @@
 {% if shots %}<div class="shots">{% for a in shots %}<a href="/media/{{ a.blob_hash }}"><img src="/media/{{ a.blob_hash }}" alt="{{ a.kind|replace('_', ' ') }}" loading="lazy"></a>{% endfor %}</div>{% endif %}
 <p class="muted small">{{ art_total }} image{{ '' if art_total == 1 else 's' }} known, {{ art_cached }} cached here. Images are shown only after this server has downloaded and checked them.</p>
 {% if p.user %}
+<details><summary>Link a store page or id</summary>
+<form class="card" method="post" action="/game/{{ g.id }}/links">{{ csrf(p.csrf) }}
+  <label for="lstore">Store</label><select id="lstore" name="store">{% for ns, s in stores.items() %}<option value="{{ ns }}">{{ s[0] }}</option>{% endfor %}<option value="other">Other (type its short name below)</option></select>
+  <label for="lother">Other store name <span class="hint">only if you chose Other, e.g. <code>humble</code></span></label><input id="lother" name="other" maxlength="50" pattern="[a-z0-9._-]*">
+  <label for="lident">Its id for this game <span class="hint">e.g. 620 for Steam, the slug from the store address for GOG or Epic</span></label><input id="lident" name="ident" required maxlength="256">
+  <label for="lnote">Source / note</label><textarea id="lnote" name="note" maxlength="2000"></textarea>
+  <p class="small muted">Linking is reviewed like other contributions. An id already used by another game is refused: ask a reviewer to merge the games.</p>
+  <p><button type="submit">Propose link</button></p>
+</form></details>
 <details><summary>Suggest artwork</summary>
 <form class="card" method="post" action="/game/{{ g.id }}/artwork">{{ csrf(p.csrf) }}
   <label for="kind">Type</label><select id="kind" name="kind">{% for k in art_kinds %}<option value="{{ k }}">{{ k|replace('_', ' ') }}</option>{% endfor %}</select>
