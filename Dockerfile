@@ -7,7 +7,7 @@ COPY atlas ./atlas
 RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim
-RUN useradd --system --uid 10001 --home /data atlas && mkdir /data /media && chown atlas /data /media
+RUN useradd --system --uid 10001 --home /data atlas && mkdir -p /data /media && chown atlas /data /media
 # same path as the build stage: venv scripts embed absolute interpreter paths
 COPY --from=build /src/.venv /src/.venv
 ENV PATH=/src/.venv/bin:$PATH PYTHONUNBUFFERED=1 ATLAS_DATABASE_URL=sqlite:////data/atlas.db
