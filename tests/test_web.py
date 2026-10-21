@@ -201,7 +201,7 @@ def test_artwork_proposal_url_validation_and_media_only_after_cache(site):
     ok = site.post(f"/game/{site.gid}/artwork", data={"csrf": t, "kind": "key_art", "url": "https://img.test/c.png"})
     assert ok.status_code == 303
     page = site.get(f"/game/{site.gid}").text
-    assert "https://img.test/c.png" not in page  # never hotlinked: only cached images are displayed
+    assert 'src="https://img.test/c.png"' not in page  # never hotlinked: pending images are listed as links only
     assert "1 image known, 0 cached" in page
 
 
@@ -390,3 +390,26 @@ def test_curators_can_import_from_a_provider_with_media_and_achievements(site):
     assert "Celeste" in game and "Chapter 1 Cleared" in game
     plain = fresh(site)
     assert plain.post("/import", data={"csrf": "x", "provider": "fakeprov", "external_id": "77"}).status_code in (303, 403)
+
+
+def test_uncached_artwork_is_listed_as_links_never_embedded(site):
+    from sqlalchemy import select
+
+    from atlas import facets
+    from atlas.models import Artwork
+
+    ctx = site.st.ctx
+    with site.st.maker() as s:
+        facets.set_artwork(s, ctx, site.gid, "steam", [
+            {"kind": "key_art", "url": "https://cdn.example/pending.png"},
+            {"kind": "banner", "url": "https://cdn.example/failing.png"}])
+        s.scalars(select(Artwork).where(Artwork.kind == "banner")).one().fail_count = 2
+        s.commit()
+    off = site.get(f"/game/{site.gid}").text  # the fixture runs with caching switched off
+    assert "2 images not cached yet" in off and "Caching is switched off" in off
+    site.st.base = site.st.base.model_copy(update={"media_cache_enabled": True})
+    ctx.settings = ctx.settings.model_copy(update={"media_cache_enabled": True})
+    page = site.get(f"/game/{site.gid}").text
+    assert "Waiting to be downloaded" in page and "Download failed 2 times" in page
+    assert 'href="https://cdn.example/pending.png"' in page
+    assert "<img" not in page.split("not cached yet")[1].split("</details>")[0]  # a link, never an image
