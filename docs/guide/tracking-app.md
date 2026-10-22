@@ -9,7 +9,7 @@ The plugin **`official.metadata-atlas`** adds Atlas as a provider for games, ani
 ### Install
 
 1. Run an Atlas node ([Quick start](quickstart.md)) and create a token with only the **`read`** scope (**Admin → Tokens**).
-2. Get the signed package from the official catalogue. This integration's Atlas provider release is **0.6.0**; development builds from `python tools/build_packages.py` are isolated unsigned previews and require explicit consent.
+2. Get the signed package from the official catalogue. The media-type support described here is introduced in Atlas provider **0.7.0**; development builds from `python tools/build_packages.py` are isolated unsigned previews and require explicit consent.
 3. In the app: **Plugin Manager** → install the `.utp` (unsigned previews need explicit consent) and grant the declared permissions.
 4. Open the provider's settings and enter **Atlas server URL** (`https://atlas.example.org`, optional path prefix) and **Atlas API token** (write-only, stored encrypted by the app).
 
