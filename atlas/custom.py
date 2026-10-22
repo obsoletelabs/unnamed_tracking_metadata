@@ -62,7 +62,7 @@ RESERVED = {"title", "description", "id", "sources", "provider_ids", "media_type
 
 def seed(session: Session) -> None:
     created: list[str] = []
-    for key, (label, position, labels, fields) in BUILTIN_MEDIA_TYPES.items():
+    for key, (label, position, labels, _fields) in BUILTIN_MEDIA_TYPES.items():
         if session.get(MediaType, key) is not None:
             continue
         session.add(MediaType(key=key, label=label, position=position, labels=labels, origin="local"))
