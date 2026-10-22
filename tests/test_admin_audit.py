@@ -30,13 +30,13 @@ def test_api_token_creation_and_revocation_are_audited_without_the_secret(site):
 def test_schema_and_sign_in_provider_changes_are_audited(site):  # noqa: F811
     signup(site, "alice")  # the first account is the administrator
     t = token(site, "/admin/schema")
-    assert site.post("/admin/schema/types", data={"csrf": t, "key": "movie", "label": "Movie", "enabled": "on"}
+    assert site.post("/admin/schema/types", data={"csrf": t, "key": "book", "label": "Book", "enabled": "on"}
                      ).status_code == 303
-    assert site.post("/admin/schema/movie/fields", data={"csrf": t, "key": "runtime", "label": "Runtime",
+    assert site.post("/admin/schema/book/fields", data={"csrf": t, "key": "runtime", "label": "Runtime",
                                                           "kind": "number", "public": "on", "editable": "on"}
                      ).status_code == 303
-    assert site.post("/admin/schema/movie/fields/runtime/delete", data={"csrf": t}).status_code == 303
-    assert site.post("/admin/schema/types/movie/delete", data={"csrf": t}).status_code == 303
+    assert site.post("/admin/schema/book/fields/runtime/delete", data={"csrf": t}).status_code == 303
+    assert site.post("/admin/schema/types/book/delete", data={"csrf": t}).status_code == 303
     seen = {(a, tgt) for a, tgt, _ in actions(site)}
-    assert {("schema_type_save", "movie"), ("schema_field_save", "movie/runtime"),
-            ("schema_field_delete", "movie/runtime"), ("schema_type_delete", "movie")} <= seen
+    assert {("schema_type_save", "book"), ("schema_field_save", "book/runtime"),
+            ("schema_field_delete", "book/runtime"), ("schema_type_delete", "book")} <= seen

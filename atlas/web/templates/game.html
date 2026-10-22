@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% from "macros.html" import csrf, chips %}
-{% block title %}{{ v.get('title') }} · {{ app_name }}{% endblock %}
+{% block title %}{{ v.get('title') }}{% if mtype_label and g.media_type != 'game' %} · {{ mtype_label }}{% endif %} · {{ app_name }}{% endblock %}
 {% block content %}
 {% if redirected_from %}<div class="flash">This record was merged; you were redirected from <code>{{ redirected_from }}</code>.</div>{% endif %}
 <div class="game-page">
 <div class="hero">
-  <div class="cover">{% if key_art %}<img src="/media/{{ key_art }}" alt="Cover art for {{ v.get('title') }}">{% endif %}</div>
+  <div class="cover">{% if key_art %}<img src="/media/{{ key_art }}" alt="Artwork for {{ v.get('title') }}">{% endif %}</div>
   <div>
-    <h1>{{ v.get('title') }}</h1>
+    <h1>{{ v.get('title') }}{% if g.media_type != 'game' %} <span class="badge">{{ mtype_label }}</span>{% endif %}</h1>
     {{ chips(v.get('platforms')) }}
     <dl class="facts">
       {% if v.get('release_date') %}<dt>{{ lbl.release_date }}</dt><dd>{{ v.release_date }}</dd>{% endif %}
@@ -26,12 +26,12 @@
       {% if v.get('aliases') %}<dt>{{ lbl.aliases }}</dt><dd>{{ v.aliases|join(', ') }}</dd>{% endif %}
       {% for d in details %}<dt>{{ d.f.label }}</dt><dd>{% if d.f.kind == 'list' %}{{ chips(d.value) }}{% elif d.f.kind == 'url' %}<a href="{{ d.value }}" rel="noopener noreferrer nofollow">{{ d.value }}</a>{% elif d.f.kind == 'bool' %}{{ 'Yes' if d.value else 'No' }}{% else %}{{ d.value }}{% endif %}</dd>{% endfor %}
       {% if mtype_label and g.media_type != 'game' %}<dt>Type</dt><dd>{{ mtype_label }}</dd>{% endif %}
-      <dt>Identifiers</dt><dd><code>{{ g.id }}</code>{% for ns, ident in (v.get('provider_ids') or {}).items() %}<br>{{ store_name(ns) }}: {% set link = store_link(ns, ident) %}{% if link %}<a href="{{ link }}" rel="noopener noreferrer nofollow">{{ ident }}</a>{% else %}{{ ident }}{% endif %}{% endfor %}</dd>
+      <dt>Provider IDs</dt><dd><code>{{ g.id }}</code>{% for ns, ident in (v.get('provider_ids') or {}).items() %}<br>{{ store_name(ns) }}: {% set link = store_link(ns, ident) %}{% if link %}<a href="{{ link }}" rel="noopener noreferrer nofollow">{{ ident }}</a>{% else %}{{ ident }}{% endif %}{% endfor %}</dd>
     </dl>
     {% if v.get('description') %}<p>{{ v.description }}</p>{% endif %}
     <div class="actions-bar">
     {% if p.user %}<a class="btn" href="/game/{{ g.id }}/edit">Suggest an edit</a>{% else %}<a class="btn" href="/login?next=/game/{{ g.id }}/edit">Sign in to suggest an edit</a>{% endif %}
-    {% if p.user and lists_on %}
+    {% if p.user and lists_on and g.media_type == 'game' %}
       <form method="post" action="/{{ 'unfollow' if following else 'follow' }}">{{ csrf(p.csrf) }}<input type="hidden" name="type" value="game"><input type="hidden" name="target" value="{{ g.id }}"><input type="hidden" name="to" value="/game/{{ g.id }}"><button class="secondary" type="submit">{{ 'Following' if following else 'Follow' }}</button></form>
       <details class="menu"><summary>Add to list ▾</summary><div class="menu-body">
         {% for l in my_lists %}{% if l.id in in_lists %}<form method="post" action="/list/{{ l.id }}/remove">{{ csrf(p.csrf) }}<input type="hidden" name="game" value="{{ g.id }}"><button class="secondary small" type="submit">Remove from {{ l.name }}</button></form>
@@ -58,9 +58,9 @@
 <dialog id="viewer" aria-label="Image viewer"><div id="viewer-body"></div></dialog>
 <p class="muted small">{{ art_total }} image{{ '' if art_total == 1 else 's' }} known, {{ art_cached }} cached here. Images are shown only after this server has downloaded and checked them.</p>
 {% if pending_art %}<details class="pending-art"><summary>{{ pending_art|length }} image{{ '' if pending_art|length == 1 else 's' }} not cached yet</summary>
-<p class="small muted">These are assigned to this game but this server has not downloaded and checked them, so they are not shown. They are listed as links and are not loaded, so viewing this page does not contact the source sites.</p>
+<p class="small muted">These are assigned to this record but this server has not downloaded and checked them, so they are not shown. They are listed as links and are not loaded, so viewing this page does not contact the source sites.</p>
 <ul>{% for a in pending_art %}<li>{{ a.kind|title }} · <a href="{{ a.url }}" rel="noopener noreferrer nofollow">{{ a.host or 'source' }}</a> <span class="muted small">· {{ a.state }} · from {{ a.source }}</span></li>{% endfor %}</ul></details>{% endif %}
-{% if p.user %}
+{% if p.user and g.media_type == 'game' %}
 <details><summary>Link a store page or id</summary>
 <p class="small"><a href="/game/{{ g.id }}/links">Find it by name</a> in Steam, IGDB or RAWG (whichever this node has configured), or enter an id below.</p>
 <form class="card" method="post" action="/game/{{ g.id }}/links">{{ csrf(p.csrf) }}
@@ -71,6 +71,8 @@
   <p class="small muted">Linking is reviewed like other contributions. An id already used by another game is refused: ask a reviewer to merge the games.</p>
   <p><button type="submit">Propose link</button></p>
 </form></details>
+{% endif %}
+{% if p.user %}
 <details><summary>Upload or suggest artwork</summary>
 <form class="card" method="post" action="/game/{{ g.id }}/artwork/upload" enctype="multipart/form-data">{{ csrf(p.csrf) }}
   <h3>Upload an image</h3>
@@ -89,7 +91,7 @@
 </form></details>
 {% endif %}
 
-<h2 id="achievements">Achievements</h2>
+{% if g.media_type == 'game' %}<h2 id="achievements">Achievements</h2>
 {% if achievements %}
 <table class="achievements"><thead><tr><th></th><th>Name</th><th>Description</th><th>Points</th><th>Global %</th></tr></thead><tbody>
 {% for a in achievements %}{% set concealed = a.hidden and not a.revealed %}<tr>
@@ -101,6 +103,7 @@
 </tbody></table>
 {% else %}<p class="muted">No achievements recorded.</p>{% endif %}
 {% if p.user %}<p><a class="btn secondary" href="/game/{{ g.id }}/achievements/edit">Edit achievements</a></p>{% else %}<p class="small"><a href="/login?next=/game/{{ g.id }}/achievements/edit">Sign in</a> to add or edit achievements.</p>{% endif %}
+{% endif %}
 
 </div>
 <aside class="side-col">
@@ -139,7 +142,7 @@
 <h3>Source records</h3>
 <table><thead><tr><th>Source</th><th>ID</th><th>Seen</th><th></th></tr></thead><tbody>
 {% for o in observations %}<tr><td>{{ o.source }}{% if not o.is_current %} <span class="badge">superseded</span>{% endif %}</td><td>{{ o.external_id }}</td><td class="small muted">{{ o.observed_at.strftime('%Y-%m-%d') }}</td>
-<td>{% if o.is_current and can_split %}<form class="inline" method="post" action="/observation/{{ o.id }}/detach">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Split this source record into its own game?" type="submit">Split off</button></form>{% endif %}</td></tr>{% endfor %}
+  <td>{% if o.is_current and can_split %}<form class="inline" method="post" action="/observation/{{ o.id }}/detach">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Split this source record into its own record?" type="submit">Split off</button></form>{% endif %}</td></tr>{% endfor %}
 </tbody></table>
 {% if revertable %}<h3>Revert a change</h3><ul>{% for r in revertable %}<li>{{ r.user }} · {{ r.kind }} · {{ r.when }}
 <form class="inline" method="post" action="/review/{{ r.id }}/revert">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Revert this change?" type="submit">Revert</button></form></li>{% endfor %}</ul>{% endif %}

@@ -1,18 +1,18 @@
 {% extends "base.html" %}
 {% from "macros.html" import cover %}
-{% block title %}Search: {{ q }} · {{ app_name }}{% endblock %}
+{% block title %}{% if q %}Search: {{ q }}{% elif mtype_label %}Browse {{ mtype_label }}{% else %}Browse media{% endif %} · {{ app_name }}{% endblock %}
 {% block content %}
-<h1>Results for “{{ q }}”</h1>
-{% if mtypes and mtypes|length > 1 %}<ul class="tabs"><li><a href="/search?q={{ q|urlencode }}"{% if not mtype %} aria-current="page"{% endif %}>All</a></li>{% for t in mtypes %}<li><a href="/search?q={{ q|urlencode }}&type={{ t.key }}"{% if mtype == t.key %} aria-current="page"{% endif %}>{{ t.label }}</a></li>{% endfor %}</ul>{% endif %}
+<h1>{% if q %}Results for “{{ q }}”{% elif mtype_label %}{{ mtype_label }}{% else %}Browse media{% endif %}</h1>
+{% if mtypes and mtypes|length > 1 %}<ul class="tabs"><li><a href="/search{% if q %}?q={{ q|urlencode }}{% endif %}"{% if not mtype %} aria-current="page"{% endif %}>All</a></li>{% for t in mtypes %}<li><a href="/search?{% if q %}q={{ q|urlencode }}&amp;{% endif %}type={{ t.key }}"{% if mtype == t.key %} aria-current="page"{% endif %}>{{ t.label }}</a></li>{% endfor %}</ul>{% endif %}
 {% if results %}
 <ul class="grid">{% for g in results %}
   <li class="tile"><a href="/game/{{ g.id }}"><div class="cover">{{ cover(g, art) }}</div>
-  <div class="meta"><div class="name">{{ g.view.get('title') }}</div><div class="muted small">{{ (g.view.get('release_date') or '')[:4] }}{% if g.view.get('developer') %} · {{ g.view.developer }}{% endif %}</div></div></a></li>
+  <div class="meta"><div class="name">{{ g.view.get('title') }}</div><div class="muted small">{{ (g.view.get('release_date') or '')[:4] }}{% if g.view.get('developer') %} · {{ g.view.developer }}{% endif %}{% if not mtype %} · {{ g.media_type|replace('_', ' ')|title }}{% endif %}</div></div></a></li>
 {% endfor %}</ul>
-<p>{% if page > 1 %}<a href="/search?q={{ q|urlencode }}&page={{ page - 1 }}">&larr; Previous</a>{% endif %}
-{% if more %} <a href="/search?q={{ q|urlencode }}&page={{ page + 1 }}">Next &rarr;</a>{% endif %}</p>
+<p>{% if page > 1 %}<a href="/search?{% if q %}q={{ q|urlencode }}&amp;{% endif %}{% if mtype %}type={{ mtype }}&amp;{% endif %}page={{ page - 1 }}">&larr; Previous</a>{% endif %}
+{% if more %} <a href="/search?{% if q %}q={{ q|urlencode }}&amp;{% endif %}{% if mtype %}type={{ mtype }}&amp;{% endif %}page={{ page + 1 }}">Next &rarr;</a>{% endif %}</p>
 {% else %}
-<div class="card"><p>Nothing found for “{{ q }}”.</p>
-{% if p.user %}<p><a class="btn" href="/new?title={{ q|urlencode }}">Add this game</a></p>{% else %}<p><a href="/login">Sign in</a> to add it.</p>{% endif %}</div>
+<div class="card"><p>{% if q %}Nothing found for “{{ q }}”.{% elif mtype_label %}No {{ mtype_label|lower }} records yet.{% else %}No media records yet.{% endif %}</p>
+{% if p.user and q %}<p><a class="btn" href="/new?title={{ q|urlencode }}{% if mtype %}&amp;type={{ mtype }}{% endif %}">Add {% if mtype_label %}{{ mtype_label|lower }}{% else %}a record{% endif %}</a></p>{% elif not p.user and q %}<p><a href="/login">Sign in</a> to add a record.</p>{% endif %}</div>
 {% endif %}
 {% endblock %}

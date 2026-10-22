@@ -4,12 +4,12 @@ Atlas works with the [Unnamed Tracking App](https://github.com/obsoletelabs/unna
 
 ## Metadata: the Atlas provider plugin
 
-The plugin **`official.metadata-atlas`** adds Atlas as a metadata provider: search, merged metadata, artwork and a health check.
+The plugin **`official.metadata-atlas`** adds Atlas as a provider for games, anime, movies and TV shows: typed search, merged metadata, achievements for games, artwork and a health check.
 
 ### Install
 
 1. Run an Atlas node ([Quick start](quickstart.md)) and create a token with only the **`read`** scope (**Admin → Tokens**).
-2. Get the signed package from the official catalogue. Version [0.2.0](https://github.com/obsoletelabs/unnamed_tracking_app_plugins/blob/main/dist/official.metadata-atlas-0.2.0.utp) was tested in the release drill. Development builds from `python tools/build_packages.py` are isolated unsigned previews and require explicit consent.
+2. Get the signed package from the official catalogue. This integration's Atlas provider release is **0.6.0**; development builds from `python tools/build_packages.py` are isolated unsigned previews and require explicit consent.
 3. In the app: **Plugin Manager** → install the `.utp` (unsigned previews need explicit consent) and grant the declared permissions.
 4. Open the provider's settings and enter **Atlas server URL** (`https://atlas.example.org`, optional path prefix) and **Atlas API token** (write-only, stored encrypted by the app).
 
@@ -17,13 +17,16 @@ The plugin **`official.metadata-atlas`** adds Atlas as a metadata provider: sear
 
 | Operation | Behaviour |
 | --- | --- |
-| Search | `GET /games?q=…`; returns the Atlas ID and every store/provider ID linked to that canonical record (`steam`, `igdb`…) |
-| Metadata | supplies Atlas fields and custom values; for candidates without an Atlas ID, matches by linked provider ID or exact title and year. Only certain matches are accepted |
-| Achievements | supplies achievement definitions, descriptions, hidden flags and cached icons. The app imports definitions as locked achievements; Atlas does not store player progress |
-| Media | lists artwork Atlas has downloaded and verified. The app fetches the public `<server>/media/<hash>` links itself |
+| Search | `GET /api/v2/games?q=…&type=…`; searches the requested type (`game`, `anime`, `movie` or `tv_show`) and returns the Atlas ID plus every linked provider ID (`steam`, `igdb`, `tmdb`…) |
+| Metadata | maps Atlas fields into the app's game, anime, movie or TV fields and forwards bounded custom values. A candidate without an Atlas ID is resolved by linked provider IDs or exact title and year, constrained to the same media type; uncertain matches are dropped |
+| Achievements | for games, supplies definitions, descriptions, hidden flags, global percentages and cached icons. The app imports definitions without changing player progress, and can resolve Atlas records from linked IDs such as Steam. Non-game records do not request achievements |
+| Media | lists only artwork Atlas has downloaded and verified. For anime, movies and TV, key art is exposed as a poster. The app fetches the public `<server>/media/<hash>` links itself |
 | Health | checks the configured URL and read token |
 
-Atlas can complement other metadata providers: search results carry linked provider IDs, and metadata is resolved to the same canonical game before the app combines provider contributions. Atlas's achievement definitions are a separate metadata resource, so the app can refresh them without replacing the game's Steam or other-provider metadata.
+The app combines Atlas with its other providers. The user's provider order sets the default winner when two sources give different values; fields that only one source has are retained. Image providers have their own order. Atlas's achievement catalogue is a separate resource, so the app can refresh definitions without replacing game metadata from Steam or another provider.
+
+![Atlas game record with its cached artwork and achievement catalogue](img/achievements-desktop.png)
+![Atlas artwork grouped by media role](img/gallery-desktop.png)
 
 ### Contract tests
 
@@ -51,7 +54,7 @@ Authorization: Bearer <read-scope-token>
 }
 ```
 
-`since` is the last `next_cursor` stored by the client. Continue with that cursor while `has_more` is true; the page limit is 1–500 feed events. The result list deduplicates canonical IDs touched in that page and reports each record's current version. A non-null `merged_into` identifies a redirect, so clients should refresh the destination record too. Events that do not affect a canonical game still advance the cursor. The optional `node_id` selects a replicated authority feed retained by this Atlas node; omit it to poll this node's own feed.
+`since` is the last `next_cursor` stored by the client. Continue with that cursor while `has_more` is true; the page limit is 1–500 feed events. The result list deduplicates canonical IDs touched in that page and reports each record's current version. A non-null `merged_into` identifies a redirect, so clients should refresh the destination record too. Events that do not affect a canonical record still advance the cursor. The optional `node_id` selects a replicated authority feed retained by this Atlas node; omit it to poll this node's own feed.
 
 The route requires the `read` scope. It returns IDs and versions only; clients fetch changed records, achievements and artwork through their usual endpoints.
 

@@ -62,10 +62,31 @@ def test_submit_resolve_get_flow(client):
     ]}).json()["results"]
     assert res[0]["canonical_id"] == cid and res[0]["method"] == "crosswalk" and res[0]["game"]["title"] == "Portal 2"
     assert res[1]["canonical_id"] == cid and res[2]["canonical_id"] is None
+    wrong_type = client.post("/api/v2/resolve", headers=H(w), json={"items": [
+        {"namespace": "playnite", "external_id": "620", "media_type": "movie"},
+    ]}).json()["results"][0]
+    assert wrong_type["canonical_id"] is None
     g = client.get(f"/api/v2/games/{cid}", headers=H(w))
     assert g.json()["provider_ids"] == {"playnite": "620"} and g.headers["etag"]
     assert client.get("/api/v2/games/atlas:nope", headers=H(w)).status_code == 404
     assert client.get(f"/api/v2/games/{cid}/explain", headers=H(w)).json()["explain"]["title"]["source"] == "playnite"
+
+
+def test_observation_and_resolve_contract_accept_media_type(client):
+    write = mint(client, ["contribute"])
+    read = mint(client, ["read"])
+    game = {**obs("qa-game-source", "game-1", "Dune", release_date="2021-10-22"), "media_type": "game"}
+    movie = {**obs("qa-movie-source", "movie-1", "Dune", release_date="2021-10-22"), "media_type": "movie"}
+    game_response = client.post("/api/v2/observations", json=game, headers=H(write))
+    movie_response = client.post("/api/v2/observations", json=movie, headers=H(write))
+    assert game_response.status_code == movie_response.status_code == 200
+    game_id = game_response.json()["results"][0]["atlas"]["canonical_id"]
+    movie_id = movie_response.json()["results"][0]["atlas"]["canonical_id"]
+    assert game_id != movie_id
+    result = client.post("/api/v2/resolve", headers=H(read), json={"items": [
+        {"title": "Dune", "release_date": "2021-10-22", "media_type": "movie"},
+    ]}).json()["results"][0]
+    assert result["canonical_id"] == movie_id and result["game"]["media_type"] == "movie"
 
 
 def test_personal_data_not_returned(client):

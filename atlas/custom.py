@@ -20,14 +20,71 @@ CORE_LABELS = ("developer", "publisher", "series", "release_date", "genres", "th
 _KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}\Z")
 _TYPE = re.compile(r"^[a-z][a-z0-9_]{0,31}\Z")
 MAX_FIELDS_PER_TYPE = 40
+BUILTIN_MEDIA_TYPES = {
+    "game": ("Game", 0, {}, ()),
+    "anime": (
+        "Anime",
+        1,
+        {"developer": "Studio", "series": "Franchise", "platforms": "Format", "features": "Themes"},
+        (
+            ("episode_count", "Episodes", "number", None, "Known episode count."),
+            ("format", "Format", "choice", ["TV", "Movie", "OVA", "ONA", "Special", "Music"], ""),
+            ("status", "Release status", "choice", ["Announced", "Airing", "Finished", "Hiatus", "Cancelled"], ""),
+            ("source_material", "Source material", "choice", ["Manga", "Novel", "Original", "Game", "Other"], ""),
+        ),
+    ),
+    "movie": (
+        "Movie",
+        2,
+        {"developer": "Director", "publisher": "Studio", "series": "Series"},
+        (
+            ("runtime_minutes", "Runtime (minutes)", "number", None, ""),
+            ("writer", "Writer", "list", None, "One name per line."),
+            ("production_countries", "Production countries", "list", None, "One country per line."),
+            ("tagline", "Tagline", "text", None, ""),
+        ),
+    ),
+    "tv_show": (
+        "TV show",
+        3,
+        {"developer": "Creator", "publisher": "Network", "series": "Franchise", "platforms": "Streaming services"},
+        (
+            ("episode_count", "Episodes", "number", None, "Known episode count."),
+            ("season_count", "Seasons", "number", None, "Known season count."),
+            ("episode_runtime_minutes", "Episode runtime (minutes)", "number", None, ""),
+            ("status", "Release status", "choice", ["Announced", "Returning", "Ended", "Cancelled", "In production"], ""),
+        ),
+    ),
+}
 RESERVED = {"title", "description", "id", "sources", "provider_ids", "media_type", "custom", "version", "artwork",
             "achievements", "updated_at", "redirected_from", *CORE_LABELS}
 
 
 def seed(session: Session) -> None:
-    if session.get(MediaType, "game") is None:
-        session.add(MediaType(key="game", label="Game", position=0, origin="local"))
-        session.flush()
+    created: list[str] = []
+    for key, (label, position, labels, fields) in BUILTIN_MEDIA_TYPES.items():
+        if session.get(MediaType, key) is not None:
+            continue
+        session.add(MediaType(key=key, label=label, position=position, labels=labels, origin="local"))
+        created.append(key)
+    session.flush()
+    for media_type in created:
+        fields = BUILTIN_MEDIA_TYPES[media_type][3]
+        for position, (key, label, kind, choices, help_text) in enumerate(fields):
+            clean = check_field(media_type, key, label, kind, choices, help_text, True, True, position * 10)
+            session.add(FieldDef(
+                media_type=media_type,
+                origin="local",
+                key=clean["key"],
+                label=clean["label"],
+                kind=clean["kind"],
+                choices=clean["choices"],
+                help=clean["help"],
+                public=clean["public"],
+                editable=clean["editable"],
+                position=clean["position"],
+            ))
+    session.flush()
 
 
 # Standard multiplayer fields every game node offers (issue #39). Added once per node; an administrator who
@@ -197,8 +254,8 @@ def check_field(media_type: Any, key: Any, label: Any, kind: Any, choices: Any, 
 def save_type(session: Session, ctx: Ctx, key: str, label: str, *, enabled: bool = True, position: int = 100,
               labels: dict[str, str] | None = None) -> MediaType:
     key, label, enabled, position, labels = check_type(key, label, enabled, position, labels)
-    if key == "game":
-        enabled = True  # the built-in type is always available
+    if key in BUILTIN_MEDIA_TYPES:
+        enabled = True  # built-in types are always available
     write_lock(session)
     row = session.get(MediaType, key)
     if row is not None and row.origin != "local":
@@ -217,8 +274,8 @@ def delete_type(session: Session, ctx: Ctx, key: str) -> None:
     row = session.get(MediaType, key)
     if row is None or row.origin != "local":
         raise AtlasError("unknown media type", "not_found")
-    if key == "game":
-        raise AtlasError("the game type cannot be removed", "conflict")
+    if key in BUILTIN_MEDIA_TYPES:
+        raise AtlasError("built-in media types cannot be removed", "conflict")
     if session.scalars(select(Canonical.id).where(Canonical.media_type == key).limit(1)).first():
         raise AtlasError("records of this type exist; disable the type instead", "conflict")
     session.execute(delete(FieldDef).where(FieldDef.media_type == key))

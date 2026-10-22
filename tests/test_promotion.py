@@ -13,7 +13,8 @@ from .conftest import batch
 from .test_key_rotation import rotate
 from .test_relay import node, publish, pull
 
-STANDARD = {key for key, *_ in custom.MULTIPLAYER_FIELDS}  # seeded on every non-mirror node
+STANDARD = ({key for key, *_ in custom.MULTIPLAYER_FIELDS}
+            | {key for _, _, _, fields in custom.BUILTIN_MEDIA_TYPES.values() for key, *_ in fields})
 
 
 def archive_rows(path, table):

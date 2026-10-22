@@ -72,11 +72,19 @@ def _score(settings: Settings, *, title_equal: bool, ratio: float, cand: Canonic
 
 def find(session: Session, settings: Settings, *, namespace: str, external_id: str,
          provider_ids: dict[str, str] | None, title: str | None, release_date: str | None,
-         platform: str | None, developer: str | None = None, exclude: str | None = None) -> Match:
+         platform: str | None, developer: str | None = None, exclude: str | None = None,
+         media_type: str | None = None) -> Match:
     # 1. identity keys
     keys = [(namespace, external_id)] + [(k, v) for k, v in (provider_ids or {}).items()]
     hits = lookup_keys(session, keys)
     distinct = sorted(set(hits.values()))
+    if media_type:
+        typed = [cid for cid in distinct if (row := session.get(Canonical, cid)) is not None
+                 and row.media_type == media_type]
+        if distinct and not typed:
+            # A provider identity already assigned to another media type is a hard mismatch, not title evidence.
+            return Match(None, "none", 0.0, [], conflict=distinct)
+        distinct = typed
     if len(distinct) == 1:
         return Match(distinct[0], "crosswalk", 1.0, [(distinct[0], 1.0)])
     if len(distinct) > 1:
@@ -92,6 +100,7 @@ def find(session: Session, settings: Settings, *, namespace: str, external_id: s
     first = norm.split()[0]
     stmt = select(Canonical).where(
         Canonical.merged_into.is_(None),
+        *([Canonical.media_type == media_type] if media_type else []),
         (Canonical.norm_title == norm) | Canonical.norm_title.like(f"{first}%"),
     ).limit(300)
     cands: list[tuple[str, float, bool]] = []

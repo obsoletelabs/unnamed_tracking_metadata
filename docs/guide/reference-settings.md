@@ -9,7 +9,7 @@ These can be changed live in **Admin → Settings** without restarting. Each cha
 | Setting | Type | Default | Notes |
 | --- | --- | --- | --- |
 | **Site name** (`app_name`) | text | `Atlas` | Shown in the header, page titles and emails. |
-| **Tagline** (`tagline`) | text | `Game metadata, merged and sourced` | One line under the title on the home page. |
+| **Tagline** (`tagline`) | text | `Media metadata, merged and sourced` | One line under the title on the home page. |
 | **Footer text** (`footer_text`) | text | `Community metadata. Contributions are CC0.` | Plain text shown in the footer. |
 | **Accent colour (dark theme)** (`accent_color`) | colour | `#6aa8ff` |  |
 | **Accent colour (light theme)** (`accent_color_light`) | colour | `#1f6fe0` |  |

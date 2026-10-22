@@ -144,6 +144,7 @@ class ObservationBatchV1(BaseModel):
 
     contract_version: Literal[1] = CONTRACT_VERSION
     connection: SourceConnectionRef
+    media_type: str = Field(default="game", min_length=1, max_length=32)
     observations: list[SourceObservationV1] = Field(min_length=1, max_length=5000)
 
     @field_validator("observations")

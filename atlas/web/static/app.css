@@ -135,6 +135,17 @@ details.inline { display: inline; } details.inline > form, details.inline > .car
 .card.unread { border-color: var(--accent); }
 .side-col h2:first-child, .main-col h2:first-child { margin-top: 0; }
 
+.home-hero { max-width: 1120px; margin: 0 auto var(--gap); padding: clamp(22px, 4vw, 48px); text-align: center; }
+.home-hero > p:first-of-type { max-width: 720px; margin: 0 auto 18px; }
+.home-hero form { max-width: 760px; margin: 0 auto; }
+.home-hero .row { justify-content: center; }
+.media-type-nav { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin: 18px 0 12px; }
+.media-type-nav a { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface-2); padding: 6px 12px; color: var(--text); font-weight: 600; }
+.media-type-nav a:hover { border-color: var(--accent); text-decoration: none; }
+.media-type-nav span { min-width: 1.6em; padding: 0 5px; border-radius: 999px; background: var(--surface); color: var(--muted);
+  font-size: .8rem; text-align: center; }
+
 .achievements td { vertical-align: middle; }
 .ach-icon { width: 48px; }
 .ach-icon img, .ach-ph { display: inline-flex; width: 40px; height: 40px; border-radius: 6px; object-fit: cover; align-items: center;

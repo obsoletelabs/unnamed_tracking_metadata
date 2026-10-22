@@ -1,17 +1,23 @@
 {% extends "base.html" %}
 {% from "macros.html" import cover %}
 {% block content %}
-<section class="card">
+<section class="card home-hero">
   <h1>{{ s.tagline }}</h1>
-  <p class="muted">One record per game, combined from many providers and the community, with every field traced to where it came from.</p>
-  <form action="/search" method="get"><div class="row"><input type="search" name="q" placeholder="Search for a game" maxlength="200" aria-label="Search for a game"><button type="submit">Search</button></div></form>
-  <p class="small muted">{{ totals.games }} games · {{ totals.artwork }} images cached · {{ totals.contributors }} contributors</p>
+  <p class="muted">One record per title, combined from providers and the community, with each field traced to its source.</p>
+  <form action="/search" method="get" role="search">
+    <div class="row"><input type="search" name="q" placeholder="Search games, anime, films, or TV shows" maxlength="200" aria-label="Search media"><button type="submit">Search</button></div>
+  </form>
+  <nav class="media-type-nav" aria-label="Browse by media type">
+    <a href="/search">All media <span>{{ totals.records }}</span></a>
+    {% for t in media_types %}<a href="/search?type={{ t.key }}">{{ t.label }} <span>{{ type_counts[t.key] }}</span></a>{% endfor %}
+  </nav>
+  <p class="small muted">{{ totals.records }} records · {{ totals.artwork }} images cached · {{ totals.contributors }} contributors</p>
 </section>
 <h2>Recently updated</h2>
 {% if recent %}
 <ul class="grid">{% for g in recent %}
   <li class="tile"><a href="/game/{{ g.id }}"><div class="cover">{{ cover(g, art) }}</div>
-  <div class="meta"><div class="name">{{ g.view.get('title') }}</div><div class="muted small">{{ (g.view.get('release_date') or '')[:4] }}</div></div></a></li>
+  <div class="meta"><div class="name">{{ g.view.get('title') }}</div><div class="muted small">{{ type_labels.get(g.media_type, g.media_type) }}{% if g.view.get('release_date') %} · {{ (g.view.get('release_date') or '')[:4] }}{% endif %}</div></div></a></li>
 {% endfor %}</ul>
-{% else %}<p class="muted">No games yet. {% if p.user %}<a href="/new">Add the first one.</a>{% else %}<a href="/login">Sign in</a> to add one.{% endif %}</p>{% endif %}
+{% else %}<p class="muted">No media records yet. {% if p.user %}<a href="/new">Add the first record.</a>{% else %}<a href="/login">Sign in</a> to add one.{% endif %}</p>{% endif %}
 {% endblock %}
