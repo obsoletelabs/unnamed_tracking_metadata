@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from . import feed, media
 from .models import Achievement, Artwork, Canonical, now
 from .normalize import norm_namespace
-from .service import AtlasError, Ctx, write_lock
+from .service import AtlasError, Ctx, touch_version, write_lock
 
 KINDS = ("key_art", "banner", "logo", "icon", "screenshot", "hero", "poster")
 MAX_ART = 200
@@ -164,6 +164,8 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
             adopt_local_blob(ctx, art)
             session.add(art)
     session.flush()
+    if redistributable:
+        touch_version(session, cid)
     if log and redistributable and ctx.settings.role == "authority":
         feed.append(session, ctx.identity, "artwork", {"canonical_id": cid, "source": source, "items": items})
     return len(items)
@@ -210,6 +212,8 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
         adopt_local_icons(ctx, row)
         session.add(row)
     session.flush()
+    if redistributable:
+        touch_version(session, cid)
     if log and redistributable and ctx.settings.role == "authority":
         feed.append(session, ctx.identity, "achievements", {"canonical_id": cid, "source": source, "items": items})
     return len(items)

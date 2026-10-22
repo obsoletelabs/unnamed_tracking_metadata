@@ -141,6 +141,7 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("put", "/games/{cid}/locks/{field}"): "Pin a field value; it beats every merged value.",
     ("post", "/games/{cid}/merge"): "Merge a record into another (leaves a redirect).",
     ("get", "/games/{cid}/observations"): "Raw source records behind a record (current and superseded).",
+    ("get", "/changes"): "Bounded client change page: canonical ids, current versions and merge redirects.",
     ("post", "/observations/{oid}/detach"): "Split one source record off onto its own record.",
     ("get", "/review"): "Open possible-duplicate and id-conflict items.",
     ("post", "/review/{rid}/dismiss"): "Mark a review item as not a duplicate.",

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -203,6 +203,134 @@ def merge(cid: str, body: MergeBody, st: St, session: Sess,
     _guard_upstream(session, st, cid)
     _guard_upstream(session, st, body.into)
     return game_out(service.merge_canonicals(session, st.ctx, cid, body.into, actor=p.name))
+
+
+class ClientChangedCanonical(BaseModel):
+    id: str = Field(description="Canonical Atlas ID touched by the feed page.")
+    version: int = Field(description="Current client-visible version of this canonical record.")
+    merged_into: str | None = Field(description="Redirect destination when this record was merged.")
+
+
+class ClientChangesPage(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "node_id": "atlas-authority",
+        "head": 124,
+        "next_cursor": 124,
+        "has_more": False,
+        "results": [
+            {"id": "atlas:0123456789abcdefghijklmnop", "version": 8, "merged_into": None},
+            {"id": "atlas:1123456789abcdefghijklmnop", "version": 5,
+             "merged_into": "atlas:2123456789abcdefghijklmnop"},
+        ],
+    }]})
+    node_id: str = Field(description="Authority feed selected for this page.")
+    head: int = Field(description="Highest feed sequence currently retained by the selected node.")
+    next_cursor: int = Field(description="Pass this value as `since` for the next page.")
+    has_more: bool = Field(description="Whether another page is available from the current feed snapshot.")
+    results: list[ClientChangedCanonical] = Field(description="Unique canonical records touched by this page.")
+
+
+def _client_changed_ids(kind: str, body: dict[str, Any]) -> list[str]:
+    """Canonical ids affected by a signed feed event, in feed order."""
+    if kind == "merge":
+        values = (body.get("src"), body.get("dst"))
+    elif kind == "detach":
+        # `canonical_id` was added for clients; older signed events still have the new id.
+        values = (body.get("canonical_id"), body.get("new_canonical_id"))
+    else:
+        values = (body.get("canonical_id"),)
+    return [value for value in values if isinstance(value, str) and value]
+
+
+@router.get(
+    "/changes",
+    tags=["games"],
+    response_model=ClientChangesPage,
+    summary="List canonical records changed since a client cursor",
+    responses={
+        200: {
+            "content": {
+                "application/json": {
+                    "example": {
+                        "node_id": "atlas-authority",
+                        "head": 124,
+                        "next_cursor": 124,
+                        "has_more": False,
+                        "results": [
+                            {
+                                "id": "atlas:0123456789abcdefghijklmnop",
+                                "version": 8,
+                                "merged_into": None,
+                            },
+                            {
+                                "id": "atlas:1123456789abcdefghijklmnop",
+                                "version": 5,
+                                "merged_into": "atlas:2123456789abcdefghijklmnop",
+                            },
+                        ],
+                    }
+                }
+            }
+        }
+    },
+)
+def client_changes(
+    st: St,
+    session: Sess,
+    _: Annotated[auth.Principal, Depends(require("read"))],
+    since: Annotated[int, Query(ge=0, description="Last `next_cursor` stored by the client.")] = 0,
+    limit: Annotated[int, Query(ge=1, le=500, description="Maximum feed events in this page.")] = 100,
+    node_id: Annotated[
+        str | None, Query(max_length=64, description="Optional authority node whose replicated feed is retained here.")
+    ] = None,
+) -> dict[str, Any]:
+    """Return current versions of canonical records touched by a bounded feed page.
+
+    The sequence cursor is independent of timestamps and includes merge redirects.
+    Clients should retain `next_cursor` and request the next page while `has_more` is true.
+    """
+    origin = node_id or st.ctx.identity.node_id
+    if origin == st.ctx.identity.node_id:
+        entries = feed.read(session, since, limit)
+        head = feed.head_seq(session)
+    else:
+        if session.get(ReplicatedFeed, origin) is None:
+            raise HTTPException(404, "This node does not retain that authority's feed.")
+        entries = list(
+            session.scalars(
+                select(ReplicatedChange)
+                .where(ReplicatedChange.node_id == origin, ReplicatedChange.seq > since)
+                .order_by(ReplicatedChange.seq)
+                .limit(limit)
+            )
+        )
+        head = session.scalar(
+            select(func.max(ReplicatedChange.seq)).where(ReplicatedChange.node_id == origin)
+        ) or 0
+
+    ids: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        for cid in _client_changed_ids(entry.kind, entry.body or {}):
+            if cid not in seen:
+                seen.add(cid)
+                ids.append(cid)
+    records = {
+        row.id: row
+        for row in session.scalars(select(Canonical).where(Canonical.id.in_(ids)))
+    } if ids else {}
+    next_cursor = entries[-1].seq if entries else since
+    return {
+        "node_id": origin,
+        "head": head,
+        "next_cursor": next_cursor,
+        # Do not make a client spin if a replica is missing a feed segment.
+        "has_more": bool(entries) and next_cursor < head,
+        "results": [
+            {"id": cid, "version": records[cid].version, "merged_into": records[cid].merged_into}
+            for cid in ids if cid in records
+        ],
+    }
 
 
 @router.post("/observations/{oid}/detach", tags=["curate"])
