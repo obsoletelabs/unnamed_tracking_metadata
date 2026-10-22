@@ -70,6 +70,16 @@ def test_public_pages_render_without_login(site):
     assert site.get("/robots.txt").text.startswith("User-agent")
 
 
+def test_login_password_visibility_control_is_accessible(site):
+    page = site.get("/login")
+    assert page.status_code == 200
+    assert '<body class="auth-page">' in page.text
+    assert 'id="password" type="password"' in page.text
+    assert 'data-password-toggle="password"' in page.text
+    assert 'aria-label="Show password" aria-pressed="false"' in page.text
+    assert "password-eye-off" in page.text
+
+
 def test_security_headers_and_no_inline_script(site):
     r = site.get("/")
     csp = r.headers["content-security-policy"]
