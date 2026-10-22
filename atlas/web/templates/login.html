@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "macros.html" import csrf %}
+{% block body_class %}auth-page{% endblock %}
 {% block title %}Sign in · {{ app_name }}{% endblock %}
 {% block content %}
 <div class="narrow card">
@@ -9,7 +10,14 @@
   {{ csrf(p.csrf) }}
   <input type="hidden" name="next" value="{{ next }}">
   <label for="username">Username</label><input id="username" type="text" name="username" autocomplete="username" required maxlength="32" autofocus>
-  <label for="password">Password</label><input id="password" type="password" name="password" autocomplete="current-password" required maxlength="200">
+  <label for="password">Password</label>
+  <div class="password-input">
+    <input id="password" type="password" name="password" autocomplete="current-password" required maxlength="200">
+    <button class="password-toggle" type="button" data-password-toggle="password" aria-label="Show password" aria-pressed="false">
+      <svg class="password-eye" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+      <svg class="password-eye-off" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m3 3 18 18M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 5.2A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a14 14 0 0 1-3.1 3.8M6.2 6.2C3.5 8.1 2 12 2 12s3.6 7 10 7c1.1 0 2.1-.2 3-.5"/></svg>
+    </button>
+  </div>
   <p><button type="submit">Sign in</button> <a class="small" href="/forgot">Forgot password?</a></p>
 </form>
 {% if issuers %}<hr><p class="small muted">Or sign in with</p>{% for i in issuers %}<p><a class="btn secondary" href="/oidc/start/{{ i.id }}?next={{ next|urlencode }}">{{ i.name }}</a></p>{% endfor %}{% endif %}

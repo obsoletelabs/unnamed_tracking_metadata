@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "macros.html" import csrf %}
+{% block body_class %}auth-page{% endblock %}
 {% block title %}Two-factor sign-in · {{ app_name }}{% endblock %}
 {% block content %}
 <div class="narrow card">
