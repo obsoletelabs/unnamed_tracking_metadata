@@ -17,38 +17,65 @@ The plugin **`official.metadata-atlas`** adds Atlas as a metadata provider: sear
 
 | Operation | Behaviour |
 | --- | --- |
-| Search | `GET /games?q=…`; returns Atlas id plus the store ids Atlas has linked (`steam`, `igdb`…) |
-| Metadata | by Atlas id, or for a candidate that only has other providers' ids, by those ids or exact title+year. **Only a certain match is accepted**; uncertain returns nothing |
-| Media | artwork Atlas has already downloaded and verified, as public `<server>/media/<hash>` links |
-| Health | validates the URL and token |
+| Search | `GET /games?q=…`; returns the Atlas ID and every store/provider ID linked to that canonical record (`steam`, `igdb`…) |
+| Metadata | supplies Atlas fields and custom values; for candidates without an Atlas ID, matches by linked provider ID or exact title and year. Only certain matches are accepted |
+| Achievements | supplies achievement definitions, descriptions, hidden flags and cached icons. The app imports definitions as locked achievements; Atlas does not store player progress |
+| Media | lists artwork Atlas has downloaded and verified. The app fetches the public `<server>/media/<hash>` links itself |
+| Health | checks the configured URL and read token |
+
+Atlas can complement other metadata providers: search results carry linked provider IDs, and metadata is resolved to the same canonical game before the app combines provider contributions. Atlas's achievement definitions are a separate metadata resource, so the app can refresh them without replacing the game's Steam or other-provider metadata.
 
 ### Contract tests
 
-`tests/test_tracking_app_contract.py` replays the exact requests the plugin makes (read-only token, search with case and punctuation differences, lookup by Atlas id, resolving a candidate that only has other providers' ids, artwork before and after caching, the tokenless public `/media/<sha256>` download) and pins every response field the plugin reads. An Atlas change that would break the app fails this test first.
+`tests/test_tracking_app_contract.py` covers the plugin's read-only token, search variations, lookup by Atlas ID, resolving a candidate that only has other provider IDs, metadata and achievement fields, artwork before and after caching, and tokenless public `/media/<sha256>` downloads. It also covers the incremental change endpoint below. An Atlas change that breaks these client requests fails this contract suite.
 
-Known gaps on the app/plugin side, not in Atlas: the plugin maps `tags`, `features` and `platforms` but not Atlas's `genres`, `themes`, `languages`, scores or `custom` fields (including the multiplayer fields).
+### Incremental client updates
+
+Client apps that cache Atlas records can poll the signed change feed through a simpler read-only endpoint:
+
+```http
+GET /api/v2/changes?since=120&limit=100
+Authorization: Bearer <read-scope-token>
+```
+
+```json
+{
+  "node_id": "atlas-node-id",
+  "head": 124,
+  "next_cursor": 124,
+  "has_more": false,
+  "results": [
+    {"id": "atlas:0123456789abcdefghijklmnop", "version": 8, "merged_into": null},
+    {"id": "atlas:1123456789abcdefghijklmnop", "version": 5, "merged_into": "atlas:2123456789abcdefghijklmnop"}
+  ]
+}
+```
+
+`since` is the last `next_cursor` stored by the client. Continue with that cursor while `has_more` is true; the page limit is 1–500 feed events. The result list deduplicates canonical IDs touched in that page and reports each record's current version. A non-null `merged_into` identifies a redirect, so clients should refresh the destination record too. Events that do not affect a canonical game still advance the cursor. The optional `node_id` selects a replicated authority feed retained by this Atlas node; omit it to poll this node's own feed.
+
+The route requires the `read` scope. It returns IDs and versions only; clients fetch changed records, achievements and artwork through their usual endpoints.
+
 
 ### Limits to know
 
-* The app downloads artwork itself and refuses private addresses, so **artwork needs a publicly reachable Atlas**. Metadata works on a LAN.
-* Atlas serves the achievement *list* (`GET /games/{id}/achievements`, see [Achievements](achievements.md)); there is no per-user progress anywhere in Atlas. The app side reads it through the `achievements` metadata-provider operation.
-* Custom fields are available in the API (`custom`) but the app's metadata model has no slot for them.
-* The plugin sends no personal data: only titles, years and provider ids.
+* The app downloads artwork itself and refuses private addresses, so artwork needs a publicly reachable Atlas. Metadata works on a LAN.
+* Atlas serves achievement definitions but never player progress; unlock state belongs to each app user.
+* The plugin sends no personal data: only titles, years and provider IDs.
 
 ### Verified host workflow
 
 The [release drill](release-verification.md) installs the unchanged signed `.utp` through the
 real Plugin Manager, approves its exact declared permissions, starts the runtime worker and
 uses ordinary host accounts. It checks secret redaction/system-configuration denial, search,
-canonical/store identifiers, enrichment, per-user search-session ownership, game creation,
-the existing metadata-refresh endpoint, manually protected fields and an unreachable Atlas.
+canonical/store identifiers, metadata enrichment, achievement definitions, per-user search-session ownership, game creation,
+the metadata-refresh endpoint, manually protected fields and an unreachable Atlas.
 Host, runtime and Atlas communicate over real HTTP; gateways and provider replies are not
 mocked. The container runtime uses its documented `NONBUBBLE_ENV` development fallback, so
 this is functional acceptance, not verification of production sandbox isolation. The existing
 refresh response labels a focused local record **Library** even when Atlas supplied fields.
 
-Achievements, custom-field mapping and public artwork delivery retain the limits above;
-this check does not close every part of the integration roadmap.
+The drill exercises the signed package with a real local stack. The incremental client route is
+covered by Atlas contract tests and does not change the plugin's request flow.
 
 ## Signing in to the Tracking App with Atlas
 

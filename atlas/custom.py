@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from . import feed
 from .models import Canonical, CustomValue, FieldDef, MediaType, Setting
-from .service import AtlasError, Ctx, write_lock
+from .service import AtlasError, Ctx, touch_version, write_lock
 
 KINDS = ("text", "longtext", "number", "date", "bool", "choice", "list", "url")
 CORE_LABELS = ("developer", "publisher", "series", "release_date", "genres", "themes", "tags", "features", "platforms", "languages",  # noqa: E501
@@ -395,6 +395,8 @@ def set_values(session: Session, ctx: Ctx, cid: str, source: str, values: dict[s
         if cv is not None:
             session.delete(cv)
     session.flush()
+    if redistributable:
+        touch_version(session, cid)
     if log and redistributable and ctx.settings.role == "authority":
         feed.append(session, ctx.identity, "custom", {"canonical_id": cid, "source": source, "values": values,
                                                       "clear": list(clear)})

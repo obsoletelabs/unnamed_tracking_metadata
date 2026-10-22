@@ -101,6 +101,17 @@ def rebuild(session: Session, ctx: Ctx, cid: str) -> Canonical:
     return row
 
 
+def touch_version(session: Session, cid: str) -> Canonical:
+    """Advance a record version when client-visible data outside `view` changes."""
+    row = session.get(Canonical, cid)
+    if row is None:
+        raise AtlasError(f"unknown canonical {cid}", "not_found")
+    row.version += 1
+    row.updated_at = now()
+    session.flush()
+    return row
+
+
 def _redistributable(ctx: Ctx, source: str, curator: bool) -> bool:
     return (
         curator
@@ -276,6 +287,8 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
     move_values(session, src, dst)
     move_list_items(session, src, dst)
     s.merged_into = dst
+    s.version += 1
+    s.updated_at = now()
     s.view, s.explain = {}, {}
     session.flush()
     rebuild(session, ctx, dst)
@@ -324,7 +337,9 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
     rebuild(session, ctx, old)
     new = rebuild(session, ctx, cid)
     if log and ctx.settings.role == "authority":
-        feed.append(session, ctx.identity, "detach", {"observation_id": observation_id, "new_canonical_id": cid})
+        feed.append(session, ctx.identity, "detach", {
+            "observation_id": observation_id, "canonical_id": old, "new_canonical_id": cid,
+        })
     return new
 
 

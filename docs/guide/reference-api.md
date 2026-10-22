@@ -71,3 +71,9 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `GET` | `/tokens` | admin | List API tokens. |
 | `POST` | `/tokens` | admin | Create a token; the secret is returned once. |
 | `DELETE` | `/tokens/{tid}` | admin | Revoke a token. |
+
+## games
+
+| Method | Path | Scope | What it does |
+| --- | --- | --- | --- |
+| `GET` | `/changes` | read | Bounded client change page: canonical ids, current versions and merge redirects. |

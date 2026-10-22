@@ -11,7 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from atlas import main, media
+from atlas import custom, main, media
 
 from .conftest import build_settings
 from .test_media_facets import client_for, png, resolver  # noqa: F401
@@ -108,6 +108,77 @@ def test_read_token_cannot_mutate(atlas):
     assert atlas.put(f"/api/v2/games/{cid}/artwork", headers=atlas.read,
                      json={"items": [{"kind": "key_art", "url": "https://img.test/a.png"}]}).status_code == 403
     assert atlas.post("/api/v2/observations", headers=atlas.read, json={}).status_code in (403, 422)
+
+
+def test_client_changes_are_bounded_cursor_pages_with_latest_versions(atlas):
+    first_id = seed(atlas, ext="620", title="Portal 2", source="manual")
+    second_id = seed(atlas, ext="621", title="Unrelated game", source="manual")
+    first_page = atlas.get("/api/v2/changes", params={"since": 0, "limit": 1}, headers=atlas.read)
+    assert first_page.status_code == 200
+    page = first_page.json()
+    assert page["node_id"] == atlas.state.ctx.identity.node_id
+    assert page["head"] >= page["next_cursor"] > 0 and page["has_more"]
+    assert len(page["results"]) <= 1
+
+    cursor, seen, pages = 0, set(), 0
+    while True:
+        current = atlas.get("/api/v2/changes", params={"since": cursor, "limit": 1}, headers=atlas.read).json()
+        seen.update(item["id"] for item in current["results"])
+        pages += 1
+        if not current["has_more"]:
+            break
+        assert current["next_cursor"] > cursor
+        cursor = current["next_cursor"]
+        assert pages < 50
+    assert {first_id, second_id} <= seen
+    assert atlas.get("/api/v2/changes", params={"limit": 501}, headers=atlas.read).status_code == 422
+    future_cursor = page["head"] + 10
+    future = atlas.get("/api/v2/changes", params={"since": future_cursor}, headers=atlas.read).json()
+    assert future["next_cursor"] == future_cursor and not future["has_more"]
+
+
+def test_client_changes_report_current_version_and_merge_redirect(atlas):
+    src = seed(atlas, ext="700", title="Portal 2", source="manual")
+    dst = seed(atlas, ext="701", title="Different game", source="manual")
+    before = atlas.get("/api/v2/changes", headers=atlas.read).json()
+    base_versions = {item["id"]: item["version"] for item in before["results"]}
+
+    assert atlas.put(f"/api/v2/games/{src}/achievements", headers=atlas.write,
+                     json={"items": [{"name": "Test achievement"}]}).status_code == 200
+    updated = atlas.get("/api/v2/changes", params={"since": before["head"]}, headers=atlas.read).json()
+    changed = [item for item in updated["results"] if item["id"] == src]
+    assert len(changed) == 1 and changed[0]["version"] > base_versions[src]
+
+    before_merge = updated["head"]
+    merged = atlas.post(f"/api/v2/games/{src}/merge", headers=atlas.write, json={"into": dst})
+    assert merged.status_code == 200, merged.text
+    redirects = atlas.get("/api/v2/changes", params={"since": before_merge}, headers=atlas.read).json()
+    assert {item["id"] for item in redirects["results"]} == {src, dst}
+    assert next(item for item in redirects["results"] if item["id"] == src)["merged_into"] == dst
+
+
+def test_client_changes_advance_versions_for_artwork_and_custom_values(atlas):
+    cid = seed(atlas, ext="702", title="Portal 2", source="manual")
+    with atlas.state.maker() as session:
+        custom.save_field(session, atlas.state.ctx, "game", "integration_note", "Integration note", "text")
+        session.commit()
+
+    before = atlas.get("/api/v2/changes", headers=atlas.read).json()
+    version = next(item["version"] for item in before["results"] if item["id"] == cid)
+    artwork = atlas.put(f"/api/v2/games/{cid}/artwork", headers=atlas.write,
+                        json={"items": [{"kind": "key_art", "url": "https://img.test/key-art.png"}]})
+    assert artwork.status_code == 200, artwork.text
+    after_artwork = atlas.get("/api/v2/changes", params={"since": before["head"]}, headers=atlas.read).json()
+    item = next(item for item in after_artwork["results"] if item["id"] == cid)
+    assert item["version"] > version
+
+    custom_write = atlas.put(f"/api/v2/games/{cid}/custom", headers=atlas.write,
+                             json={"values": {"integration_note": "Source changed"}})
+    assert custom_write.status_code == 200, custom_write.text
+    after_custom = atlas.get("/api/v2/changes", params={"since": after_artwork["head"]},
+                             headers=atlas.read).json()
+    item = next(item for item in after_custom["results"] if item["id"] == cid)
+    assert item["version"] > next(item["version"] for item in after_artwork["results"] if item["id"] == cid)
 
 
 def test_artwork_flow_matches_what_the_plugin_publishes_to_the_host(atlas):
