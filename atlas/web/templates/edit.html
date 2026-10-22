@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% from "macros.html" import csrf %}
-{% block title %}{{ 'Add a game' if new else 'Edit ' ~ v.get('title', '') }} · {{ app_name }}{% endblock %}
+{% block title %}{{ 'Add ' ~ mtype_label|lower if new else 'Edit ' ~ v.get('title', '') }} · {{ app_name }}{% endblock %}
 {% block content %}
-<h1>{{ 'Add a game' if new else 'Edit ' ~ v.get('title', '') }}</h1>
+<h1>{{ 'Add ' ~ mtype_label|lower if new else 'Edit ' ~ v.get('title', '') }}</h1>
 {% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
-{% if new and mtypes and mtypes|length > 1 %}<p>Type: {% for t in mtypes %}{% if t.key == mtype %}<strong>{{ t.label }}</strong>{% else %}<a href="/new?type={{ t.key }}">{{ t.label }}</a>{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+{% if new and mtypes and mtypes|length > 1 %}<nav class="tabs" aria-label="Choose a media type">{% for t in mtypes %}{% if t.key == mtype %}<strong aria-current="page">{{ t.label }}</strong>{% else %}<a href="/new?type={{ t.key }}">{{ t.label }}</a>{% endif %}{% endfor %}</nav>{% endif %}
 <form class="card" method="post" action="{{ action }}">
   {{ csrf(p.csrf) }}{% if new %}<input type="hidden" name="media_type" value="{{ mtype }}">{% endif %}
   {% include "_fields.html" %}
   {% if new %}
-  <label for="provider_ids">Known store IDs <span class="hint">one per line, e.g. <code>steam:620</code>, <code>gog:the_witcher_3</code>, <code>epic:slug</code>, <code>tgdb:1234</code></span></label>
+  <label for="provider_ids">Known provider IDs <span class="hint">one per line{% if mtype == 'game' %}, e.g. <code>steam:620</code>, <code>gog:the_witcher_3</code>, <code>epic:slug</code>{% elif mtype == 'anime' %}, e.g. <code>anilist:12345</code>, <code>mal:12345</code>{% elif mtype == 'movie' %}, e.g. <code>tmdb:12345</code>, <code>imdb:tt1234567</code>{% elif mtype == 'tv_show' %}, e.g. <code>tmdb:12345</code>, <code>tvmaze:12345</code>{% endif %}</span></label>
   <textarea id="provider_ids" name="provider_ids">{{ ids_text|default('') }}</textarea>
   {% endif %}
   <label for="note">Source / note for reviewers <span class="hint">link to the store page or announcement</span></label>

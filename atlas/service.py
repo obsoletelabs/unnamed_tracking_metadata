@@ -142,6 +142,7 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
     """`curator`: token holds the curate scope. `system`: the node itself (provider fetches, imports)."""
     trusted = curator or system
     write_lock(session)
+    media_type = _valid_type(session, media_type)
     conn = batch.connection
     ns = norm_namespace(conn.source)
     reserved = set(ctx.settings.source_trust) | ctx.settings.redistributable_sources
@@ -178,13 +179,14 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
                 provider_ids=item.provider_ids, title=item.title,
                 release_date=payload.get("release_date"), platform=item.platform,
                 developer=(payload.get("facts") or {}).get("developer"),
+                media_type=media_type,
             )
         status = "updated" if match.assigned else "created"
         if match.assigned:
             cid = match.canonical_id  # type: ignore[assignment]
         else:
             cid = new_canonical_id()
-            session.add(Canonical(id=cid, view={}, explain={}, media_type=_valid_type(session, media_type)))
+            session.add(Canonical(id=cid, view={}, explain={}, media_type=media_type))
             session.flush()
 
         left = None
@@ -386,17 +388,20 @@ def clear_lock(session: Session, ctx: Ctx, cid: str, field: str, *, log: bool = 
 def search(session: Session, q: str, limit: int = 25, offset: int = 0,
            media_type: str | None = None) -> list[Canonical]:
     norm = norm_title(q)
-    if not norm:
-        return []
-    like = "%" + "%".join(norm.split()) + "%"
     stmt = (
         select(Canonical)
-        .where(Canonical.merged_into.is_(None), Canonical.norm_title.like(like))
+        .where(Canonical.merged_into.is_(None), Canonical.norm_title != "")
         .where(Canonical.media_type == media_type if media_type else Canonical.media_type.is_not(None))
-        .order_by(Canonical.norm_title.asc())
         .limit(min(limit, 100))
         .offset(max(offset, 0))
     )
+    if norm:
+        like = "%" + "%".join(norm.split()) + "%"
+        stmt = stmt.where(Canonical.norm_title.like(like)).order_by(Canonical.norm_title.asc())
+    else:
+        stmt = stmt.order_by(Canonical.updated_at.desc())
     rows = list(session.scalars(stmt))
+    if not norm:
+        return rows
     rows.sort(key=lambda r: (r.norm_title != norm, not r.norm_title.startswith(norm), len(r.norm_title)))
     return rows

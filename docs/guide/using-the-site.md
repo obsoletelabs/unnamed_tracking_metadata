@@ -2,9 +2,11 @@
 
 ## Browsing
 
-Anyone can search and read: games, artwork, achievements, discussions and public profiles. Each game page shows the merged facts, identifiers (with links where they exist), achievements, a **Where this came from** table, and recent changes.
+Anyone can search and read games, anime, movies and TV shows, along with their artwork, discussions and public profiles. The home page links to each media type, and its browse page lists the latest records. A record page shows merged facts, identifiers (with links where they exist), a **Where this came from** table, and recent changes. Games also show achievements and store links.
 
-![Home](img/01-home.png)
+![Atlas home page with a centered search panel above recently updated records](img/01-home.png)
+
+The home page keeps search at the center of the experience. Its horizontal media links open the latest games, anime, movies or TV shows; a search from the home page can find records across types.
 
 A phone-sized screen works the same way; the site follows your system's light or dark setting.
 
@@ -26,11 +28,11 @@ Sign-in and account-recovery forms are centered in the space between the site he
 
 ![The in-page viewer](img/gallery-viewer-desktop.png)
 
-The **Artwork** section of a game page shows every image this server has downloaded and checked, grouped by type (cover, banner, hero, logo, icon, screenshots, poster) with the default first. Click an image to open it in a viewer on the same page: you see its source, status, size and votes; the arrow keys (or the Previous / Next buttons) move between images of the same type, **Esc** closes it and returns focus to where you were. Without JavaScript each image opens on its own page with the same details. Images that are assigned but not downloaded yet are listed below as text and are never loaded.
+The **Artwork** section of a record page shows every image this server has downloaded and checked, grouped by type (cover, banner, hero, logo, icon, screenshots, poster) with the default first. Click an image to open it in a viewer on the same page: you see its source, status, size and votes; the arrow keys (or the Previous / Next buttons) move between images of the same type, **Esc** closes it and returns focus to where you were. Without JavaScript each image opens on its own page with the same details. Images that are assigned but not downloaded yet are listed below as text and are never loaded.
 
 Signed-in members with a confirmed email can **upvote or downvote** an image and **propose it as the default** for its type. Votes are opinions shown next to the image: they never reorder or replace anything by themselves. A default change is a proposal that goes through the same review as other artwork changes (applied at once for reviewers and trusted members, reviewable and revertable, no reputation reward). The default is local to the server you are using and is not published to other nodes.
 
-On a game page choose **Suggest an edit**. You can change core fields and any **custom fields** the administrators defined, and add a source or note for reviewers (link the store page or announcement: it speeds review). *Add game* proposes a new record; *Suggest artwork* and *Edit achievements* are on the game page; see [Achievements](achievements.md).
+On a record page choose **Suggest an edit**. You can change core fields and any **custom fields** the administrators defined, and add a source or note for reviewers. The home page's **Add a record** form lets you choose a media type before entering details. Signed-in members can suggest artwork for every type; **Edit achievements** and store linking are available on games. See [Achievements](achievements.md).
 
 ![The edit form, with admin-defined fields](img/06-edit-form-custom-fields.png)
 
@@ -46,7 +48,7 @@ Reviewers see exactly what changes (old and new). You can **withdraw** a pending
 
 ### Reputation
 
-* A reviewer **approves** your proposal: **+5** (edit), **+10** (new game), **+3** (artwork), **+5** (achievements).
+* A reviewer **approves** your proposal: **+5** (edit), **+10** (new record), **+3** (artwork), **+5** (achievements).
 * **Rejected**: −2. **Reverted** later: −10 and the points it earned.
 * A moderator **hides** one of your comments: −3.
 

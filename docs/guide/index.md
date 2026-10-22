@@ -1,6 +1,6 @@
 # Atlas guide
 
-Atlas is a **game metadata server**. It gathers what many providers (Steam, IGDB, RAWG…) and a community say about a game, merges it into **one canonical record**, and keeps track of **where every detail came from**. Other programs, above all the [Unnamed Tracking App](tracking-app.md), read that record through an API. People browse and improve it on Atlas's own website.
+Atlas is a **media metadata server** for games, anime, movies and TV shows. It combines provider data with community contributions into **one canonical record per title**, and keeps track of **where every detail came from**. Other programs, above all the [Unnamed Tracking App](tracking-app.md), read those records through an API. People browse and improve them on Atlas's own website.
 
 ![A game page: merged facts, achievements, provenance, discussion](img/02-game.png)
 
@@ -31,7 +31,7 @@ Everything an operator normally wants to change (name, colours, logo, menus, pag
 
 ## What it is not
 
-* **Not a tracker.** Atlas holds facts about games. Playtime, ownership and completion belong to the app that tracks them. Atlas deliberately discards personal facts it is sent.
+* **Not a tracker.** Atlas holds shared facts about media. Playtime, ownership and completion belong to the app that tracks them. Atlas deliberately discards personal facts it is sent.
 * **Not a store of provider data to redistribute.** Provider-derived data stays on the node that fetched it. Only what people contribute (released as CC0) is replicated.
 
 Contributed metadata is dedicated to the public domain under [CC0 1.0](https://github.com/obsoletelabs/unnamed_tracking_metadata/blob/v2/DATA-LICENSE.md); the software is MIT.

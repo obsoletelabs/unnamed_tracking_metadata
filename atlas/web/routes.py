@@ -233,7 +233,7 @@ def when(dt) -> str:
 
 def title_of(p: Page, cid: str | None) -> str:
     row = p.session.get(Canonical, cid) if cid else None
-    return (row.view.get("title") if row and row.view else None) or "(new game)"
+    return (row.view.get("title") if row and row.view else None) or "(new record)"
 
 
 # ---- public pages -------------------------------------------------------------------------------------
@@ -243,24 +243,33 @@ def home(p: Annotated[Page, Depends(page)]):
     s = p.session
     recent = list(s.scalars(select(Canonical).where(Canonical.merged_into.is_(None), Canonical.norm_title != "")
                             .order_by(Canonical.updated_at.desc()).limit(12)))
+    media_types = custom.types(s, enabled_only=True)
+    record_filter = (Canonical.merged_into.is_(None), Canonical.norm_title != "")
+    type_counts = {
+        item.key: s.scalar(select(func.count()).select_from(Canonical).where(
+            *record_filter, Canonical.media_type == item.key)) or 0
+        for item in media_types
+    }
     totals = {
-        "games": s.scalar(select(func.count()).select_from(Canonical).where(
-            Canonical.merged_into.is_(None), Canonical.norm_title != "")) or 0,
+        "records": sum(type_counts.values()),
         "artwork": s.scalar(select(func.count()).select_from(Artwork).where(Artwork.blob_hash.is_not(None))) or 0,
         "contributors": s.scalar(select(func.count()).select_from(User)) or 0}
-    return render(p, "home.html", recent=recent, art=primary_art(p, [g.id for g in recent]), totals=totals)
+    return render(p, "home.html", recent=recent, art=primary_art(p, [g.id for g in recent]), totals=totals,
+                  media_types=media_types, type_counts=type_counts,
+                  type_labels={item.key: item.label for item in media_types})
 
 
 @router.get("/search", response_class=HTMLResponse)
 def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length=200)] = "",
            page_no: Annotated[int, Query(alias="page", ge=1, le=1000)] = 1,
            type: Annotated[str, Query(max_length=32)] = ""):
-    rows = service.search(p.session, q, PER_PAGE + 1, (page_no - 1) * PER_PAGE, media_type=type or None) \
-        if q.strip() else []
+    rows = service.search(p.session, q, PER_PAGE + 1, (page_no - 1) * PER_PAGE, media_type=type or None)
     more = len(rows) > PER_PAGE
     rows = rows[:PER_PAGE]
+    mtypes = custom.types(p.session, enabled_only=True)
+    type_label = next((item.label for item in mtypes if item.key == type), None)
     return render(p, "search.html", q=q, results=rows, more=more, page=page_no, art=primary_art(p, [g.id for g in rows]),
-                  mtypes=custom.types(p.session, enabled_only=True), mtype=type)
+                  mtypes=mtypes, mtype=type, mtype_label=type_label)
 
 
 @router.get("/media/{digest}")
@@ -279,13 +288,14 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     try:
         g, redirected = live_game(p, cid)
     except AtlasError as exc:
-        raise HTTPException(404, "No such game.") from exc
+        raise HTTPException(404, "No such record.") from exc
     if redirected:
         return RedirectResponse(f"/game/{g.id}?from={redirected}", status_code=301)
     s, ctx = p.session, p.st.ctx
     art = facets.merged_artwork(s, ctx, g.id)
     cached = [a for a in art if a.blob_hash]
-    key_art = next((a.blob_hash for a in cached if a.kind == "key_art"), None)
+    cover_kinds = ("key_art", "poster", "cover") if g.media_type == "game" else ("poster", "key_art", "cover")
+    key_art = next((a.blob_hash for kind in cover_kinds for a in cached if a.kind == kind), None)
     gallery = build_gallery(p, art)
     pending = pending_artwork([a for a in art if not a.blob_hash], ctx.settings.media_cache_enabled)
     activity = []
@@ -422,7 +432,10 @@ def _changed(current: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
 
 
 def _edit_ctx(p: Page, mtype: str, **extra: Any) -> dict[str, Any]:
-    return {"lbl": labels_for(p, mtype), "auto": proposals.can_auto_apply(p.st.ctx, p.me), **extra}
+    media_type = p.session.get(MediaType, mtype)
+    return {"lbl": labels_for(p, mtype), "mtype": mtype,
+            "mtype_label": media_type.label if media_type else mtype.replace("_", " ").title(),
+            "auto": proposals.can_auto_apply(p.st.ctx, p.me), **extra}
 
 
 @router.get("/game/{cid}/edit", response_class=HTMLResponse)
@@ -466,7 +479,7 @@ def new_form(p: Annotated[Page, Depends(user_page)], title: Annotated[str, Query
     mtypes = custom.types(p.session, enabled_only=True)
     if type not in {t.key for t in mtypes}:
         type = "game"
-    return render(p, "edit.html", new=True, v={"title": title}, action="/new", cancel="/", error=None, mtype=type,
+    return render(p, "edit.html", new=True, v={"title": title}, action="/new", cancel="/", error=None,
                   mtypes=mtypes, cfields=custom_inputs(p, type), **_edit_ctx(p, type))
 
 
@@ -494,7 +507,7 @@ def new_submit(p: Annotated[Page, Depends(user_form)], f: Annotated[dict[str, st
     except AtlasError as exc:
         p.session.rollback()
         return render(p, "edit.html", status=400, new=True, v=new, action="/new", cancel="/", error=str(exc),
-                      note=note, ids_text=f.get("provider_ids", ""), mtype=mtype,
+                      note=note, ids_text=f.get("provider_ids", ""),
                       mtypes=custom.types(p.session, enabled_only=True),
                       cfields=custom_inputs(p, mtype, extra), **_edit_ctx(p, mtype))
     if pr.auto_applied and pr.canonical_id:

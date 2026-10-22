@@ -45,7 +45,7 @@ Playtime, ownership, wishlist state, favourites and similar personal facts are s
 
 ## Media types and custom fields
 
-A record has a **media type** (`game` is built in). An admin can add types (movie, anime…) and extra **typed fields** per type, and can relabel core fields per type (a movie's *Developer* reads *Director*). They appear in forms, pages and the API, and contributors' changes to them are reviewed like any other. See [Administering](administering.md#media-types-and-custom-fields).
+A record has a **media type**. Atlas provides built-in types for `game`, `anime`, `movie` and `tv_show`, with fields suited to each: episode and season counts for shows, or runtime and production countries for movies. An admin can add other types and extra **typed fields**, and can relabel shared fields per type (a movie's *Developer* reads *Director*). They appear in forms, pages and the API, and contributor changes to them are reviewed like any other. Achievements and store linking are game-only; artwork, images, identifiers, provenance and federation work across media types. See [Administering](administering.md#media-types-and-custom-fields).
 
 ## Artwork and achievements
 

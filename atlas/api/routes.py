@@ -101,6 +101,7 @@ def site(st: St, session: Sess) -> dict[str, Any]:
 class ResolveItem(BaseModel):
     namespace: ProviderKey | None = None
     external_id: str | None = Field(default=None, max_length=256)
+    media_type: str | None = Field(default=None, max_length=32)
     title: str | None = Field(default=None, max_length=500)
     platform: str | None = Field(default=None, max_length=50)
     release_date: str | None = Field(default=None, max_length=10)
@@ -122,7 +123,7 @@ def resolve(body: ResolveRequest, st: St, session: Sess, _: Annotated[auth.Princ
         m = find(
             session, st.ctx.settings, namespace=it.namespace or "", external_id=it.external_id or "",
             provider_ids=it.provider_ids, title=it.title, release_date=it.release_date,
-            platform=it.platform, developer=it.developer,
+            platform=it.platform, developer=it.developer, media_type=it.media_type,
         ) if (it.external_id or it.title or it.provider_ids) else None
         if m is None:
             out.append({"canonical_id": None, "method": "none", "confidence": 0.0, "candidates": []})
@@ -167,7 +168,7 @@ def submit(body: ObservationBatchV1, st: St, session: Sess,
            p: Annotated[auth.Principal, Depends(require("contribute"))]):
     if len(body.observations) > st.ctx.settings.max_batch:
         raise HTTPException(413, f"at most {st.ctx.settings.max_batch} observations per request")
-    results = service.ingest(session, st.ctx, body, curator=p.allows("curate"))
+    results = service.ingest(session, st.ctx, body, curator=p.allows("curate"), media_type=body.media_type)
     return {"contract_version": 1, "results": [
         {"external_id": r.external_id, "status": r.status,
          "atlas": {"canonical_id": r.canonical_id, "match": r.method, "confidence": r.confidence,

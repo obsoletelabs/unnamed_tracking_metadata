@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     # "official" is a claim: it means something only to people who pin this node's key from your published list.
     node_kind: Literal["auto", "official", "community", "mirror", "local"] = "auto"
     node_operator: str = ""
-    tagline: str = "Game metadata, merged and sourced"
+    tagline: str = "Media metadata, merged and sourced"
     footer_text: str = "Community metadata. Contributions are CC0."
     accent_color: str = "#6aa8ff"  # dark theme accent
     accent_color_light: str = "#1f6fe0"

@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from atlas import custom, feed, main, proposals, service, sync
 from atlas.models import Canonical, CustomValue, FieldDef, MediaType
+from atlas.resolve import find
 from atlas.service import AtlasError, Ctx
 from atlas.signing import load_identity
 
@@ -69,6 +70,26 @@ def test_type_rules(session, ctx):
     assert session.get(MediaType, "anime").labels == {"developer": "Studio"}  # unknown / empty labels dropped
 
 
+def test_builtin_media_baselines_are_seeded_and_stable(session, ctx):
+    custom.seed(session)
+    assert {row.key for row in session.scalars(select(MediaType))} == {"game", "anime", "movie", "tv_show"}
+    assert session.get(MediaType, "movie").labels["developer"] == "Director"
+    assert session.get(MediaType, "tv_show").labels["publisher"] == "Network"
+    expected = {
+        "anime": {"episode_count", "format", "status", "source_material"},
+        "movie": {"runtime_minutes", "writer", "production_countries", "tagline"},
+        "tv_show": {"episode_count", "season_count", "episode_runtime_minutes", "status"},
+    }
+    for media_type, keys in expected.items():
+        fields = session.scalars(select(FieldDef).where(FieldDef.media_type == media_type)).all()
+        assert {field.key for field in fields} == keys
+        assert all(field.public and field.editable for field in fields)
+    custom.seed(session)
+    assert len(session.scalars(select(FieldDef).where(FieldDef.media_type == "movie")).all()) == 4
+    with pytest.raises(AtlasError, match="built-in media types"):
+        custom.delete_type(session, ctx, "movie")
+
+
 @pytest.mark.parametrize(("kind", "raw", "ok"), [
     ("text", "hello", "hello"), ("text", "x" * 501, None), ("text", "a\x00b", None),
     ("longtext", "x" * 20000, "x" * 20000), ("longtext", "x" * 20001, None),
@@ -104,7 +125,7 @@ def test_merge_by_trust_hides_private_and_orphaned_values(session, schema):
     custom.delete_field(session, ctx, "movie", "runtime_min")
     assert "runtime_min" not in custom.merged(session, ctx, cid)
     assert session.get(CustomValue, (cid, "runtime_min", "community")) is None
-    with pytest.raises(AtlasError, match="records of this type exist"):
+    with pytest.raises(AtlasError, match="built-in media types"):
         custom.delete_type(session, ctx, "movie")
 
 
@@ -113,10 +134,25 @@ def test_unknown_or_disabled_media_types_are_refused_on_ingest(session, schema):
     with pytest.raises(AtlasError, match="media type"):
         service.ingest(session, ctx, batch("igdb", [{"external_id": "9", "title": "X"}]), system=True,
                        media_type="podcast")
-    custom.save_type(session, ctx, "movie", "Movie", enabled=False)
+
+
+def test_ingest_and_resolution_keep_same_title_separate_by_media_type(session):
+    custom.seed(session)
+    ctx = Ctx(settings=build_settings(), identity=load_identity(session))
+    game_batch = batch("gamefeed", [{"external_id": "game-1", "title": "Dune", "release_date": "2021-10-22"}])
+    movie_batch = batch("moviedb", [{"external_id": "movie-1", "title": "Dune", "release_date": "2021-10-22"}])
+    [game] = service.ingest(session, ctx, game_batch, system=True, media_type="game")
+    [movie] = service.ingest(session, ctx, movie_batch, system=True, media_type="movie")
+    assert game.canonical_id != movie.canonical_id
+    assert session.get(Canonical, game.canonical_id).media_type == "game"
+    assert session.get(Canonical, movie.canonical_id).media_type == "movie"
+    match = find(session, ctx.settings, namespace="", external_id="", provider_ids=None, title="Dune",
+                 release_date="2021-10-22", platform=None, media_type="movie")
+    assert match.canonical_id == movie.canonical_id
+    custom.save_type(session, ctx, "podcast", "Podcast", enabled=False)
     with pytest.raises(AtlasError, match="media type"):
-        service.ingest(session, ctx, batch("igdb", [{"external_id": "9", "title": "X"}]), system=True,
-                       media_type="movie")
+        service.ingest(session, ctx, batch("podcast", [{"external_id": "9", "title": "X"}]), system=True,
+                       media_type="podcast")
 
 
 def test_custom_values_move_on_merge(session, schema):
@@ -207,7 +243,10 @@ def test_api_exposes_schema_custom_values_and_type_filter(api):
         s.commit()
     schema = api.get("/api/v2/schema").json()
     movie = next(t for t in schema["media_types"] if t["key"] == "movie")
-    assert movie["labels"] == {"developer": "Director"} and [f["key"] for f in movie["fields"]] == ["rating"]
+    assert movie["labels"] == {"developer": "Director"}
+    assert {f["key"] for f in movie["fields"]} == {
+        "rating", "runtime_minutes", "writer", "production_countries", "tagline"
+    }
     with api.state.maker() as s:
         [r] = service.ingest(s, api.state.ctx, batch("igdb", [{"external_id": "1", "title": "Alien"}]), system=True,
                              media_type="movie")
@@ -318,7 +357,7 @@ def test_schema_and_values_replicate_and_local_definitions_win(pair):  # noqa: F
     with a_maker() as s:
         custom.seed(s)
         custom.save_type(s, a_ctx, "movie", "Movie", labels={"developer": "Director"})
-        custom.save_type(s, a_ctx, "anime", "Anime")
+        custom.save_type(s, a_ctx, "miniseries", "Miniseries")
         custom.save_field(s, a_ctx, "movie", "rating", "Rating", "choice", choices="G\nPG")
         custom.save_field(s, a_ctx, "movie", "runtime_min", "Runtime", "number")
         s.commit()
@@ -332,18 +371,19 @@ def test_schema_and_values_replicate_and_local_definitions_win(pair):  # noqa: F
     with m_maker() as s:
         types = {t.key: t for t in s.scalars(select(MediaType))}
         assert types["movie"].origin == "local" and types["movie"].label == "My Movies"  # local wins
-        assert types["anime"].origin == "upstream"
+        assert types["anime"].origin == "local"
+        assert types["miniseries"].origin == "upstream"
         fields = {(f.media_type, f.key): f for f in s.scalars(select(FieldDef))}
         assert fields[("movie", "rating")].origin == "local" and fields[("movie", "runtime_min")].origin == "upstream"
         assert s.get(CustomValue, (r.canonical_id, "runtime_min", "curator")).value == 117
     # the authority drops a type and a field: the mirror follows for upstream-origin definitions only
     with a_maker() as s:
         custom.delete_field(s, a_ctx, "movie", "runtime_min")
-        custom.delete_type(s, a_ctx, "anime")
+        custom.delete_type(s, a_ctx, "miniseries")
         s.commit()
     sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
     with m_maker() as s:
-        assert s.get(MediaType, "anime") is None
+        assert s.get(MediaType, "miniseries") is None
         assert s.scalars(select(FieldDef).where(FieldDef.key == "runtime_min")).first() is None
         assert s.scalars(select(FieldDef).where(FieldDef.key == "rating", FieldDef.origin == "local")).first()
 

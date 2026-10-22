@@ -11,7 +11,8 @@ from atlas.signing import verify
 
 from .conftest import batch, build_settings
 
-STANDARD = {key for key, *_ in custom.MULTIPLAYER_FIELDS}  # seeded on every non-mirror node
+STANDARD = ({key for key, *_ in custom.MULTIPLAYER_FIELDS}
+            | {key for _, _, _, fields in custom.BUILTIN_MEDIA_TYPES.values() for key, *_ in fields})
 
 
 def node(tmp_path, name, role):
@@ -56,7 +57,7 @@ def test_two_authorities_relay_to_an_offline_capable_downstream(tmp_path):
     assert pull(mirror[2], a) > 0 and pull(mirror[2], b) > 0
     with mirror[2].maker() as session:
         assert {f.key for f in session.scalars(select(FieldDef))} - STANDARD == {"alpha_note", "beta_note"}
-        assert {f.origin_node for f in session.scalars(select(FieldDef))} == {
+        assert {f.origin_node for f in session.scalars(select(FieldDef)) if f.key not in STANDARD} == {
             a[2].ctx.identity.node_id, b[2].ctx.identity.node_id}
     assert pull(local[2], mirror, a[2].ctx.identity) > 0
     assert pull(local[2], mirror, b[2].ctx.identity) > 0
@@ -75,6 +76,29 @@ def test_two_authorities_relay_to_an_offline_capable_downstream(tmp_path):
     another = node(tmp_path, "another", "local")
     assert pull(another[2], mirror, a[2].ctx.identity) > 0
     assert pull(local[2], mirror, a[2].ctx.identity) == 0
+
+
+def test_media_type_survives_authority_to_mirror_and_local_federation(tmp_path):
+    authority = node(tmp_path, "media-authority", "authority")
+    mirror = node(tmp_path, "media-mirror", "mirror")
+    local = node(tmp_path, "media-local", "local")
+    with authority[2].maker() as session:
+        (result,) = service.ingest(
+            session,
+            authority[2].ctx,
+            batch("manual", [{"external_id": "spirited-away", "title": "Spirited Away"}], kind="manual"),
+            curator=True,
+            media_type="movie",
+        )
+        session.commit()
+
+    assert pull(mirror[2], authority) > 0
+    assert pull(local[2], mirror, authority[2].ctx.identity) > 0
+    with local[2].maker() as session:
+        record = session.get(Canonical, result.canonical_id)
+        assert record is not None
+        assert record.media_type == "movie"
+        assert record.view["title"] == "Spirited Away"
 
 
 def test_upgraded_mirror_backfills_without_reverting_current_schema(tmp_path):

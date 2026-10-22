@@ -88,7 +88,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `ATLAS_APP_NAME` | `Atlas` | Site name. Editable in Admin → Settings. **live** |
-| `ATLAS_TAGLINE` | `Game metadata, merged and sourced` | Home page line. Editable in Admin → Settings. **live** |
+| `ATLAS_TAGLINE` | `Media metadata, merged and sourced` | Home page line. Editable in Admin → Settings. **live** |
 | `ATLAS_FOOTER_TEXT` | `Community metadata. Contributions are CC0.` | Footer text. Editable in Admin → Settings. **live** |
 | `ATLAS_ACCENT_COLOR` | `#6aa8ff` | Accent colour, dark theme. Editable in Admin → Settings. **live** |
 | `ATLAS_ACCENT_COLOR_LIGHT` | `#1f6fe0` | Accent colour, light theme. Editable in Admin → Settings. **live** |

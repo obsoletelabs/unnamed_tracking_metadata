@@ -1,6 +1,6 @@
 # Atlas
 
-A semi-distributed **game metadata server**. It merges what many providers and a community say about a game into one canonical record, tells you where every field came from, and keeps working when its upstream is down. It has its own website, an API for apps (notably the [Unnamed Tracking App](https://github.com/obsoletelabs/unnamed_tracking_app_2)), and can sign people in to other software over OpenID Connect.
+A semi-distributed **media metadata server** for games, anime, movies and TV shows. It merges provider data and community contributions into one canonical record per title, tells you where every field came from, and keeps working when its upstream is down. It has its own website, an API for apps (notably the [Unnamed Tracking App](https://github.com/obsoletelabs/unnamed_tracking_app_2)), and can sign people in to other software over OpenID Connect.
 
 ![A game page](docs/guide/img/02-game.png)
 

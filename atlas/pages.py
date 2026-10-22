@@ -26,15 +26,24 @@ def render_markdown(text: str) -> Markup:
 
 
 DEFAULT_PAGES = {
-    "about": ("About", "# About\n\nThis site collects and merges game metadata from many providers into one record per "
-              "game, and keeps track of where every detail came from.\n\nEdit this page from **Admin → Pages**.\n",
-              True, 10),
+    "about": (
+        "About",
+        "# About\n\nThis site collects and merges metadata for games, anime, movies and TV shows into "
+        "one record per title, and keeps track of where every detail came from.\n\nEdit this page from **Admin → Pages**.\n",
+        True,
+        10,
+    ),
     "rules": ("Contribution rules", "# Contribution rules\n\n* Cite a source (a store page, the publisher's site) for "
               "every change.\n* Don't remove correct information; propose improvements instead.\n* Everything you "
               "contribute is released under CC0.\n* Reviewers may reject or revert changes that aren't supported by a "
               "source.\n", True, 20),
-    "help": ("Help", "# Help\n\nSearch for a game, open it, and choose **Suggest an edit** to improve it. New accounts' "
-             "changes are reviewed before they appear; trusted contributors' changes apply at once.\n", False, 30),
+    "help": (
+        "Help",
+        "# Help\n\nSearch for a title, open its record, and choose **Suggest an edit** to improve it. "
+        "New accounts' changes are reviewed before they appear; trusted contributors' changes apply at once.\n",
+        False,
+        30,
+    ),
 }
 
 

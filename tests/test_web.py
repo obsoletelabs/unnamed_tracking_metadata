@@ -70,6 +70,27 @@ def test_public_pages_render_without_login(site):
     assert site.get("/robots.txt").text.startswith("User-agent")
 
 
+def test_media_browse_and_type_specific_add_forms(site):
+    with site.st.maker() as session:
+        [movie] = service.ingest(
+            session,
+            site.st.ctx,
+            batch("tmdb", [{"external_id": "blade-runner", "title": "Blade Runner", "release_date": "1982-06-25"}]),
+            system=True,
+            media_type="movie",
+        )
+        session.commit()
+    home = site.get("/").text
+    assert 'aria-label="Browse by media type"' in home and "Anime" in home and "Movies" not in home
+    browse = site.get("/search?type=movie").text
+    assert "Blade Runner" in browse and "Browse" in browse
+    detail = site.get(f"/game/{movie.canonical_id}").text
+    assert "Director" not in detail and "Movie" in detail and "Achievements" not in detail
+    signup(site, "media-curator")
+    form = site.get("/new?type=movie").text
+    assert "Add movie" in form and "Runtime (minutes)" in form and "Known provider IDs" in form
+
+
 def test_login_password_visibility_control_is_accessible(site):
     page = site.get("/login")
     assert page.status_code == 200

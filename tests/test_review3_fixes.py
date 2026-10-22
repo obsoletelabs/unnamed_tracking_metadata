@@ -158,9 +158,11 @@ def test_hostile_schema_snapshots_are_filtered_not_applied(session, ctx):
                    {"media_type": "movie", "key": "ok_field", "label": "OK\x00 field", "kind": "text"}, 5]})
     session.commit()
     types = {t.key: t for t in session.scalars(select(MediaType))}
-    assert set(types) == {"game", "legacy", "movie"} and types["movie"].labels == {"developer": "Director <script>"}
-    assert [f.key for f in session.scalars(select(FieldDef))] == ["ok_field"]
-    assert session.scalars(select(FieldDef)).one().label == "OK field"
+    assert set(types) == {"game", "legacy", "anime", "movie", "tv_show"}
+    assert types["movie"].labels == {"developer": "Director", "publisher": "Studio", "series": "Series"}
+    fields = {f.key: f for f in session.scalars(select(FieldDef))}
+    assert fields["ok_field"].label == "OK field"
+    assert not {"title", "evil", "nolabel"}.intersection(fields)
     assert types["legacy"].enabled is False  # records still use it: kept, not deleted
     assert session.get(Canonical, "atlas:used").media_type == "legacy"
     custom.apply_snapshot(session, {"types": "nope", "fields": None})  # garbage shapes are ignored too

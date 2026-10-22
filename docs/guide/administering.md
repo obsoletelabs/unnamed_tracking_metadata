@@ -36,16 +36,18 @@ Upload a PNG/JPEG/WebP/GIF (≤512 KB, ≤1024 px; checked and re-served from th
 
 **Linking a store id to an existing game.** Signed-in members use *Link a store page or id* on a game page (pick Steam, GOG, Epic, TheGamesDB, itch.io, IGDB or RAWG, or type another store's short name, and its id), or open **Find it by name**, which **suggests matches automatically**: it searches Steam, IGDB and RAWG (whichever the node has configured) for the game's own name, skips stores the game is already linked to, and lists the results with likely matches first (same title and, where known, the same year), each one click to propose. You can also search by hand. This searches Steam, IGDB or RAWG (whichever the node has configured) by the game's name and links the match you pick, with no id to look up. It is a reviewed contribution like any other (trusted accounts apply immediately, reviewers can revert). An id already used by another game is refused (the games should be merged instead), and so is replacing a different id the game already has for that store (propose an edit).
 
-**Artwork cache.** The same page shows how many images are cached or failing, with *Retry uncached images now* (clears backoff so the next pass tries them) and *Clear cached images* (deletes downloaded provider images; uploads are kept; type `clear` to confirm). Turn automatic caching on or off in **Admin → Settings → Artwork**. Members can **upload an image file** on a game page instead of linking one: it is checked and stored by this node, then follows the normal review rules (trusted accounts apply immediately). Clients can always request `GET /api/v2/artwork/{id}/image`, which serves cached bytes or redirects to the original public address.
+**Artwork cache.** The same page shows how many images are cached or failing, with *Retry uncached images now* (clears backoff so the next pass tries them) and *Clear cached images* (deletes downloaded provider images; uploads are kept; type `clear` to confirm). Turn automatic caching on or off in **Admin → Settings → Artwork**. Members can **upload an image file** from any record page instead of linking one: it is checked and stored by this node, then follows the normal review rules (trusted accounts apply immediately). Clients can always request `GET /api/v2/artwork/{id}/image`, which serves cached bytes or redirects to the original public address.
 
 The page also lists the store namespaces Atlas links on game pages (`steam`, `gog`, `epic`, `tgdb`, `itch`, `igdb`, `rawg`): add ids as `namespace:id` lines when adding a game, or let a plugin submit them. GOG, Epic and TheGamesDB have no import adapter yet, so their ids are stored and linked but Atlas does not fetch data from them.
 
 ## Media types and custom fields
 
-**Admin → Fields.** A **media type** says what a record is (`game` is built in; add *movie*, *anime*, *tool*…). For each type you can:
+**Admin → Fields.** A **media type** says what a record is. Atlas starts with `game`, `anime`, `movie` and `tv_show`; each is seeded once with useful default labels and fields. You can add types such as *book* or *tool*. For each type you can:
 
 * **rename core fields**, so a movie's *Developer* reads *Director* and *Publisher* reads *Studio*;
 * add **custom fields**: text, long text, number, date, yes/no, choice (with options), list, link (`https://`). Each has a label, help text, order, **shown** (page and API) and **editable by contributors** switches.
+
+The built-in anime fields are episode count, format, release status and source material. Movies start with runtime, writer, production countries and tagline. TV shows start with episode and season counts, episode runtime and release status. These are ordinary editable fields: admins can rename or remove them, and Atlas will not recreate a field after an admin removes it.
 
 ![Fields](img/05-admin-fields.png)
 
