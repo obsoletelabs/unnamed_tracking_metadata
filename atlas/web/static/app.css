@@ -24,6 +24,9 @@ header.site .brand { font-weight: 700; font-size: 1.15rem; color: var(--text); }
 header.site nav { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-left: auto; align-items: center; }
 header.site form.search { flex: 1 1 220px; max-width: 420px; display: flex; gap: 6px; }
 main { padding: 24px 0 56px; min-height: 70vh; }
+body.auth-page { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+body.auth-page > main { flex: 1 0 auto; display: flex; align-items: center; min-height: 0; }
+body.auth-page > main > .wrap { width: min(100% - 40px, 1200px); }
 footer { border-top: 1px solid var(--border); color: var(--muted); font-size: .85rem; padding: 18px 0; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: var(--gap); }
 .muted { color: var(--muted); } .small { font-size: .85rem; }
@@ -32,6 +35,15 @@ footer { border-top: 1px solid var(--border); color: var(--muted); font-size: .8
 input, select, textarea, button { font: inherit; color: var(--text); }
 input[type=text], input[type=password], input[type=email], input[type=search], input[type=url], select, textarea {
   width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.password-input { position: relative; }
+.password-input input { padding-right: 46px; }
+.password-toggle { position: absolute; top: 50%; right: 5px; transform: translateY(-50%); width: 36px; height: 36px; min-height: 36px; padding: 7px; background: transparent; color: var(--muted); border: 0; border-radius: 6px; box-shadow: none; }
+.password-toggle:hover { background: var(--surface-2); color: var(--text); filter: none; }
+.password-toggle:active { transform: translateY(-50%); box-shadow: none; }
+.password-toggle svg { display: block; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.password-toggle .password-eye-off { display: none; }
+.password-toggle[aria-pressed="true"] .password-eye { display: none; }
+.password-toggle[aria-pressed="true"] .password-eye-off { display: block; }
 textarea { min-height: 7em; resize: vertical; }
 input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 button, .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: var(--accent);

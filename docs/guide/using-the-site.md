@@ -14,6 +14,10 @@ A phone-sized screen works the same way; the site follows your system's light or
 
 *Forgot your password?* on the sign-in page emails a link that works for one hour and once. It signs you out everywhere. The same message is shown whether or not the account exists.
 
+Sign-in and account-recovery forms are centered in the space between the site header and footer. On the sign-in page, use the eye button to show or hide the password while you type.
+
+![Centered sign-in form with the password visibility control](img/atlas-login-password-toggle.png)
+
 ## Suggesting changes
 
 ## Browsing artwork

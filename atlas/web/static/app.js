@@ -1,5 +1,16 @@
 // Progressive enhancement only; every page works without this file.
 document.addEventListener("click", function (e) {
+  var toggle = e.target.closest("[data-password-toggle]");
+  if (toggle) {
+    var input = document.getElementById(toggle.getAttribute("data-password-toggle"));
+    if (input) {
+      var visible = input.type === "password";
+      input.type = visible ? "text" : "password";
+      toggle.setAttribute("aria-pressed", visible ? "true" : "false");
+      toggle.setAttribute("aria-label", visible ? "Hide password" : "Show password");
+    }
+    return;
+  }
   var el = e.target.closest("[data-confirm]");
   if (el && !window.confirm(el.getAttribute("data-confirm"))) { e.preventDefault(); }
 });
