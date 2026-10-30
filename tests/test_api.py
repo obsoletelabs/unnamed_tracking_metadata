@@ -143,6 +143,27 @@ def test_rate_limit_and_body_limit(tmp_path):
         assert chunked.status_code == 413
 
 
+def test_large_achievement_catalogue_is_readable_in_bounded_pages(client):
+    cid = client.post("/api/v2/observations", json=obs("steam", "620", "Portal 2"),
+                      headers=H(mint(client, ["contribute"]))).json()["results"][0]["atlas"]["canonical_id"]
+    curator = H(mint(client, ["curate"]))
+    items = [{"name": f"Achievement {n:04d}", "external_id": f"ACH_{n}", "position": n} for n in range(450)]
+    assert client.put(f"/api/v2/games/{cid}/achievements", json={"items": items}, headers=curator).json() == {
+        "count": 450}
+    read = H(mint(client, ["read"]))
+    unpaged = client.get(f"/api/v2/games/{cid}/achievements", headers=read).json()
+    assert len(unpaged["results"]) == 450 and unpaged["total"] == 450 and unpaged["next_offset"] is None
+    seen, offset, pages = [], 0, 0
+    while offset is not None:
+        page = client.get(f"/api/v2/games/{cid}/achievements?limit=200&offset={offset}", headers=read).json()
+        assert len(page["results"]) <= 200 and page["total"] == 450
+        seen += [a["id"] for a in page["results"]]
+        offset, pages = page["next_offset"], pages + 1
+    assert pages == 3 and seen == [a["id"] for a in unpaged["results"]] and len(set(seen)) == 450
+    assert client.get(f"/api/v2/games/{cid}/achievements?limit=201", headers=read).status_code == 422
+    assert client.get(f"/api/v2/games/{cid}/achievements?limit=10&offset=900", headers=read).json()["results"] == []
+    
+    
 def test_failed_sync_entries_are_admin_only_and_reported(client):
     from atlas.models import SyncFailure
 
