@@ -134,6 +134,25 @@ class SyncCursor(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class SyncFailure(Base):
+    """A mirrored feed entry that could not be applied, kept so it can be retried and reported.
+
+    The signed entry itself stays in `replicated_change`; this row only says it still needs applying."""
+
+    __tablename__ = "sync_failure"
+
+    node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    error: Mapped[str] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    first_failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    last_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (Index("ix_sync_failure_open", "resolved_at", "node_id", "seq"),)
+
+
 class ReplicatedFeed(Base):
     """Pinned original feed identity, retained so mirrors can relay without re-signing."""
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -15,7 +15,17 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from . import key_rotation, service
 from .contract import SourceObservationV1
-from .models import Canonical, Crosswalk, Lock, NodeState, Observation, ReplicatedChange, ReplicatedFeed, SyncCursor
+from .models import (
+    Canonical,
+    Crosswalk,
+    Lock,
+    NodeState,
+    Observation,
+    ReplicatedChange,
+    ReplicatedFeed,
+    SyncCursor,
+    SyncFailure,
+)
 from .service import AtlasError, Ctx, keys_of
 from .signing import key_id_for
 
@@ -66,12 +76,66 @@ def _valid_observation(o: Any) -> bool:
         return False
 
 
-def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: dict[str, Any]) -> None:
+# Automatic retries stop here so a permanently broken entry is not re-run on every pull; an
+# administrator can still retry it by hand.
+AUTO_RETRY_LIMIT = 20
+
+
+def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: dict[str, Any]) -> bool:
+    """Apply one entry; False when it failed. A failure is recorded, not silently dropped, and the
+    entry's partial changes are rolled back, so one bad entry neither stalls replication nor leaves
+    half-applied state."""
     try:
-        _apply(session, ctx, node_id, seq, kind, body)
+        with session.begin_nested():
+            _apply(session, ctx, node_id, seq, kind, body)
     except (AtlasError, KeyError, TypeError, ValueError, AttributeError) as exc:
-        # One malformed entry from a trusted upstream must not stall replication forever: skip it, keep going.
-        log.warning("skipping feed entry %s (%s) from %s: %s", seq, kind, node_id, exc)
+        log.warning("could not apply feed entry %s (%s) from %s: %s", seq, kind, node_id, exc)
+        _record_failure(session, node_id, seq, kind, exc)
+        return False
+    failure = session.get(SyncFailure, (node_id, seq))
+    if failure is not None and failure.resolved_at is None:
+        failure.resolved_at = datetime.now(UTC)
+        failure.last_attempt_at = failure.resolved_at
+    return True
+
+
+def _record_failure(session: Session, node_id: str, seq: int, kind: str, exc: Exception) -> None:
+    message = f"{type(exc).__name__}: {exc}"[:2000]
+    now = datetime.now(UTC)
+    failure = session.get(SyncFailure, (node_id, seq))
+    if failure is None:
+        session.add(SyncFailure(node_id=node_id, seq=seq, kind=kind[:32], error=message, attempts=1,
+                                first_failed_at=now, last_attempt_at=now))
+    else:
+        failure.error, failure.attempts, failure.last_attempt_at = message, failure.attempts + 1, now
+        failure.resolved_at = None
+    session.flush()
+
+
+def retry_failures(session: Session, ctx: Ctx, node_id: str | None = None, *, limit: int = 100,
+                   max_attempts: int | None = AUTO_RETRY_LIMIT) -> dict[str, int]:
+    """Re-apply retained entries that failed, oldest first. Application is idempotent, so a retry
+    that succeeds converges without duplicating anything and healthy entries are untouched."""
+    query = select(SyncFailure).where(SyncFailure.resolved_at.is_(None))
+    if node_id is not None:
+        query = query.where(SyncFailure.node_id == node_id)
+    if max_attempts is not None:
+        query = query.where(SyncFailure.attempts < max_attempts)
+    rows = session.scalars(query.order_by(SyncFailure.node_id, SyncFailure.seq).limit(limit)).all()
+    resolved = 0
+    for row in rows:
+        entry = session.get(ReplicatedChange, (row.node_id, row.seq))
+        if entry is None:
+            _record_failure(session, row.node_id, row.seq, row.kind, KeyError("retained entry is missing"))
+        elif apply_entry(session, ctx, row.node_id, row.seq, entry.kind, entry.body):
+            resolved += 1
+    return {"retried": len(rows), "resolved": resolved, "still_failing": len(rows) - resolved}
+
+
+def open_failures(session: Session) -> int:
+    from sqlalchemy import func
+
+    return session.scalar(select(func.count()).select_from(SyncFailure).where(SyncFailure.resolved_at.is_(None))) or 0
 
 
 def _apply(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: dict[str, Any]) -> None:
@@ -260,6 +324,7 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
                     apply_entry(session, ctx, node_id, e["seq"], e["kind"], e["body"])
                 expected = e["seq"]
                 applied += 1
+            retry_failures(session, ctx, node_id)
             if applied:
                 cur = session.get(SyncCursor, node_id)
                 if cur is None:

@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from atlas import feed, service, sync
 from atlas.db import make_sessionmaker
-from atlas.models import Base, Canonical, Crosswalk, Observation, SyncCursor
+from atlas.models import Base, Canonical, Crosswalk, NodeState, Observation, SyncCursor, SyncFailure
 from atlas.service import Ctx
 from atlas.signing import load_identity
 
@@ -160,3 +160,75 @@ def test_untrusted_upstream_key_is_refused(pair):
     with pytest.raises(sync.SyncError, match="is not trusted"):
         sync.pull_once(m_maker, m_ctx, client, "http://upstream", None)
 
+
+# --- failed entries are reported and retried (#90) ---------------------------------------------
+
+
+@pytest.fixture
+def flaky(monkeypatch):
+    """Make applying one feed sequence number fail until `fail.clear()` is called."""
+    fail: set[int] = set()
+    real = sync._apply
+
+    def apply(session, ctx, node_id, seq, kind, body):
+        if seq in fail:
+            # Write something first, to prove a failed entry is rolled back rather than half-applied.
+            session.add(NodeState(key=f"partial:{seq}", value="x"))
+            session.flush()
+            raise ValueError("simulated apply failure")
+        real(session, ctx, node_id, seq, kind, body)
+
+    monkeypatch.setattr(sync, "_apply", apply)
+    return fail
+
+
+def test_failed_entry_is_recorded_rolled_back_and_does_not_block_healthy_ones(pair, flaky):
+    a_maker, a_ctx, m_maker, m_ctx, client = pair
+    [first] = curate(a_maker, a_ctx, "curator", [{"external_id": "1", "title": "Failing"}])
+    [second] = curate(a_maker, a_ctx, "curator", [{"external_id": "2", "title": "Healthy"}])
+    flaky.add(1)
+    sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    with m_maker() as s:
+        assert s.get(Canonical, second.canonical_id).view["title"] == "Healthy"
+        assert s.get(Canonical, first.canonical_id) is None
+        assert s.get(NodeState, "partial:1") is None  # the half-applied write was rolled back
+        assert s.get(SyncCursor, a_ctx.identity.node_id).last_seq == 2
+        [failure] = s.scalars(select(SyncFailure)).all()
+        assert (failure.seq, failure.kind, failure.resolved_at) == (1, "obs", None)
+        assert "simulated apply failure" in failure.error
+        assert sync.open_failures(s) == 1
+
+
+def test_retry_converges_without_duplicates_once_the_cause_is_fixed(pair, flaky):
+    a_maker, a_ctx, m_maker, m_ctx, client = pair
+    [first] = curate(a_maker, a_ctx, "curator", [{"external_id": "1", "title": "Failing"}])
+    flaky.add(1)
+    sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    flaky.clear()
+    sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)  # nothing new; the retry still runs
+    sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    with m_maker() as s:
+        assert s.get(Canonical, first.canonical_id).view["title"] == "Failing"
+        assert len(s.scalars(select(Observation).where(Observation.external_id == "1")).all()) == 1
+        [failure] = s.scalars(select(SyncFailure)).all()
+        assert failure.resolved_at is not None
+        assert sync.open_failures(s) == 0
+
+
+def test_automatic_retries_stop_but_an_administrator_can_still_retry(pair, flaky):
+    a_maker, a_ctx, m_maker, m_ctx, client = pair
+    [first] = curate(a_maker, a_ctx, "curator", [{"external_id": "1", "title": "Failing"}])
+    flaky.add(1)
+    for _ in range(sync.AUTO_RETRY_LIMIT + 3):
+        sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    with m_maker() as s:
+        failure = s.scalars(select(SyncFailure)).one()
+        assert failure.attempts == sync.AUTO_RETRY_LIMIT  # capped, not retried on every pull
+    flaky.clear()
+    sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    with m_maker() as s:
+        assert sync.open_failures(s) == 1  # automatic retries gave up
+        result = sync.retry_failures(s, m_ctx, max_attempts=None)
+        s.commit()
+        assert result == {"retried": 1, "resolved": 1, "still_failing": 0}
+        assert s.get(Canonical, first.canonical_id) is not None
