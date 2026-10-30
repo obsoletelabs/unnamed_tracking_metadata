@@ -112,8 +112,8 @@ def resolve_provider_identity(provider: str, external_id: str, db: Db, authoriza
 
 
 @router.post("/games/{canonical_id}/identity/mappings", status_code=202)
-def propose_mapping(canonical_id: str, payload: MappingCreate, db: Db):
-    token, _ = require_api_token(db, required_scope="write")
+def propose_mapping(canonical_id: str, payload: MappingCreate, db: Db, authorization: str | None = Header(default=None)):
+    token, _ = require_api_token(db, authorization, "write")
     game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -145,8 +145,8 @@ def propose_mapping(canonical_id: str, payload: MappingCreate, db: Db):
 
 
 @router.post("/games/{canonical_id}/identity/observations", status_code=202)
-def add_observation(canonical_id: str, payload: ObservationCreate, db: Db):
-    token, _ = require_api_token(db, required_scope="write")
+def add_observation(canonical_id: str, payload: ObservationCreate, db: Db, authorization: str | None = Header(default=None)):
+    token, _ = require_api_token(db, authorization, "write")
     game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -168,8 +168,8 @@ def add_observation(canonical_id: str, payload: ObservationCreate, db: Db):
 
 
 @router.post("/games/{canonical_id}/identity/aliases", status_code=202)
-def add_alias(canonical_id: str, payload: AliasCreate, db: Db):
-    token, _ = require_api_token(db, required_scope="write")
+def add_alias(canonical_id: str, payload: AliasCreate, db: Db, authorization: str | None = Header(default=None)):
+    token, _ = require_api_token(db, authorization, "write")
     game = db.scalar(select(Game).where(Game.canonical_id == canonical_id))
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
