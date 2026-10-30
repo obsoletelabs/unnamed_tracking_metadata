@@ -141,3 +141,21 @@ def test_rate_limit_and_body_limit(tmp_path):
         assert big.status_code == 413
         chunked = c.post("/api/v2/resolve", headers=H(ADMIN), content=iter([b"x" * 1500, b"x" * 1500]))
         assert chunked.status_code == 413
+
+
+def test_failed_sync_entries_are_admin_only_and_reported(client):
+    from atlas.models import SyncFailure
+
+    assert client.get("/api/v2/sync/failures").status_code == 401
+    reader = mint(client, ["read"])
+    assert client.get("/api/v2/sync/failures", headers=H(reader)).status_code == 403
+    assert client.post("/api/v2/sync/failures/retry", headers=H(reader)).status_code == 403
+    with client.app_state.maker() as s:
+        s.add(SyncFailure(node_id="up", seq=7, kind="obs", error="ValueError: bad", attempts=3))
+        s.commit()
+    body = client.get("/api/v2/sync/failures", headers=H(ADMIN)).json()
+    assert body["open"] == 1 and body["failures"][0]["seq"] == 7 and body["failures"][0]["attempts"] == 3
+    assert client.get("/api/v2/status", headers=H(ADMIN)).json()["sync_failures"] == 1
+    # the retained entry is gone, so the retry reports it as still failing rather than hiding it
+    retry = client.post("/api/v2/sync/failures/retry", headers=H(ADMIN)).json()
+    assert retry["still_failing"] == 1 and retry["open"] == 1

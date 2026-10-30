@@ -67,7 +67,9 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
-| `GET` | `/status` | admin | Role, feed head and replication cursors. |
+| `GET` | `/status` | admin | Role, feed head, replication cursors and the number of feed entries that failed to apply. |
+| `GET` | `/sync/failures` | admin | Mirrored feed entries that could not be applied and still need attention. |
+| `POST` | `/sync/failures/retry` | admin | Retry failed mirrored entries now, whatever the automatic attempt count. |
 | `GET` | `/tokens` | admin | List API tokens. |
 | `POST` | `/tokens` | admin | Create a token; the secret is returned once. |
 | `DELETE` | `/tokens/{tid}` | admin | Revoke a token. |
