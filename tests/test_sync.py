@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from atlas import feed, service, sync
 from atlas.db import make_sessionmaker
-from atlas.models import Base, Canonical, Crosswalk, Observation, SyncCursor
+from atlas.models import Base, Canonical, Crosswalk, Observation, SyncCursor, SyncFailure
 from atlas.service import Ctx
 from atlas.signing import load_identity
 
@@ -160,3 +160,65 @@ def test_untrusted_upstream_key_is_refused(pair):
     with pytest.raises(sync.SyncError, match="is not trusted"):
         sync.pull_once(m_maker, m_ctx, client, "http://upstream", None)
 
+
+
+def _locked_and_followed(pair):
+    a_maker, a_ctx, m_maker, m_ctx, client = pair
+    [a] = curate(a_maker, a_ctx, "curator", [{"external_id": "1", "title": "Mystery"}])
+    with a_maker() as s:
+        service.set_lock(s, a_ctx, a.canonical_id, "title", "Mystery Game")
+        s.commit()
+    [b] = curate(a_maker, a_ctx, "curator", [{"external_id": "2", "title": "Another"}])
+    return a, b
+
+
+def test_an_entry_that_cannot_be_applied_is_recorded_and_the_feed_continues(pair, monkeypatch):
+    a_maker, a_ctx, m_maker, m_ctx, client = pair
+    _, b = _locked_and_followed(pair)
+
+    def refuse(*_args, **_kwargs):
+        raise service.AtlasError("conflict", "refused")
+
+    monkeypatch.setattr(service, "set_lock", refuse)
+    sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    with m_maker() as s:
+        [failure] = s.scalars(select(SyncFailure)).all()
+        assert failure.kind == "lock" and failure.attempts >= 1 and failure.resolved_at is None
+        assert s.get(Canonical, b.canonical_id) is not None
+        assert s.get(SyncCursor, a_ctx.identity.node_id).last_seq == 3
+
+
+def test_a_recorded_failure_is_retried_on_the_next_pull_and_resolved(pair, monkeypatch):
+    a_maker, a_ctx, m_maker, m_ctx, client = pair
+    a, _ = _locked_and_followed(pair)
+    real = service.set_lock
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise service.AtlasError("conflict", "refused")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(service, "set_lock", flaky)
+    sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    with m_maker() as s:
+        assert s.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))).all() == []
+        [failure] = s.scalars(select(SyncFailure)).all()
+        assert failure.resolved_at is not None
+        assert s.get(Canonical, a.canonical_id).view["title"] == "Mystery Game"
+
+
+def test_retries_are_bounded_and_the_failure_stays_listed(pair, monkeypatch):
+    a_maker, a_ctx, m_maker, m_ctx, client = pair
+    _locked_and_followed(pair)
+
+    def refuse(*_args, **_kwargs):
+        raise service.AtlasError("conflict", "refused")
+
+    monkeypatch.setattr(service, "set_lock", refuse)
+    for _ in range(sync.MAX_ATTEMPTS + 3):
+        sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    with m_maker() as s:
+        [failure] = s.scalars(select(SyncFailure)).all()
+        assert failure.attempts == sync.MAX_ATTEMPTS and failure.resolved_at is None

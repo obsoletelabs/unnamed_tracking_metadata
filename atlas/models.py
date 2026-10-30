@@ -528,6 +528,22 @@ class Report(Base):
     __table_args__ = (UniqueConstraint("comment_id", "reporter_id", name="uq_report"),)
 
 
+class SyncFailure(Base):
+    """A replicated feed entry that could not be applied. The signed entry itself stays in
+    replicated_change; this row records why it was skipped and how often it has been retried."""
+
+    __tablename__ = "sync_failure"
+
+    node_id: Mapped[str] = mapped_column(ForeignKey("replicated_feed.node_id"), primary_key=True)
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    error: Mapped[str] = mapped_column(String(300))
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    first_failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    last_failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Peer(Base):
     """An upstream node this node replicates from, with its identity pinned by the administrator."""
 

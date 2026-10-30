@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
 from .. import accounts, auth, key_rotation, secrets_box, sync
-from ..models import Peer, SyncCursor, Token, User
+from ..models import Peer, SyncCursor, SyncFailure, Token, User
 from ..service import AtlasError
 from ..signing import key_id_for, load_identity
 from .deps import Page as Ctx
@@ -75,7 +75,11 @@ def peers(p: Annotated[Ctx, Depends(admin_page)], probe: dict | None = None, err
         cur = cursors.get(peer.node_id)
         rows.append({"peer": peer, "seq": cur.last_seq if cur else 0, "fp": fingerprint(peer.node_id)})
     s = p.st.ctx.settings
-    return render(p, "admin_peers.html", rows=rows, own=p.st.ctx.identity, fp=fingerprint(p.st.ctx.identity.node_id),
+    failures = p.session.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))
+                                 .order_by(SyncFailure.last_failed_at.desc()).limit(50)).all()
+    return render(p, "admin_peers.html", rows=rows, failures=failures, max_attempts=sync.MAX_ATTEMPTS,
+                  fingerprint=fingerprint,
+                  own=p.st.ctx.identity, fp=fingerprint(p.st.ctx.identity.node_id),
                   can_store=secrets_box.available(s), env_upstream=s.upstream_url, probe=probe, error=error, when=when,
                   inherit=s.inherit_schema)
 

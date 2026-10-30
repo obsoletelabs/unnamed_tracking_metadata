@@ -15,7 +15,18 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from . import key_rotation, service
 from .contract import SourceObservationV1
-from .models import Canonical, Crosswalk, Lock, NodeState, Observation, ReplicatedChange, ReplicatedFeed, SyncCursor
+from .models import (
+    Canonical,
+    Crosswalk,
+    Lock,
+    NodeState,
+    Observation,
+    ReplicatedChange,
+    ReplicatedFeed,
+    SyncCursor,
+    SyncFailure,
+    now,
+)
 from .service import AtlasError, Ctx, keys_of
 from .signing import key_id_for
 
@@ -66,12 +77,51 @@ def _valid_observation(o: Any) -> bool:
         return False
 
 
-def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: dict[str, Any]) -> None:
+# An entry that cannot be applied is retried on later pulls this many times in all, then left listed
+# (Admin -> Peers) for an administrator.
+MAX_ATTEMPTS = 5
+
+
+def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: dict[str, Any]) -> bool:
+    """Apply one feed entry in its own savepoint. A malformed or unappliable entry from a trusted upstream must
+    not stall replication, so it is rolled back, recorded in sync_failure and skipped; later pulls retry it."""
     try:
-        _apply(session, ctx, node_id, seq, kind, body)
+        with session.begin_nested():
+            _apply(session, ctx, node_id, seq, kind, body)
     except (AtlasError, KeyError, TypeError, ValueError, AttributeError) as exc:
-        # One malformed entry from a trusted upstream must not stall replication forever: skip it, keep going.
-        log.warning("skipping feed entry %s (%s) from %s: %s", seq, kind, node_id, exc)
+        log.warning("could not apply feed entry %s (%s) from %s: %s", seq, kind, node_id, exc)
+        _record_failure(session, node_id, seq, kind, exc)
+        return False
+    failure = session.get(SyncFailure, (node_id, seq))
+    if failure is not None and failure.resolved_at is None:
+        failure.resolved_at = now()
+    return True
+
+
+def _record_failure(session: Session, node_id: str, seq: int, kind: str, exc: Exception) -> None:
+    message = (f"{type(exc).__name__}: {exc}" if not isinstance(exc, AtlasError) else str(exc))[:300]
+    failure = session.get(SyncFailure, (node_id, seq))
+    if failure is None:
+        session.add(SyncFailure(node_id=node_id, seq=seq, kind=kind, error=message, attempts=1))
+    else:
+        failure.error, failure.attempts, failure.last_failed_at, failure.resolved_at = (
+            message, failure.attempts + 1, now(), None)
+    session.flush()
+
+
+def retry_failures(session: Session, ctx: Ctx, node_id: str) -> int:
+    """Retry entries that failed earlier, oldest first, from the signed copies already retained.
+    Returns how many now apply. Entries past MAX_ATTEMPTS stay listed and are not retried."""
+    rows = session.scalars(
+        select(SyncFailure).where(SyncFailure.node_id == node_id, SyncFailure.resolved_at.is_(None),
+                                  SyncFailure.attempts < MAX_ATTEMPTS).order_by(SyncFailure.seq)
+    ).all()
+    fixed = 0
+    for row in rows:
+        entry = session.get(ReplicatedChange, (node_id, row.seq))
+        if entry is not None and apply_entry(session, ctx, node_id, row.seq, entry.kind, entry.body):
+            fixed += 1
+    return fixed
 
 
 def _apply(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: dict[str, Any]) -> None:
@@ -119,11 +169,8 @@ def _apply(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: 
     elif kind in ("artwork", "achievements"):
         from . import facets
 
-        try:
-            fn = facets.set_artwork if kind == "artwork" else facets.set_achievements
-            fn(session, ctx, body["canonical_id"], body["source"], body["items"], redistributable=True, log=False)
-        except AtlasError:
-            return
+        fn = facets.set_artwork if kind == "artwork" else facets.set_achievements
+        fn(session, ctx, body["canonical_id"], body["source"], body["items"], redistributable=True, log=False)
     elif kind == "schema":
         from . import custom
 
@@ -151,22 +198,21 @@ def _apply(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: 
             service.detach_observation(
                 session, ctx, body["observation_id"], new_id=body["new_canonical_id"], log=False
             )
-        except AtlasError:
-            return
+        except AtlasError as exc:
+            if exc.code != "conflict":  # "nothing to split": already detached, so already converged
+                raise
     elif kind == "lock":
         existing = session.get(Lock, (body["canonical_id"], body["field"]))
         if existing is not None and existing.local_only:
             return
-        try:
-            service.set_lock(session, ctx, body["canonical_id"], body["field"], body["value"],
-                             actor=node_id, log=False)
-        except AtlasError:
-            return
+        service.set_lock(session, ctx, body["canonical_id"], body["field"], body["value"],
+                         actor=node_id, log=False)
     elif kind == "unlock":
         try:
             service.clear_lock(session, ctx, body["canonical_id"], body["field"], log=False)
-        except AtlasError:
-            return
+        except AtlasError as exc:
+            if exc.code != "not_found":  # "no such lock": already cleared, so already converged
+                raise
     elif kind == "key_rotation":
         pass  # Verified with the complete key history before any entry is applied.
     else:
@@ -260,6 +306,7 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
                     apply_entry(session, ctx, node_id, e["seq"], e["kind"], e["body"])
                 expected = e["seq"]
                 applied += 1
+            retry_failures(session, ctx, node_id)
             if applied:
                 cur = session.get(SyncCursor, node_id)
                 if cur is None:

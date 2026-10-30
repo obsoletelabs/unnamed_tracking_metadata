@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from atlas import main, secrets_box, service, sync
-from atlas.models import Canonical, Peer
+from atlas.models import Canonical, Peer, ReplicatedFeed, SyncFailure
 from atlas.service import Ctx
 from atlas.signing import key_id_for
 
@@ -208,3 +208,18 @@ def test_admin_token_page_creates_scoped_tokens_once_and_revokes(pair_sites):
 
 
 _ = key_id_for
+
+
+def test_peers_page_lists_entries_that_could_not_be_applied(tmp_path):
+    u = main.create_app(build_settings(database_url=f"sqlite:///{tmp_path}/n.db", role="local",
+                                       media_cache_enabled=False))
+    with TestClient(u, base_url="http://localhost:8000", follow_redirects=False) as c:
+        signup(c, "alice")
+        assert "could not be applied" not in c.get("/admin/peers").text
+        node_id = u.state.atlas.ctx.identity.node_id
+        with u.state.atlas.maker() as s:
+            s.add(ReplicatedFeed(node_id=node_id, public_key="AAAA"))
+            s.add(SyncFailure(node_id=node_id, seq=7, kind="lock", error="record not found", attempts=5))
+            s.commit()
+        page = c.get("/admin/peers").text
+        assert "could not be applied" in page and "record not found" in page and "gave up" in page

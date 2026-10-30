@@ -18,6 +18,12 @@
 <form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/toggle">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">{{ 'Pause' if r.peer.enabled else 'Resume' }}</button></form>
 <form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/delete">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Stop replicating from this peer? Data already received stays." type="submit">Remove</button></form></td></tr>{% endfor %}
 </tbody></table>{% else %}<p class="muted">No peers yet.</p>{% endif %}
+{% if failures %}<section class="card error" role="status"><h3>Entries that could not be applied</h3>
+<p class="small">These replicated entries were skipped so the rest of the feed could continue, so this node may differ from its upstream. Each is retried on every sync until it applies or has failed {{ max_attempts }} times, after which it stays listed here.</p>
+<table><thead><tr><th>Authority</th><th>Entry</th><th>Reason</th><th>Tries</th><th>Last tried</th></tr></thead><tbody>
+{% for f in failures %}<tr><td><code class="small">{{ fingerprint(f.node_id) }}</code></td><td>#{{ f.seq }} <span class="small muted">{{ f.kind }}</span></td><td class="small">{{ f.error }}</td>
+<td>{{ f.attempts }}{% if f.attempts >= max_attempts %} <span class="badge warn">gave up</span>{% endif %}</td><td class="small">{{ when(f.last_failed_at) }}</td></tr>{% endfor %}
+</tbody></table></section>{% endif %}
 <p class="small muted">Adopting the upstream's media types and fields: <strong>{{ 'on' if inherit else 'off' }}</strong> (Settings → Federation).</p>
 
 {% if probe %}
