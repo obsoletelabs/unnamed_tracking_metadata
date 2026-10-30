@@ -54,6 +54,12 @@ Signed-in members use **Edit achievements** on the game page. Each achievement i
 }
 ```
 
+Large catalogues can be read in pages so a single response stays small: add `limit` (1–200) and `offset`, and keep
+requesting with the returned `next_offset` until it is `null`. `total` and `hidden_count` always describe the whole
+catalogue, and the order is stable, so pages never overlap or skip an entry. Without `limit` the whole list comes
+back in one response, as before. A client that forwards a catalogue to another system, such as the Tracking App's
+Atlas plugin, should page and de-duplicate by achievement `id`.
+
 Relative image paths are resolved against the Atlas base URL. Origin image addresses are never returned, so clients cannot be made to hotlink a third-party site. Images need a publicly reachable Atlas for the Tracking App to download them (as for artwork).
 
 ## Hidden achievements

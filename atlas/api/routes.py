@@ -465,6 +465,9 @@ class ArtworkBody(BaseModel):
     items: list[dict[str, Any]] = Field(max_length=200)
 
 
+ACHIEVEMENT_PAGE_MAX = 200
+
+
 class AchievementsBody(BaseModel):
     items: list[dict[str, Any]] = Field(max_length=2000)
 
@@ -498,17 +501,28 @@ def put_artwork(cid: str, body: ArtworkBody, st: St, session: Sess,
 
 @router.get("/games/{cid}/achievements", tags=["read"])
 def get_achievements(cid: str, st: St, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
-                     reveal: Annotated[str | None, Query(max_length=2000)] = None):
+                     reveal: Annotated[str | None, Query(max_length=2000)] = None,
+                     limit: Annotated[int | None, Query(ge=1, le=ACHIEVEMENT_PAGE_MAX)] = None,
+                     offset: Annotated[int, Query(ge=0)] = 0):
     """Hidden achievements come back redacted. `reveal=all` or `reveal=<id>,<id>` unlocks their real text, but only
-    for a signed-in user's own token or a curator/admin token; any other caller still gets the redacted rows."""
+    for a signed-in user's own token or a curator/admin token; any other caller still gets the redacted rows.
+
+    Large catalogues can be read in pages: pass `limit` (at most 200) and `offset`, and follow `next_offset` until it
+    is null. The order is stable, so pages never overlap or skip. Without `limit` the whole list is returned."""
     row, redirected = service.get_canonical(session, cid)
     allowed = principal.personal or principal.allows("curate")
     wanted: bool | set[str] = False
     if reveal and allowed:
         wanted = True if reveal.strip().lower() == "all" else {i.strip() for i in reveal.split(",") if i.strip()}
     results = facets.merged_achievements(session, st.ctx, row.id, reveal=wanted)
-    return {"id": row.id, "redirected_from": redirected,
-            "hidden_count": sum(1 for r in results if r["hidden"]), "results": results}
+    total = len(results)
+    hidden_count = sum(1 for r in results if r["hidden"])
+    next_offset = None
+    if limit is not None:
+        next_offset = offset + limit if offset + limit < total else None
+        results = results[offset:offset + limit]
+    return {"id": row.id, "redirected_from": redirected, "hidden_count": hidden_count, "total": total,
+            "next_offset": next_offset, "results": results}
 
 
 @router.put("/games/{cid}/achievements", tags=["curate"])
