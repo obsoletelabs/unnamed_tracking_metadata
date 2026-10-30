@@ -40,7 +40,7 @@ class Canonical(Base):
     __tablename__ = "canonical"
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
-    media_type: Mapped[str] = mapped_column(String(16), default="game", server_default="game", index=True)
+    media_type: Mapped[str] = mapped_column(String(32), default="game", server_default="game", index=True)
     norm_title: Mapped[str] = mapped_column(String(500), default="", index=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     view: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

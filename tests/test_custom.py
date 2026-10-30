@@ -111,6 +111,34 @@ def test_value_validation(kind, raw, ok):
     assert custom.validate_value(f, "") is None and custom.validate_value(f, None) is None
 
 
+def test_a_record_can_hold_any_media_type_key_that_is_allowed(session, schema):
+    from atlas.models import MediaType
+
+    assert Canonical.__table__.c.media_type.type.length >= MediaType.__table__.c.key.type.length
+    key = "a" * 32
+    custom.save_type(session, schema, key, "Long")
+    [r] = service.ingest(session, schema, batch("igdb", [{"external_id": "1", "title": "Odd"}]), system=True,
+                         media_type=key)
+    assert session.get(Canonical, r.canonical_id).media_type == key
+
+
+def test_splitting_a_record_keeps_its_media_type(session, schema):
+    from atlas.models import Observation
+
+    [a] = service.ingest(session, schema, batch("igdb", [{"external_id": "1", "title": "Alien"}]), system=True,
+                         media_type="movie")
+    [b] = service.ingest(session, schema, batch("tmdb", [{"external_id": "2", "title": "Different",
+                                                          "provider_ids": {"igdb": "1"}}]), system=True,
+                         media_type="movie")
+    assert b.canonical_id == a.canonical_id
+    obs = session.scalars(select(Observation).where(Observation.external_id == "2")).one()
+    new = service.detach_observation(session, schema, obs.id)
+    session.commit()
+    assert new.id != a.canonical_id
+    assert session.get(Canonical, new.id).media_type == "movie"
+    assert session.get(Canonical, a.canonical_id).media_type == "movie"
+
+
 def test_merge_by_trust_hides_private_and_orphaned_values(session, schema):
     ctx = schema
     [r] = service.ingest(session, ctx, batch("igdb", [{"external_id": "1", "title": "Alien"}]), system=True,

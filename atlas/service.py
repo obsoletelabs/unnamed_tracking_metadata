@@ -313,7 +313,9 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
     if not any(s.is_current for s in siblings):
         raise AtlasError("record has a single observation; nothing to split", "conflict")
     cid = new_id or new_canonical_id()
-    session.add(Canonical(id=cid, view={}, explain={}))
+    # The split record is still the same kind of thing: a movie or anime must not turn into a game.
+    original = session.get(Canonical, old)
+    session.add(Canonical(id=cid, view={}, explain={}, media_type=original.media_type if original else "game"))
     session.flush()
     obs.canonical_id = cid
     for s in siblings:  # superseded history of the same source record travels with it

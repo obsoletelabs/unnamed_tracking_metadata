@@ -11,7 +11,7 @@ from datetime import timedelta
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .models import AuditEntry, Token, User, UserMfa, UserSession, now
+from .models import AuditEntry, Setting, Token, User, UserMfa, UserSession, now
 from .service import AtlasError, write_lock
 from .settings import Settings
 
@@ -19,6 +19,7 @@ USERNAME = re.compile(r"^[a-z0-9][a-z0-9_-]{2,31}\Z")
 EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}\.[^@\s]{2,}\Z")
 _N, _R, _P = 2**15, 8, 1
 _DUMMY = None
+_INITIAL_ADMIN_CLAIMED = "initial_admin_claimed"
 
 
 def hash_password(password: str) -> str:
@@ -43,6 +44,14 @@ def audit(session: Session, actor: str | None, action: str, target: str = "", de
     session.add(AuditEntry(actor_id=actor, action=action, target=target[:128], detail=detail))
 
 
+def _initial_admin_claimed(session: Session) -> bool:
+    """True once the bootstrap has been used, including on installs from before it was recorded."""
+    if session.get(Setting, _INITIAL_ADMIN_CLAIMED) is not None:
+        return True
+    return session.scalar(select(func.count()).select_from(User).where(
+        (User.role == "admin") | User.deleted_at.is_not(None))) > 0
+
+
 def register(session: Session, settings: Settings, username: str, password: str, email: str | None = None) -> User:
     if settings.registration != "open":
         raise AtlasError("registration is closed", "forbidden")
@@ -63,7 +72,11 @@ def register(session: Session, settings: Settings, username: str, password: str,
     write_lock(session)  # two simultaneous first registrations must not both count zero users
     session.flush()
     if settings.initial_admin:
-        first = username == settings.initial_admin.strip().lower()
+        # The configured name bootstraps the first administrator once. Deleting that account
+        # frees the name, and it must not hand the role to whoever registers it next.
+        first = username == settings.initial_admin.strip().lower() and not _initial_admin_claimed(session)
+        if first:
+            session.merge(Setting(key=_INITIAL_ADMIN_CLAIMED, value=True))
     else:
         first = session.scalar(select(func.count()).select_from(User)) == 0
     user = User(username=username, email=email, password_hash=hash_password(password),

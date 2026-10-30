@@ -68,7 +68,7 @@ Set **Email → Delivery** to `smtp` and fill host, port, user and from; put the
 
 ## Users
 
-**Admin → Overview → Users:** set a role (*user*, *curator*, *admin*) and status (*active*, *suspended*). Suspending signs the person out everywhere and revokes their tokens. You cannot demote or suspend yourself. The first administrator is `ATLAS_INITIAL_ADMIN` (or the first account); `atlas make-admin <username>` promotes someone from the command line.
+**Admin → Overview → Users:** set a role (*user*, *curator*, *admin*) and status (*active*, *suspended*). Suspending signs the person out everywhere and revokes their tokens. You cannot demote or suspend yourself. The first administrator is `ATLAS_INITIAL_ADMIN` (or the first account). That name is a one-time bootstrap: once an administrator exists, or any account has been deleted, registering the name again creates an ordinary user; `atlas make-admin <username>` promotes someone from the command line.
 
 ## Tokens
 

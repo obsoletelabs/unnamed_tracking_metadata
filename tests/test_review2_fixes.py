@@ -166,6 +166,32 @@ def test_initial_admin_setting_decides_who_administers(session):
     assert first.role == "user" and boss.role == "admin"
 
 
+def test_deleting_the_initial_admin_does_not_hand_the_name_to_the_next_registrant(session):
+    from atlas import social
+
+    s = build_settings(initial_admin="boss")
+    boss = accounts.register(session, s, "boss", PW)
+    deputy = accounts.register(session, s, "deputy", PW)
+    deputy.role = "admin"
+    session.flush()
+    social.delete_account(session, boss)
+    session.flush()
+    returning = accounts.register(session, s, "boss", PW)
+    assert boss.role == "user" and returning.role == "user"
+
+
+def test_the_initial_admin_name_is_single_use_even_without_another_administrator(session):
+    from atlas import social
+
+    s = build_settings(initial_admin="boss")
+    boss = accounts.register(session, s, "boss", PW)
+    boss.role = "user"  # for example demoted by `atlas` tooling before the account is deleted
+    session.flush()
+    social.delete_account(session, boss)
+    session.flush()
+    assert accounts.register(session, s, "boss", PW).role == "user"
+
+
 def test_production_with_open_registration_needs_an_initial_admin(tmp_path):
     with pytest.raises(ValueError, match="INITIAL_ADMIN"):
         build_settings(environment="production", public_url="https://x.test", role="local",
