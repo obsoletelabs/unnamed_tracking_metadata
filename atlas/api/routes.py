@@ -8,9 +8,20 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import __version__, accounts, auth, custom, db, facets, feed, importer, key_rotation, media, service
+from .. import __version__, accounts, auth, custom, db, facets, feed, importer, key_rotation, media, service, sync
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
-from ..models import Artwork, Canonical, Lock, Observation, ReplicatedChange, ReplicatedFeed, ReviewItem, SyncCursor, Token
+from ..models import (
+    Artwork,
+    Canonical,
+    Lock,
+    Observation,
+    ReplicatedChange,
+    ReplicatedFeed,
+    ReviewItem,
+    SyncCursor,
+    SyncFailure,
+    Token,
+)
 from ..normalize import norm_namespace
 from ..providers import ProviderError
 from ..resolve import find
@@ -77,11 +88,33 @@ def ready(session: Sess, st: St, response: Response) -> dict[str, str]:
 def status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]) -> dict[str, Any]:
     cursors = {c.upstream: c.last_seq for c in session.scalars(select(SyncCursor))}
     return {"role": st.ctx.settings.role, "feed_head": feed.head_seq(session),
-            "upstream_cursors": cursors,
+            "upstream_cursors": cursors, "sync_failures": sync.open_failures(session),
             # the detail the public /ready deliberately leaves out
             "checks": {"database": "ok", "schema": db.schema_state(session, st.ctx.settings.database_url),
                        "media": "ok" if media.storage_problem(st.ctx.settings) is None else "unwritable",
                        "provider_failures": st.providers.failure_counts()}}
+
+
+@router.get("/sync/failures", tags=["admin"])
+def sync_failures(session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))],
+                  limit: Annotated[int, Query(ge=1, le=200)] = 50) -> dict[str, Any]:
+    """Mirrored feed entries that could not be applied and still need attention."""
+    rows = session.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))
+                           .order_by(SyncFailure.node_id, SyncFailure.seq).limit(limit)).all()
+    return {"open": sync.open_failures(session),
+            "failures": [{"node_id": f.node_id, "seq": f.seq, "kind": f.kind, "error": f.error,
+                          "attempts": f.attempts, "first_failed_at": f.first_failed_at.isoformat(),
+                          "last_attempt_at": f.last_attempt_at.isoformat()} for f in rows]}
+
+
+@router.post("/sync/failures/retry", tags=["admin"])
+def retry_sync_failures(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))],
+                        limit: Annotated[int, Query(ge=1, le=500)] = 100) -> dict[str, Any]:
+    """Retry failed mirrored entries now, whatever the automatic attempt count."""
+    service.write_lock(session)
+    result = sync.retry_failures(session, st.ctx, limit=limit, max_attempts=None)
+    session.commit()
+    return {**result, "open": sync.open_failures(session)}
 
 
 @router.get("/site", tags=["ops"])

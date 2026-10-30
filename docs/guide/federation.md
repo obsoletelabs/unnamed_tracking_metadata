@@ -87,6 +87,7 @@ You can also configure a single upstream with environment variables (`ATLAS_UPST
 ## Operating it
 
 * **Position/lag:** Admin → Peers shows each peer's position; `GET /api/v2/status` (admin) shows the authority's feed head.
+* **Entries that fail to apply:** a mirror never drops one silently. If a feed entry cannot be applied it is rolled back, recorded, and the rest of the page still applies. Each pull retries the recorded entries from the signed copy the mirror retains (up to 20 automatic attempts each; retries are idempotent, so they converge without duplicates). `GET /api/v2/status` shows the open count as `sync_failures`, `GET /api/v2/sync/failures` lists them with the error and attempt count, and `POST /api/v2/sync/failures/retry` retries them immediately, including ones past the automatic limit.
 * **Add a mirror:** nothing to do on the authority except issue a token.
 * **Remove a peer:** *Remove*; data already received stays.
 * **Disaster recovery:** a current verified database backup preserves identity. If that is unavailable, a mirror with complete retained signatures can build an [offline recovery candidate](recovery.md) under a fresh root; followers explicitly retire the old origin and pin the new one.

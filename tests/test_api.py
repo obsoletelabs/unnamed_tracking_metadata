@@ -162,3 +162,21 @@ def test_large_achievement_catalogue_is_readable_in_bounded_pages(client):
     assert pages == 3 and seen == [a["id"] for a in unpaged["results"]] and len(set(seen)) == 450
     assert client.get(f"/api/v2/games/{cid}/achievements?limit=201", headers=read).status_code == 422
     assert client.get(f"/api/v2/games/{cid}/achievements?limit=10&offset=900", headers=read).json()["results"] == []
+    
+    
+def test_failed_sync_entries_are_admin_only_and_reported(client):
+    from atlas.models import SyncFailure
+
+    assert client.get("/api/v2/sync/failures").status_code == 401
+    reader = mint(client, ["read"])
+    assert client.get("/api/v2/sync/failures", headers=H(reader)).status_code == 403
+    assert client.post("/api/v2/sync/failures/retry", headers=H(reader)).status_code == 403
+    with client.app_state.maker() as s:
+        s.add(SyncFailure(node_id="up", seq=7, kind="obs", error="ValueError: bad", attempts=3))
+        s.commit()
+    body = client.get("/api/v2/sync/failures", headers=H(ADMIN)).json()
+    assert body["open"] == 1 and body["failures"][0]["seq"] == 7 and body["failures"][0]["attempts"] == 3
+    assert client.get("/api/v2/status", headers=H(ADMIN)).json()["sync_failures"] == 1
+    # the retained entry is gone, so the retry reports it as still failing rather than hiding it
+    retry = client.post("/api/v2/sync/failures/retry", headers=H(ADMIN)).json()
+    assert retry["still_failing"] == 1 and retry["open"] == 1
