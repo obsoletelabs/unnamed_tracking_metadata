@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from sqlalchemy import func, select, text
 
-from atlas import db, feed, service
+from atlas import custom, db, feed, service
 from atlas.models import Canonical, ChangeLog, Crosswalk, Observation
 from atlas.service import Ctx
 from atlas.signing import load_identity
@@ -240,3 +240,16 @@ def test_concurrent_community_races(pg):
         roles = [u.role for u in s.scalars(select(User))]
         assert roles.count("admin") == 1 and len(roles) == 6, roles
     _ = rid
+
+
+def test_a_record_of_the_longest_media_type_key_is_stored(pg):
+    maker, ctx = pg
+    key = "a" * 32
+    with maker() as s:
+        custom.seed(s)
+        custom.save_type(s, ctx, key, "Long")
+        [r] = service.ingest(s, ctx, batch("manual", [{"external_id": "long", "title": "Long Type"}], kind="manual"),
+                             curator=True, media_type=key)
+        s.commit()
+        assert s.get(Canonical, r.canonical_id).media_type == key
+
