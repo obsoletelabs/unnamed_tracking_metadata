@@ -250,3 +250,61 @@ def test_openapi_documents_the_c4_response(atlas):  # noqa: F811
     assert set(item["properties"]["tier"]["enum"]) == {"id", "strong", "weak", "none"}
     for key in ("assigned", "redirected_from", "matched_keys", "conflict", "canonical_id", "method"):
         assert key in item["properties"], key
+
+
+def test_unknown_atlas_id_never_lets_the_title_assign(atlas):  # noqa: F811
+    """A client holding an Atlas id this node does not know (another authority, a reset database, a typo) is not
+    told to adopt a different record on title alone: the title candidates are reported, nothing is assigned."""
+    ids = build(atlas)
+    unknown = "atlas:01ZZZZZZZZZZZZZZZZZZZZZZZZ"
+    with atlas.state.maker() as session:
+        assert session.get(models.Canonical, unknown) is None
+        assert session.get(models.Crosswalk, ("atlas", unknown)) is None
+    plain, held, as_provider = resolve(
+        atlas,
+        {"title": "Portal 2", "release_date": "2011"},
+        {"namespace": "atlas", "external_id": unknown, "title": "Portal 2", "release_date": "2011"},
+        {"provider_ids": {"atlas": unknown}, "title": "Portal 2", "release_date": "2011"})
+    assert (plain["reason"], plain["canonical_id"]) == ("exact", ids["portal"])
+    for got in (held, as_provider):
+        assert (got["reason"], got["tier"], got["canonical_id"], got["assigned"]) == ("ambiguous", "weak", None, False)
+        assert got["candidates"][0]["id"] == ids["portal"] and got["confidence"] == plain["confidence"]
+        assert got["matched_keys"] == [] and got["game"] is None
+
+    # a known provider id is still identity evidence on its own
+    known = resolve(atlas, {"provider_ids": {"atlas": unknown, "steamsync": "620"}, "title": "Unrelated"})[0]
+    assert (known["reason"], known["canonical_id"]) == ("crosswalk", ids["portal"])
+
+
+def test_merge_chain_beyond_the_hop_limit_is_never_a_redirect(atlas):  # noqa: F811
+    from atlas.resolve import MAX_REDIRECT_HOPS
+
+    chain = [observe(atlas, {"source": "steamsync", "external_id": str(7000 + i), "title": f"Chain Link {i:02d}",
+                             "release_date": "2010-01-01"})["canonical_id"] for i in range(MAX_REDIRECT_HOPS + 2)]
+    for src, dst in zip(chain[:-1], chain[1:], strict=True):
+        r = atlas.post(f"/api/v2/games/{src}/merge", json={"into": dst}, headers=atlas.write)
+        assert r.status_code == 200, r.text
+    with atlas.state.maker() as session:
+        hops, cid = 0, chain[0]
+        while (row := session.get(models.Canonical, cid)).merged_into is not None:
+            hops, cid = hops + 1, row.merged_into
+        assert hops == MAX_REDIRECT_HOPS + 1 and cid == chain[-1]
+
+    deep, near = resolve(atlas, {"namespace": "atlas", "external_id": chain[0], "title": "Chain Link 21"},
+                         {"namespace": "atlas", "external_id": chain[1]})
+    # the followed record is still merged: no live id is known, so nothing is assigned, and the title is capped
+    assert (deep["reason"], deep["canonical_id"], deep["assigned"]) == ("ambiguous", None, False)
+    assert deep["redirected_from"] is None and deep["matched_keys"] == []
+    assert (near["reason"], near["canonical_id"], near["redirected_from"]) == ("redirect", chain[-1], chain[1])
+
+
+def test_conflict_own_is_the_items_own_atlas_id(atlas):  # noqa: F811
+    ids = build(atlas)
+    first, second = sorted((ids["doom1993"], ids["doom2016"]))
+    for own, other in ((first, second), (second, first)):
+        got = resolve(atlas, {"namespace": "atlas", "external_id": own, "provider_ids": {"atlas": other}})[0]
+        assert got["reason"] == "conflict" and got["canonical_id"] is None
+        assert got["conflict"]["own"] == own and sorted(got["conflict"]["canonical_ids"]) == [first, second]
+    # without an item-level Atlas id there is no `own`, whatever provider_ids.atlas says
+    got = resolve(atlas, {"provider_ids": {"atlas": first, "steamsync": "379720"}})[0]
+    assert got["reason"] == "conflict" and got["conflict"]["own"] is None and got["confidence"] == 0.0
