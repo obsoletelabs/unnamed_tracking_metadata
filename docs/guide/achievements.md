@@ -46,7 +46,8 @@ Signed-in members use **Edit achievements** on the game page. Each achievement i
 {
   "id": "01J…", "redirected_from": null, "hidden_count": 1,
   "results": [
-    {"id": "01J…", "name": "Escape", "description": "Leave the house", "hidden": false, "revealed": false,
+    {"id": "01J…", "key": "ak1:…", "keys": ["ak1:…"], "key_identity": "steam:ACH_ESCAPE",
+     "name": "Escape", "description": "Leave the house", "hidden": false, "revealed": false,
      "kind": "progression", "tier": "gold", "points": 50, "global_percent": 3.5,
      "icon_url": "/api/v2/media/<sha256>", "locked_icon_url": null,
      "external_ids": {"steam": "ACH_ESCAPE"}, "sources": ["steam"]}
@@ -54,11 +55,31 @@ Signed-in members use **Edit achievements** on the game page. Each achievement i
 }
 ```
 
+### Stable keys
+
+Every per-source achievement row has a stored **key**, `ak1:` followed by 26 lower-case base32 characters
+(30 characters in all). It is derived once, when the row is created, from the row's identity: `<source>:<external_id>`,
+or `<source>~<normalised name>` when the source gives no id. After that it is kept:
+
+* Refreshing a source updates its rows **in place**. An entry is matched by its key, then by its external id, then
+  by its normalised name, so a provider renaming an achievement, a reordered list or an added or removed entry keeps
+  the `id` and `key` of every entry that is still there.
+* A rename in the editor keeps the key, because the editor sends the key back with each row.
+* Merging two records keeps the keys (the key does not include the record id), and mirrors store the authority's keys.
+
+In the response, `keys` lists the keys of every source row merged into the entry (sorted) and `key` is the smallest
+of them. `key` does not depend on this node's source-trust settings, so every node names the entry alike; it changes
+only when a source adds or drops a row with a smaller key. `id` is the row id of the most trusted source: it is
+stable on this node now, but it is kept for older clients only and is **deprecated as an identity**. A client that
+forwards entries to another system should use `key`. `key_identity` is the plain identity behind `key`, for
+debugging; it is `null` while the entry is hidden and redacted. It is not a checksum: after a rename in the editor it
+names the new name while `key` keeps the old one. Keys are unique within one record, not across records.
+
 Large catalogues can be read in pages so a single response stays small: add `limit` (1–200) and `offset`, and keep
 requesting with the returned `next_offset` until it is `null`. `total` and `hidden_count` always describe the whole
 catalogue, and the order is stable, so pages never overlap or skip an entry. Without `limit` the whole list comes
 back in one response, as before. A client that forwards a catalogue to another system, such as the Tracking App's
-Atlas plugin, should page and de-duplicate by achievement `id`.
+Atlas plugin, should page and de-duplicate by achievement `key` (or `id` on an Atlas without keys).
 
 Relative image paths are resolved against the Atlas base URL. Origin image addresses are never returned, so clients cannot be made to hotlink a third-party site. Images need a publicly reachable Atlas for the Tracking App to download them (as for artwork).
 
@@ -68,13 +89,13 @@ Hidden achievements are viewable, but only by signed-in people and only on reque
 
 * **Anonymous visitors and the public site.** They only learn that a hidden achievement exists (and its kind, tier, points and rarity, which do not spoil anything). The page never contains the name, description, icon or provider ids.
 * **Signed-in members on the website.** The row is concealed; clicking **Reveal (spoiler)** requests `/game/<id>/achievements/<achievement id>` for that single entry. The request needs the member's session and is answered `Cache-Control: no-store`, so the text is not in the page source, not in shared caches and not sent to anonymous requests. (Without JavaScript the button opens a small page with the same text.)
-* **The API.** A hidden achievement is returned **redacted**: `name` is `"Hidden achievement"`, `description` is empty, no icon, no `external_ids`, `revealed: false`. To reveal, add `?reveal=all` or `?reveal=<id>,<id>` (Atlas ids). Atlas honours it only for a **signed-in user's personal token** or a token with the `curate` scope (or `admin`). Every other token (including a plain `read` token) still gets redacted rows, even if it sends `reveal`. A client should ask for the ids the user has already unlocked. Revealed rows have `revealed: true`. If *any* source marks an achievement hidden it stays hidden.
+* **The API.** A hidden achievement is returned **redacted**: `name` is `"Hidden achievement"`, `description` is empty, no icon, no `external_ids`, `revealed: false`. To reveal, add `?reveal=all` or `?reveal=<id>,<id>` (Atlas ids or keys). A hidden entry still carries `key` and `keys`: they are digests and do not spell out the name or the provider id, while `key_identity` is `null` until it is revealed. Atlas honours it only for a **signed-in user's personal token** or a token with the `curate` scope (or `admin`). Every other token (including a plain `read` token) still gets redacted rows, even if it sends `reveal`. A client should ask for the ids the user has already unlocked. Revealed rows have `revealed: true`. If *any* source marks an achievement hidden it stays hidden.
 
 Privacy tradeoff: this protects against crawlers, casual visitors and spoiler-averse readers, not against a determined member. Anyone can create an account (when registration is open) and then reveal any hidden achievement, exactly as they could with a personal token; reveal requests are not rate limited separately. Atlas has no notion of who has *unlocked* an achievement (it stores no progress), so it cannot restrict reveal to people who have earned it; the client decides which ids to ask for. Sites that want stricter secrecy can close registration or keep a game's secret achievements out of Atlas.
 
 ## Contributing
 
-* Curators: `PUT /api/v2/games/{id}/achievements` with `{"items": [...]}` replaces the curator source's list. Every field above (except `id`, `sources`, `external_ids`) can be sent; `external_id` is the id at that source; `icon_url` / `locked_icon_url` must be `http(s)` addresses and are downloaded by Atlas's artwork cache under the same safety rules (public addresses only, content-type and size checks).
+* Curators: `PUT /api/v2/games/{id}/achievements` with `{"items": [...]}` replaces the curator source's list. Every field above (except `id`, `keys`, `key_identity`, `sources`, `external_ids`) can be sent; `key` may be sent to keep an entry's key through a rename (it must be an `ak1:` key; a key another source's row already holds is ignored and a new one derived); `external_id` is the id at that source; `icon_url` / `locked_icon_url` must be `http(s)` addresses and are downloaded by Atlas's artwork cache under the same safety rules (public addresses only, content-type and size checks).
 * Everyone signed in: **Edit achievements** on the game page (see [the editor](#the-editor)) creates a proposal that goes through the normal review (reputation rules, revert). Proposals can *replace* the community list (`{"items": [...], "mode": "replace"}`) or add to it.
 
 ## Host app contract

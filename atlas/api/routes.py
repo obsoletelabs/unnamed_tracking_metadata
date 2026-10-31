@@ -571,8 +571,11 @@ def get_achievements(cid: str, st: St, session: Sess, principal: Annotated[auth.
                      reveal: Annotated[str | None, Query(max_length=2000)] = None,
                      limit: Annotated[int | None, Query(ge=1, le=ACHIEVEMENT_PAGE_MAX)] = None,
                      offset: Annotated[int, Query(ge=0)] = 0):
-    """Hidden achievements come back redacted. `reveal=all` or `reveal=<id>,<id>` unlocks their real text, but only
-    for a signed-in user's own token or a curator/admin token; any other caller still gets the redacted rows.
+    """Hidden achievements come back redacted. `reveal=all` or `reveal=<id or key>,...` unlocks their real text, but
+    only for a signed-in user's own token or a curator/admin token; any other caller still gets the redacted rows.
+
+    Each entry carries a stable `key` (`ak1:…`, the smallest of `keys`, the stored keys of the rows merged into it)
+    and `key_identity` (null while redacted). `id` stays for older clients and is deprecated as an identity.
 
     Large catalogues can be read in pages: pass `limit` (at most 200) and `offset`, and follow `next_offset` until it
     is null. The order is stable, so pages never overlap or skip. Without `limit` the whole list is returned."""
