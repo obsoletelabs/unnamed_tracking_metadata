@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
@@ -23,8 +24,10 @@ def make_engine(url: str) -> Engine:
     return create_engine(url, pool_pre_ping=True)
 
 
-def make_sessionmaker(engine: Engine) -> sessionmaker[Session]:
-    return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+def make_sessionmaker(engine: Engine, settings: Any = None) -> sessionmaker[Session]:
+    """`settings` travels in `session.info["atlas_settings"]`, so code that only has a session (the feed signer)
+    can still decrypt the node signing key (CONTRACTS-v1 C9.1)."""
+    return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, info={"atlas_settings": settings})
 
 
 @contextmanager
@@ -40,7 +43,9 @@ def session_scope(maker: sessionmaker[Session]) -> Iterator[Session]:
         session.close()
 
 
-def alembic_config(url: str):
+def alembic_config(url: str, settings: Any = None):
+    """With `settings`, data migrations that need ATLAS_SECRET_KEY (0024) use its secrets; without, they read
+    ATLAS_SECRET_KEY and ATLAS_SECRET_KEY_PREVIOUS from the environment."""
     from pathlib import Path
 
     from alembic.config import Config
@@ -48,6 +53,8 @@ def alembic_config(url: str):
     cfg = Config()
     cfg.set_main_option("script_location", str(Path(__file__).parent / "migrations"))
     cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    if settings is not None:
+        cfg.attributes["atlas_secrets"] = (settings.secret_key, settings.secret_key_previous)
     return cfg
 
 
@@ -65,7 +72,13 @@ def schema_state(session: Session, url: str) -> str:
     return "current" if applied == heads else "behind"
 
 
-def upgrade(url: str, revision: str = "head") -> None:
+def upgrade(url: str, revision: str = "head", settings: Any = None) -> None:
     from alembic import command
 
-    command.upgrade(alembic_config(url), revision)
+    command.upgrade(alembic_config(url, settings), revision)
+
+
+def downgrade(url: str, revision: str, settings: Any = None) -> None:
+    from alembic import command
+
+    command.downgrade(alembic_config(url, settings), revision)

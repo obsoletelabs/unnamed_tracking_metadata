@@ -30,8 +30,10 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                     "PostgreSQL for authorities and an explicit initial administrator."),
     "auto_migrate": ("Node", "Run database migrations on start. Default: on for SQLite, off otherwise. With several replicas "
                      "set `false` and run `atlas migrate` as a job."),
-    "secret_key": ("Node", "Encrypts secrets stored in the database (peer tokens, OIDC client secrets, provider credentials entered in Admin → Integrations). Generate one with "
-                   "`atlas secret-key`. Losing it makes those secrets unreadable."),
+    "secret_key": ("Node", "Encrypts secrets stored in the database (the node signing key, peer tokens, OIDC client secrets, provider credentials entered in Admin → Integrations). Generate one with "
+                   "`atlas secret-key`. Losing it makes those secrets unreadable, and a backup's node identity unrecoverable."),
+    "secret_key_previous": ("Node", "Comma-separated retired secrets that can still decrypt while you rotate "
+                            "`ATLAS_SECRET_KEY`. Run `atlas secrets rewrap`, then remove them."),
     "bootstrap_admin_token": ("Node", "32+ random characters. Becomes an admin API token while set; removing it revokes it. "
                               "Use it to create the first real tokens."),
     "initial_admin": ("Node", "Username that becomes the website administrator when it registers. If unset, the first account "

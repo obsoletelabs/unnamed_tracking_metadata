@@ -1,8 +1,10 @@
 """Portable backups: every table plus the cached media in one verifiable archive, restorable on SQLite or PostgreSQL.
 
 An archive is a gzip'd tar holding `tables/<name>.jsonl`, `media/<blob>` and a `manifest.json` that lists the SHA-256 of
-every member, the Atlas version and the database revision. It contains secrets (password hashes, the node's signing key),
-so it is written with owner-only permissions; encrypt it before it leaves the machine.
+every member, the Atlas version and the database revision. It contains secrets (password hashes, tokens and, unless
+ATLAS_SECRET_KEY is set, the node's signing key in plaintext), so it is written with owner-only permissions; encrypt it
+before it leaves the machine. With ATLAS_SECRET_KEY the signing key and stored credentials are in it only encrypted
+(`enc:v1:`), and the archive cannot be used without that secret (CONTRACTS-v1 C9.1).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from cryptography.hazmat.primitives import serialization
 from sqlalchemy import BigInteger, DateTime, Engine, Integer, LargeBinary, Table, delete, func, select, text, update
 
 from . import __version__, client_changes
@@ -190,6 +193,68 @@ def verify(path: Path) -> dict[str, Any]:
     return manifest
 
 
+# table -> column holding a secrets_box token (the signing key and integration settings are handled apart)
+_SECRET_COLUMNS = {"peer": "token_enc", "oidc_issuer": "client_secret_enc", "user_mfa": "secret_enc"}
+
+
+def _rows(path: Path, table: str) -> Iterator[dict[str, Any]]:
+    with tarfile.open(path, "r:gz") as tar:
+        try:
+            member = tar.getmember(f"tables/{table}.jsonl")
+        except KeyError:
+            return
+        for line in io.TextIOWrapper(tar.extractfile(member), encoding="utf-8"):  # type: ignore[arg-type]
+            yield json.loads(line)
+
+
+def secret_check(settings: Settings, path: Path) -> dict[str, Any]:
+    """`backup verify --secret-check`: decrypt the archive's signing key and stored secrets with this node's
+    ATLAS_SECRET_KEY (and ATLAS_SECRET_KEY_PREVIOUS), without restoring anything. Raises BackupError when
+    there is no secret to check with or something does not decrypt."""
+    from . import integrations, secrets_box, signing
+
+    if not secrets_box.available(settings):
+        raise BackupError("set ATLAS_SECRET_KEY to the secret of the node that made this backup to check it")
+    path = Path(path)
+    stored = next((r["value"] for r in _rows(path, "node_state") if r.get("key") == signing.SIGNING_KEY), None)
+    result: dict[str, Any] = {"signing_key": None if stored is None else signing.at_rest(stored), "secrets": 0}
+    if stored is not None:
+        try:
+            identity = signing.unseal(settings, stored)
+        except (secrets_box.SecretsError, ValueError) as exc:
+            raise BackupError(f"the signing key in this backup cannot be decrypted: {exc}") from None
+        public = identity.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        result["signing_key_id"] = signing.key_id_for(public)
+    tokens = [(table, row.get(column)) for table, column in _SECRET_COLUMNS.items() for row in _rows(path, table)]
+    keys = {integrations.PREFIX + field for field in integrations.SECRET_FIELDS}
+    tokens += [("setting", row.get("value")) for row in _rows(path, "setting") if row.get("key") in keys]
+    for table, token in tokens:
+        if not isinstance(token, str) or not token:
+            continue
+        try:
+            secrets_box.decrypt(settings, token)
+        except secrets_box.SecretsError:
+            raise BackupError(f"a stored secret in table {table} cannot be decrypted with ATLAS_SECRET_KEY") from None
+        result["secrets"] += 1
+    return result
+
+
+def _require_readable_key(settings: Settings, path: Path) -> None:
+    """Refuse, before anything is deleted, to restore an encrypted signing key this node cannot decrypt:
+    the node would refuse to start afterwards, with the previous database already replaced."""
+    from . import secrets_box, signing
+
+    stored = next((r["value"] for r in _rows(path, "node_state") if r.get("key") == signing.SIGNING_KEY), None)
+    if stored is None or signing.at_rest(stored) != "encrypted":
+        return
+    try:
+        signing.unseal(settings, stored)
+    except (secrets_box.SecretsError, ValueError):
+        raise BackupError("the signing key in this backup is encrypted and ATLAS_SECRET_KEY (or "
+                          "ATLAS_SECRET_KEY_PREVIOUS) on this node cannot decrypt it; set the secret of the node "
+                          "that made the backup and run the restore again. Nothing was changed") from None
+
+
 def _self_fk_columns(table: Table) -> list[str]:
     return [c.name for c in table.columns for fk in c.foreign_keys if fk.column.table is table]
 
@@ -211,6 +276,7 @@ def restore(settings: Settings, engine: Engine, path: Path, *, force: bool = Fal
     """Load an archive into a database migrated to the archive's revision. Refuses a non-empty database unless forced."""
     path = Path(path)
     manifest = verify(path)
+    _require_readable_key(settings, path)
     tables = {t.name: t for t in _tables()}
     with engine.begin() as conn:
         current = _revision(conn)
