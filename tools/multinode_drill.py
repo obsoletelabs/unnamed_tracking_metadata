@@ -41,8 +41,12 @@ def csrf(client, path="/me"):
 
 
 class Node:
-    def __init__(self, root, name, role, database_url=None):
+    def __init__(self, root, name, role, database_url=None, *, password=PASSWORD, extra_env=None, python=None):
         self.root, self.name, self.role = root, name, role
+        # `password` and `extra_env` let other harnesses (tools.federation_lab) generate per-run
+        # credentials and tune a node; `python` runs the server from another interpreter, for
+        # example a virtualenv holding an older release, to build a real mixed-version network.
+        self.password, self.extra_env, self.python = password, dict(extra_env or {}), python or sys.executable
         self.url = f"http://127.0.0.1:{free_port()}"
         self.database_url = database_url or f"sqlite:///{root}/{name}.db"
         self.admin_token, self.encryption_key = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
@@ -53,15 +57,15 @@ class Node:
         self.app = main.create_app(settings)
         self.state = self.app.state.atlas
         with self.state.maker() as session:
-            accounts.register(session, settings, "drill-admin", PASSWORD, "admin@example.test")
-            accounts.register(session, settings, "drill-user", PASSWORD, "user@example.test")
-            accounts.register(session, settings, "drill-other", PASSWORD, "other@example.test")
+            accounts.register(session, settings, "drill-admin", self.password, "admin@example.test")
+            accounts.register(session, settings, "drill-user", self.password, "user@example.test")
+            accounts.register(session, settings, "drill-other", self.password, "other@example.test")
             _, self.reader = auth.create_token(session, "drill-reader", ["read"])
             _, self.follower = auth.create_token(session, "drill-follower", ["read", "sync"])
             _, self.scraper = auth.create_token(session, "drill-scraper", ["metrics"])
             session.commit()
         self.process, self.client, self.admin = None, None, None
-        self.log = (root / f"{name}.log").open("wb")
+        self.log = (root / f"{name}.log").open("ab")
 
     def start(self):
         env = {key: value for key, value in os.environ.items() if not key.startswith("ATLAS_")}
@@ -70,7 +74,8 @@ class Node:
                    ATLAS_SECRET_KEY=self.encryption_key, ATLAS_BOOTSTRAP_ADMIN_TOKEN=self.admin_token,
                    ATLAS_MEDIA_DIR=str(self.root / f"{self.name}-media"), ATLAS_MEDIA_CACHE_ENABLED="false",
                    ATLAS_SYNC_INTERVAL_SECONDS="3600", ATLAS_METRICS_ENABLED="true", ATLAS_JSON_LOGS="true")
-        self.process = subprocess.Popen([sys.executable, "-m", "uvicorn", "atlas.main:app_factory", "--factory",
+        env.update(self.extra_env)
+        self.process = subprocess.Popen([self.python, "-m", "uvicorn", "atlas.main:app_factory", "--factory",
                                         "--host", "127.0.0.1", "--port", self.url.rsplit(":", 1)[1]],
                                        env=env, stdout=self.log, stderr=self.log)
         self.client = httpx.Client(base_url=self.url, timeout=20, follow_redirects=False, trust_env=False)
@@ -89,7 +94,8 @@ class Node:
 
     def signin(self, username):
         client = httpx.Client(base_url=self.url, timeout=20, follow_redirects=False, trust_env=False)
-        response = client.post("/login", data={"csrf": csrf(client, "/login"), "username": username, "password": PASSWORD})
+        form = {"csrf": csrf(client, "/login"), "username": username, "password": self.password}
+        response = client.post("/login", data=form)
         assert response.status_code == 303, f"sign-in on {self.name}"
         return client
 
