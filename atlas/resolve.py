@@ -221,6 +221,11 @@ def _atlas_ids(namespace: str, external_id: str, provider_ids: dict[str, str] | 
     return out
 
 
+def _is_live(session: Session, cid: str) -> bool:
+    row = session.get(Canonical, cid)
+    return row is not None and row.merged_into is None
+
+
 def _contradicted(session: Session, cid: str, keys: list[tuple[str, str]]) -> bool:
     """True when the client holds an id in a namespace where the title candidate already has a different id.
     The client's key is not in the crosswalk (or identity evidence would have answered), so equal titles are then
@@ -242,20 +247,35 @@ def classify(session: Session, settings: Settings, *, namespace: str, external_i
       on the title.
     - Identity evidence that points at more than one record is a `conflict`: no canonical id is returned.
     - Title evidence alone assigns only when it is exact or a capped fuzzy match, clearly ahead, not a placeholder
-      title and not contradicted by an id the client holds in the same namespace.
+      title, not contradicted by an id the client holds in the same namespace, and the client sent no Atlas id
+      that fails to resolve to a live record here.
     """
     matched: dict[tuple[str, str], str] = {}
     requested_atlas: dict[str, str] = {}  # live id -> the Atlas id the client sent
+    own_atlas: str | None = None  # live id of the item's own external_id when namespace is "atlas"
+    # An Atlas id the client holds but this node cannot resolve to a live record (unknown here, or a merge chain
+    # longer than MAX_REDIRECT_HOPS) is not evidence for any record, but it is evidence against adopting another
+    # record on title alone: every record here has an Atlas id, and it is not the one the client holds.
+    unresolved_atlas = False
+    own_cids = set(_atlas_ids(namespace, external_id, None))  # the item's own external_id, as an Atlas id
     for cid in _atlas_ids(namespace, external_id, provider_ids):
         if session.get(Canonical, cid) is None:
-            continue  # unknown Atlas ids are not evidence; the provider ids and the title still are
+            unresolved_atlas = True
+            continue
         live = follow(session, cid)
+        if not _is_live(session, live):
+            unresolved_atlas = True
+            continue
         matched[(ATLAS_NAMESPACE, cid)] = live
         requested_atlas.setdefault(live, cid)
+        if cid in own_cids:
+            own_atlas = live
     keys = [(namespace, external_id)] if namespace != ATLAS_NAMESPACE else []
     keys += [(k, v) for k, v in (provider_ids or {}).items() if k != ATLAS_NAMESPACE]
     keys = [k for k in dict.fromkeys(keys) if k[0] and k[1]]
     for key, live in lookup_keys(session, keys).items():
+        if not _is_live(session, live):
+            continue  # a crosswalk row behind an over-long merge chain names no live record
         matched[key] = live
     matched_keys = [(ns, ext, cid) for (ns, ext), cid in matched.items()]
     distinct = sorted(set(matched.values()))
@@ -275,7 +295,7 @@ def classify(session: Session, settings: Settings, *, namespace: str, external_i
                 return Resolution("redirect", live, 1.0, [(live, 1.0)], matched_keys, redirected_from=asked)
             return Resolution("id", live, 1.0, [(live, 1.0)], matched_keys)
         if namespace == ATLAS_NAMESPACE:
-            own = next((live for live in typed if live in requested_atlas), None)
+            own = own_atlas
         else:
             own = matched.get((namespace, external_id))
         own = own if own in typed else None
@@ -290,7 +310,7 @@ def classify(session: Session, settings: Settings, *, namespace: str, external_i
         return Resolution()
     out = [(c, round(s, 3)) for c, s, _ in cands]
     top_id, top, equal = cands[0]
-    if _assignable(settings, cands) and not _contradicted(session, top_id, keys):
+    if _assignable(settings, cands) and not unresolved_atlas and not _contradicted(session, top_id, keys):
         return Resolution("exact" if equal else "fuzzy", top_id, round(top, 3), out)
     return Resolution("ambiguous", None, round(top, 3), out)
 
