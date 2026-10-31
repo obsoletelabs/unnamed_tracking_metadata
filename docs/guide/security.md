@@ -11,7 +11,7 @@
 | Artwork | downloads only from public addresses (pinned address, every redirect re-checked, tunnelled IPv6 refused, environment proxies ignored), size and pixel limits, full image decode, content-hash storage, served with `nosniff` and a restrictive CSP |
 | Federation | Ed25519-signed feed (sequence, kind, content), pinned trust, gap/rewind/tamper rejection, provider data never republished; even from a trusted peer, observations, schema and values are validated like local input and a malformed entry is skipped instead of stalling replication |
 | OIDC | the sign-in is bound to the browser that started it (login-CSRF safe), exact redirect match, consent, PKCE, single-use burned codes, pinned issuer keys, algorithm never negotiated, email never used to take over an account |
-| Secrets at rest | peer tokens and client secrets encrypted with `ATLAS_SECRET_KEY`; SMTP password only in the environment; sent email bodies deleted from the outbox |
+| Secrets at rest | the node signing key, peer tokens, client secrets, provider credentials and authenticator secrets encrypted with `ATLAS_SECRET_KEY` (rotatable with `ATLAS_SECRET_KEY_PREVIOUS` and `atlas secrets rewrap`); SMTP password only in the environment; sent email bodies deleted from the outbox |
 | Concurrency | writers serialised; reviews, reverts and withdrawals cannot double-apply; responses are sent only after commit |
 | Audit | admin and moderation actions are logged with the actor |
 
@@ -20,7 +20,7 @@ Two independent code reviews were carried out during development; every confirme
 ## Known limits (be aware)
 
 * **No breached-password check**; passwords are length-checked only.
-* **Signing keys** remain in the database. Ed25519 feed keys support signed successor rotation; OIDC RSA-key rotation is not implemented.
+* **Signing keys** remain in the database, encrypted with `ATLAS_SECRET_KEY` when it is set (plaintext otherwise, with a warning on every start; see [the signing key at rest](backup.md#the-signing-key-at-rest)). Anyone with both a database dump and the secret holds the key. Ed25519 feed keys support signed successor rotation; OIDC RSA-key rotation is not implemented.
 * [Logs and metrics](observability.md) are opt-in. Monitoring, alert delivery and production thresholds remain operator responsibilities.
 * The SMTP server and the reverse proxy are yours to harden.
 * Admin-supplied URLs (peers, OIDC providers) are fetched by the server; only administrators can set them, and private addresses are allowed on purpose (LAN mirrors).

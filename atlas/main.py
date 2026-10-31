@@ -23,7 +23,7 @@ from .pages import seed_pages
 from .providers import Fetcher, build_registry
 from .service import AtlasError, Ctx
 from .settings import Settings, get_settings
-from .signing import load_identity
+from .signing import load_identity, signing_key_at_rest
 from .web import STATIC_DIR, templates
 from .web.account import router as account_router
 from .web.achievements import router as achievements_router
@@ -175,15 +175,29 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) ->
             stop.wait(wait)
 
 
+def _warn_key_at_rest(settings: Settings, at_rest: str | None) -> None:
+    """Warn on every start while the signing key is plaintext (C9.1). Decision H4: a production authority will
+    refuse to start in this state in the release after signed updates (A10); this release only warns."""
+    if at_rest != "plaintext":
+        return
+    if settings.role == "authority" and settings.environment == "production":
+        log.warning("signing_key_plaintext: this production authority stores its signing key unencrypted; set "
+                    "ATLAS_SECRET_KEY (see `atlas secret-key`). A future release will refuse to start like this.")
+    else:
+        log.warning("signing_key_plaintext: the node signing key is stored unencrypted; set ATLAS_SECRET_KEY "
+                    "(see `atlas secret-key`) to encrypt it")
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     engine = make_engine(settings.database_url)
-    maker = make_sessionmaker(engine)
+    maker = make_sessionmaker(engine, settings)
     auto = settings.auto_migrate if settings.auto_migrate is not None else settings.database_url.startswith("sqlite")
     if auto:
-        upgrade(settings.database_url)
+        upgrade(settings.database_url, settings=settings)
     with maker() as s:
-        identity = load_identity(s)
+        identity = load_identity(s, settings)
+        _warn_key_at_rest(settings, signing_key_at_rest(s))
         auth.sync_bootstrap(s, settings.bootstrap_admin_token)
         seed_pages(s)
         custom.seed(s)
