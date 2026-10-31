@@ -14,8 +14,12 @@ authority's longer kind name is retained (and parked) instead of failing the who
 
 Downgrade drops the new columns, index and table, and narrows replicated_change.kind again. It refuses
 while a retained entry has a kind longer than 16 characters (it would not fit; delete nothing silently).
-Parked rows survive the downgrade as ordinary open sync failures, and the applied cursor never moved
-past them, so the older code can still see and retry them; nothing is lost.
+Parked rows survive the downgrade as ordinary open sync failures and every signed entry stays
+retained. The older code cannot park, though: it retries those rows, passes over kinds it does not
+know, marks them resolved and moves its cursor past them (the old silent skip). After upgrading again,
+`atlas sync replay --rescan` re-classifies those resolved rows and `atlas sync replay --historical`
+re-applies them in feed order. The operational node_state keys this release wrote (downloaded head,
+refusal, rewind, protocol, replay marker) are deleted; the next pull recomputes them.
 """
 import sqlalchemy as sa
 from alembic import op
@@ -66,4 +70,5 @@ def downgrade() -> None:
         batch_op.drop_column('disposition')
     # Operational watermarks this release wrote; the previous release never reads them.
     op.execute("DELETE FROM node_state WHERE key LIKE 'sync_downloaded:%' OR key LIKE 'sync_refused:%' "
-               "OR key LIKE 'sync_protocol:%' OR key = 'sync_replayed_for'")
+               "OR key LIKE 'sync_protocol:%' OR key LIKE 'sync_rewound:%' "
+               "OR key = 'sync_replayed_for'")
