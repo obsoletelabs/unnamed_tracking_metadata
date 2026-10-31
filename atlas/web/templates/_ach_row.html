@@ -5,6 +5,7 @@
 {% if r.hidden %}<span class="badge">hidden</span>{% endif %}</legend>
 <input type="hidden" name="row" value="{{ r.key }}">
 <input type="hidden" name="external_id.{{ r.key }}" value="{{ r.external_id }}">
+<input type="hidden" name="akey.{{ r.key }}" value="{{ r.akey }}">
 <input type="hidden" name="global_percent.{{ r.key }}" value="{{ r.global_percent }}">
 {% for e in r.errors %}<p class="field-error" role="alert">{{ e }}</p>{% endfor %}
 {% for n in r.notes %}<p class="small muted">{{ n }}</p>{% endfor %}
