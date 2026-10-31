@@ -452,9 +452,10 @@ def set_values(session: Session, ctx: Ctx, cid: str, source: str, values: dict[s
         if cv is not None:
             session.delete(cv)
     session.flush()
-    if redistributable:
-        touch_version(session, cid)
-    if log and redistributable and ctx.settings.role == "authority":
+    # Clients see every change (C3.1); only redistributable data on an authority enters the signed feed.
+    signed = log and redistributable and ctx.settings.role == "authority"
+    touch_version(session, cid, cause="feed" if signed else "local")
+    if signed:
         feed.emit(session, ctx, "custom", {"canonical_id": cid, "source": source, "values": values,
                                                       "clear": list(clear)})
 

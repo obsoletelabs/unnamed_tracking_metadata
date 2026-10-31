@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
-from . import custom, facets, service
+from . import client_changes, custom, facets, service
 from .models import Canonical
 from .providers import ProviderError
 
@@ -29,7 +29,14 @@ def import_from_provider(st: AppState, session: Session, provider: str, external
     """Fetch full details (cached), merge them into the canonical record and keep its media and achievements.
 
     Raises ProviderError when the provider cannot be reached and service.AtlasError when it has no such record.
+    Every version bump it causes is a `provider` client change: visible to this node's clients through
+    `/changes?feed=local`, never signed into the feed (the data is not redistributable).
     """
+    with client_changes.cause(session, "provider"):
+        return _import(st, session, provider, external_id)
+
+
+def _import(st: AppState, session: Session, provider: str, external_id: str) -> Imported:
     results = st.providers.lookup(session, provider, external_id=external_id)
     batch = st.providers.as_batch(provider, results)
     if batch is None:
