@@ -30,31 +30,52 @@ The app combines Atlas with its other providers. The user's provider order sets 
 
 ### Contract tests
 
-`tests/test_tracking_app_contract.py` covers the plugin's read-only token, search variations, lookup by Atlas ID, resolving a candidate that only has other provider IDs, metadata and achievement fields, artwork before and after caching, and tokenless public `/media/<sha256>` downloads. It also covers the incremental change endpoint below. An Atlas change that breaks these client requests fails this contract suite.
+`tests/test_tracking_app_contract.py` covers the plugin's read-only token, search variations, lookup by Atlas ID, resolving a candidate that only has other provider IDs, metadata and achievement fields, artwork before and after caching, and tokenless public `/media/<sha256>` downloads. It also covers the incremental change endpoint below, in both its signed and its local mode. An Atlas change that breaks these client requests fails this contract suite.
 
 ### Incremental client updates
 
-Client apps that cache Atlas records can poll the signed change feed through a simpler read-only endpoint:
+Client apps that cache Atlas records can ask which records changed since they last looked. The
+route has two modes, chosen with `feed`. Use **`feed=local`**: it is the recommended mode.
 
 ```http
-GET /api/v2/changes?since=120&limit=100
+GET /api/v2/changes?feed=local&since=9000&limit=100
 Authorization: Bearer <read-scope-token>
 ```
 
 ```json
 {
-  "node_id": "atlas-node-id",
-  "head": 124,
-  "next_cursor": 124,
-  "has_more": false,
+  "feed": "local",
+  "node_id": "3f2a9c0d1e2b4a55",
+  "head": 9123,
+  "next_cursor": 9100,
+  "has_more": true,
+  "reset": false,
   "results": [
-    {"id": "atlas:0123456789abcdefghijklmnop", "version": 8, "merged_into": null},
-    {"id": "atlas:1123456789abcdefghijklmnop", "version": 5, "merged_into": "atlas:2123456789abcdefghijklmnop"}
+    {"id": "atlas:0123456789abcdefghijklmnop", "version": 14, "merged_into": null, "causes": ["provider"]},
+    {"id": "atlas:1123456789abcdefghijklmnop", "version": 5, "merged_into": "atlas:2123456789abcdefghijklmnop", "causes": ["merge"]}
   ]
 }
 ```
 
-`since` is the last `next_cursor` stored by the client. Continue with that cursor while `has_more` is true; the page limit is 1–500 feed events. The result list deduplicates canonical IDs touched in that page and reports each record's current version. A non-null `merged_into` identifies a redirect, so clients should refresh the destination record too. Events that do not affect a canonical record still advance the cursor. The optional `node_id` selects a replicated authority feed retained by this Atlas node; omit it to poll this node's own feed.
+| Mode | What it covers |
+| --- | --- |
+| `feed=local` (recommended) | Every client-visible change on **this** node: entries it signed, entries it applied from an upstream, local edits, provider imports (artwork, achievements, crossplay and other fields from Steam, IGDB and so on), merges and detaches. The cursor is this node's local change log. |
+| no `feed`, or `feed=signed` | The signed federation feed, unchanged from earlier releases. It **misses provider imports**, because data that may not be redistributed never enters the signed feed. On a mirror or local node it also needs `node_id=<authority>`. The response says `"feed": "signed"` and `"local_feed": true` (this node also serves the local mode). |
+
+How to poll:
+
+1. **First run.** Call `/changes?feed=local` once and store its `head` as your cursor, then read the records you need through the usual endpoints (in that order, so nothing that changes in between is missed). The log only holds changes made after this release was installed, so it is not a way to list every record.
+2. **Each poll.** Call with `since=<stored cursor>`. Refresh every record in `results` (the record itself, its achievements and its artwork), then store `next_cursor`. Repeat while `has_more` is true. `limit` is 1–500 log rows; a page lists each record once with its **current** version, so a record can show a version newer than the change that put it in the page.
+3. **Merges.** A non-null `merged_into` is a redirect: re-point your cached record to the destination, which is in the same page.
+4. **Reset.** If `reset` is `true`, `results` is empty and your cursor cannot be continued. This happens when the log was pruned past your cursor (see below), or when it was recreated (a database restore, a rollback of this release, or a cursor taken from another node). Store `next_cursor` (the current head) **first**, then re-read every cached record. Never treat `reset` as "nothing changed".
+
+`causes` lists why the record changed within the page: `feed`, `replicated`, `local`, `provider`, `merge` or `detach`. It is informational; refresh the record whatever it says. `version` only ever increases for a record, so you can skip a refresh when your cached copy already has that version.
+
+The two modes have separate cursors. Do not pass a cursor from one to the other, and do not send `node_id` with `feed=local` (that is a `400`): the local log has no other origin. A cursor also belongs to one node: if you switch to a different Atlas node, start again from step 1.
+
+**Retention.** Once a day the node deletes log rows older than `ATLAS_CLIENT_CHANGES_RETAIN_DAYS` (90 by default) that have a newer row for the same record. The newest row of every record is always kept, so a client that has been away for longer still sees every record that changed; its cursor may then be below the oldest kept row, which is answered with `reset`.
+
+**Privacy and licensing.** The local log holds a record id, a version and a cause, never record content. It is served only to this node's own clients with the `read` scope. It is never signed, never sent to followers or relays, and never copied into a [recovery candidate](recovery.md). Provider data a client fetches after a change is subject to the same rules as before.
 
 The route requires the `read` scope. It returns IDs and versions only; clients fetch changed records, achievements and artwork through their usual endpoints.
 
