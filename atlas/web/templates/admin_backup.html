@@ -6,7 +6,7 @@
 {% include "_adminnav.html" %}
 {% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
 <div class="card">
-  <h2 style="margin-top:0">Backups</h2>
+  <h2 class="flush-top">Backups</h2>
   {% if enabled %}
   <p>A verified archive of the whole database and cached artwork is written to <code>{{ directory }}</code> every {{ interval }} hours, keeping the newest {{ keep }}.
   Copy that folder somewhere else: a backup on the same disk does not survive the disk.</p>

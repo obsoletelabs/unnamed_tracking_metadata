@@ -1,4 +1,5 @@
 import json
+import os
 import tarfile
 
 import pytest
@@ -44,7 +45,8 @@ def test_recovery_uses_only_one_verified_public_feed_and_a_new_identity(tmp_path
     out = tmp_path / "candidate.tar.gz"
     result = promotion.candidate(settings, engine, a[2].ctx.identity.node_id, mirror[2].ctx.identity.node_id, out)
     assert result["node_id"] not in {st.ctx.identity.node_id for st in (a[2], b[2], mirror[2])}
-    assert out.stat().st_mode & 0o077 == 0
+    if os.name != "nt":  # NTFS has no POSIX permission bits, so group/other access cannot be asserted there
+        assert out.stat().st_mode & 0o077 == 0
     assert backup.verify(out)["media_included"] is False
     for table in ("app_user", "user_session", "api_token", "peer", "user_mfa", "outbox"):
         assert archive_rows(out, table) == []

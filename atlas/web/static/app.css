@@ -109,6 +109,9 @@ form.card, .card > form { max-width: 900px; }
 details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .sr { position: absolute; left: -9999px; }
 .row { display: flex; gap: 8px; }
+.row .grow { flex: 1; }
+.row .align-end { align-self: end; }
+.flush-top { margin-top: 0; }
 dl.facts dd, code { overflow-wrap: anywhere; }
 .hero > div { min-width: 0; }
 .brand img { height: 28px; width: auto; vertical-align: middle; margin-right: 8px; border-radius: 6px; }
