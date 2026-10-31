@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     sync_batch_size: int = Field(default=500, ge=1, le=5000)
     # Entries a follower keeps downloading, verifying and relaying past the first parked one (C1.4, H10).
     sync_max_parked_backlog: int = Field(default=50_000, ge=1)
+    client_changes_retain_days: int = Field(default=90, ge=1, le=3650)  # local client change log (C3.2)
     # Lowest follower protocol this node serves; followers below it refuse to sync (C1.3).
     min_follower_protocol: str = "1.0"
     # Highest protocol this node's own feed may use. Unset = min_follower_protocol. Raised in Admin → Peers.

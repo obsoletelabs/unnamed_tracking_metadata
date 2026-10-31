@@ -46,6 +46,10 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "sync_max_parked_backlog": ("Federation", "Entries a follower keeps downloading, verifying and relaying after the "
                                 "first entry it had to park (it needs a newer release). Above this it pauses downloading "
                                 "and reports `backlog_full`."),
+    "client_changes_retain_days": ("Limits", "Days the local client change log (`GET /api/v2/changes?feed=local`) keeps "
+                                   "superseded rows. A daily job then deletes every row that has a newer row for the "
+                                   "same record; the newest row of each record is always kept. A client whose cursor "
+                                   "is older than the oldest kept row gets `\"reset\": true` and must re-read."),
     "min_follower_protocol": ("Federation", "Lowest federation protocol a follower must speak to sync from this node "
                               "(followers below it refuse). Default: the previous release's protocol."),
     "emit_protocol": ("Federation", "Newest federation protocol this node's own feed may use. Unset = "
@@ -148,7 +152,7 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("put", "/games/{cid}/locks/{field}"): "Pin a field value; it beats every merged value.",
     ("post", "/games/{cid}/merge"): "Merge a record into another (leaves a redirect).",
     ("get", "/games/{cid}/observations"): "Raw source records behind a record (current and superseded).",
-    ("get", "/changes"): "Bounded client change page: canonical ids, current versions and merge redirects.",
+    ("get", "/changes"): "Bounded client change page: canonical ids, current versions and merge redirects. `feed=local` pages this node's local change log (every change, provider imports included); the default is the signed feed.",
     ("post", "/observations/{oid}/detach"): "Split one source record off onto its own record.",
     ("get", "/review"): "Open possible-duplicate and id-conflict items.",
     ("post", "/review/{rid}/dismiss"): "Mark a review item as not a duplicate.",

@@ -80,4 +80,4 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
-| `GET` | `/changes` | read | Bounded client change page: canonical ids, current versions and merge redirects. |
+| `GET` | `/changes` | read | Bounded client change page: canonical ids, current versions and merge redirects. `feed=local` pages this node's local change log (every change, provider imports included); the default is the signed feed. |

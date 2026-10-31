@@ -83,6 +83,7 @@ You can also configure a single upstream with environment variables (`ATLAS_UPST
 * A follower cannot merge, split or unpin records the upstream owns (those decisions belong to the authority). Pins a follower sets are **local-only**, never override upstream ones, and an upstream pin never overwrites a local override. Edits proposed on a follower are local overlays and are never sent upstream.
 * A record the follower created from a provider **folds into** the authoritative record when an upstream observation claims the same identifiers (authority wins; no duplicates).
 * Local nodes can add their own media types and fields; those stay local and win over an upstream definition with the same name.
+* Every node keeps a **local client change log** for its own API clients (`GET /api/v2/changes?feed=local`, see [Incremental client updates](tracking-app.md#incremental-client-updates)). It records which records changed and why, including provider imports that never enter the signed feed. It is unsigned and holds ids and versions only. It is never served by `/sync/changes`, never relayed and never copied into a recovery candidate, so nothing in it reaches a follower.
 
 ## Operating it
 

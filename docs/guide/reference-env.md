@@ -56,6 +56,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `ATLAS_CLIENT_CHANGES_RETAIN_DAYS` | `90` | Days the local client change log (`GET /api/v2/changes?feed=local`) keeps superseded rows. A daily job then deletes every row that has a newer row for the same record; the newest row of each record is always kept. A client whose cursor is older than the oldest kept row gets `"reset": true` and must re-read. |
 | `ATLAS_MAX_BATCH` | `1000` | Largest observation batch accepted by the API. **live** |
 | `ATLAS_MAX_RESOLVE` | `200` | Largest `/resolve` batch. **live** |
 | `ATLAS_RATE_LIMIT_PER_MINUTE` | `600` | API requests per token per minute (unauthenticated callers get 60 per address). **live** |

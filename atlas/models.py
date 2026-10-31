@@ -127,6 +127,27 @@ class ChangeLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class ClientChange(Base):
+    """This node's local, unsigned change log for its own API clients (C3).
+
+    One row per client-visible version bump, written only by `service.bump_version`. It holds ids, versions
+    and a cause, never record content, and it is never federated, relayed or copied into a recovery candidate:
+    nothing that builds or serves a signed feed reads this table."""
+
+    __tablename__ = "client_change"
+
+    seq: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    canonical_id: Mapped[str] = mapped_column(String(40))
+    version: Mapped[int] = mapped_column(Integer)
+    cause: Mapped[str] = mapped_column(String(16))  # feed | replicated | local | provider | merge | detach
+    origin_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    origin_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    # sqlite_autoincrement: SQLite never reuses a seq, even if the newest rows were ever deleted.
+    __table_args__ = (Index("ix_client_change_cid", "canonical_id", "seq"), {"sqlite_autoincrement": True})
+
+
 class SyncCursor(Base):
     __tablename__ = "sync_cursor"
 

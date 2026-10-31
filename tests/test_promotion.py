@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from atlas import accounts, auth, backup, custom, db, key_rotation, promotion, service
-from atlas.models import Canonical, FieldDef, NodeState, ReplicatedChange, User
+from atlas.models import Canonical, ClientChange, FieldDef, NodeState, ReplicatedChange, User
 from atlas.settings import Settings
 from atlas.signing import load_identity
 
@@ -40,6 +40,7 @@ def test_recovery_uses_only_one_verified_public_feed_and_a_new_identity(tmp_path
         session.commit()
         source_counts = {"users": len(list(session.scalars(select(User)))),
                          "canonicals": len(list(session.scalars(select(Canonical))))}
+        assert session.scalars(select(ClientChange)).all()  # the source mirror has a local client log
     settings = mirror[2].ctx.settings
     engine = mirror[2].maker.kw["bind"]
     out = tmp_path / "candidate.tar.gz"
@@ -48,8 +49,8 @@ def test_recovery_uses_only_one_verified_public_feed_and_a_new_identity(tmp_path
     if os.name != "nt":  # NTFS has no POSIX permission bits, so group/other access cannot be asserted there
         assert out.stat().st_mode & 0o077 == 0
     assert backup.verify(out)["media_included"] is False
-    for table in ("app_user", "user_session", "api_token", "peer", "user_mfa", "outbox"):
-        assert archive_rows(out, table) == []
+    for table in ("app_user", "user_session", "api_token", "peer", "user_mfa", "outbox", "client_change"):
+        assert archive_rows(out, table) == []  # the local client change log is never promoted (C3.1)
     ids = {row["id"] for row in archive_rows(out, "canonical")}
     assert aid in ids and bid not in ids and local.canonical_id not in ids
     assert {row["node_id"] for row in archive_rows(out, "replicated_change")} == {a[2].ctx.identity.node_id}
