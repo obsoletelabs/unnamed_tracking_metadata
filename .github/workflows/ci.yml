@@ -25,6 +25,13 @@ jobs:
       - run: uv sync --frozen --extra dev
       - run: uv run ruff check atlas tests tools e2e
       - run: uv run pytest -q
+      - name: Resolve contract fixture (C4.5, vendored by the metadata-atlas plugin)
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolve-contract-v1
+          path: |
+            tests/fixtures/resolve-contract-v1.json
+            tests/fixtures/resolve-contract-v1.json.sha256
       - name: Multi-authority HTTP and restore drills
         run: |
           uv run python -m tools.multinode_drill --postgres-admin-url "$ATLAS_TEST_PG_URL" --output topology-postgres.json

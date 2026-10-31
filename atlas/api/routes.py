@@ -43,7 +43,7 @@ from ..models import (
 )
 from ..normalize import norm_namespace
 from ..providers import ProviderError
-from ..resolve import find
+from ..resolve import Resolution, classify, conflict_review
 from ..service import AtlasError
 from ..signing import load_identity
 from .deps import AppState, get_session, require, state
@@ -167,14 +167,20 @@ def site(st: St, session: Sess) -> dict[str, Any]:
 # ---- reading ------------------------------------------------------------------------------------------
 
 class ResolveItem(BaseModel):
-    namespace: ProviderKey | None = None
+    namespace: ProviderKey | None = Field(default=None, description="Namespace of `external_id`: a provider or "
+                                                                    "source key, or `atlas` for an Atlas id.")
     external_id: str | None = Field(default=None, max_length=256)
     media_type: str | None = Field(default=None, max_length=32)
-    title: str | None = Field(default=None, max_length=500)
+    title: str | None = Field(default=None, max_length=500, description="Title evidence. Never used when an id "
+                                                                         "matches, and ignored when it is a "
+                                                                         "placeholder such as `Steam app 12345`.")
     platform: str | None = Field(default=None, max_length=50)
-    release_date: str | None = Field(default=None, max_length=10)
+    release_date: str | None = Field(default=None, max_length=10, description="`YYYY`, `YYYY-MM` or `YYYY-MM-DD`; "
+                                                                               "only the year is used.")
     developer: str | None = Field(default=None, max_length=200)
-    provider_ids: dict[ProviderKey, ProviderIdentity] | None = Field(default=None, max_length=32)
+    provider_ids: dict[ProviderKey, ProviderIdentity] | None = Field(
+        default=None, max_length=32, description="Every id the client holds, `{namespace: id}`. `atlas` is an "
+                                                 "Atlas id and is followed through merges.")
 
 
 class ResolveRequest(BaseModel):
@@ -182,28 +188,94 @@ class ResolveRequest(BaseModel):
     include_view: bool = True
 
 
-@router.post("/resolve", tags=["read"])
+class ResolveCandidate(BaseModel):
+    id: str
+    score: float
+
+
+class ResolveMatchedKey(BaseModel):
+    namespace: str
+    external_id: str
+    canonical_id: str = Field(description="The live record this key points at, after merge redirects.")
+
+
+class ResolveConflict(BaseModel):
+    canonical_ids: list[str] = Field(description="Every record the client's ids point at.")
+    own: str | None = Field(description="The record the item's own `namespace`/`external_id` points at: a hint for "
+                                        "a curator, never something to assign.")
+    review_id: str | None = Field(description="The open `id_conflict` review covering these records, if any.")
+
+
+class ResolveResult(BaseModel):
+    canonical_id: str | None = Field(description="Set only when the evidence allows assigning it (see `reason`).")
+    method: Literal["crosswalk", "exact", "fuzzy", "none"] = Field(
+        description="Pre-C4 field, kept for old clients. `none` whenever `canonical_id` is null, conflicts included.")
+    confidence: float
+    candidates: list[ResolveCandidate]
+    assigned: bool = Field(description="`canonical_id` is not null.")
+    reason: Literal["id", "redirect", "crosswalk", "conflict", "type_mismatch", "exact", "fuzzy", "ambiguous",
+                    "none"] = Field(description="Why. Clients auto-assign only `id`, `redirect`, `crosswalk` and "
+                                                "`exact`; never `conflict`, `type_mismatch` or `ambiguous`.")
+    tier: Literal["id", "strong", "weak", "none"] = Field(
+        description="Evidence tier: `id` (identity keys only, never the title), `strong` (title evidence that may "
+                    "assign), `weak` (title candidates that must not be assigned), `none`.")
+    redirected_from: str | None = Field(description="The Atlas id the client sent when it was merged into "
+                                                    "`canonical_id` (`reason: redirect`).")
+    matched_keys: list[ResolveMatchedKey] = Field(description="The client's ids that Atlas knows, and where each "
+                                                              "points.")
+    conflict: ResolveConflict | None = Field(description="Set only for `reason: conflict`.")
+    game: dict[str, Any] | None = Field(default=None, description="The record (as `GET /games/{id}`) when "
+                                                                  "`include_view` and `canonical_id` is set.")
+
+
+class ResolveResponse(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{"results": [
+        {"canonical_id": None, "method": "none", "confidence": 0.9,
+         "candidates": [{"id": "atlas:0123456789abcdefghijklmnop", "score": 1.0},
+                        {"id": "atlas:1123456789abcdefghijklmnop", "score": 1.0}],
+         "assigned": False, "reason": "conflict", "tier": "id", "redirected_from": None,
+         "matched_keys": [{"namespace": "steam", "external_id": "620",
+                           "canonical_id": "atlas:0123456789abcdefghijklmnop"},
+                          {"namespace": "igdb", "external_id": "72",
+                           "canonical_id": "atlas:1123456789abcdefghijklmnop"}],
+         "conflict": {"canonical_ids": ["atlas:0123456789abcdefghijklmnop", "atlas:1123456789abcdefghijklmnop"],
+                      "own": "atlas:0123456789abcdefghijklmnop", "review_id": None},
+         "game": None},
+    ]}]})
+    results: list[ResolveResult]
+
+
+def _resolution_out(r: Resolution, session: Session, st: AppState, include_view: bool) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "canonical_id": r.canonical_id, "method": r.method, "confidence": r.confidence,
+        "candidates": [{"id": c, "score": s} for c, s in r.candidates], "assigned": r.assigned,
+        "reason": r.reason, "tier": r.tier, "redirected_from": r.redirected_from,
+        "matched_keys": [{"namespace": ns, "external_id": ext, "canonical_id": cid}
+                         for ns, ext, cid in r.matched_keys],
+        "conflict": {"canonical_ids": r.conflict, "own": r.own, "review_id": conflict_review(session, r.conflict)}
+        if r.reason == "conflict" else None,
+    }
+    if include_view:
+        row = session.get(Canonical, r.canonical_id) if r.canonical_id else None
+        entry["game"] = game_out(row, None, session, st.ctx) if row else None
+    return entry
+
+
+@router.post("/resolve", tags=["read"], response_model=ResolveResponse, response_model_exclude_unset=True,
+             summary="Resolve client ids and titles to canonical Atlas ids (C4)")
 def resolve(body: ResolveRequest, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+    """Read-only. Identity evidence wins over titles; conflicting identity evidence returns `canonical_id: null`
+    with `reason: conflict` (a behaviour change, H2: older Atlas returned the item's own id with `crosswalk`)."""
     if len(body.items) > st.ctx.settings.max_resolve:
         raise HTTPException(413, f"at most {st.ctx.settings.max_resolve} items per request")
     out = []
     for it in body.items:
-        m = find(
+        r = classify(
             session, st.ctx.settings, namespace=it.namespace or "", external_id=it.external_id or "",
             provider_ids=it.provider_ids, title=it.title, release_date=it.release_date,
             platform=it.platform, developer=it.developer, media_type=it.media_type,
-        ) if (it.external_id or it.title or it.provider_ids) else None
-        if m is None:
-            out.append({"canonical_id": None, "method": "none", "confidence": 0.0, "candidates": []})
-            continue
-        entry: dict[str, Any] = {
-            "canonical_id": m.canonical_id, "method": m.method if m.assigned else "none",
-            "confidence": m.confidence, "candidates": [{"id": c, "score": s} for c, s in m.candidates],
-        }
-        if body.include_view and m.canonical_id:
-            row = session.get(Canonical, m.canonical_id)
-            entry["game"] = game_out(row, None, session, st.ctx) if row else None
-        out.append(entry)
+        ) if (it.external_id or it.title or it.provider_ids) else Resolution()
+        out.append(_resolution_out(r, session, st, body.include_view))
     return {"results": out}
 
 

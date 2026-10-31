@@ -133,6 +133,7 @@ def _open_review(session: Session, kind: str, cid: str, candidates: list[tuple[s
     cands = [[c, s] for c, s in candidates if c != cid]
     if not cands:
         return False
+    session.flush()  # sessions do not autoflush: one ingest item may open the same review twice
     existing = session.scalars(
         select(ReviewItem).where(
             ReviewItem.canonical_id == cid, ReviewItem.kind == kind, ReviewItem.status == "open"

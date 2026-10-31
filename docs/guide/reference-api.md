@@ -24,7 +24,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `GET` | `/games/{cid}/artwork` | read | Artwork by trust and priority, plus the best image per kind; `media_url` once cached, and `image_url` always. |
 | `GET` | `/games/{cid}/explain` | read | Which source and rule produced each field (provenance). |
 | `GET` | `/media/{digest}` | read | A cached, verified image. Immutable; `nosniff`. |
-| `POST` | `/resolve` | read | Batch (max `max_resolve`): store ids / titles to canonical ids with method and confidence. Read-only. |
+| `POST` | `/resolve` | read | Batch (max `max_resolve`): Atlas ids, provider ids and titles to canonical ids, with `reason` (id, redirect, crosswalk, conflict, type_mismatch, exact, fuzzy, ambiguous, none), `tier`, `matched_keys`, `conflict` and `redirected_from`. A conflict returns no id. Read-only. See [Tracking App](tracking-app.md#resolving-ids-post-resolve). |
 
 ## write
 
