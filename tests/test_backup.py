@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from atlas import backup, db, main, service
+from atlas import backup, client_changes, db, main, service
 from atlas.models import Base, Canonical, ChangeLog
 
 from .conftest import batch, build_settings
@@ -71,6 +71,17 @@ def _dump(engine):
     return out
 
 
+def _epoch(dump):
+    return dict(dump["node_state"]).get(client_changes.EPOCH)
+
+
+def _same_except_epoch(restored, before):
+    """A restore keeps every row except the client change log epoch, which it renews (C3.2)."""
+    strip = {**restored, "node_state": [r for r in restored["node_state"] if r[0] != client_changes.EPOCH]}
+    assert strip == {**before, "node_state": [r for r in before["node_state"] if r[0] != client_changes.EPOCH]}
+    assert _epoch(before) and _epoch(restored) and _epoch(restored) != _epoch(before)
+
+
 def _roundtrip(src_url, dst_url, tmp_path, dst_engine):
     media = tmp_path / "media"
     settings, st = _populate(src_url, media)
@@ -89,12 +100,15 @@ def _roundtrip(src_url, dst_url, tmp_path, dst_engine):
     dst_settings = build_settings(database_url=dst_url, media_dir=str(restored_media))
     loaded = backup.restore(dst_settings, dst_engine, archive)
     assert loaded["canonical"] == manifest["tables"]["canonical"]
-    assert _dump(dst_engine) == before  # every row, including the signed change feed, is identical
+    restored = _dump(dst_engine)
+    _same_except_epoch(restored, before)  # every row, including the signed change feed, is identical
     assert (restored_media / "ab" / f"{DIGEST}.png").read_bytes() == b"\x89PNG fake image bytes"
     with pytest.raises(backup.BackupError, match="already has data"):
         backup.restore(dst_settings, dst_engine, archive)
     backup.restore(dst_settings, dst_engine, archive, force=True)
-    assert _dump(dst_engine) == before
+    again = _dump(dst_engine)
+    _same_except_epoch(again, before)
+    assert _epoch(again) != _epoch(restored)  # every restore starts a new epoch
     # the feed keeps counting from where it stopped
     with dst_engine.connect() as c:
         head = c.execute(select(ChangeLog.seq).order_by(ChangeLog.seq.desc())).scalar()

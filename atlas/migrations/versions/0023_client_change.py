@@ -9,14 +9,20 @@ a client that a record had changed (#78 part 2, #62; CONTRACTS-v1 C3.1). This ta
 client-visible version bumps that `GET /api/v2/changes?feed=local` pages through. It holds ids, versions
 and a cause only, never record content, and is never federated, relayed or promoted.
 
-Upgrade creates the empty table and its index. Nothing is backfilled: the log starts with the first
-change after the upgrade, and clients do one full read when they switch to `feed=local`.
+Upgrade creates the empty table and its index, and a new random log epoch (`node_state` key
+`client_change_epoch`). Nothing is backfilled: the log starts with the first change after the upgrade, and
+clients do one full read when they switch to `feed=local`.
 
-Downgrade drops the table. It is a derived, disposable log (no record data lives only here), so nothing a
-record needs is lost. The previous release goes back to not bumping versions for provider imports.
-Upgrading again starts an empty log whose sequence restarts at 1; a client whose stored cursor is now
-above the head gets `"reset": true` and re-reads, so a restarted sequence is never mistaken for progress.
+Downgrade drops the table and the epoch. It is a derived, disposable log (no record data lives only
+here), so nothing a record needs is lost. The previous release goes back to not bumping versions for
+provider imports, so changes it makes are not logged. Upgrading again starts an empty log whose sequence
+restarts at 1 under a new epoch. A client that stores and sends the epoch with its cursor (as the Tracking
+App guide requires) gets `"reset": true` and re-reads every cached record, however far the new head has
+moved past its old cursor, which also covers what the previous release changed. A client that sends no
+epoch is only told to reset while its cursor is above the new head.
 """
+import secrets
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -40,8 +46,13 @@ def upgrade() -> None:
         sqlite_autoincrement=True,  # SQLite never reuses a seq
     )
     op.create_index('ix_client_change_cid', 'client_change', ['canonical_id', 'seq'])
+    node_state = sa.table('node_state', sa.column('key', sa.String), sa.column('value', sa.Text))
+    op.execute(node_state.delete().where(node_state.c.key == 'client_change_epoch'))
+    op.bulk_insert(node_state, [{'key': 'client_change_epoch', 'value': secrets.token_hex(8)}])
 
 
 def downgrade() -> None:
     op.drop_index('ix_client_change_cid', table_name='client_change')
     op.drop_table('client_change')
+    node_state = sa.table('node_state', sa.column('key', sa.String))
+    op.execute(node_state.delete().where(node_state.c.key == 'client_change_epoch'))

@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from atlas import client_changes, custom, service
+from atlas import backup, client_changes, custom, service
 from atlas.models import (
     Achievement,
     Artwork,
@@ -71,8 +71,9 @@ def curator(node):
     return {"Authorization": f"Bearer {secret}"}
 
 
-def local_page(node, since=0, limit=100):
-    r = node.client.get("/api/v2/changes", params={"feed": "local", "since": since, "limit": limit}, headers=H(node))
+def local_page(node, since=0, limit=100, epoch=None):
+    params = {"feed": "local", "since": since, "limit": limit, **({"epoch": epoch} if epoch is not None else {})}
+    r = node.client.get("/api/v2/changes", params=params, headers=H(node))
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -316,6 +317,9 @@ def test_parameters_are_validated(authority):
     assert a.client.get("/api/v2/changes", params={"feed": "everything"}, headers=H(a)).status_code == 422
     assert a.client.get("/api/v2/changes", params={"feed": "local", "limit": 501}, headers=H(a)).status_code == 422
     assert a.client.get("/api/v2/changes", params={"feed": "local"}).status_code == 401
+    assert a.client.get("/api/v2/changes", params={"epoch": "x"}, headers=H(a)).status_code == 400
+    assert a.client.get("/api/v2/changes", params={"feed": "local", "epoch": "x" * 65},
+                        headers=H(a)).status_code == 422
     signed = a.client.get("/api/v2/changes", params={"feed": "signed"}, headers=H(a)).json()
     assert signed["feed"] == "signed" and signed == v1_page(a)
 
@@ -359,6 +363,55 @@ def test_retention_keeps_the_newest_row_per_record_and_stale_cursors_reset(autho
     # A cursor above the head (the log was recreated by a rollback or restore) also resets.
     ahead = local_page(a, page["head"] + 5)
     assert ahead["reset"] is True and ahead["next_cursor"] == page["head"]
+
+
+def test_epoch_is_stable_and_a_foreign_epoch_resets(authority):
+    a = authority
+    a.publish("One")
+    first = local_page(a)
+    assert len(first["epoch"]) == 16 and first["reset"] is False
+    a.publish("Two")
+    same = local_page(a, first["next_cursor"], epoch=first["epoch"])
+    assert same["epoch"] == first["epoch"] and same["reset"] is False and len(same["results"]) == 1
+    other = local_page(a, first["next_cursor"], epoch="0" * 16)  # e.g. a cursor stored for another node
+    assert other["reset"] is True and other["results"] == [] and other["next_cursor"] == other["head"]
+    assert other["epoch"] == first["epoch"]
+
+
+def test_restoring_an_older_backup_resets_a_cursor_the_new_head_has_overtaken(tmp_path, authority):
+    """C3.2: after a restore rewinds the log, new writes push the head past the client's old cursor. A
+    seq alone would look like progress and silently skip every row up to it; the renewed epoch resets."""
+    a = authority
+    settings, engine = a.st.ctx.settings, a.st.maker.kw["bind"]
+    for title in ("A", "B", "C"):
+        a.publish(title)
+    archive = tmp_path / "older.tar.gz"
+    backup.create(settings, engine, archive, include_media=False)
+    before = local_page(a)
+    later = [a.publish(f"Later {i}") for i in range(5)]  # changes the client sees, then the restore loses
+    client = local_page(a, before["next_cursor"], epoch=before["epoch"])
+    assert {x["id"] for x in client["results"]} == set(later)
+    cursor, stored_epoch = client["next_cursor"], client["epoch"]
+
+    engine.dispose()
+    backup.restore(settings, engine, archive, force=True)
+    with a.st.maker() as session:
+        assert client_changes.head(session) == before["head"] < cursor
+    changed = [a.publish(f"After {i}") for i in range(10)]  # the head overtakes the stale cursor
+    with a.st.maker() as session:
+        assert client_changes.head(session) > cursor
+
+    page = local_page(a, cursor, epoch=stored_epoch)
+    assert page["reset"] is True and page["results"] == [] and page["epoch"] != stored_epoch
+    assert page["next_cursor"] == page["head"]
+    # Without the epoch the API cannot tell this cursor from progress (on PostgreSQL the restore rewinds the
+    # sequence, so rows below the cursor would be skipped); that is why clients must send it.
+    assert local_page(a, cursor)["reset"] is False
+    assert set(changed) <= {x["id"] for x in local_page(a, before["next_cursor"], epoch=page["epoch"])["results"]}
+    # After the reset the client continues under the new epoch.
+    a.publish("Next")
+    nxt = local_page(a, page["next_cursor"], epoch=page["epoch"])
+    assert nxt["reset"] is False and len(nxt["results"]) == 1
 
 
 def test_prune_is_due_again_after_a_day(session, ctx):
