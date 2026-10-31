@@ -315,17 +315,21 @@ class LocalChangesPage(BaseModel):
     """`feed=local`: a page of this node's local, unsigned client change log (C3.2)."""
 
     model_config = ConfigDict(json_schema_extra={"examples": [{
-        "feed": "local", "node_id": "3f2a9c0d1e2b4a55", "head": 9123, "next_cursor": 9000, "has_more": True,
-        "reset": False,
+        "feed": "local", "node_id": "3f2a9c0d1e2b4a55", "epoch": "9c41e07a5b2d8f13", "head": 9123,
+        "next_cursor": 9000, "has_more": True, "reset": False,
         "results": [{"id": "atlas:0123456789abcdefghijklmnop", "version": 14, "merged_into": None,
                      "causes": ["provider"]}],
     }]})
     feed: Literal["local"] = Field(description="Which change log this page reads.")
     node_id: str = Field(description="This node. The local log is never federated, so it has no other origin.")
+    epoch: str = Field(description="Identifies this incarnation of the log. It changes whenever the log is recreated "
+                                   "or rewound (a downgrade and re-upgrade, a restore, a recovered node). Store it "
+                                   "with `next_cursor` and send it back as `epoch`.")
     head: int = Field(description="Highest sequence in this node's local change log.")
     next_cursor: int = Field(description="Pass this value as `since` for the next page.")
     has_more: bool = Field(description="Whether another page is available from the current log snapshot.")
-    reset: bool = Field(description="True when `since` cannot be continued (pruned, or the log was recreated). "
+    reset: bool = Field(description="True when `since` cannot be continued (pruned, the log was recreated, or "
+                                    "`epoch` differs). "
                                     "`results` is then empty: store `next_cursor`, then re-read every cached record.")
     results: list[LocalChangedCanonical] = Field(description="Unique canonical records changed in this page.")
 
@@ -369,8 +373,8 @@ def _client_changed_ids(kind: str, body: dict[str, Any]) -> list[str]:
                             ],
                         }},
                         "local": {"summary": "feed=local: every change on this node (recommended)", "value": {
-                            "feed": "local", "node_id": "3f2a9c0d1e2b4a55", "head": 9123, "next_cursor": 9000,
-                            "has_more": True, "reset": False,
+                            "feed": "local", "node_id": "3f2a9c0d1e2b4a55", "epoch": "9c41e07a5b2d8f13",
+                            "head": 9123, "next_cursor": 9000, "has_more": True, "reset": False,
                             "results": [{"id": "atlas:0123456789abcdefghijklmnop", "version": 14,
                                          "merged_into": None, "causes": ["provider"]}],
                         }},
@@ -396,6 +400,11 @@ def client_changes(
                                         "imports, local edits, merges and detaches (recommended). Omit it, or pass "
                                         "`signed`, for the signed feed (unchanged v1 behaviour)."),
     ] = None,
+    epoch: Annotated[
+        str | None,
+        Query(max_length=64, description="`feed=local` only: the `epoch` stored with `since`. When it differs from "
+                                         "the log's current epoch the page is a `reset`. Always send it."),
+    ] = None,
 ) -> dict[str, Any]:
     """Return current versions of canonical records touched by a bounded feed page.
 
@@ -406,7 +415,10 @@ def client_changes(
     if feed_name == "local":
         if node_id is not None:
             raise HTTPException(400, "node_id is not allowed with feed=local: the local log has no other origin.")
-        return {"feed": "local", "node_id": st.ctx.identity.node_id, **client_change_log.page(session, since, limit)}
+        return {"feed": "local", "node_id": st.ctx.identity.node_id,
+                **client_change_log.page(session, since, limit, epoch)}
+    if epoch is not None:
+        raise HTTPException(400, "epoch is only used with feed=local.")
     origin = node_id or st.ctx.identity.node_id
     if origin == st.ctx.identity.node_id:
         entries = feed.read(session, since, limit)

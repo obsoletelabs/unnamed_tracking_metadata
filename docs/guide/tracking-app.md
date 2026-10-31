@@ -38,7 +38,7 @@ Client apps that cache Atlas records can ask which records changed since they la
 route has two modes, chosen with `feed`. Use **`feed=local`**: it is the recommended mode.
 
 ```http
-GET /api/v2/changes?feed=local&since=9000&limit=100
+GET /api/v2/changes?feed=local&since=9000&epoch=9c41e07a5b2d8f13&limit=100
 Authorization: Bearer <read-scope-token>
 ```
 
@@ -46,6 +46,7 @@ Authorization: Bearer <read-scope-token>
 {
   "feed": "local",
   "node_id": "3f2a9c0d1e2b4a55",
+  "epoch": "9c41e07a5b2d8f13",
   "head": 9123,
   "next_cursor": 9100,
   "has_more": true,
@@ -64,14 +65,16 @@ Authorization: Bearer <read-scope-token>
 
 How to poll:
 
-1. **First run.** Call `/changes?feed=local` once and store its `head` as your cursor, then read the records you need through the usual endpoints (in that order, so nothing that changes in between is missed). The log only holds changes made after this release was installed, so it is not a way to list every record.
-2. **Each poll.** Call with `since=<stored cursor>`. Refresh every record in `results` (the record itself, its achievements and its artwork), then store `next_cursor`. Repeat while `has_more` is true. `limit` is 1–500 log rows; a page lists each record once with its **current** version, so a record can show a version newer than the change that put it in the page.
+1. **First run.** Call `/changes?feed=local` once and store its `head` as your cursor **together with its `epoch`**, then read the records you need through the usual endpoints (in that order, so nothing that changes in between is missed). The log only holds changes made after this release was installed, so it is not a way to list every record.
+2. **Each poll.** Call with `since=<stored cursor>&epoch=<stored epoch>`. Refresh every record in `results` (the record itself, its achievements and its artwork), then store `next_cursor` and `epoch`. Repeat while `has_more` is true. `limit` is 1–500 log rows; a page lists each record once with its **current** version, so a record can show a version newer than the change that put it in the page.
 3. **Merges.** A non-null `merged_into` is a redirect: re-point your cached record to the destination, which is in the same page.
-4. **Reset.** If `reset` is `true`, `results` is empty and your cursor cannot be continued. This happens when the log was pruned past your cursor (see below), or when it was recreated (a database restore, a rollback of this release, or a cursor taken from another node). Store `next_cursor` (the current head) **first**, then re-read every cached record. Never treat `reset` as "nothing changed".
+4. **Reset.** If `reset` is `true`, `results` is empty and your cursor cannot be continued. This happens when the log was pruned past your cursor (see below), or when it was recreated or rewound (a database restore, a rollback and re-upgrade of this release, a recovered node), which gives it a new `epoch`, or when the cursor came from another node. Store `next_cursor` and the new `epoch` **first**, then re-read every cached record. Re-reading also catches what a rolled-back release changed, since it did not log its changes. Never treat `reset` as "nothing changed".
 
 `causes` lists why the record changed within the page: `feed`, `replicated`, `local`, `provider`, `merge` or `detach`. It is informational; refresh the record whatever it says. `version` only ever increases for a record, so you can skip a refresh when your cached copy already has that version.
 
 The two modes have separate cursors. Do not pass a cursor from one to the other, and do not send `node_id` with `feed=local` (that is a `400`): the local log has no other origin. A cursor also belongs to one node: if you switch to a different Atlas node, start again from step 1.
+
+**Always send `epoch`.** A `since` alone cannot tell a recreated log from progress: after a restore or a rollback the sequence starts again lower, and once new changes push the head past your old cursor a page without `epoch` silently skips everything up to it. Without `epoch` the only stale cursor Atlas can detect is one above the head. `epoch` is not allowed with the signed feed (that is a `400`).
 
 **Retention.** Once a day the node deletes log rows older than `ATLAS_CLIENT_CHANGES_RETAIN_DAYS` (90 by default) that have a newer row for the same record. The newest row of every record is always kept, so a client that has been away for longer still sees every record that changed; its cursor may then be below the oldest kept row, which is answered with `reset`.
 

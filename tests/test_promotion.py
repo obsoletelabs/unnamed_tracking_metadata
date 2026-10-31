@@ -51,6 +51,10 @@ def test_recovery_uses_only_one_verified_public_feed_and_a_new_identity(tmp_path
     assert backup.verify(out)["media_included"] is False
     for table in ("app_user", "user_session", "api_token", "peer", "user_mfa", "outbox", "client_change"):
         assert archive_rows(out, table) == []  # the local client change log is never promoted (C3.1)
+    with mirror[2].maker() as session:
+        source_epoch = session.get(NodeState, "client_change_epoch").value
+    [candidate_epoch] = [r["value"] for r in archive_rows(out, "node_state") if r["key"] == "client_change_epoch"]
+    assert candidate_epoch != source_epoch  # a mirror client's cursor never continues on the recovered node
     ids = {row["id"] for row in archive_rows(out, "canonical")}
     assert aid in ids and bid not in ids and local.canonical_id not in ids
     assert {row["node_id"] for row in archive_rows(out, "replicated_change")} == {a[2].ctx.identity.node_id}

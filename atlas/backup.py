@@ -22,7 +22,7 @@ from typing import Any
 
 from sqlalchemy import BigInteger, DateTime, Engine, Integer, LargeBinary, Table, delete, func, select, text, update
 
-from . import __version__
+from . import __version__, client_changes
 from .models import Base
 from .settings import Settings
 
@@ -195,7 +195,16 @@ def _self_fk_columns(table: Table) -> list[str]:
 
 
 def _has_rows(conn) -> list[str]:
-    return [t.name for t in _tables() if conn.execute(select(func.count()).select_from(t)).scalar()]
+    """Tables with data. The client change log epoch that migration 0023 writes into a freshly migrated
+    database is not data: the restore replaces it anyway."""
+    occupied = []
+    for t in _tables():
+        query = select(func.count()).select_from(t)
+        if t.name == "node_state":
+            query = query.where(t.c.key != client_changes.EPOCH)
+        if conn.execute(query).scalar():
+            occupied.append(t.name)
+    return occupied
 
 
 def restore(settings: Settings, engine: Engine, path: Path, *, force: bool = False, include_media: bool = True) -> dict[str, int]:  # noqa: E501
@@ -249,6 +258,12 @@ def restore(settings: Settings, engine: Engine, path: Path, *, force: bool = Fal
                 values = {k: v for k, v in original.items() if k not in pk}
                 conn.execute(update(table).where(*[table.c[k] == v for k, v in pk.items()]).values(values))
         _reset_sequences(conn, engine, list(tables.values()))
+        if "client_change" in tables:
+            # The restored client change log is older than (or foreign to) what clients have seen: a new epoch
+            # makes every client cursor reset, even after the head passes it again (C3.2).
+            node_state = tables["node_state"]
+            conn.execute(delete(node_state).where(node_state.c.key == client_changes.EPOCH))
+            conn.execute(node_state.insert().values(key=client_changes.EPOCH, value=client_changes.new_epoch()))
     if include_media and manifest.get("media_included"):
         _restore_media(settings, path)
     return loaded
