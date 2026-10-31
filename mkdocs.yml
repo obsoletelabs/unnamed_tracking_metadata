@@ -63,6 +63,7 @@ nav:
       - Extending: extending.md
   - Contributing:
       - Testing: testing.md
+      - Federation test lab: federation-lab.md
   - Reference:
       - API: reference-api.md
       - Environment variables: reference-env.md
