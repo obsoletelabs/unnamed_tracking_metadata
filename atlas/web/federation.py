@@ -15,7 +15,7 @@ from sqlalchemy import select
 from .. import accounts, auth, feed_schema, key_rotation, runtime, secrets_box, service, sync
 from ..models import FollowerSeen, Peer, Setting, SyncCursor, SyncFailure, Token, User
 from ..service import AtlasError
-from ..signing import key_id_for, load_identity
+from ..signing import key_id_for, load_identity, signing_key_at_rest
 from .deps import Page as Ctx
 from .deps import admin_form, admin_page, go, throttle
 from .routes import render, when
@@ -24,8 +24,8 @@ router = APIRouter()
 
 
 def _keys(p: Ctx, error=None, status=200):
-    identity = load_identity(p.session)
-    return render(p, "admin_keys.html", status=status, identity=identity,
+    identity = load_identity(p.session, p.st.ctx.settings)
+    return render(p, "admin_keys.html", status=status, identity=identity, at_rest=signing_key_at_rest(p.session),
                   history=key_rotation.own_history(p.session, identity.node_id), error=error,
                   has_password=p.me.password_hash != "!")
 
@@ -45,7 +45,7 @@ def rotate_signing_key(p: Annotated[Ctx, Depends(admin_form)], confirm: Annotate
     if not accounts.reauthenticated(p.me, password, p.login):
         return _keys(p, "Confirm your current password or sign in again with your linked provider.", status=400)
     try:
-        successor = key_rotation.rotate(p.session, confirm.strip())
+        successor = key_rotation.rotate(p.session, confirm.strip(), p.st.ctx.settings)
     except AtlasError as exc:
         return _keys(p, str(exc), status=409)
     accounts.audit(p.session, p.me.id, "signing_key_rotated", successor.node_id,

@@ -4,6 +4,13 @@ Restore a verified authority backup whenever possible: it preserves accounts, cr
 private data and the original identity. This procedure is for a lost authority whose available
 backup is too old, when a mirror retains its complete original signed public feed.
 
+It is also the way out when `ATLAS_SECRET_KEY` is lost. The signing key in every backup is then
+encrypted under a secret nobody has, so the original identity cannot be recovered from a backup.
+Recover the public feed from a mirror under a new trust anchor, and have followers re-pin it.
+
+The candidate's new signing key is encrypted with the mirror's `ATLAS_SECRET_KEY`. Restore the
+candidate with that same secret set.
+
 ## Safety boundary
 
 `atlas recover-mirror` builds an **offline candidate archive under a new identity**. It never

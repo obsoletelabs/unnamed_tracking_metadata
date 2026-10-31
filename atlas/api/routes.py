@@ -45,7 +45,7 @@ from ..normalize import norm_namespace
 from ..providers import ProviderError
 from ..resolve import Resolution, classify, conflict_review
 from ..service import AtlasError
-from ..signing import load_identity
+from ..signing import load_identity, signing_key_at_rest
 from .deps import AppState, get_session, require, state
 
 router = APIRouter(prefix="/api/v2")
@@ -108,6 +108,8 @@ def status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("
     cursors = {c.upstream: c.last_seq for c in session.scalars(select(SyncCursor))}
     return {"role": st.ctx.settings.role, "feed_head": feed.head_seq(session),
             "upstream_cursors": cursors, "sync_failures": sync.open_failures(session),
+            # "encrypted" (enc:v1, ATLAS_SECRET_KEY) or "plaintext" (legacy; every backup holds the key) (C9.1)
+            "signing_key_at_rest": signing_key_at_rest(session),
             # named heads per upstream (observed, downloaded, verified, applied, parked, quarantined)
             "upstreams": sync.status(session, st.ctx)["upstreams"],
             # the detail the public /ready deliberately leaves out
@@ -814,7 +816,7 @@ def upsert_follower_seen(session: Session, token_id: str, protocol: str, now: da
 @router.get("/sync/info", tags=["federation"])
 def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(require("read"))],
               atlas_protocol: ProtocolHeader = None):
-    identity = load_identity(session)
+    identity = load_identity(session, st.ctx.settings)
     s = st.ctx.settings
     _note_follower(session, who, atlas_protocol, default=None)
     feeds = []

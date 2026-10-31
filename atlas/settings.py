@@ -125,6 +125,9 @@ class Settings(BaseSettings):
     bootstrap_admin_token: str | None = None
     # Encrypts secrets stored in the database (peer tokens, OIDC client secrets). Generate: `atlas secret-key`.
     secret_key: str | None = None
+    # Retired secrets (comma separated) that still decrypt during a rotation; `atlas secrets rewrap` moves
+    # every stored secret to secret_key, after which this can be emptied.
+    secret_key_previous: str | None = None
     # None = migrate automatically on SQLite only; set false on multi-replica Postgres and run `atlas migrate`.
     auto_migrate: bool | None = None
 

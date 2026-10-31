@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import json
 
-from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -13,7 +12,8 @@ from sqlalchemy.orm import Session
 from . import feed
 from .models import ChangeLog, NodeState, ReplicatedChange
 from .service import AtlasError, write_lock
-from .signing import NodeIdentity, key_id_for, load_identity, verify
+from .settings import Settings
+from .signing import SIGNING_KEY, NodeIdentity, key_id_for, load_identity, seal, verify
 
 MAX_ROTATIONS = 128
 PROOF_FIELDS = ("seq", "kind", "body", "body_hash", "signature", "key_id", "node_id")
@@ -117,22 +117,23 @@ def check_entry(root_id: str, history: list[dict], keys: dict[str, str], entry: 
                   entry["body_hash"], entry["signature"])
 
 
-def rotate(session: Session, expected: str) -> NodeIdentity:
+def rotate(session: Session, expected: str, settings: Settings | None = None) -> NodeIdentity:
+    """Replace the signing key. The successor is stored encrypted when ATLAS_SECRET_KEY is set (C9.1)."""
+    if settings is None:
+        settings = session.info.get("atlas_settings")
     if session.get_bind().dialect.name == "sqlite":
         # Acquire a writer lock even if the form dependency already read the account.
         session.execute(text("UPDATE node_state SET value=value WHERE key='feed_seq'"))
     write_lock(session)
     session.scalars(select(NodeState).where(NodeState.key == "feed_seq").with_for_update()).one()
-    old = load_identity(session)
+    old = load_identity(session, settings)
     if old.key_id != expected:
         raise AtlasError("The signing key changed. Reload and confirm the current key.", "conflict")
     if len(own_history(session, old.node_id)) >= MAX_ROTATIONS:
         raise AtlasError("This identity reached its rotation limit; plan a new trust anchor.", "conflict")
     successor = NodeIdentity(old.node_id, Ed25519PrivateKey.generate(), old.trust_public_b64)
     feed.append(session, old, "key_rotation", {"key_id": successor.key_id, "public_key": successor.public_b64})
-    raw = successor.private.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
-                                         serialization.NoEncryption())
-    session.get(NodeState, "signing_key").value = base64.b64encode(raw).decode()
+    session.get(NodeState, SIGNING_KEY).value = seal(settings, successor.private)
     session.flush()
     session.info.pop("atlas_feed_signer", None)
     return successor
