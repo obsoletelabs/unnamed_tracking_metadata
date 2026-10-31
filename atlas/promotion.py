@@ -8,7 +8,7 @@ from pathlib import Path
 
 from sqlalchemy import delete, func, select, text
 
-from . import backup, custom, db, feed, feed_schema, key_rotation, sync
+from . import backup, client_changes, custom, db, feed, feed_schema, key_rotation, sync
 from .models import ClientChange, FieldDef, MediaType, NodeState, ReplicatedChange, ReplicatedFeed, SyncCursor, SyncFailure
 from .service import AtlasError, Ctx
 from .settings import Settings
@@ -114,6 +114,7 @@ def candidate(settings: Settings, source_engine, authority: str, confirm_mirror:
                     # The client change log is local to a node: the replay above wrote rows for the candidate's
                     # own rebuilds, and the source mirror's log is never read. Start the new node empty (C3.1).
                     target.execute(delete(ClientChange))
+                    client_changes.renew_epoch(target)
                     target.add(SyncCursor(upstream=authority, last_seq=head))
                     key_rotation.remember(target, authority, history)
                     provenance = {"source_mirror": confirm_mirror, "recovered_authority": authority,
