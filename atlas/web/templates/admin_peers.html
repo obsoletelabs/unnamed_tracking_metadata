@@ -18,6 +18,19 @@
 <form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/toggle">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">{{ 'Pause' if r.peer.enabled else 'Resume' }}</button></form>
 <form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/delete">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Stop replicating from this peer? Data already received stays." type="submit">Remove</button></form></td></tr>{% endfor %}
 </tbody></table>{% else %}<p class="muted">No peers yet.</p>{% endif %}
+<section aria-labelledby="failed-entries">
+<h2 id="failed-entries">Entries that could not be applied</h2>
+{% if failures %}
+<p>{{ failures_open }} mirrored entr{{ 'y' if failures_open == 1 else 'ies' }} failed to apply and {{ 'is' if failures_open == 1 else 'are' }} kept so they can be retried. Healthy entries keep syncing meanwhile; a retry applies each failed entry again without duplicating anything.</p>
+<div class="table-scroll"><table class="failures"><thead><tr><th scope="col">Origin node</th><th scope="col">Seq</th><th scope="col">Kind</th><th scope="col">Attempts</th><th scope="col">Last attempt</th><th scope="col">Reason</th></tr></thead><tbody>
+{% for f in failures %}<tr data-failure="{{ f.seq }}"><td><code class="small">{{ f.node_id[:16] }}</code></td><td>{{ f.seq }}</td><td>{{ f.kind }}</td>
+<td>{{ f.attempts }}{% if f.attempts >= auto_limit %} <span class="badge warn" title="Automatic retries have stopped; use Retry now">automatic retries stopped</span>{% endif %}</td>
+<td class="small">{{ when(f.last_attempt_at) }}</td><td class="small error">{{ f.error }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% if failures_open > failures|length %}<p class="small muted">Showing the first {{ failures|length }} of {{ failures_open }}.</p>{% endif %}
+<form method="post" action="/admin/peers/failures/retry">{{ csrf(p.csrf) }}<button type="submit">Retry failed entries now</button></form>
+{% else %}<p class="muted">No failed entries. Every mirrored entry has been applied.</p>{% endif %}
+</section>
 <p class="small muted">Adopting the upstream's media types and fields: <strong>{{ 'on' if inherit else 'off' }}</strong> (Settings → Federation).</p>
 
 {% if probe %}

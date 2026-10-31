@@ -392,4 +392,4 @@ def user_oidc(uid: str, p: Annotated[Ctx, Depends(admin_form)], allowed: Annotat
         raise HTTPException(404, "No such user.")
     u.oidc_allowed = allowed == "on"
     accounts.audit(p.session, p.me.id, "oidc_allow", uid, {"allowed": u.oidc_allowed})
-    return go("/admin", "saved")
+    return go("/admin/users", "saved")

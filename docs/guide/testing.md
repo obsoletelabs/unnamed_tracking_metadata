@@ -55,6 +55,7 @@ npm test
 | --- | --- |
 | `tests/smoke.spec.js` | Each signed-in and signed-out screen in `tests/screens.js` answers with the expected status, has a title and a `main` landmark, and does not scroll sideways at the current viewport. A signed-out visit to an admin page redirects to the login page. |
 | `tests/flow.spec.js` | A real write flow: create a record with the new-record form, find it through search, edit it, and see the edit on the page and in search. |
+| `tests/admin-ui.spec.js` | Administrator flows: Import keeps the administration tabs, the users page (filter, change a role, a refused change shows its reason and can be retried), the achievement editor looks consistent and stores a new achievement, failed mirror entries are listed and retried, uncached artwork is listed, and no admin page has an inline style or a content security policy violation. Each change is checked again after a reload. |
 | every spec | A fixture fails the test on any `console.error`, uncaught page error, failed request or unexpected 4xx/5xx response. A screen that is meant to return 404 declares it with `allowedStatuses`. |
 
 When you add a page, add a line to `tests/screens.js`. When you add a form, add or extend a flow in `tests/flow.spec.js`.
@@ -68,6 +69,14 @@ E2E_SCREENSHOT_DIR=./screenshots npm test
 ```
 
 The data is synthetic, so the images can be committed as pull-request evidence.
+
+### Pull request evidence
+
+`tests/evidence.spec.js` runs only when `E2E_EVIDENCE_DIR` is set. With `E2E_EVIDENCE_PHASE=before` or `after` it writes the before and after screenshots of the admin screens at both sizes:
+
+```bash
+E2E_EVIDENCE_DIR=./evidence E2E_EVIDENCE_PHASE=after npx playwright test evidence
+```
 
 ### Settings
 
