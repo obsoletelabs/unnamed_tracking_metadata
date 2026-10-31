@@ -15,13 +15,13 @@ from .. import (
     accounts,
     auth,
     custom,
-    db,
     facets,
     feed,
     feed_schema,
     importer,
     key_rotation,
     media,
+    readiness,
     service,
     sync,
 )
@@ -94,18 +94,20 @@ def health(st: St) -> dict[str, str]:
 
 @router.get("/ready", tags=["ops"])
 def ready(session: Sess, st: St, response: Response) -> dict[str, str]:
-    """Minimal on purpose (public): ready only when the database answers and its schema is current."""
-    session.execute(select(1))
-    if db.schema_state(session, st.ctx.settings.database_url) == "behind":
+    """Minimal on purpose (public). 503 `not_ready` when the database does not answer or migrations are pending;
+    200 `degraded` when only artwork storage is unwritable; 200 `ready` otherwise. Unlike `/health` (liveness)
+    this touches the database, so an orchestrator holds traffic, not restarts the process, while it fails."""
+    result = readiness.check(session, st.ctx.settings)
+    response.headers["Cache-Control"] = "no-store"
+    if not result.serving:
         response.status_code = 503
-        response.headers["Cache-Control"] = "no-store"
-        return {"status": "not_ready"}
-    return {"status": "ready"}
+    return {"status": result.status}
 
 
 @router.get("/status", tags=["admin"])
 def status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]) -> dict[str, Any]:
     cursors = {c.upstream: c.last_seq for c in session.scalars(select(SyncCursor))}
+    ready = readiness.check(session, st.ctx.settings)
     return {"role": st.ctx.settings.role, "feed_head": feed.head_seq(session),
             "upstream_cursors": cursors, "sync_failures": sync.open_failures(session),
             # "encrypted" (enc:v1, ATLAS_SECRET_KEY) or "plaintext" (legacy; every backup holds the key) (C9.1)
@@ -113,8 +115,8 @@ def status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("
             # named heads per upstream (observed, downloaded, verified, applied, parked, quarantined)
             "upstreams": sync.status(session, st.ctx)["upstreams"],
             # the detail the public /ready deliberately leaves out
-            "checks": {"database": "ok", "schema": db.schema_state(session, st.ctx.settings.database_url),
-                       "media": "ok" if media.storage_problem(st.ctx.settings) is None else "unwritable",
+            "checks": {"database": "ok" if ready.database else "unavailable", "schema": ready.schema,
+                       "media": "ok" if ready.media else "unwritable", "readiness": ready.status,
                        "provider_failures": st.providers.failure_counts()}}
 
 
