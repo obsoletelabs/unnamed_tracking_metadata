@@ -12,6 +12,23 @@ A future enrichment operation should accept a selected canonical ID and return p
 
 The client stores the metadata authority's canonical ID separately from provider IDs. Provider IDs are mappings/evidence and must never replace the canonical identity when a provider changes.
 
+### Resolution by established identity (contract C4, #96)
+
+`POST /api/v2/resolve` reports the evidence behind every answer, so a client never mistakes weak or conflicting evidence for a safe refresh. The full table of `reason` and `tier` values is in the [Tracking App guide](guide/tracking-app.md#resolving-ids-post-resolve). The guarantees, and the tests that pin them:
+
+| Guarantee | Evidence |
+| --- | --- |
+| A known Atlas id or provider id resolves to the same canonical id whatever title the client sends (renamed records, placeholder titles such as `Steam app 12345`) | `tests/test_resolve_contract.py`: rename, placeholder and fixture cases; `tests/test_tracking_app_contract.py::test_candidate_from_another_provider_resolves_by_crosswalk` |
+| A merged Atlas id resolves to the live record (`reason: redirect`, `redirected_from`), through a chain of merges; the merged record's provider ids follow the merge | `test_merge_chain_redirects_by_id_and_keeps_old_ids_resolving`, fixture cases `merged atlas id, chain of 2` and `provider id of a merged record follows the merge` |
+| Ids that point at more than one record are a `conflict` with `canonical_id: null` and `method: none`; the candidates, the matched keys, the source's own record and the open curator review are reported | `test_conflict_reports_keys_and_the_review_ingest_opened_without_writing`, fixture cases `two sources claim the same id` and `atlas id contradicted by a provider id` |
+| Ids of another media type are a `type_mismatch` with no id, never title evidence | fixture case `identity of another media type` |
+| Title-only evidence assigns only when exact, clearly ahead of the next candidate and not contradicted by a different id the client holds in the same namespace; equal titles on different games are `ambiguous` | fixture cases `identical titles …`; `test_identical_titles_list_both_candidates_and_assign_neither` |
+| `/resolve` writes nothing: no review, crosswalk row or version changes | `test_conflict_reports_keys_and_the_review_ingest_opened_without_writing` |
+
+Failure semantics for clients: assign only `reason` ∈ {`id`, `redirect`, `crosswalk`, `exact`}. Treat `conflict`, `type_mismatch` and `ambiguous` as "do not apply" and keep the current local record and its metadata. On `redirect`, replace the stored Atlas id with `canonical_id`. Atlas does not merge or overwrite anything on the client's behalf.
+
+Host and plugin compatibility: the cases live as data in `tests/fixtures/resolve-contract-v1.json`, with its SHA-256 (over LF line endings) in `resolve-contract-v1.json.sha256`. The metadata-atlas plugin vendors that file and replays it against its own gateway. Nothing in it is host or user-library state: every record is synthetic. An older plugin that reads only `method` stops adopting conflicting ids, because a conflict now has `method: none` (decision H2).
+
 A self-hosted authority may return a local canonical ID. The client must accept that ID without requiring a central account. Hybrid instances may later expose a central mapping without requiring a destructive client-side merge.
 
 ## Images
