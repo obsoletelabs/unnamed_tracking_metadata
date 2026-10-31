@@ -1,8 +1,10 @@
 """Boot a throwaway Atlas node for the end-to-end tests.
 
-Everything lives in a fresh temporary directory (SQLite database and media), the node listens on
-127.0.0.1 only, and the directory is removed when the process stops. Nothing here talks to a real
-service: provider integrations are disabled and all credentials are synthetic test values.
+Everything lives in e2e/.run/node (git-ignored; SQLite database and media), the node listens on
+127.0.0.1 only, and the directory is wiped at the start of every run. It is also removed when this
+process exits normally, but Playwright kills the process tree on shutdown (always on Windows), so
+the cleanup at exit is best effort and the wipe at the next start is what guarantees a clean slate.
+Nothing here talks to a real service: provider integrations are disabled and all credentials are synthetic test values.
 
 Run from the repository root:  uv run python e2e/server.py
 """
@@ -14,18 +16,20 @@ import secrets
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PORT = int(os.environ.get("E2E_PORT", "8765"))
-# Synthetic, test-only values. The node is bound to loopback and its database is deleted on exit.
+# Synthetic, test-only values. The node is bound to loopback; its database sits in a git-ignored folder
+# that is wiped on the next start.
 BOOTSTRAP_TOKEN = os.environ.get("E2E_BOOTSTRAP_TOKEN", "e2e-synthetic-bootstrap-token-0123456789abcdef")
 ADMIN_USER = os.environ.get("E2E_ADMIN_USER", "alice")
 
 
 def main() -> int:
-    data = Path(tempfile.mkdtemp(prefix="atlas-e2e-"))
+    data = ROOT / "e2e" / ".run" / "node"
+    shutil.rmtree(data, ignore_errors=True)
+    data.mkdir(parents=True)
     env = {
         **os.environ,
         "PYTHONPATH": str(ROOT),
@@ -40,13 +44,17 @@ def main() -> int:
         "ATLAS_STEAM_ENABLED": "false",
         "ATLAS_MEDIA_CACHE_ENABLED": "false",  # no outbound image fetches during tests
     }
+    proc = None
     try:
-        proc = subprocess.Popen([sys.executable, "-m", "atlas.cli", "serve", "--host", "127.0.0.1", "--port", str(PORT)],
-                                cwd=ROOT, env=env)
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "atlas.cli", "serve", "--host", "127.0.0.1", "--port", str(PORT)], cwd=ROOT, env=env
+        )
         return proc.wait()
     except KeyboardInterrupt:
-        proc.terminate()
-        return proc.wait()
+        if proc is not None:
+            proc.terminate()
+            return proc.wait()
+        return 1
     finally:
         shutil.rmtree(data, ignore_errors=True)
 

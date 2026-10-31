@@ -9,3 +9,4 @@ __pycache__/
 
 # default artwork cache directory when running from a checkout
 /media/
+e2e/.run/
