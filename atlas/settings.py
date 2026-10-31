@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     trusted_keys: dict[str, str] = Field(default_factory=dict)
     sync_interval_seconds: int = Field(default=60, ge=5)
     sync_batch_size: int = Field(default=500, ge=1, le=5000)
+    # Entries a follower keeps downloading, verifying and relaying past the first parked one (C1.4, H10).
+    sync_max_parked_backlog: int = Field(default=50_000, ge=1)
+    # Lowest follower protocol this node serves; followers below it refuse to sync (C1.3).
+    min_follower_protocol: str = "1.0"
+    # Highest protocol this node's own feed may use. Unset = min_follower_protocol. Raised in Admin → Peers.
+    emit_protocol: str | None = None
 
     # Resolution
     auto_match_threshold: float = Field(default=0.85, ge=0.5, le=1.0)
@@ -126,8 +132,21 @@ class Settings(BaseSettings):
     def strip_slash(cls, v: str) -> str:
         return v.rstrip("/")
 
+    @field_validator("min_follower_protocol", "emit_protocol")
+    @classmethod
+    def protocol_version(cls, v: str | None) -> str | None:
+        from .feed_schema import PROTOCOL, parse_protocol
+
+        if v is None or v == "":
+            return None
+        if parse_protocol(v) > parse_protocol(PROTOCOL):
+            raise ValueError(f"this release speaks federation protocol {PROTOCOL} at most")
+        return v
+
     @model_validator(mode="after")
     def check(self) -> Settings:
+        if self.min_follower_protocol is None:
+            self.min_follower_protocol = "1.0"
         if self.review_threshold > self.auto_match_threshold:
             raise ValueError("review_threshold must not exceed auto_match_threshold")
         if self.upstream_url and not self.trusted_keys:

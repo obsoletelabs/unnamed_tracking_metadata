@@ -167,7 +167,7 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
     if redistributable:
         touch_version(session, cid)
     if log and redistributable and ctx.settings.role == "authority":
-        feed.append(session, ctx.identity, "artwork", {"canonical_id": cid, "source": source, "items": items})
+        feed.emit(session, ctx, "artwork", {"canonical_id": cid, "source": source, "items": items})
     return len(items)
 
 
@@ -215,7 +215,7 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
     if redistributable:
         touch_version(session, cid)
     if log and redistributable and ctx.settings.role == "authority":
-        feed.append(session, ctx.identity, "achievements", {"canonical_id": cid, "source": source, "items": items})
+        feed.emit(session, ctx, "achievements", {"canonical_id": cid, "source": source, "items": items})
     return len(items)
 
 

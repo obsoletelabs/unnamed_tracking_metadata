@@ -8,24 +8,48 @@
 <div class="card"><h3>This node</h3>
   <dl class="facts"><dt>Node ID</dt><dd><code>{{ fp }}</code></dd><dt>Trust anchor public key</dt><dd><code>{{ own.trust_public_b64 }}</code></dd></dl>
   <p class="small muted">Give these to the administrators of nodes that should replicate from this one. Compare the node ID out of band when they add you.</p></div>
+<section class="card" aria-labelledby="fed-protocol"><h3 id="fed-protocol">Federation protocol</h3>
+  <dl class="facts"><dt>This release speaks</dt><dd data-protocol="own">{{ protocol.own }}</dd>
+  <dt>Oldest follower served</dt><dd>{{ protocol.min }} <span class="small muted">(ATLAS_MIN_FOLLOWER_PROTOCOL)</span></dd>
+  <dt>This node's feed emits</dt><dd data-protocol="emit"><strong>{{ protocol.emit }}</strong></dd></dl>
+  <p class="small muted">Followers park entries newer than they understand, so features that need a newer protocol (for example platinum achievements in 1.2) stay off this node's feed until you raise the emit protocol. Raise it only after every follower is upgraded.</p>
+  {% if protocol.followers %}<div class="table-scroll"><table><thead><tr><th scope="col">Follower token</th><th scope="col">Protocol</th><th scope="col">Last seen</th></tr></thead><tbody>
+  {% for f in protocol.followers %}<tr data-follower-protocol="{{ f.protocol }}"><td>{{ f.name }}</td><td>{{ f.protocol }}{% if f.behind %} <span class="badge warn">below {{ protocol.emit }}</span>{% endif %}</td><td class="small">{{ when(f.seen) }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% if protocol.followers|selectattr('behind')|list %}<p class="error">Some followers speak an older protocol than this node emits. They will park new entries until they upgrade.</p>{% endif %}
+  {% else %}<p class="small muted">No follower has synchronized from this node yet.</p>{% endif %}
+  {% if protocol.choices|length > 1 %}<form method="post" action="/admin/peers/protocol">{{ csrf(p.csrf) }}
+  <label for="emit-protocol">Emit protocol</label><select id="emit-protocol" name="emit_protocol">{% for c in protocol.choices %}<option value="{{ c }}"{% if c == protocol.emit %} selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+  <label for="emit-password">Current password{% if not protocol.has_password %} (or a recent linked sign-in){% endif %}</label><input id="emit-password" name="password" type="password" autocomplete="current-password" maxlength="200" {{ 'required' if protocol.has_password }}>
+  <label><input type="checkbox" name="followers_upgraded"> Every follower runs a release that speaks the chosen protocol (required to raise it).</label>
+  <p><button class="secondary" type="submit" data-confirm="Change the protocol this node's feed emits? Older followers park entries they do not understand.">Change emit protocol</button></p>
+  </form>{% endif %}
+</section>
 <h2>Peers this node replicates from</h2>
 {% if env_upstream %}<p class="small muted">The environment also configures an upstream: <code>{{ env_upstream }}</code> (ATLAS_UPSTREAM_URL).</p>{% endif %}
-{% if rows %}<table><thead><tr><th>Peer</th><th>Node ID</th><th>Position</th><th>Last sync</th><th></th></tr></thead><tbody>
-{% for r in rows %}<tr><td><strong>{{ r.peer.name }}</strong><div class="small muted">{{ r.peer.url }}{% if not r.peer.enabled %} · <span class="badge warn">paused</span>{% endif %}</div></td>
-<td><code class="small">{{ r.fp }}</code></td><td>{{ r.seq }}</td>
+{% if rows %}<div class="table-scroll"><table><thead><tr><th>Peer</th><th>Node ID</th><th>Position</th><th>Last sync</th><th></th></tr></thead><tbody>
+{% for r in rows %}{% set h = r.heads %}<tr data-peer-state="{{ h.state if h else 'unknown' }}"><td><strong>{{ r.peer.name }}</strong><div class="small muted">{{ r.peer.url }}{% if not r.peer.enabled %} · <span class="badge warn">paused</span>{% endif %}{% if r.peer.remote_protocol %} · protocol {{ r.peer.remote_protocol }}{% endif %}</div></td>
+<td><code class="small">{{ r.fp }}</code></td><td>{{ r.seq }}{% if h %}
+<div class="small"><span class="badge {{ 'ok' if h.in_sync else ('bad' if h.state in ('refused', 'rewound', 'backlog_full', 'parked') else 'warn') }}">{{ h.state|replace('_', ' ') }}</span></div>
+<div class="small muted" title="observed (claimed by the upstream, unsigned) / downloaded / verified (signed, relayable) / applied">applied {{ h.applied_head }} · verified {{ h.verified_head }} · seen {{ h.observed_head }}</div>
+{% if h.parked %}<div class="small error">Parked at entry {{ h.parked.first_seq }} ({{ h.parked.first_reason|replace('_', ' ') }}, kind {{ h.parked.first_kind }}): {{ h.parked.count }} entr{{ 'y' if h.parked.count == 1 else 'ies' }} held back{% if h.parked.backlog_full %}, downloading paused{% endif %}. Upgrade Atlas; they apply automatically afterwards.</div>{% endif %}
+{% if h.refused %}<div class="small error">Refused: {{ h.refused.reason }}</div>{% endif %}
+{% if h.rewound %}<div class="small error">Rewound or forked: {{ h.rewound.reason }}</div>{% endif %}{% endif %}</td>
 <td class="small">{% if r.peer.last_ok_at %}{{ when(r.peer.last_ok_at) }}{% else %}never{% endif %}{% if r.peer.last_error %}<div class="error">{{ r.peer.last_error }}</div>{% endif %}</td>
 <td><form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/sync">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Sync now</button></form>
 <form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/toggle">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">{{ 'Pause' if r.peer.enabled else 'Resume' }}</button></form>
 <form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/delete">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Stop replicating from this peer? Data already received stays." type="submit">Remove</button></form></td></tr>{% endfor %}
-</tbody></table>{% else %}<p class="muted">No peers yet.</p>{% endif %}
+</tbody></table></div>{% else %}<p class="muted">No peers yet.</p>{% endif %}
 <section aria-labelledby="failed-entries">
 <h2 id="failed-entries">Entries that could not be applied</h2>
 {% if failures %}
-<p>{{ failures_open }} mirrored entr{{ 'y' if failures_open == 1 else 'ies' }} failed to apply and {{ 'is' if failures_open == 1 else 'are' }} kept so they can be retried. Healthy entries keep syncing meanwhile; a retry applies each failed entry again without duplicating anything.</p>
+<p>{{ failures_open }} mirrored entr{{ 'y' if failures_open == 1 else 'ies' }} could not be applied and {{ 'is' if failures_open == 1 else 'are' }} kept, signed, so nothing is lost.</p>
+<ul class="small"><li><strong>Quarantined</strong>: understood but failed to apply. Healthy entries keep syncing meanwhile; a retry applies each one again without duplicating anything.</li>
+<li><strong>Parked</strong>{% if parked_open %} ({{ parked_open }}){% endif %}: needs a newer Atlas release (an unknown kind, field or value). Nothing after a parked entry is applied until you upgrade; later entries keep downloading and relaying. After upgrading they apply automatically (or run <code>atlas sync replay</code>). <code>atlas sync skip</code> gives up on one entry, audited.</li></ul>
 <div class="table-scroll"><table class="failures"><thead><tr><th scope="col">Origin node</th><th scope="col">Seq</th><th scope="col">Kind</th><th scope="col">Attempts</th><th scope="col">Last attempt</th><th scope="col">Reason</th></tr></thead><tbody>
-{% for f in failures %}<tr data-failure="{{ f.seq }}"><td><code class="small">{{ f.node_id[:16] }}</code></td><td>{{ f.seq }}</td><td>{{ f.kind }}</td>
-<td>{{ f.attempts }}{% if f.attempts >= auto_limit %} <span class="badge warn" title="Automatic retries have stopped; use Retry now">automatic retries stopped</span>{% endif %}</td>
-<td class="small">{{ when(f.last_attempt_at) }}</td><td class="small error">{{ f.error }}</td></tr>{% endfor %}
+{% for f in failures %}<tr data-failure="{{ f.seq }}" data-disposition="{{ f.disposition }}"><td><code class="small">{{ f.node_id[:16] }}</code></td><td>{{ f.seq }}</td><td>{{ f.kind }}</td>
+<td>{{ f.attempts }}{% if f.disposition == 'quarantined' and f.attempts >= auto_limit %} <span class="badge warn" title="Automatic retries have stopped; use Retry now">automatic retries stopped</span>{% endif %}</td>
+<td class="small">{{ when(f.last_attempt_at) }}</td><td class="small"><span class="badge {{ 'bad' if f.disposition == 'parked' else 'warn' }}">{{ f.disposition }}</span> <span class="muted">{{ f.reason|replace('_', ' ') }}</span><div class="error">{{ f.error }}</div></td></tr>{% endfor %}
 </tbody></table></div>
 {% if failures_open > failures|length %}<p class="small muted">Showing the first {{ failures|length }} of {{ failures_open }}.</p>{% endif %}
 <form method="post" action="/admin/peers/failures/retry">{{ csrf(p.csrf) }}<button type="submit">Retry failed entries now</button></form>

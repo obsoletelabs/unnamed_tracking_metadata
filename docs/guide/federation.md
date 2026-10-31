@@ -87,12 +87,156 @@ You can also configure a single upstream with environment variables (`ATLAS_UPST
 ## Operating it
 
 * **Position/lag:** Admin → Peers shows each peer's position; `GET /api/v2/status` (admin) shows the authority's feed head.
-* **Entries that fail to apply:** a mirror never drops one silently. If a feed entry cannot be applied it is rolled back, recorded, and the rest of the page still applies. Each pull retries the recorded entries from the signed copy the mirror retains (up to 20 automatic attempts each; retries are idempotent, so they converge without duplicates). `GET /api/v2/status` shows the open count as `sync_failures`, `GET /api/v2/sync/failures` lists them with the error and attempt count, and `POST /api/v2/sync/failures/retry` retries them immediately, including ones past the automatic limit.
+* **Entries that fail to apply:** a mirror never drops one silently. An entry this release does not understand is *parked* and holds later entries back until an upgrade (see [Compatibility and upgrades](#compatibility-and-upgrades)). If a known feed entry cannot be applied it is rolled back, recorded as *quarantined*, and the rest of the page still applies. Each pull retries the recorded entries from the signed copy the mirror retains (up to 20 automatic attempts each; retries are idempotent, so they converge without duplicates). `GET /api/v2/status` shows the open count as `sync_failures`, `GET /api/v2/sync/failures` lists them with the error and attempt count, and `POST /api/v2/sync/failures/retry` retries them immediately, including ones past the automatic limit.
 * **Add a mirror:** nothing to do on the authority except issue a token.
 * **Remove a peer:** *Remove*; data already received stays.
 * **Disaster recovery:** a current verified database backup preserves identity. If that is unavailable, a mirror with complete retained signatures can build an [offline recovery candidate](recovery.md) under a fresh root; followers explicitly retire the old origin and pin the new one.
 * **Several workers:** every worker process runs the sync loop; replays are idempotent, so extra pulls are wasteful but harmless.
 * **One writer at a time:** writes are serialised by a database lock. This is fine for metadata; it is the first thing to revisit under very heavy ingestion.
+
+## Compatibility and upgrades
+
+Nodes of different releases can follow each other. Each release speaks a federation **protocol**
+(`MAJOR.MINOR`); this release speaks **1.1**. Releases before it did not advertise one and
+count as **1.0**.
+
+### What a follower does with entries it does not understand
+
+A follower never silently skips a signed entry. It sorts every verified entry into one of:
+
+| Outcome | When | Blocks later entries? |
+| --- | --- | --- |
+| applied | the kind, body version, required capabilities, every field and every vocabulary value are known | no |
+| **parked** | an unknown kind (`unsupported_kind`), a newer or malformed body version (`unsupported_version`), an unknown or malformed `_requires` (`unsupported_capability`), an unknown field or `ext` shape (`unsupported_field`) or an unknown closed value, or one that is not text, such as an achievement tier (`unsupported_value`) | **yes**: nothing after it is applied until you upgrade |
+| **quarantined** | a known entry that fails validation (`invalid`) or fails to apply (`apply_error`) | no; it is retried automatically |
+| no-op | an idempotent replay (an observation already present, a merge already done) | no |
+
+Parking blocks because entries are causally ordered (a merge can depend on something written
+before it). While parked, the follower **keeps downloading, verifying and retaining** later entries,
+so a mirror still relays a newer authority's feed byte for byte, up to
+`ATLAS_SYNC_MAX_PARKED_BACKLOG` entries (50 000 by default). Above that it pauses downloading and
+reports `backlog_full`. After you upgrade, the next pull (and a one-time replay at startup) applies
+the parked entries in order from the applied head; `atlas sync replay` does the same on demand.
+Entries recorded by `atlas sync replay --rescan` (below the applied head, see below) are different:
+they apply only through `atlas sync replay --historical`.
+
+### Heads
+
+Admin → Peers, `GET /api/v2/status` (field `upstreams`) and `GET /api/v2/sync/status` (admin) show,
+per upstream feed:
+
+| Head | Meaning |
+| --- | --- |
+| `observed_head` | what the upstream claims (unsigned; never trusted on its own) |
+| `downloaded_head` | highest entry fetched, also when a page failed to verify |
+| `verified_head` | highest signed entry verified and retained; relayable |
+| `applied_head` | what the local view reflects: every entry up to it was applied, a no-op or quarantined |
+| `parked` | first parked entry, its reason and kind, how many entries are held back, `backlog_full` |
+| `quarantined` | how many entries are quarantined and the oldest one |
+
+`applied <= verified <= downloaded <= observed` always holds. `state` is `in_sync` only when the
+upstream reported a head, every entry up to it is verified and applied, and nothing is parked,
+quarantined, refused or rewound. A node never reports itself synchronized from a head it has not verified.
+
+If an authority advertises fewer signed entries than this node already verified, or serves a
+different entry under a sequence number this node retains, the pull fails with "authority feed fork
+or rewind", nothing is applied, and the upstream's `state` becomes `rewound` (field `rewound`, metric
+`atlas_sync_rewound`, `atlas sync status` exit 5). It stays `rewound` until the authority serves the
+last entry this node verified again, byte for byte. Recovering from a real fork is not automated yet.
+
+### Negotiation and refusal
+
+`/api/v2/sync/info` advertises `protocol`, `min_follower_protocol`, `emit_protocol`,
+`observation_schema`, `kinds` (per kind, the highest body version emitted and applied) and
+`capabilities`, next to the unchanged `contract: 1`. Followers send an `Atlas-Protocol` header.
+A follower refuses an upstream, before downloading anything and without moving its cursor, when
+the upstream needs a newer follower (`min_follower_protocol`) or when the upstream is more than
+one major version older (N-1 support). The reason is shown on the peer and in `sync/status`.
+
+An authority records which protocol each follower token last sent (token id only) and shows it on
+Admin → Peers. A follower that sends no header is a 1.0 release.
+
+### Emitting newer features
+
+`emit_protocol` (default: `ATLAS_MIN_FOLLOWER_PROTOCOL`, itself 1.0 by default) is the newest
+protocol this node's own feed may use. Constructs that need more are not signed: a reserved kind is
+refused (kept local), a platinum achievement tier is rejected with "Raise federation emit protocol
+to 1.2 first", and an extended release date is stored locally but left out of the signed
+observation. Raise it under **Admin → Peers → Federation protocol** only after every follower is
+upgraded: it asks for your password and a confirmation, like a key rotation, and is audited.
+Followers of releases before 1.1 cannot park and would silently drop newer constructs, so keep
+`emit_protocol` at 1.1 or lower until none remain.
+
+### Upgrading a network
+
+1. Upgrade followers (mirrors first, then local nodes). They keep following older authorities.
+2. Upgrade authorities. They keep emitting the old protocol.
+3. When Admin → Peers shows every follower on the new protocol, raise `emit_protocol`.
+
+After upgrading a follower from a release before 1.1, run `atlas sync replay --rescan` once: it
+records retained entries that the old release skipped without applying (unknown kinds, unknown
+fields, invalid observations) as parked or quarantined, without moving the cursor back and without
+applying anything. An observation this release accepts but the old one rejected is parked as
+`dropped_by_previous_release`. These rows sit below the applied head, so they no longer block, but
+the upstream stays `parked` (and promotion is refused) until they are dealt with.
+
+Then run `atlas sync replay --historical` (try `--dry-run` first). It re-applies **every** retained
+entry from the oldest recovered one up to the applied head, in feed order, so a skipped entry lands in
+its causal position and the merges, detaches and artwork after it run again on top of it. Entries
+already reflected are no-ops; an observation that a later entry superseded is stored as history, not
+made current. Values set by those entries are applied again, so a local change since to the same
+upstream-owned field is overwritten by the authority's value, as on any pull. A plain `atlas sync
+replay`, and the replay at startup, never apply these rows: entries are never applied out of order.
+
+Rolling the code back after an upgrade loses nothing that is retained, but it is not free: a release
+before 1.1 cannot park. It treats parked rows as ordinary failed entries, retries them, passes over
+the kinds it does not know, marks those rows resolved and moves its cursor past them, which is the
+old silent skip. After upgrading again, run `atlas sync replay --rescan` (it re-classifies rows an
+older release resolved) and then `atlas sync replay --historical`. Downgrading the database
+(`alembic downgrade`) removes the parked/quarantined distinction; see the migration notes.
+
+### Operator commands
+
+```
+atlas sync status [--node N] [--json]          # heads per upstream; exit 3 parked, 4 refused, 5 rewound
+atlas sync replay [--node N] [--dry-run] [--limit K]   # apply parked entries in order until the next park
+atlas sync replay --rescan [--node N]          # one-time recovery after upgrading from 1.0 (records only)
+atlas sync replay --historical [--node N] [--dry-run]  # re-apply retained entries from the oldest recovered one
+atlas sync skip --node N --seq S --reason TEXT # give up on one parked entry (quarantined, audited)
+atlas sync reconcile --node N --dry-run        # compare this node's view with the upstream's /sync/digest
+```
+
+`replay` exits 0 when converged, 3 while entries are still parked (the reason is printed), 4 when
+an upstream refused this node and 5 when an upstream rewound or forked its feed.
+
+`reconcile` compares a digest (`atlas-view-v1`) of the observations the authority published and the
+live record each sits on (so merges and detaches count). It does not cover artwork, achievements,
+custom values, locks or the schema: a match means equal replicated observations, not an identical
+node. The upstream caches its answer for up to 60 seconds (`cached_seconds`). Plain `atlas sync` still pulls from `ATLAS_UPSTREAM_URL`.
+
+### Feed kinds in this release
+
+| Kind | Since | Emits / applies body version | Fields |
+| --- | --- | --- | --- |
+| `obs` | 1.0 | 1 / 1 | `canonical_id`, `media_type`, `observation` |
+| `artwork` | 1.0 | 1 / 1 | `canonical_id`, `items`, `source` |
+| `achievements` | 1.0 | 1 / 1 | `canonical_id`, `items`, `source` |
+| `custom` | 1.0 | 1 / 1 | `canonical_id`, `clear`, `source`, `values` |
+| `schema` | 1.0 | 1 / 1 | `fields`, `types` |
+| `merge` | 1.0 | 1 / 1 | `dst`, `src` |
+| `detach` | 1.0 | 1 / 1 | `canonical_id`, `new_canonical_id`, `observation_id` |
+| `lock` | 1.0 | 1 / 1 | `canonical_id`, `field`, `value` |
+| `unlock` | 1.0 | 1 / 1 | `canonical_id`, `field` |
+| `key_rotation` | 1.0 | 1 / 1 | `key_id`, `public_key` |
+| `relation` | 1.4 (reserved) | not in this release | parked by this release |
+
+Each entry body may carry `_v` (body version; absent means 1) and `_requires` (capability or
+vocabulary tokens a follower must know, at most 16 of up to 40 characters). Both are inside the
+signed body, so they cannot be stripped; keys starting with `_` are reserved for this envelope.
+Observation payloads may carry `ext` members: one listed in `_requires` must be understood, any
+other is ignored by a follower that does not know it. The only field that a later minor may add
+without parking 1.1 followers is `achievements.items[].key` (reserved-optional). Version-1 bodies
+are unchanged on the wire, so existing signed feeds and signatures stay valid.
 
 ## Sharing sign-ins between nodes
 
