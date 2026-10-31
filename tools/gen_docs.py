@@ -143,7 +143,7 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/artwork/{art_id}/image"): "One image: its cached bytes, or a redirect to the original public address while it is not cached.",
     ("get", "/games/{cid}/explain"): "Which source and rule produced each field (provenance).",
     ("get", "/media/{digest}"): "A cached, verified image. Immutable; `nosniff`.",
-    ("post", "/resolve"): "Batch (max `max_resolve`): store ids / titles to canonical ids with method and confidence. Read-only.",
+    ("post", "/resolve"): "Batch (max `max_resolve`): Atlas ids, provider ids and titles to canonical ids, with `reason` (id, redirect, crosswalk, conflict, type_mismatch, exact, fuzzy, ambiguous, none), `tier`, `matched_keys`, `conflict` and `redirected_from`. A conflict returns no id. Read-only. See [Tracking App](tracking-app.md#resolving-ids-post-resolve).",
     ("post", "/observations"): "Submit a batch of observations (the app's ingestion contract v1). Personal facts are discarded.",
     ("put", "/games/{cid}/achievements"): "Replace the curated achievement set for a record.",
     ("put", "/games/{cid}/artwork"): "Replace the curated artwork set for a record.",
