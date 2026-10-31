@@ -4,7 +4,7 @@ import hashlib
 import re
 from datetime import UTC, datetime
 from typing import Annotated, Any
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -330,10 +330,25 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     return render(p, "game.html", g=g, v=g.view, explain=g.explain, key_art=key_art, gallery=gallery, **social_ctx,
                   lbl=labels_for(p, g.media_type), details=details,
                   mtype_label=(s.get(MediaType, g.media_type).label if s.get(MediaType, g.media_type) else g.media_type),
-                  pending_art=pending, stores=integrations.STORES, art_total=len(art), art_cached=len(cached),
+                  pending_art=pending, caching=ctx.settings.media_cache_enabled, stores=integrations.STORES,
+                  art_total=len(art), art_cached=len(cached),
                   art_kinds=facets.KINDS, activity=activity,
                   achievements=facets.merged_achievements(s, ctx, g.id),
                   redirected_from=p.request.query_params.get("from"), **extra)
+
+
+@router.post("/game/{cid}/artwork/retry")
+def retry_game_artwork(cid: str, p: Annotated[Page, Depends(admin_form)]):
+    """Make this record's uncached images eligible for the next background download pass straight away."""
+    try:
+        g, _ = live_game(p, cid)
+    except AtlasError as exc:
+        raise HTTPException(404, "No such record.") from exc
+    rows = [a for a in facets.merged_artwork(p.session, p.st.ctx, g.id) if not a.blob_hash]
+    for a in rows:
+        a.fail_count, a.next_try_at = 0, None
+    accounts.audit(p.session, p.me.id, "media_retry", g.id, {"images": len(rows)})
+    return go(f"/game/{g.id}", "artretry" if rows else "artnone")
 
 
 # ---- sign in / out ------------------------------------------------------------------------------------
@@ -985,9 +1000,44 @@ def admin(p: Annotated[Page, Depends(admin_page)]):
                            for c in s.scalars(select(SyncCursor))])
 
 
-@router.post("/admin/users/{uid}")
+USER_ROLES = ("user", "curator", "admin")
+USER_STATUSES = ("active", "suspended")
+USER_LIMIT = 200
+
+
+def _users_page(p: Page, *, q: str = "", role: str = "", status: str = "", error: str | None = None,
+                http_status: int = 200):
+    """The user list with its filters. Filter values that are not known are ignored rather than trusted."""
+    s = p.session
+    query = select(User)
+    q = q.strip()[:80]
+    if q:
+        esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{esc}%"
+        query = query.where(User.username.ilike(like, escape="\\") | User.email.ilike(like, escape="\\"))
+    if role in USER_ROLES:
+        query = query.where(User.role == role)
+    if status in USER_STATUSES:
+        query = query.where(User.status == status)
+    total = s.scalar(select(func.count()).select_from(query.subquery())) or 0
+    users = list(s.scalars(query.order_by(User.created_at).limit(USER_LIMIT)))
+    counts = {r: n for r, n in s.execute(select(User.role, func.count()).group_by(User.role))}
+    suspended = s.scalar(select(func.count()).select_from(User).where(User.status == "suspended")) or 0
+    return render(p, "admin_users.html", status=http_status, users=users, total=total, limit=USER_LIMIT, uq=q,
+                  role=role if role in USER_ROLES else "", filter_status=status if status in USER_STATUSES else "",
+                  roles=USER_ROLES, statuses=USER_STATUSES, counts=counts, suspended=suspended, error=error)
+
+
+@router.get("/admin/users", response_class=HTMLResponse)
+def admin_users(p: Annotated[Page, Depends(admin_page)], q: Annotated[str, Query(max_length=80)] = "",
+                role: Annotated[str, Query(max_length=16)] = "", status: Annotated[str, Query(max_length=16)] = ""):
+    return _users_page(p, q=q, role=role, status=status)
+
+
+@router.post("/admin/users/{uid}", response_class=HTMLResponse)
 def admin_user(uid: str, p: Annotated[Page, Depends(admin_form)], role: Annotated[str, Form()],
-               status: Annotated[str, Form()]):
+               status: Annotated[str, Form()], fq: Annotated[str, Form(max_length=80)] = "",
+               frole: Annotated[str, Form(max_length=16)] = "", fstatus: Annotated[str, Form(max_length=16)] = ""):
     target = p.session.get(User, uid)
     if target is None:
         raise HTTPException(404, "No such user.")
@@ -997,8 +1047,13 @@ def admin_user(uid: str, p: Annotated[Page, Depends(admin_form)], role: Annotate
         if status != target.status:
             accounts.set_status(p.session, p.me, target, status)
     except AtlasError as exc:
-        raise HTTPException(409 if exc.code == "conflict" else 400, str(exc)) from exc
-    return go("/admin", "saved")
+        # Show the reason on the list itself, with the controls still there to try again. Nothing was changed:
+        # the request's session is rolled back when the response is an error status.
+        p.session.rollback()
+        return _users_page(p, q=fq, role=frole, status=fstatus, error=f"Could not change {target.username}: {exc}",
+                           http_status=409 if exc.code in ("conflict", "forbidden") else 400)
+    back = urlencode({k: v for k, v in (("q", fq), ("role", frole), ("status", fstatus)) if v})
+    return go("/admin/users" + (f"?{back}" if back else ""), "saved")
 
 
 def web_headers(response, path: str) -> None:

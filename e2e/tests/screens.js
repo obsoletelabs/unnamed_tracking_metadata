@@ -22,6 +22,7 @@ const ADMIN_SCREENS = [
   ['account-lists', () => '/me/lists'],
   ['notifications', () => '/notifications'],
   ['admin-overview', () => '/admin'],
+  ['admin-users', () => '/admin/users'],
   ['admin-settings', () => '/admin/settings'],
   ['admin-integrations', () => '/admin/integrations'],
   ['admin-peers', () => '/admin/peers'],
