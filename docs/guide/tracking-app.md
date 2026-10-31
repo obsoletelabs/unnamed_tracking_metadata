@@ -47,13 +47,14 @@ The app combines Atlas with its other providers. The user's provider order sets 
 | `type_mismatch` | `id` | `null` | **no** | your ids only point at records of another media type |
 | `exact` | `strong` | the record | yes | no id matched; the normalized title is equal, the year agrees enough to reach the auto-match threshold, and the next candidate is 0.1 behind |
 | `fuzzy` | `strong` | the record | only if you opt in | as `exact` with a near-equal title. Capped at 0.8, so it only appears when an administrator lowers the threshold |
-| `ambiguous` | `weak` | `null` | **no** | title candidates exist but cannot be assigned: too weak, too close to each other, or contradicted by an id you hold (see below) |
+| `ambiguous` | `weak` | `null` | **no** | title candidates exist but cannot be assigned: too weak, too close to each other, or contradicted by an id you hold, or you sent an Atlas id Atlas does not know (see below) |
 | `none` | `none` | `null` | no | nothing |
 
 Rules a client can rely on:
 
 * An id-tier answer never depends on the title. A renamed record keeps its id and resolves by its provider ids whatever title you send; the rename itself shows up in `/changes` as a new version.
-* A merged Atlas id keeps resolving, through up to 20 merges, with `reason: redirect`. `GET /games/{old id}` returns the live record with `redirected_from` too. Ids are followed by id, never by title.
+* A merged Atlas id keeps resolving, through up to 20 merges, with `reason: redirect`. `GET /games/{old id}` returns the live record with `redirected_from` too. Ids are followed by id, never by title. A chain longer than 20 merges names no live record: that Atlas id is then treated as unknown (next rule).
+* An Atlas id that Atlas does not know (another node's id, a reset database, a typo) is not evidence for any record, but it is evidence against adopting a different one on title alone: every record already has its own Atlas id. Your provider ids still decide on their own; if none match, a title that would be `exact` is answered `ambiguous` instead, with the candidates listed.
 * Placeholder titles such as `Steam app 12345` or `GOG game 1207658924` are never title evidence. A placeholder record refreshes by its provider id or not at all.
 * Equal titles are not proof. Two records may share a title (`Doom`, 1993 and 2016). When you send an id in a namespace (say `steam`) that Atlas does not know, and the best title candidate already has a different id in that namespace, the answer is `ambiguous`, not `exact`.
 * `method` is kept for older clients. Since contract C4 it is `none` whenever `canonical_id` is `null`. **Behaviour change:** an id conflict used to return the item's own record with `method: crosswalk`; it now returns `canonical_id: null` and `method: none`, so an older client stops adopting a contested id.
