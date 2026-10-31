@@ -12,8 +12,8 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
-from .. import accounts, auth, key_rotation, secrets_box, sync
-from ..models import Peer, SyncCursor, Token, User
+from .. import accounts, auth, key_rotation, secrets_box, service, sync
+from ..models import Peer, SyncCursor, SyncFailure, Token, User
 from ..service import AtlasError
 from ..signing import key_id_for, load_identity
 from .deps import Page as Ctx
@@ -67,6 +67,9 @@ def fingerprint(node_id: str) -> str:
     return " ".join(node_id[i:i + 4] for i in range(0, len(node_id), 4))
 
 
+FAILURES_SHOWN = 50
+
+
 @router.get("/admin/peers", response_class=HTMLResponse)
 def peers(p: Annotated[Ctx, Depends(admin_page)], probe: dict | None = None, error: str | None = None):
     rows = []
@@ -75,7 +78,10 @@ def peers(p: Annotated[Ctx, Depends(admin_page)], probe: dict | None = None, err
         cur = cursors.get(peer.node_id)
         rows.append({"peer": peer, "seq": cur.last_seq if cur else 0, "fp": fingerprint(peer.node_id)})
     s = p.st.ctx.settings
-    return render(p, "admin_peers.html", rows=rows, own=p.st.ctx.identity, fp=fingerprint(p.st.ctx.identity.node_id),
+    failures = list(p.session.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))
+                                      .order_by(SyncFailure.node_id, SyncFailure.seq).limit(FAILURES_SHOWN)))
+    return render(p, "admin_peers.html", rows=rows, failures=failures, failures_open=sync.open_failures(p.session),
+                  auto_limit=sync.AUTO_RETRY_LIMIT, own=p.st.ctx.identity, fp=fingerprint(p.st.ctx.identity.node_id),
                   can_store=secrets_box.available(s), env_upstream=s.upstream_url, probe=probe, error=error, when=when,
                   inherit=s.inherit_schema)
 
@@ -171,6 +177,21 @@ def sync_now(pid: str, p: Annotated[Ctx, Depends(admin_form)]):
         row.last_error = f"{type(exc).__name__}: {exc}"[:300]
         p.session.commit()
         return peers(p, error=f"Sync failed: {row.last_error}")  # type: ignore[arg-type]
+
+
+@router.post("/admin/peers/failures/retry", response_class=HTMLResponse)
+def retry_failed_entries(p: Annotated[Ctx, Depends(admin_form)]):
+    """Re-apply the mirrored entries that failed, whatever their automatic attempt count."""
+    service.write_lock(p.session)
+    result = sync.retry_failures(p.session, p.st.ctx, limit=100, max_attempts=None)
+    accounts.audit(p.session, p.me.id, "sync_failures_retry", "", result)
+    p.session.flush()
+    if not result["retried"]:
+        return peers(p, error="Nothing to retry.")  # type: ignore[arg-type]
+    note = f"Retried {result['retried']} entr{'y' if result['retried'] == 1 else 'ies'}: {result['resolved']} applied"
+    if result["still_failing"]:
+        note += f", {result['still_failing']} still failing (see the reasons below)"
+    return peers(p, error=note + ".")  # type: ignore[arg-type]
 
 
 # ---- tokens -------------------------------------------------------------------------------------------

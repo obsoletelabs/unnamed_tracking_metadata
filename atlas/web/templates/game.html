@@ -57,16 +57,18 @@
 {% endfor %}
 <dialog id="viewer" aria-label="Image viewer"><div id="viewer-body"></div></dialog>
 <p class="muted small">{{ art_total }} image{{ '' if art_total == 1 else 's' }} known, {{ art_cached }} cached here. Images are shown only after this server has downloaded and checked them.</p>
-{% if pending_art %}<details class="pending-art"><summary>{{ pending_art|length }} image{{ '' if pending_art|length == 1 else 's' }} not cached yet</summary>
+{% if pending_art %}<details class="pending-art"{{ ' open' if p.is_admin }}><summary>{{ pending_art|length }} image{{ '' if pending_art|length == 1 else 's' }} not cached yet</summary>
 <p class="small muted">These are assigned to this record but this server has not downloaded and checked them, so they are not shown. They are listed as links and are not loaded, so viewing this page does not contact the source sites.</p>
-<ul>{% for a in pending_art %}<li>{{ a.kind|title }} · <a href="{{ a.url }}" rel="noopener noreferrer nofollow">{{ a.host or 'source' }}</a> <span class="muted small">· {{ a.state }} · from {{ a.source }}</span></li>{% endfor %}</ul></details>{% endif %}
+<ul>{% for a in pending_art %}<li>{{ a.kind|title }} · <a href="{{ a.url }}" rel="noopener noreferrer nofollow">{{ a.host or 'source' }}</a> <span class="muted small">· {{ a.state }} · from {{ a.source }}</span></li>{% endfor %}</ul>
+{% if p.is_admin %}{% if caching %}<form method="post" action="/game/{{ g.id }}/artwork/retry">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Retry downloads now</button></form>
+{% else %}<p class="small">Caching is switched off on this node, so nothing will be downloaded. Turn it on in <a href="/admin/settings">Settings</a>.</p>{% endif %}{% endif %}</details>{% endif %}
 {% if p.user and g.media_type == 'game' %}
 <details><summary>Link a store page or id</summary>
 <p class="small"><a href="/game/{{ g.id }}/links">Find it by name</a> in Steam, IGDB or RAWG (whichever this node has configured), or enter an id below.</p>
 <form class="card" method="post" action="/game/{{ g.id }}/links">{{ csrf(p.csrf) }}
   <label for="lstore">Store</label><select id="lstore" name="store">{% for ns, s in stores.items() %}<option value="{{ ns }}">{{ s[0] }}</option>{% endfor %}<option value="other">Other (type its short name below)</option></select>
-  <label for="lother">Other store name <span class="hint">only if you chose Other, e.g. <code>humble</code></span></label><input id="lother" name="other" maxlength="50" pattern="[a-z0-9._-]*">
-  <label for="lident">Its id for this game <span class="hint">e.g. 620 for Steam, the slug from the store address for GOG or Epic</span></label><input id="lident" name="ident" required maxlength="256">
+  <label for="lother">Other store name <span class="hint">only if you chose Other, e.g. <code>humble</code></span></label><input id="lother" type="text" name="other" maxlength="50" pattern="[a-z0-9._-]*">
+  <label for="lident">Its id for this game <span class="hint">e.g. 620 for Steam, the slug from the store address for GOG or Epic</span></label><input id="lident" type="text" name="ident" required maxlength="256">
   <label for="lnote">Source / note</label><textarea id="lnote" name="note" maxlength="2000"></textarea>
   <p class="small muted">Linking is reviewed like other contributions. An id already used by another game is refused: ask a reviewer to merge the games.</p>
   <p><button type="submit">Propose link</button></p>

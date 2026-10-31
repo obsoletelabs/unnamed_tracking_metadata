@@ -166,4 +166,4 @@ def admin_verify(uid: str, p: Annotated[Ctx, Depends(admin_form)]):
         raise HTTPException(404, "No such user.")
     u.email_verified_at = now()
     accounts.audit(p.session, p.me.id, "verify_email", u.id)
-    return go("/admin", "saved")
+    return go("/admin/users", "saved")

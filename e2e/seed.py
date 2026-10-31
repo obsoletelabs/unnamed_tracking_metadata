@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -36,6 +38,31 @@ GAMES = [
      "Survival in a silent frozen city. " + "Silent frozen streets and long nights. " * 12, ["survival"], ["adventure"]),
 ]
 ACHIEVEMENT_NAMES = ["First Light", "Keeper of the Flame", "Lost and Found", "Night Owl", "Cartographer", "Collector"]
+
+
+DB = HERE / ".run" / "node" / "atlas.db"
+FEED_NODE = "e2e5ee0d" * 8  # a 64 character synthetic node id
+
+
+def seed_failed_mirror_entries() -> None:
+    """Two open `sync_failure` rows, written straight into the throwaway node's SQLite file.
+
+    seq 1 has its retained entry (a no-op `key_rotation` kind), so retrying it succeeds. seq 2 has none, so a
+    retry keeps failing and the reason stays on screen. Both automatic retries were used up on seq 2."""
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    con = sqlite3.connect(DB)
+    try:
+        con.execute("INSERT INTO replicated_feed (node_id, public_key) VALUES (?, ?)", (FEED_NODE, "synthetic-public-key"))
+        con.execute("INSERT INTO replicated_change (node_id, seq, kind, body, body_hash, signature, key_id, created_at) "
+                    "VALUES (?, 1, 'key_rotation', '{}', ?, ?, ?, ?)",
+                    (FEED_NODE, "0" * 64, "synthetic", "synthetic", stamp))
+        for seq, error, attempts in ((1, "ValueError: synthetic apply failure", 3),
+                                     (2, "KeyError: 'canonical_id'", 20)):
+            con.execute("INSERT INTO sync_failure (node_id, seq, kind, error, attempts, first_failed_at, last_attempt_at) "
+                        "VALUES (?, ?, 'obs', ?, ?, ?, ?)", (FEED_NODE, seq, error, attempts, stamp, stamp))
+        con.commit()
+    finally:
+        con.close()
 
 
 def csrf_of(html: str) -> str:
@@ -85,6 +112,10 @@ def main() -> None:
             for k, name in enumerate(ACHIEVEMENT_NAMES)
         ]
         api(api_client, "PUT", f"/games/{ids['Starlight Harbor']}/achievements", token, json={"items": achievements})
+        # Artwork this node has not cached (caching is off on the throwaway node): the game page lists it as text.
+        api(api_client, "PUT", f"/games/{ids['Paper Meridian']}/artwork", token, json={"items": [
+            {"kind": "poster", "url": "https://images.example.invalid/paper-meridian/cover.png"},
+            {"kind": "key_art", "url": "https://images.example.invalid/paper-meridian/key-art.jpg"}]})
 
     sessions: dict[str, httpx.Client] = {}
     try:
@@ -103,6 +134,7 @@ def main() -> None:
     finally:
         for c in sessions.values():
             c.close()
+    seed_failed_mirror_entries()
     (HERE / ".seed.json").write_text(json.dumps({"ids": ids}, indent=1), encoding="utf-8")
     print(f"seeded {len(ids)} records")
 

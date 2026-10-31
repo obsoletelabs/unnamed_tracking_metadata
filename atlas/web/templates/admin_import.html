@@ -2,7 +2,9 @@
 {% from "macros.html" import csrf %}
 {% block title %}Import · {{ app_name }}{% endblock %}
 {% block content %}
-<h1>Import from a provider</h1>
+{% if p.is_admin %}<h1>Administration</h1>
+{% include "_adminnav.html" %}
+<h2 class="flush-top">Import from a provider</h2>{% else %}<h1>Import from a provider</h1>{% endif %}
 <p class="muted">Search a metadata provider and pull a game in with its facts, artwork and achievements. Provider data stays on this node's records as a source observation; nothing personal is sent.</p>
 {% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
 {% if done %}<div class="flash" role="status">Imported <a href="/game/{{ done.row.id }}"><strong>{{ done.row.title }}</strong></a>
