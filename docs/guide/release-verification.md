@@ -50,6 +50,27 @@ database permissions. **Do not use production credentials.** Servers use ephemer
 ports. Temporary SQLite/media folders and subprocesses are removed on exit. JSON success
 reports are written only after every assertion passes.
 
+## Version skew drill
+
+`python -m tools.skew_drill --output skew-1.0.json` runs the previous release next to this one as real
+HTTP servers. It unpacks `--previous-ref` (default: the pinned commit `62c73f3`, the last v2 release before protocol
+negotiation; a branch would move once this release is merged) with `git archive`, so the repository is
+not changed, and installs it into its own virtual environment with `uv sync --frozen`. Every node uses a
+disposable folder, SQLite and synthetic data on loopback. It checks that:
+
+* a previous-release (1.0) follower converges on an authority of this release emitting protocol 1.0, and
+  the authority records that follower as 1.0 (what keeps `emit_protocol` from being raised);
+* a follower of this release accepts a previous-release authority and reports `in_sync` only after it
+  verified and applied the advertised head;
+* entries the previous release skipped silently (an unknown kind, an observation with an `ext` member)
+  are recovered when that follower is upgraded in place: `atlas sync replay --rescan` records them,
+  a plain `atlas sync replay` applies nothing below the cursor (never out of order), `atlas sync replay
+  --historical` re-applies the retained range in feed order so the observation is applied, and the
+  unknown kind stays parked with its reason.
+
+The Federation lab workflow runs it after the scenarios and uploads `skew-1.0.json`. See
+[Compatibility and upgrades](federation.md#compatibility-and-upgrades).
+
 ## Topology and ordinary users
 
 The topology starts four real HTTP servers: two authorities → mirror → local node. The

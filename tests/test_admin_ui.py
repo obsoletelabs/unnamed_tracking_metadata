@@ -153,3 +153,63 @@ def test_templates_use_no_inline_style_attributes():
     offenders = [p.name for p in TEMPLATES.glob("*.html")
                  if re.search(r"<[^>]+\sstyle=", p.read_text(encoding="utf-8"))]
     assert offenders == []
+
+
+# ---- federation compatibility on the peers page (atlas#33, CONTRACTS-v1 C1.6) -------------------------
+
+def test_peers_page_shows_protocol_and_parked_entries(site):
+    from atlas.models import FollowerSeen
+
+    signup(site, "alice")
+    node = "p" * 16
+    now = datetime.now(UTC)
+    with site.st.maker() as s:
+        s.add(SyncFailure(node_id=node, seq=7, kind="relation", error="unsupported kind; kind 'relation'", attempts=1,
+                          first_failed_at=now, last_attempt_at=now, disposition="parked", reason="unsupported_kind"))
+        s.add(FollowerSeen(token_id="t" * 26, protocol="1.0", last_seen_at=now))
+        s.commit()
+    page = site.get("/admin/peers").text
+    assert 'data-protocol="own">1.1<' in page and 'data-protocol="emit"><strong>1.0<' in page
+    assert 'data-failure="7" data-disposition="parked"' in page and "unsupported kind" in page
+    assert 'data-follower-protocol="1.0"' in page and "(deleted token)" in page
+
+
+def test_raising_the_emit_protocol_needs_reauthentication_and_followers_upgraded(site):
+    from atlas.models import FollowerSeen, Setting
+    from atlas.web.federation import feed_schema
+
+    from .test_web import PW
+
+    signup(site, "alice")
+    with site.st.maker() as s:
+        s.add(FollowerSeen(token_id="f" * 26, protocol="1.0", last_seen_at=datetime.now(UTC)))
+        s.commit()
+    form = {"emit_protocol": "1.1", "password": PW, "followers_upgraded": "on"}
+    no_check = site.post("/admin/peers/protocol", data={**form, "csrf": token(site, "/admin/peers"),
+                                                        "followers_upgraded": ""})
+    assert no_check.status_code == 400 and "upgrade every follower first" in no_check.text
+    wrong = site.post("/admin/peers/protocol", data={**form, "csrf": token(site, "/admin/peers"), "password": "nope"})
+    assert wrong.status_code == 400
+    bogus = site.post("/admin/peers/protocol", data={**form, "csrf": token(site, "/admin/peers"),
+                                                     "emit_protocol": "9.9"})
+    assert bogus.status_code == 400
+    with site.st.maker() as s:
+        assert s.get(Setting, "emit_protocol") is None
+    ok = site.post("/admin/peers/protocol", data={**form, "csrf": token(site, "/admin/peers")})
+    assert ok.status_code == 303
+    with site.st.maker() as s:
+        assert s.get(Setting, "emit_protocol").value == "1.1"
+        audit = s.scalars(select(AuditEntry).where(AuditEntry.action == "emit_protocol")).one()
+        assert audit.detail["from"] == "1.0" and audit.detail["to"] == "1.1"
+        assert audit.detail["followers_behind"] == ["(deleted token)"]
+    assert feed_schema.emit_protocol(site.st.ctx.settings) == "1.1"
+    page = site.get("/admin/peers").text
+    assert 'data-protocol="emit"><strong>1.1<' in page and "below 1.1" in page
+    # Lowering needs the password but no follower confirmation.
+    down = site.post("/admin/peers/protocol", data={"csrf": token(site, "/admin/peers"), "emit_protocol": "1.0",
+                                                    "password": PW})
+    assert down.status_code == 303
+    assert feed_schema.emit_protocol(site.st.ctx.settings) == "1.0"
+    bob = fresh(site)
+    signup(bob, "bob")
+    assert bob.post("/admin/peers/protocol", data={**form, "csrf": token(bob, "/me")}).status_code == 403

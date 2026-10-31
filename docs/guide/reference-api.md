@@ -61,15 +61,17 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
 | `GET` | `/sync/changes` | sync | Signed entries after `since`; optional `node_id` selects a retained original authority feed. |
-| `GET` | `/sync/info` | read | Stable trust root, current signer, signed successor proofs and available original feeds. |
+| `GET` | `/sync/digest` | sync | Digest of the replicated observations of this node's feed (or a retained one with `node_id`), for `atlas sync reconcile`. Observations only; cached up to 60 s (`cached_seconds`). |
+| `GET` | `/sync/info` | read | Stable trust root, current signer, signed successor proofs, available original feeds, and the federation protocol, feed kinds and capabilities this node speaks. |
 
 ## admin
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
-| `GET` | `/status` | admin | Role, feed head, replication cursors and the number of feed entries that failed to apply. |
-| `GET` | `/sync/failures` | admin | Mirrored feed entries that could not be applied and still need attention. |
+| `GET` | `/status` | admin | Role, feed head, replication cursors, the number of feed entries that failed to apply and the named heads per upstream. |
+| `GET` | `/sync/failures` | admin | Mirrored feed entries that could not be applied and still need attention: parked (need a newer release) or quarantined. |
 | `POST` | `/sync/failures/retry` | admin | Retry failed mirrored entries now, whatever the automatic attempt count. |
+| `GET` | `/sync/status` | admin | Protocol versions, named heads (observed, downloaded, verified, applied), parked and quarantined entries per upstream, and the protocol each follower last spoke. |
 | `GET` | `/tokens` | admin | List API tokens. |
 | `POST` | `/tokens` | admin | Create a token; the secret is returned once. |
 | `DELETE` | `/tokens/{tid}` | admin | Revoke a token. |

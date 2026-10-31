@@ -117,3 +117,22 @@ def test_production_mirror_configuration_can_build_an_offline_sqlite_candidate(t
     promotion.candidate(settings, mirror[2].maker.kw["bind"], a[2].ctx.identity.node_id,
                         mirror[2].ctx.identity.node_id, out)
     assert backup.verify(out)["tables"]["canonical"] == 1
+
+
+def test_recovery_refuses_while_an_entry_is_parked(tmp_path):
+    """applied == verified is not enough (C1.7): an entry the mirror parked was never applied."""
+    from atlas import sync
+
+    a, mirror = node(tmp_path, "a", "authority"), node(tmp_path, "m", "mirror")
+    publish(a[2], "Alpha", "note")
+    pull(mirror[2], a)
+    authority = a[2].ctx.identity.node_id
+    with mirror[2].maker() as session:
+        assert sync.applied_head(session, authority) == sync.verified_head(session, authority)
+        sync._record(session, authority, 1, "obs", "parked", "unsupported_field", "parked by a rescan", None)
+        session.commit()
+    out = tmp_path / "parked.tar.gz"
+    with pytest.raises(promotion.PromotionError, match="parked"):
+        promotion.candidate(mirror[2].ctx.settings, mirror[2].maker.kw["bind"], authority,
+                            mirror[2].ctx.identity.node_id, out)
+    assert not out.exists()

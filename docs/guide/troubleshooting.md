@@ -47,6 +47,10 @@ are served from the node's public `/media/<sha256>` path.
 
 Admin → Peers shows each peer's last error. Common ones: *not trusted* (the node id changed or was never pinned), *feed gap or rewind* (the upstream was restored from an older backup; re-pin after confirming with its administrator), *bad signature*, token missing the `sync` scope, unreachable upstream (the node keeps serving and retries).
 
+* *Parked at entry N (unsupported kind/field/value…)*: the upstream runs a newer release. Later entries keep downloading but are not applied. Upgrade this node; parked entries from the applied head on apply on the next pull (or run `atlas sync replay`). Entries recorded by `atlas sync replay --rescan` below the applied head apply only through `atlas sync replay --historical`. See [Compatibility and upgrades](federation.md#compatibility-and-upgrades).
+* *upstream needs protocol ≥ X; this node speaks Y*: this node is too old for that upstream. Upgrade Atlas.
+* *authority feed fork or rewind: it advertises head N but this node already verified M*: the authority was restored from an older backup or is serving a different history. Nothing was applied. Confirm with its administrator before trusting it again.
+
 ## Artwork doesn't show
 
 A game's page lists images that are assigned but not cached yet under **N images not cached yet**, as links to the source with the reason (waiting, failed and retrying, or caching switched off). They are deliberately links, not embedded images.
