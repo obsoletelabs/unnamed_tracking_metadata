@@ -61,11 +61,13 @@ Every per-source achievement row has a stored **key**, `ak1:` followed by 26 low
 (30 characters in all). It is derived once, when the row is created, from the row's identity: `<source>:<external_id>`,
 or `<source>~<normalised name>` when the source gives no id. After that it is kept:
 
-* Refreshing a source updates its rows **in place**. An entry is matched by its key, then by its external id, then
-  by its normalised name, so a provider renaming an achievement, a reordered list or an added or removed entry keeps
+* Refreshing a source updates its rows **in place**. An entry is matched by its key, then by its external id and
+  name, then by its external id, then by its normalised name, so a provider renaming an achievement, a reordered list or an added or removed entry keeps
   the `id` and `key` of every entry that is still there.
 * A rename in the editor keeps the key, because the editor sends the key back with each row.
 * Merging two records keeps the keys (the key does not include the record id), and mirrors store the authority's keys.
+  When the surviving record already has a row of the same source with the same key, the survivor's row stays; when
+  it holds that key under a different source, the moving row is kept and gets its derived key instead.
 
 In the response, `keys` lists the keys of every source row merged into the entry (sorted) and `key` is the smallest
 of them. `key` does not depend on this node's source-trust settings, so every node names the entry alike; it changes
@@ -90,6 +92,8 @@ Hidden achievements are viewable, but only by signed-in people and only on reque
 * **Anonymous visitors and the public site.** They only learn that a hidden achievement exists (and its kind, tier, points and rarity, which do not spoil anything). The page never contains the name, description, icon or provider ids.
 * **Signed-in members on the website.** The row is concealed; clicking **Reveal (spoiler)** requests `/game/<id>/achievements/<achievement id>` for that single entry. The request needs the member's session and is answered `Cache-Control: no-store`, so the text is not in the page source, not in shared caches and not sent to anonymous requests. (Without JavaScript the button opens a small page with the same text.)
 * **The API.** A hidden achievement is returned **redacted**: `name` is `"Hidden achievement"`, `description` is empty, no icon, no `external_ids`, `revealed: false`. To reveal, add `?reveal=all` or `?reveal=<id>,<id>` (Atlas ids or keys). A hidden entry still carries `key` and `keys`: they are digests and do not spell out the name or the provider id, while `key_identity` is `null` until it is revealed. Atlas honours it only for a **signed-in user's personal token** or a token with the `curate` scope (or `admin`). Every other token (including a plain `read` token) still gets redacted rows, even if it sends `reveal`. A client should ask for the ids the user has already unlocked. Revealed rows have `revealed: true`. If *any* source marks an achievement hidden it stays hidden.
+
+Hidden entries and keys: a redacted entry's keys are not secret. `len(keys)` shows how many sources describe the entry (even though `sources` is blanked), and a key in the name form (`<source>~<normalised name>`, used by curator and community lists without ids) is a hash of a short, guessable name, so someone can test candidate names against it offline. Keys only confirm a guess; they never reveal a name nobody guessed. This is accepted under decision H1; keep a secret out of Atlas if a confirmable guess is too much.
 
 Privacy tradeoff: this protects against crawlers, casual visitors and spoiler-averse readers, not against a determined member. Anyone can create an account (when registration is open) and then reveal any hidden achievement, exactly as they could with a personal token; reveal requests are not rate limited separately. Atlas has no notion of who has *unlocked* an achievement (it stores no progress), so it cannot restrict reveal to people who have earned it; the client decides which ids to ask for. Sites that want stricter secrecy can close registration or keep a game's secret achievements out of Atlas.
 
