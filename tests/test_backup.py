@@ -78,7 +78,8 @@ def _roundtrip(src_url, dst_url, tmp_path, dst_engine):
     archive = tmp_path / "b.tar.gz"
     manifest = backup.create(settings, engine, archive)
     assert manifest["tables"]["canonical"] >= 2 and f"media/{DIGEST}.png" in manifest["files"]
-    assert oct(archive.stat().st_mode & 0o777) == "0o600"
+    if os.name != "nt":  # NTFS has no POSIX permission bits; os.stat() reports 0o666 whatever the archive was created with
+        assert oct(archive.stat().st_mode & 0o777) == "0o600"
     assert backup.verify(archive)["revision"] == manifest["revision"]
     before = _dump(engine)
     assert before["change_log"], "the fixture must put something in the signed feed"

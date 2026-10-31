@@ -226,7 +226,11 @@ def reference_api() -> str:
     with tempfile.TemporaryDirectory() as tmp:
         app = create_app(Settings(_env_file=None, database_url=f"sqlite:///{tmp}/docs.db", role="authority",
                                   media_dir=f"{tmp}/media"))
-        spec = app.openapi()
+        try:
+            spec = app.openapi()
+        finally:  # release the SQLite file before the temp dir is removed (Windows cannot delete an open file)
+            app.state.atlas.maker.kw["bind"].dispose()
+            app.state.atlas.http.close()
     scope_of: dict[tuple[str, str], str] = {}
     from atlas.api.routes import router as api_router
 
@@ -276,10 +280,10 @@ def main(argv: list[str]) -> int:
         text = build().rstrip() + "\n"
         path = out / name
         if "--check" in argv:
-            if not path.exists() or path.read_text() != text:
+            if not path.exists() or path.read_text(encoding="utf-8") != text:
                 stale.append(name)
         else:
-            path.write_text(text)
+            path.write_text(text, encoding="utf-8", newline="\n")
     if stale:
         print("out of date: " + ", ".join(stale) + " (run python tools/gen_docs.py)")
         return 1

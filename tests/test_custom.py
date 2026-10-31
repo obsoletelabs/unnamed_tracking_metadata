@@ -90,6 +90,8 @@ def test_builtin_media_baselines_are_seeded_and_stable(session, ctx):
         custom.delete_type(session, ctx, "movie")
 
 
+# Long values must not become test ids: pytest copies the id into PYTEST_CURRENT_TEST and Windows caps an
+# environment variable at 32767 characters, which broke setup and teardown of the 20000-character case.
 @pytest.mark.parametrize(("kind", "raw", "ok"), [
     ("text", "hello", "hello"), ("text", "x" * 501, None), ("text", "a\x00b", None),
     ("longtext", "x" * 20000, "x" * 20000), ("longtext", "x" * 20001, None),
@@ -100,7 +102,7 @@ def test_builtin_media_baselines_are_seeded_and_stable(session, ctx):
     ("list", "a\nb\n a ", ["a", "b", "a"]), ("list", "x" * 200, None),
     ("url", "https://x.test/a", "https://x.test/a"), ("url", "http://x.test", None), ("url", "javascript:alert(1)", None),
     ("url", "https://x.test/a b", None),
-])
+], ids=lambda v: f"{v[:12]}...len{len(v)}" if isinstance(v, str) and len(v) > 100 else None)  
 def test_value_validation(kind, raw, ok):
     f = FieldDef(media_type="movie", key="k", label="K", kind=kind, choices=["G", "PG", "R"])
     if ok is None:

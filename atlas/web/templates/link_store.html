@@ -17,8 +17,8 @@
 <form class="card" method="get" action="/game/{{ g.id }}/links">
   <div class="row">
     <div><label for="provider">Store or database</label><select id="provider" name="provider">{% for n in names %}<option value="{{ n }}" {{ 'selected' if n == provider }}>{{ stores[n][0] if n in stores else n }}</option>{% endfor %}</select></div>
-    <div style="flex:1"><label for="q">Name</label><input id="q" type="search" name="q" value="{{ q }}" maxlength="200" required></div>
-    <div style="align-self:end"><button type="submit">Search</button></div>
+    <div class="grow"><label for="q">Name</label><input id="q" type="search" name="q" value="{{ q }}" maxlength="200" required></div>
+    <div class="align-end"><button type="submit">Search</button></div>
   </div>
   <p class="small muted">GOG, Epic and TheGamesDB cannot be searched yet; for those, <a href="/game/{{ g.id }}">enter the id by hand</a>.</p>
 </form>

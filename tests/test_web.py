@@ -112,6 +112,16 @@ def test_security_headers_and_no_inline_script(site):
     assert "content-security-policy" not in site.get("/api/v2/health").headers
 
 
+def test_no_template_uses_an_inline_style_attribute():
+    """The CSP is `style-src 'self'`, so a style attribute is blocked and logs a console error (seen on /admin/backup)."""
+    from pathlib import Path
+
+    templates = Path(main.__file__).parent / "web" / "templates"
+    inline = re.compile(r"<[a-z][^>]*\sstyle=")
+    offenders = [p.name for p in templates.glob("*.html") if inline.search(p.read_text(encoding="utf-8"))]
+    assert offenders == [], f"use a CSS class in app.css instead of style=: {offenders}"
+
+
 def test_registration_login_logout_flow(site):
     signup(site, "alice")  # first account is the administrator
     page = site.get("/me")

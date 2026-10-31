@@ -61,6 +61,8 @@ nav:
       - Tracking App: tracking-app.md
       - Achievements: achievements.md
       - Extending: extending.md
+  - Contributing:
+      - Testing: testing.md
   - Reference:
       - API: reference-api.md
       - Environment variables: reference-env.md
