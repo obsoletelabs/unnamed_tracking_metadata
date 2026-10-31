@@ -11,7 +11,7 @@ Atlas has two test layers. Both run in CI (`.github/workflows/ci.yml`) and both 
 
 ```bash
 uv sync --frozen --extra dev
-uv run ruff check atlas tests tools
+uv run ruff check atlas tests tools e2e
 uv run pytest -q
 ```
 
@@ -43,7 +43,7 @@ npm test
 
 `npm test` does everything itself:
 
-1. Playwright starts `e2e/server.py`, which boots a local-role Atlas node on `127.0.0.1:8765` with a temporary SQLite database and media folder. Provider integrations and artwork caching are off, so nothing leaves the machine. The folder is deleted when the run ends.
+1. Playwright starts `e2e/server.py`, which boots a local-role Atlas node on `127.0.0.1:8765` with a temporary SQLite database and media folder. Provider integrations and artwork caching are off, so nothing leaves the machine. The data lives in `e2e/.run/` (git-ignored). Playwright kills the server process tree when the run ends, so the server cannot always clean up after itself (never on Windows); the folder is wiped at the start of the next run instead.
 2. `e2e/seed.py` loads **synthetic** data: six games, a movie, six achievements on one game, three accounts (`alice` is the administrator), a pending proposal, a comment and a public list. The accounts and bootstrap token are test-only values that exist only on that throwaway node.
 3. A setup step signs in as the administrator and stores the session.
 4. The specs run once at **desktop (1440x900)** and once at **mobile (390x844, touch)**.

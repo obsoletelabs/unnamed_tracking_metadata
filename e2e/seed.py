@@ -75,11 +75,15 @@ def main() -> None:
                 json={"connection": {"source_kind": "manual", "source": "manual", "source_scope": "e2e"},
                       "media_type": "movie", "observations": [
                           {"external_id": "E2E-M1", "title": "Midnight Lanterns", "release_date": "2019-11-02",
-                           "facts": {"description": "A courier crosses a city during a lantern festival.", "genres": ["drama"]}}]})
+                           "facts": {"description": "A courier crosses a city during a lantern festival.",
+                                     "genres": ["drama"]}}]})
         ids["Midnight Lanterns"] = r.json()["results"][0]["atlas"]["canonical_id"]
-        achievements = [{"name": name, "description": f"Synthetic achievement {k + 1}.", "hidden": k == 4,
-                         "tier": ["bronze", "silver", "gold"][k % 3], "points": 5 * (k + 1), "global_percent": round(60 / (k + 1), 1)}
-                        for k, name in enumerate(ACHIEVEMENT_NAMES)]
+        achievements = [
+            {"name": name, "description": f"Synthetic achievement {k + 1}.", "hidden": k == 4,
+             "tier": ["bronze", "silver", "gold"][k % 3], "points": 5 * (k + 1),
+             "global_percent": round(60 / (k + 1), 1)}
+            for k, name in enumerate(ACHIEVEMENT_NAMES)
+        ]
         api(api_client, "PUT", f"/games/{ids['Starlight Harbor']}/achievements", token, json={"items": achievements})
 
     sessions: dict[str, httpx.Client] = {}
