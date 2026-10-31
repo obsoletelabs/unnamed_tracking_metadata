@@ -1,11 +1,12 @@
 # Testing Atlas
 
-Atlas has two test layers. Both run in CI (`.github/workflows/ci.yml`) and both run on a developer machine, including Windows.
+Atlas has three test layers. The first two run in the main CI workflow (`.github/workflows/ci.yml`), the third in its own workflow (`.github/workflows/federation-lab.yml`), and all of them run on a developer machine, including Windows.
 
 | Layer | Where | What it covers | Command |
 | --- | --- | --- | --- |
 | Python tests | `tests/` | The API, service layer, federation, backups, the server-rendered pages through `TestClient` | `uv run pytest -q` |
 | Browser end-to-end tests | `e2e/` | The real site in Chromium: every main screen, a create-and-edit flow, console errors, mobile layout | `cd e2e && npm test` |
+| Federation lab | `tests/federation_lab/` | Five real nodes: database convergence, replays, outages, forged and revoked keys, version skew. Opt-in. See [Federation test lab](federation-lab.md) | `uv run python -m tools.federation_lab` |
 
 ## Python tests
 
