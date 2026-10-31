@@ -103,6 +103,28 @@ class Stats:
         lines.append("# TYPE atlas_sync_head gauge")
         for origin, head in heads.items():
             lines.append(f"atlas_sync_head{{node_id={json.dumps(origin)}}} {head}")
+        # Compatibility heads per upstream feed (C1.7). Labels: trusted upstream node ids and fixed names only.
+        from . import sync
+
+        upstreams = sync.status(session, state.ctx)["upstreams"]
+        lines.append("# TYPE atlas_sync_upstream_head gauge")
+        for origin, info in upstreams.items():
+            for head in ("observed", "downloaded", "verified", "applied"):
+                lines.append(f'atlas_sync_upstream_head{{node_id={json.dumps(origin)},head="{head}"}} '
+                             f'{info[head + "_head"]}')
+        lines.extend(["# TYPE atlas_sync_parked_entries gauge", "# TYPE atlas_sync_quarantined_entries gauge",
+                      "# TYPE atlas_sync_refused gauge", "# TYPE atlas_sync_rewound gauge",
+                      "# TYPE atlas_sync_backlog_full gauge",
+                      "# TYPE atlas_sync_in_sync gauge"])
+        for origin, info in upstreams.items():
+            label = f"node_id={json.dumps(origin)}"
+            parked = info["parked"] or {}
+            lines += [f"atlas_sync_parked_entries{{{label}}} {parked.get('count', 0)}",
+                      f"atlas_sync_quarantined_entries{{{label}}} {info['quarantined']['count']}",
+                      f"atlas_sync_refused{{{label}}} {int(bool(info['refused']))}",
+                      f"atlas_sync_rewound{{{label}}} {int(bool(info['rewound']))}",
+                      f"atlas_sync_backlog_full{{{label}}} {int(bool(parked.get('backlog_full')))}",
+                      f"atlas_sync_in_sync{{{label}}} {int(info['in_sync'])}"]
         lines.append("# TYPE atlas_provider_failures_total counter")
         for provider, count in sorted(state.providers.failure_counts().items()):
             lines.append(f"atlas_provider_failures_total{{provider={json.dumps(provider)}}} {count}")
