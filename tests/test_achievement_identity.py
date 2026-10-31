@@ -188,6 +188,55 @@ def test_repeated_external_id_and_foreign_keys_get_distinct_keys(session, ctx):
         facets.set_achievements(session, ctx, cid, "curator", [{"name": "Bad", "key": "steam:ACH_WIN"}])
 
 
+def test_repeated_external_id_refreshes_keep_each_name_on_its_row(session, ctx):
+    cid = seed(session, ctx)
+    dup = [{"name": "Winner", "external_id": "X"}, {"name": "Winner Again", "external_id": "X"},
+           {"name": "Other", "external_id": "Y"}]
+    facets.set_achievements(session, ctx, cid, "steam", dup)
+    session.commit()
+    first = stored(session, cid)
+    assert first["Winner"][1] == ak1("steam:X") and first["Winner Again"][1] == ak1("steam~winner again")
+    for order in [dup, dup, dup[::-1], [dup[1], dup[2], dup[0]], dup]:  # same order and reordered
+        facets.set_achievements(session, ctx, cid, "steam", order)
+        session.commit()
+        assert stored(session, cid) == first
+
+
+def test_repeated_external_id_rows_backfilled_in_the_other_order_stay_put(session, ctx):
+    # migration 0022 hands the ext-id key to the lower row id, which need not be the first name in the list
+    cid = seed(session, ctx)
+    facets.set_achievements(session, ctx, cid, "steam", [{"name": "Winner Again", "external_id": "X"},
+                                                         {"name": "Winner", "external_id": "X"}])
+    session.commit()
+    first = stored(session, cid)
+    assert first["Winner Again"][1] == ak1("steam:X")
+    for _ in range(5):
+        facets.set_achievements(session, ctx, cid, "steam", [{"name": "Winner", "external_id": "X"},
+                                                             {"name": "Winner Again", "external_id": "X"}])
+        session.commit()
+        assert stored(session, cid) == first
+
+
+def test_merge_keeps_a_curated_row_whose_key_another_source_holds(session, ctx):
+    one, two = seed(session, ctx), seed(session, ctx, ext="400", title="Portal")
+    facets.set_achievements(session, ctx, one, "steam", [{"name": "Winner", "external_id": "ACH_WIN"}])
+    session.commit()
+    steam_key = stored(session, one)["Winner"][1]
+    facets.set_achievements(session, ctx, two, "curator", [{"name": "Curated Only", "key": steam_key}])
+    facets.set_achievements(session, ctx, two, "steam", [{"name": "Winner", "external_id": "ACH_WIN"}])
+    session.commit()
+    curated_id = stored(session, two)["Curated Only"][0]
+    assert stored(session, two)["Curated Only"][1] == steam_key
+    service.merge_canonicals(session, ctx, two, one, actor="test")
+    session.commit()
+    after = stored(session, one)
+    assert after["Winner"][1] == steam_key  # the survivor's steam row stays; the moving steam duplicate goes
+    assert after["Curated Only"] == (curated_id, ak1("curator~curated only"))  # kept, re-keyed, same id
+    assert len(after) == 2
+    row = session.get(Achievement, curated_id)
+    assert (row.source, row.canonical_id) == ("curator", one)
+
+
 def test_detach_moves_rows_with_their_keys(session, ctx):
     cid = seed(session, ctx)
     service.ingest(session, ctx, batch("gog", [{"external_id": "g1", "title": "Portal 2",
@@ -257,6 +306,37 @@ def test_mirror_adopts_the_authority_key_for_rows_it_derived_itself(pair):  # no
     sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
     with m_maker() as s:
         assert stored(s, cid) == {"Escape": (rid, authority_key)}
+
+
+def test_mirror_backfilled_in_another_order_adopts_the_authority_keys(pair):  # noqa: F811
+    a_maker, a_ctx, m_maker, m_ctx, client = pair
+    [r] = curate(a_maker, a_ctx, "curator", [{"external_id": "c1", "title": "Hades", "release_date": "2020-09-17"}])
+    sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    cid = r.canonical_id
+    k_ext, k_name = ak1("curator:X"), ak1("curator~winner again")
+    with m_maker() as s:  # the mirror's own backfill gave the two duplicate-id rows the other keys
+        facets.set_achievements(s, m_ctx, cid, "curator", [{"name": "Winner Again", "external_id": "X"},
+                                                           {"name": "Winner", "external_id": "X"}])
+        s.commit()
+        before = stored(s, cid)
+        assert before["Winner Again"][1] == k_ext
+    with a_maker() as s:
+        feed.append(s, a_ctx.identity, "achievements", {"canonical_id": cid, "source": "curator", "items": [
+            {"name": "Winner", "external_id": "X", "key": k_ext},
+            {"name": "Winner Again", "external_id": "X", "key": k_name}]})
+        s.commit()
+    sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    with m_maker() as s:  # the authority's key is the identity (matched first): mirror and authority agree
+        # again, and each mirror row id follows its key, as the mirror's own clients saw them paired
+        assert stored(s, cid) == {"Winner": (before["Winner Again"][0], k_ext),
+                                  "Winner Again": (before["Winner"][0], k_name)}
+        merged = {m["name"]: m["key"] for m in facets.merged_achievements(s, m_ctx, cid)}
+        assert merged == {"Winner": k_ext, "Winner Again": k_name}
+    with m_maker() as s:  # and a repeat of the same signed entry changes nothing
+        again = stored(s, cid)
+    sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    with m_maker() as s:
+        assert stored(s, cid) == again
 
 
 # ---- HTTP API ---------------------------------------------------------------------------------------------
