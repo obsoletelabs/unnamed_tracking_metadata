@@ -10,11 +10,17 @@ The log is private to this node and its own API clients:
   data is never exposed by it;
 - nothing that builds or serves a signed feed reads it (`feed`, `/sync/changes`, relay, promotion), and a
   recovery candidate starts with an empty log.
+
+A cursor is a `seq` together with the log's **epoch**, a random id kept in `node_state`. Every event that
+recreates or rewinds the log gets a new epoch: the 0023 upgrade (so a downgrade and re-upgrade), a backup
+restore and a recovery candidate. A seq alone cannot tell a recreated log from progress once the new head
+has passed the old cursor; a client that sends its stored epoch is told to `reset` whenever it differs.
 """
 
 from __future__ import annotations
 
 import contextlib
+import secrets
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -29,6 +35,7 @@ _SCOPE = "atlas_client_change_scope"
 _PENDING = "atlas_client_change_pending"
 PRUNED_AT = "client_change_pruned_at"
 PRUNE_EVERY = timedelta(days=1)
+EPOCH = "client_change_epoch"
 
 Origin = tuple[str, int] | None
 
@@ -93,13 +100,45 @@ def head(session: Session) -> int:
     return session.scalar(select(func.max(ClientChange.seq))) or 0
 
 
-def page(session: Session, since: int, limit: int) -> dict[str, Any]:
+def new_epoch() -> str:
+    return secrets.token_hex(8)
+
+
+def epoch(session: Session) -> str:
+    """The current log epoch. Migration 0023 creates it; a database without one (an unmerged development
+    revision of 0023) gets one here, which only ever makes clients reset."""
+    state = session.get(NodeState, EPOCH)
+    if state is None:
+        state = NodeState(key=EPOCH, value=new_epoch())
+        session.add(state)
+        session.flush()
+    return state.value
+
+
+def renew_epoch(session: Session) -> str:
+    """Start a new epoch: call this whenever the log is recreated or rewound (restore, recovery)."""
+    value = new_epoch()
+    state = session.get(NodeState, EPOCH)
+    if state is None:
+        session.add(NodeState(key=EPOCH, value=value))
+    else:
+        state.value = value
+    session.flush()
+    return value
+
+
+def page(session: Session, since: int, limit: int, client_epoch: str | None = None) -> dict[str, Any]:
     """One page of the local feed after `since`. `reset` means the client's cursor cannot be continued:
-    entries it has not seen were pruned, or the log was recreated (a rollback, restore or downgrade)."""
+    entries it has not seen were pruned, or the log was recreated or rewound (a downgrade and re-upgrade, a
+    restore or a recovery candidate), which a client that sends its stored `client_epoch` always learns.
+    Without an epoch only a cursor above the head is recognised as stale."""
+    current = epoch(session)
     top = head(session)
     floor = session.scalar(select(func.min(ClientChange.seq)))
-    if since > top or (floor is not None and since < floor - 1):
-        return {"head": top, "next_cursor": top, "has_more": False, "reset": True, "results": []}
+    recreated = client_epoch is not None and client_epoch != current
+    if recreated or since > top or (floor is not None and since < floor - 1):
+        return {"epoch": current, "head": top, "next_cursor": top, "has_more": False, "reset": True,
+                "results": []}
     rows = list(session.scalars(
         select(ClientChange).where(ClientChange.seq > since).order_by(ClientChange.seq).limit(limit)))
     ids: list[str] = []
@@ -112,6 +151,7 @@ def page(session: Session, since: int, limit: int) -> dict[str, Any]:
     records = {r.id: r for r in session.scalars(select(Canonical).where(Canonical.id.in_(ids)))} if ids else {}
     next_cursor = rows[-1].seq if rows else since
     return {
+        "epoch": current,
         "head": top,
         "next_cursor": next_cursor,
         "has_more": bool(rows) and next_cursor < top,
