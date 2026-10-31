@@ -235,8 +235,13 @@ vocabulary tokens a follower must know, at most 16 of up to 40 characters). Both
 signed body, so they cannot be stripped; keys starting with `_` are reserved for this envelope.
 Observation payloads may carry `ext` members: one listed in `_requires` must be understood, any
 other is ignored by a follower that does not know it. The only field that a later minor may add
-without parking 1.1 followers is `achievements.items[].key` (reserved-optional). Version-1 bodies
-are unchanged on the wire, so existing signed feeds and signatures stay valid.
+without parking 1.1 followers is `achievements.items[].key` (reserved-optional). Since migration 0022
+an authority puts each row's stored key there (see [Achievements](achievements.md#stable-keys)), at
+every emit protocol: 1.1 followers accept it as reserved-optional, and 1.0 followers read only the
+fields they know, so they ignore it. A follower stores the authority's key, so mirror and authority
+name every entry alike; an entry without a key (from an older authority) gets the derived key, which
+is the same except for entries renamed in the authority's editor. Version-1 bodies are unchanged on
+the wire, so existing signed feeds and signatures stay valid.
 
 ## Sharing sign-ins between nodes
 

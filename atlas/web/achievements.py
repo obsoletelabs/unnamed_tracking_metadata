@@ -77,7 +77,7 @@ def _row_from_item(item: dict[str, Any], key: str) -> dict[str, Any]:
             "kind": item.get("kind", ""), "tier": item.get("tier", ""),
             "points": "" if item.get("points") is None else str(item["points"]), "hidden": bool(item.get("hidden")),
             "icon_url": item.get("icon_url", ""), "locked_icon_url": item.get("locked_icon_url", ""),
-            "external_id": item.get("external_id", ""),
+            "external_id": item.get("external_id", ""), "akey": item.get("key", ""),
             "global_percent": "" if item.get("global_percent") is None else str(item["global_percent"]),
             "errors": [], "notes": []}
 
@@ -119,6 +119,8 @@ def _clean_row(row: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
         return None, []
     item: dict[str, Any] = {"name": row["name"], "description": row["description"], "hidden": row["hidden"],
                             "external_id": row.get("external_id", "")}
+    if row.get("akey"):  # the stored key of the entry this row edits: a rename keeps the entry (C2.2)
+        item["key"] = row["akey"]
     problems = []
     for field in ("kind", "tier", "icon_url", "locked_icon_url"):
         if str(row[field]).strip():
@@ -170,6 +172,7 @@ async def _read_rows(p: Page, form: Any) -> tuple[list[dict[str, Any]], list[dic
         if form.get(f"remove.{k}"):
             continue
         row = {"key": k, "external_id": str(form.get(f"external_id.{k}") or "")[:200],
+               "akey": str(form.get(f"akey.{k}") or "")[:30],
                "global_percent": str(form.get(f"global_percent.{k}") or "")[:20], "errors": [], "notes": [],
                "hidden": bool(form.get(f"hidden.{k}"))}
         for f in ("name", "description", "kind", "tier", "points", "icon_url", "locked_icon_url"):
@@ -205,17 +208,36 @@ async def _read_rows(p: Page, form: Any) -> tuple[list[dict[str, Any]], list[dic
     return rows, items
 
 
+def _pair(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[int | None]:
+    """For each new item, the index of the old entry it edits: same key first, then same name."""
+    by_key = {i["key"]: n for n, i in enumerate(old) if i.get("key")}
+    by_name = {facets._norm_name(i["name"]): n for n, i in enumerate(old)}
+    pairs: list[int | None] = [None] * len(new)
+    used: set[int] = set()
+    for idx, i in enumerate(new):
+        n = by_key.get(i.get("key", ""))
+        if n is not None and n not in used:
+            pairs[idx] = n
+            used.add(n)
+    for idx, i in enumerate(new):
+        n = by_name.get(facets._norm_name(i["name"]))
+        if pairs[idx] is None and n is not None and n not in used:
+            pairs[idx] = n
+            used.add(n)
+    return pairs
+
+
 def _diff(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> dict[str, Any]:
-    """What will change in the community list, entry by entry."""
-    before = {facets._norm_name(i["name"]): i for i in old}
-    after = {facets._norm_name(i["name"]): i for i in new}
-    added = [after[k]["name"] for k in after if k not in before]
-    removed = [before[k]["name"] for k in before if k not in after]
+    """What will change in the community list, entry by entry. A renamed row is a change, not a removal."""
+    pairs = _pair(old, new)
+    used = {n for n in pairs if n is not None}
+    added = [i["name"] for i, n in zip(new, pairs, strict=True) if n is None]
+    removed = [i["name"] for n, i in enumerate(old) if n not in used]
     changed = []
-    for k in after:
-        if k not in before:
+    for b, n in zip(new, pairs, strict=True):
+        if n is None:
             continue
-        a, b = before[k], after[k]
+        a = old[n]
         deltas = []
         for f in ("name", "description", "kind", "tier", "points", "hidden", "icon_url", "locked_icon_url"):
             x, y = a.get(f) or ("" if f != "hidden" else False), b.get(f) or ("" if f != "hidden" else False)
@@ -223,8 +245,7 @@ def _diff(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> dict[str, Any
                 deltas.append((FIELD_LABELS.get(f, f.replace("_", " ").capitalize()), _show(x), _show(y)))
         if deltas:
             changed.append({"name": b["name"], "deltas": deltas})
-    order_changed = [facets._norm_name(i["name"]) for i in old if facets._norm_name(i["name"]) in after] != \
-        [facets._norm_name(i["name"]) for i in new if facets._norm_name(i["name"]) in before]
+    order_changed = sorted(used) != [n for n in pairs if n is not None]
     return {"added": added, "removed": removed, "changed": changed, "reordered": order_changed,
             "none": not (added or removed or changed or order_changed)}
 
@@ -283,7 +304,8 @@ def reveal(cid: str, aid: str, p: Annotated[Page, Depends(page)], json: int = 0)
             return JSONResponse({"error": "sign in"}, status_code=401, headers={"Cache-Control": "no-store"})
         return go(f"/login?next=/game/{cid}/achievements/{aid}")
     g, _ = live_game(p, cid)
-    found = next((m for m in facets.merged_achievements(p.session, p.st.ctx, g.id, reveal={aid}) if m["id"] == aid), None)
+    found = next((m for m in facets.merged_achievements(p.session, p.st.ctx, g.id, reveal={aid})
+                  if m["id"] == aid or aid in m["keys"]), None)
     if found is None:
         raise HTTPException(404, "No such achievement.")
     if json:

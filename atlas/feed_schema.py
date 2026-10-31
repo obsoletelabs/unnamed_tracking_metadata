@@ -95,7 +95,7 @@ class KindSpec:
     nested: dict[str, frozenset[str]] = field(default_factory=dict)
     # path -> name of the closed vocabulary its values must belong to
     values: dict[str, str] = field(default_factory=dict)
-    # reserved-optional fields: accepted and ignored when this release does not use them
+    # reserved-optional fields: a 1.1 follower accepts them (this release stores `items[].key`)
     optional: frozenset[str] = frozenset()
 
 

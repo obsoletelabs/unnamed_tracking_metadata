@@ -134,7 +134,7 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/site"): "Name, theme, navigation, role, registration and email policy of this node.",
     ("get", "/games"): "Search records by title (`q`, optional `type`, `limit`). Includes `custom` values.",
     ("get", "/games/{cid}"): "One record. Follows merge redirects (`redirected_from`). ETag = id-version.",
-    ("get", "/games/{cid}/achievements"): "Merged achievement list: name, description, kind, tier, points, icons, global percent. Hidden ones are redacted unless `reveal=all` or `reveal=<id>,<id>` is sent with a signed-in user's token or a curator token. No per-user progress. See [Achievements](achievements.md).",
+    ("get", "/games/{cid}/achievements"): "Merged achievement list: name, description, kind, tier, points, icons, global percent, and a stable `key` (`ak1:…`) with `keys` and `key_identity`. Hidden ones are redacted unless `reveal=all` or `reveal=<id or key>,…` is sent with a signed-in user's token or a curator token. No per-user progress. See [Achievements](achievements.md).",
     ("get", "/games/{cid}/artwork"): "Artwork by trust and priority, plus the best image per kind; `media_url` once cached, and `image_url` always.",
     ("get", "/artwork/{art_id}/image"): "One image: its cached bytes, or a redirect to the original public address while it is not cached.",
     ("get", "/games/{cid}/explain"): "Which source and rule produced each field (provenance).",
