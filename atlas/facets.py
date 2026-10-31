@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -19,6 +20,7 @@ MAX_ACH = 2000
 _BAD_URL = re.compile(r"[\s\\\x00-\x1f]")
 
 
+log_ = logging.getLogger(__name__)
 _norm_name = achievement_key.norm_name
 _ROW_ID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}\Z")  # an Atlas row id (ULID, Crockford base32)
 
@@ -201,14 +203,17 @@ _ICON_STATE = {"icon": ("icon_blob_hash", "icon_fail_count", "icon_next_try_at")
 def _match_rows(rows: list[Achievement], items: list[dict[str, Any]]) -> list[Achievement | None]:
     """Pair each incoming item with at most one existing row of the same source (C2.2 step 2).
 
-    All items are tried against their explicit key first, then their external id, then their normalised name,
-    so an item that carries a row's key is never beaten to that row by another item's weaker match."""
+    All items are tried against their explicit key first, then their external id together with their name,
+    then their external id alone, then their normalised name, so an item is never beaten to a row by another
+    item's weaker match. The external-id-and-name pass keeps a list that repeats one external id under two
+    names stable: each name stays on its own row (and key) however the list is ordered."""
     by_key = {r.key: r for r in rows}
     by_ext: dict[str, list[Achievement]] = {}
     for r in rows:
         if r.external_id:
             by_ext.setdefault(r.external_id, []).append(r)
     by_name = {r.norm_name: r for r in rows}
+    by_ext_name = {(r.external_id, r.norm_name): r for r in rows if r.external_id}
     match: list[Achievement | None] = [None] * len(items)
     claimed: set[str] = set()
 
@@ -219,6 +224,9 @@ def _match_rows(rows: list[Achievement], items: list[dict[str, Any]]) -> list[Ac
 
     for i, it in enumerate(items):
         claim(i, by_key.get(it.get("key", "")))
+    for i, it in enumerate(items):
+        if match[i] is None and it["external_id"]:
+            claim(i, by_ext_name.get((it["external_id"], _norm_name(it["name"]))))
     for i, it in enumerate(items):
         if match[i] is None and it["external_id"]:
             claim(i, next((r for r in by_ext.get(it["external_id"], []) if r.id not in claimed), None))
@@ -252,10 +260,11 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
     """Replace what one source says, reconciling its rows in place (CONTRACTS-v1 C2.2).
 
     Each item is matched to an existing row of this source by its key (or the row id the editor submits),
-    then its external id, then its normalised name. A matched row keeps its id and key and is updated; its
-    cached icons survive when the address is unchanged. Unmatched items become new rows and unmatched rows
-    are deleted. `ordered` keeps the given order (for lists people arranged by hand). `adopt_keys` is for
-    signed feed entries: the authority's key replaces a mirror's own, so every node publishes the same key."""
+    then its external id and name, then its external id, then its normalised name. A matched row keeps its id
+    and key and is updated; its cached icons survive when the address is unchanged. Unmatched items become new
+    rows and unmatched rows are deleted. `ordered` keeps the given order (for lists people arranged by hand).
+    `adopt_keys` is for signed feed entries: the authority's key replaces a mirror's own, so every node
+    publishes the same key."""
     write_lock(session)
     _live(session, cid)
     source = norm_namespace(source)
@@ -276,21 +285,33 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
             session.delete(r)
     session.flush()
 
-    # 2. final keys. A matched row keeps its key; under `adopt_keys` it takes the item's key when no other
-    # row of the record holds that key.
-    held = set(session.scalars(select(Achievement.key).where(Achievement.canonical_id == cid)))
-    final: list[str] = []
-    for it, row in zip(items, match, strict=True):
-        want = it.get("key")
-        if row is not None:
-            final.append(want if adopt_keys and want and want not in held else row.key)
-        else:
-            final.append("")
-    reserved = held | set(final)
+    # 2. final keys. A matched row keeps its key. Under `adopt_keys` it takes the item's key instead when no
+    # row of another source on the record holds that key; rows of this source are all being reconciled here,
+    # so two of them may swap keys (step 3 makes that safe). A row whose key another row adopts is re-keyed.
+    other = set(session.scalars(select(Achievement.key).where(Achievement.canonical_id == cid,
+                                                              Achievement.source != source)))
+    final: list[str] = [""] * len(items)
+    if adopt_keys:
+        for i, (it, row) in enumerate(zip(items, match, strict=True)):
+            want = it.get("key")
+            if row is not None and want and want not in other and want not in final:
+                final[i] = want
+    taken = set(final)
+    for i, row in enumerate(match):
+        if row is not None and not final[i] and row.key not in taken:
+            final[i] = row.key
+            taken.add(row.key)
+    reserved = other | taken
     for i, it in enumerate(items):
-        if match[i] is None:
-            final[i] = _new_key(source, it, reserved)
+        if not final[i]:
+            cand = it if match[i] is None else {**it, "key": None}
+            final[i] = _new_key(source, cand, reserved)
             reserved.add(final[i])
+    if adopt_keys and (refused := sum(1 for it, key in zip(items, final, strict=True)
+                                      if it.get("key") and it["key"] != key)):
+        # mirror and authority now name these entries differently (C2.8); counted so it is not silent
+        log_.warning("achievements %s/%s: %d authority key(s) not adopted (held by another source here)",
+                     cid, source, refused)
 
     # 3. renames and re-keys go through a temporary value first, so a swap never trips a unique constraint
     moving = [r for i, r in enumerate(match) if r is not None
@@ -411,7 +432,8 @@ def move_facets(session: Session, src: str, dst: str) -> None:
     """On merge: carry artwork/achievements over; duplicates keep the survivor's row.
 
     Moved achievement rows keep their id and key (the key leaves out the canonical id). A row whose source and
-    name, or whose key, the survivor already has is a duplicate: the survivor's row stays."""
+    name, or whose source and key, the survivor already has is a duplicate: the survivor's row stays. A row
+    whose key the survivor holds under another source is kept and re-keyed with its derived key, never dropped."""
     have_art = {(a.kind, a.url) for a in session.scalars(select(Artwork).where(Artwork.canonical_id == dst))}
     for a in session.scalars(select(Artwork).where(Artwork.canonical_id == src)).all():
         if (a.kind, a.url) in have_art:
@@ -420,12 +442,14 @@ def move_facets(session: Session, src: str, dst: str) -> None:
             a.canonical_id, a.preferred = dst, False  # the survivor keeps its own defaults
     survivor = list(session.scalars(select(Achievement).where(Achievement.canonical_id == dst)))
     have_ach = {(a.source, a.norm_name) for a in survivor}
-    have_key = {a.key for a in survivor}
+    have_key = {a.key: a.source for a in survivor}
     for a in session.scalars(select(Achievement).where(Achievement.canonical_id == src)).all():
-        if (a.source, a.norm_name) in have_ach or a.key in have_key:
+        if (a.source, a.norm_name) in have_ach or have_key.get(a.key) == a.source:
             session.delete(a)
-        else:
-            a.canonical_id = dst
-            have_ach.add((a.source, a.norm_name))
-            have_key.add(a.key)
+            continue
+        if a.key in have_key:  # another source's row holds the key: keep this row under its derived key
+            a.key = _new_key(a.source, {"name": a.name, "external_id": a.external_id}, set(have_key))
+        a.canonical_id = dst
+        have_ach.add((a.source, a.norm_name))
+        have_key[a.key] = a.source
     session.flush()
