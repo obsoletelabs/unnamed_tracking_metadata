@@ -1,0 +1,64 @@
+{
+ "comment": "Synthetic test vectors (CONTRACT-C10 section 11 b, cc). The seed is a public test value, never a real key.",
+ "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+ "public_key": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+ "sign_message": [
+  {
+   "name": "cert",
+   "domain": "atlas-grp-cert-v1\n",
+   "parts": [
+    "9c1e4b7a2f30d811",
+    "root",
+    "9c1e4b7a2f30d811",
+    "9c1e4b7a2f30d811",
+    "cert:root/1-0123456789abcdef",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "signature": "vj4zT4tBujDnpOJNL5RrD4ptjM1zm+6gByScrTLHcjQbS7Y5dJfIMJFk45aYKYKw0wUh7SyeVT+/SuYWvQXwDw=="
+  },
+  {
+   "name": "crl",
+   "domain": "atlas-grp-crl-v1\n",
+   "parts": [
+    "9c1e4b7a2f30d811",
+    "node",
+    "3f2a9c0d1e2b4a55",
+    "3f2a9c0d1e2b4a55",
+    "crl:3f2a9c0d1e2b4a55/1",
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   ],
+   "signature": "p7HXlvvlBTZm0+QEzSCyZzl/MKO8Yv07DbegccG1PS87O6XE7xdR1c5f/zZ1hJmWCq08X/gNX56W2+dkLvMPBQ=="
+  },
+  {
+   "name": "enrol",
+   "domain": "atlas-grp-enrol-v1\n",
+   "parts": [
+    "inviter",
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+   ],
+   "signature": "dgz4ELihKw7R3u21PQsyDrQYU+Je2TE9v01Qrxck9LfFvzsJgrK8ZfdmQUI2iYya+u+zEBHFDAzxDEYE1L3RDg=="
+  }
+ ],
+ "feed": {
+  "node_id": "56475aa75463474c",
+  "seq": 7,
+  "kind": "metadata",
+  "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "signature": "XLbObFrGsc8Ie438sHFS3ZhXldhWgxRgQYo3Jy0Bf9lhM27CfoYWK9Y1tgAY+XbIgzbyjDuCd8QtdHvU4o7IAQ=="
+ },
+ "rejected_parts": [
+  [
+   "9c1e4b7a2f30d811",
+   "root\nnode"
+  ],
+  [
+   "has space"
+  ],
+  [
+   ""
+  ],
+  [
+   "caf\u00e9"
+  ]
+ ]
+}

@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -154,6 +155,37 @@ def load_identity(session: Session, settings: Settings | None = None) -> NodeIde
                  key_id_for(pub))
     session.flush()
     return NodeIdentity(node_id=root_id, private=key, root_public_b64=root.value)
+
+
+_PART = re.compile(r"[\x21-\x7e]+\Z")
+
+
+def message_parts_ok(parts: list[str]) -> bool:
+    """Every element of a domain-separated message is printable ASCII without space or newline (C10 §1.3)."""
+    return all(isinstance(part, str) and _PART.match(part) for part in parts)
+
+
+def domain_message(domain: bytes, parts: list[str]) -> bytes:
+    if not domain.startswith(b"atlas-") or not domain.endswith(b"\n"):
+        raise ValueError("signing domains start with 'atlas-' and end with a newline")
+    if not message_parts_ok(parts):
+        raise ValueError("a signed message part is empty or holds a control character, space or non-ASCII text")
+    return domain + "\n".join(parts).encode("ascii")
+
+
+def sign_message(private: Ed25519PrivateKey, domain: bytes, parts: list[str]) -> str:
+    """Sign `domain + "\\n".join(parts)` (owner groups, CONTRACT-C10 §1.3). The feed message is unchanged."""
+    return base64.b64encode(private.sign(domain_message(domain, parts))).decode()
+
+
+def verify_message(public_b64: str, domain: bytes, parts: list[str], signature_b64: str) -> bool:
+    try:
+        message = domain_message(domain, parts)
+        pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_b64, validate=True))
+        pub.verify(base64.b64decode(signature_b64, validate=True), message)
+        return True
+    except (InvalidSignature, ValueError, TypeError):
+        return False
 
 
 def verify(public_b64: str, node_id: str, seq: int, kind: str, body: Any, claimed_hash: str,
