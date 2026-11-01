@@ -33,9 +33,11 @@ from .web.backups import router as backups_router
 from .web.deps import LoginRequired, MfaRequired
 from .web.federation import router as federation_router
 from .web.group import router as group_web_router
+from .web.group_link import router as group_link_router
 from .web.importing import router as import_router
 from .web.mfa import router as mfa_router
 from .web.oidc import router as oidc_router
+from .web.profile_pages import router as profile_router
 from .web.routes import router as web_router
 from .web.routes import web_headers
 from .web.schema import router as schema_router
@@ -194,12 +196,30 @@ def group_round(maker: sessionmaker[Session], ctx: Ctx, client) -> dict[str, str
         groups.rebuild(session, group, ctx.identity.node_id, settings=ctx.settings)
         outcomes = group_routes.pull(session, ctx.settings, ctx.identity, group, client)
         session.commit()
-        return outcomes
+    # The private channel (§3.3-§3.8) runs in its own transaction after the trust state is current.
+    from . import group_channel, profile
+
+    with maker() as session:
+        group = groups.active(session)
+        if group is not None:
+            channel = group_channel.sync(session, ctx.settings, ctx.identity, group, client, group_routes.call)
+            for node, outcome in channel.items():
+                if outcome != "ok":
+                    outcomes[node] = outcomes.get(node, "ok") + f"; {outcome}"
+        profile.prune(session)
+        session.commit()
+    return outcomes
 
 
 def _group_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
     with httpx.Client(timeout=15, trust_env=False) as client:
-        while not stop.wait(ctx.settings.group_sync_interval):
+        from .group_channel import WAKE
+
+        while not stop.is_set():
+            WAKE.wait(ctx.settings.group_sync_interval)  # an inbound `notify` wakes the loop early
+            WAKE.clear()
+            if stop.is_set():
+                break
             try:
                 group_round(maker, ctx, client)
             except Exception as exc:  # noqa: BLE001 - the next round retries; local service continues
@@ -255,6 +275,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         threading.Thread(target=_group_loop, args=(maker, ctx, stop), daemon=True, name="atlas-group").start()
         yield
         stop.set()
+        from .group_channel import WAKE
+
+        WAKE.set()
 
     app = FastAPI(title="Atlas Metadata", version=__version__, lifespan=lifespan,
                   docs_url="/docs" if settings.environment == "dev" else None, redoc_url=None)
@@ -287,6 +310,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(oidc_router)
     app.include_router(group_router)
     app.include_router(group_web_router)
+    app.include_router(profile_router)
+    app.include_router(group_link_router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.middleware("http")

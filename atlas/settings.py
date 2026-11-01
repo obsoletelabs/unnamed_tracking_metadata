@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     # Owner groups (CONTRACT-C10): the freshness gate for privileged actions (H28) and the member pull interval.
     group_view_max_age_hours: int = Field(default=24, ge=1, le=168)
     group_sync_interval: int = Field(default=60, ge=30, le=86400)  # C10 §3.8
+    # Profile sync over the private group channel (C10 §4.3): the operator's switch and field allow-list (empty =
+    # every registry field), and how long a version waits for its missing history before it is applied (§4.4).
+    group_profile_sync: bool = True
+    group_profile_fields: str = ""
+    group_hold_timeout_days: int = Field(default=7, ge=1, le=90)
     tagline: str = "Media metadata, merged and sourced"
     footer_text: str = "Community metadata. Contributions are CC0."
     accent_color: str = "#6aa8ff"  # dark theme accent

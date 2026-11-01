@@ -865,3 +865,201 @@ class GroupNonce(Base):
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (Index("ix_group_nonce_seen", "seen_at"),)
+
+
+# ---- owner-group private channel and profile sync (CONTRACT-C10 §3.4-§4.6, §9.2: migration 0029) ----------------
+
+class GroupStream(Base):
+    """One `(origin, epoch, scope)` stream, own streams included (own next seq = hwm + 1 under a row lock)."""
+
+    __tablename__ = "group_stream"
+
+    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    origin: Mapped[str] = mapped_column(String(16), primary_key=True)
+    epoch: Mapped[str] = mapped_column(String(8), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(26), primary_key=True)
+    hwm: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    last_issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    key_id: Mapped[str] = mapped_column(String(64))  # the key this epoch is bound to (§1.7)
+    key_bound_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # previous.heads[scope] (rotation)
+    advertised_head: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # for the expiry grace (§1.5)
+    advertised_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    blocked_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    blocked_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class GroupChange(Base):
+    """Every change entry this node emitted or received, with its disposition (§3.4). `body` is NULL when the
+    entry was elided or its body stripped (authorization refusals never keep a value)."""
+
+    __tablename__ = "group_change"
+
+    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    origin: Mapped[str] = mapped_column(String(16), primary_key=True)
+    epoch: Mapped[str] = mapped_column(String(8), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(26), primary_key=True)
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    subject: Mapped[str] = mapped_column(String(48))  # the signed field name, or "-"
+    body: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    body_hash: Mapped[str] = mapped_column(String(64))
+    key_id: Mapped[str] = mapped_column(String(64))
+    sig: Mapped[str] = mapped_column(String(128))
+    hlc: Mapped[str | None] = mapped_column(String(48), nullable=True)  # kept when the body is stripped (§4.4)
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_from: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    disposition: Mapped[str] = mapped_column(String(12))  # applied|noop|parked|held|elided|rejected
+    reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    __table_args__ = (Index("ix_group_change_scope", "group_id", "scope", "issued_at"),)
+
+
+class GroupAccountLink(Base):
+    """This node's local user for a group account (§5.1): one each way."""
+
+    __tablename__ = "group_account_link"
+
+    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    account_uid: Mapped[str] = mapped_column(String(26), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"))
+    minted_here: Mapped[bool] = mapped_column(Boolean)
+    linked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    __table_args__ = (UniqueConstraint("group_id", "user_id", name="uq_group_account_link_user"),)
+
+
+class GroupAccountNode(Base):
+    """Which nodes hold an account, from `account.link` / `account.unlink` entries (§4.3)."""
+
+    __tablename__ = "group_account_node"
+
+    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    account_uid: Mapped[str] = mapped_column(String(26), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    status: Mapped[str] = mapped_column(String(10))  # linked|unlinked|suspect
+    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    entry_ref: Mapped[str] = mapped_column(String(120))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ProfileField(Base):
+    """The displayed value of one preference (the materialized head winner, §4.4). NULL value = node default."""
+
+    __tablename__ = "profile_field"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
+    field: Mapped[str] = mapped_column(String(48), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON, nullable=True)
+    hlc: Mapped[str] = mapped_column(String(48))
+    origin_node: Mapped[str] = mapped_column(String(16))
+    cause: Mapped[str] = mapped_column(String(12))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ProfileVersion(Base):
+    """One version of one preference; the versions of a (user, field) form a DAG through `base` (§4.4)."""
+
+    __tablename__ = "profile_version"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
+    field: Mapped[str] = mapped_column(String(48), primary_key=True)
+    hlc: Mapped[str] = mapped_column(String(48), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON, nullable=True)
+    cleared: Mapped[bool] = mapped_column(Boolean)
+    base: Mapped[list[str]] = mapped_column(JSON)
+    cause: Mapped[str] = mapped_column(String(12))
+    origin_node: Mapped[str] = mapped_column(String(16))
+    entry_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)  # group_change PK; NULL = local only
+    is_head: Mapped[bool] = mapped_column(Boolean)
+    held_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ProfileSuperseded(Base):
+    __tablename__ = "profile_superseded"
+
+    user_id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    field: Mapped[str] = mapped_column(String(48), primary_key=True)
+    hlc: Mapped[str] = mapped_column(String(48), primary_key=True)
+    pruned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ProfileConflict(Base):
+    """A review-queue row (§4.6): concurrent|privacy_widen|suspect|suspect_link|missing_base|held."""
+
+    __tablename__ = "profile_conflict"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"))
+    field: Mapped[str] = mapped_column(String(48))
+    kind: Mapped[str] = mapped_column(String(16))
+    winner_hlc: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    loser_hlc: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(10))  # open|resolved|merged|dismissed
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("user_id", "field", "kind", "loser_hlc", name="uq_profile_conflict"),)
+
+
+class ProfileSyncConsent(Base):
+    """Per-node consent of one user for one group (§4.3): consent is given where the data lands, never synced."""
+
+    __tablename__ = "profile_sync_consent"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    fields: Mapped[list[str]] = mapped_column(JSON)
+    signout_propagation: Mapped[bool] = mapped_column(Boolean)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class GroupSigninState(Base):
+    """A pending link (A11) or sign-in (A12) at the relying party, bound to the `atlas_grp_bind` cookie (§5.3)."""
+
+    __tablename__ = "group_signin_state"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256(state) = the assertion's state_hash
+    group_id: Mapped[str] = mapped_column(String(16))
+    idp_node: Mapped[str] = mapped_column(String(16))
+    purpose: Mapped[str] = mapped_column(String(8))
+    nonce: Mapped[str] = mapped_column(String(64))
+    binding: Mapped[str] = mapped_column(String(64))  # sha256(atlas_grp_bind)
+    link_user_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    next_url: Mapped[str] = mapped_column(String(300))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class GroupWebHandle(Base):
+    """POST-parks-then-303-GET handles (§5.3): the decrypted, signature-checked payload, single use."""
+
+    __tablename__ = "group_web_handle"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256(handle)
+    kind: Mapped[str] = mapped_column(String(10))  # authorize|callback|start (+ consent|linkform, A11 amendment)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class GroupAssertionSeen(Base):
+    __tablename__ = "group_assertion_seen"
+
+    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    jti: Mapped[str] = mapped_column(String(26), primary_key=True)
+    iss_node: Mapped[str] = mapped_column(String(16))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class GroupIdpConsent(Base):
+    """On the asserting node: this user agreed to link (or sign in to) `rp_node`."""
+
+    __tablename__ = "group_idp_consent"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    rp_node: Mapped[str] = mapped_column(String(16), primary_key=True)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

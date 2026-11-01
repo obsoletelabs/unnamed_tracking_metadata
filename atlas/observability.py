@@ -231,6 +231,43 @@ class Stats:
                                ("aborted", ("aborted",))):
             lines.append(f'atlas_group_enrolments{{result="{result}"}} {sum(r in states for r in rows)}')
         lines += ["# TYPE atlas_group_resyncing gauge", f"atlas_group_resyncing {int(group.status == 'resyncing')}"]
+        lines += self._channel(session, group, now, [m.node_id for m in members[:32]])
+        return lines
+
+    @staticmethod
+    def _channel(session, group, now, pinned: list[str]) -> list[str]:
+        """Private channel health (§8.3): counts and closed reason labels only, never a field, value or account."""
+        from . import group_channel
+        from .models import AuditEntry, GroupChange, GroupStream, ProfileConflict
+
+        day = now - timedelta(days=1)
+        lines = ["# TYPE atlas_group_stream_lag gauge"]
+        lag: dict[str, int] = {}
+        for s in session.scalars(select(GroupStream).where(GroupStream.group_id == group.group_id,
+                                                           GroupStream.advertised_head.isnot(None))):
+            if s.origin in pinned:
+                lag[s.origin] = max(lag.get(s.origin, 0), max(0, (s.advertised_head or 0) - s.hwm))
+        lines += [f'atlas_group_stream_lag{{origin="{o}"}} {v}' for o, v in sorted(lag.items())]
+        rows = session.execute(select(GroupChange.disposition, GroupChange.reason, func.count()).where(
+            GroupChange.group_id == group.group_id, GroupChange.received_at >= day, GroupChange.received_from.isnot(None)
+        ).group_by(GroupChange.disposition, GroupChange.reason)).all()
+        lines.append("# TYPE atlas_group_entries gauge")
+        for disposition in ("applied", "noop", "parked", "held", "elided", "rejected"):
+            lines.append(f'atlas_group_entries{{disposition="{disposition}"}} '
+                         f'{sum(n for d, _, n in rows if d == disposition)}')
+        # Refusals that stop a stream without storing the entry are only in the audit log.
+        unstored: Counter[str] = Counter()
+        for action, detail in session.execute(select(AuditEntry.action, AuditEntry.detail).where(
+                AuditEntry.action.in_(("group_peer_suspect", "group_stream_fork")), AuditEntry.created_at >= day)
+                .limit(10_000)):
+            unstored["fork" if action == "group_stream_fork" else str((detail or {}).get("reason"))] += 1
+        lines.append("# TYPE atlas_group_rejected gauge")
+        for reason in group_channel.METRIC_REASONS:
+            stored = sum(n for d, r, n in rows if d == "rejected" and r == reason)
+            lines.append(f'atlas_group_rejected{{reason="{reason}"}} {stored + unstored[reason]}')
+        open_n = session.scalar(select(func.count()).select_from(ProfileConflict).where(
+            ProfileConflict.status == "open")) or 0
+        lines += ["# TYPE atlas_profile_conflicts_open gauge", f"atlas_profile_conflicts_open {open_n}"]
         return lines
 
     def _collectors(self, session) -> tuple[str, ...]:

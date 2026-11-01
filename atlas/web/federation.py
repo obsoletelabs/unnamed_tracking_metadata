@@ -51,6 +51,12 @@ def rotate_signing_key(p: Annotated[Ctx, Depends(admin_form)], confirm: Annotate
     accounts.audit(p.session, p.me.id, "signing_key_rotated", successor.node_id,
                    {"previous": confirm.strip(), "current": successor.key_id})
     p.st.ctx.identity = successor
+    from .. import group_channel, groups
+
+    group = groups.active(p.session)
+    opened = group is not None and group_channel.current_epoch(p.session, group, successor.node_id) is not None
+    if opened and group_channel.may_emit(p.session, group, successor):
+        group_channel.ensure_epoch(p.session, group, successor)  # the rotation epoch (§1.7)
     return go("/admin/keys", "saved")
 
 
