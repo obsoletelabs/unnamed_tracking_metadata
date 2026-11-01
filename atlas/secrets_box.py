@@ -145,6 +145,13 @@ def rewrap(session: Any, settings: Settings) -> dict[str, int]:
     pending = session.get(NodeState, "group_recovery_pending")
     if pending is not None:
         pending.value = group_secret("the pending group recovery file", pending.value)
+    successor = session.get(NodeState, "group_succession_root")  # {index, key_id, sealed}: a pending G'
+    if successor is not None:
+        import json
+
+        held = json.loads(successor.value)
+        held["sealed"] = group_secret("the root key of a pending succession", held.get("sealed"))
+        successor.value = json.dumps(held)
     session.add(AuditEntry(actor_id=None, action="secrets_rewrapped", target="", detail=counts))
     session.flush()
     return counts

@@ -272,6 +272,17 @@ def cmd_resync(args) -> int:
     return _run(run)
 
 
+def _open_files(paths: list[str]) -> list[gc.RecoveryKeys]:
+    opened = []
+    for i, path in enumerate(paths, start=1):
+        try:
+            data = json.loads(Path(path).read_text("utf-8"))
+        except (OSError, ValueError) as exc:
+            raise groups.GroupError(f"cannot read recovery file {path}: {exc}") from None
+        opened.append(gc.open_recovery_file(data, _ask(f"Passphrase of recovery file {i} ({Path(path).name}): ")))
+    return opened
+
+
 def cmd_root(args) -> int:
     def run(session, settings, identity):
         group = _group(session)
@@ -303,12 +314,49 @@ def cmd_root(args) -> int:
                 session.merge(groups.NodeState(key=groups.RECOVERY_VERIFIED, value=gc.stamp()))
             print("recovery file verified" + (" (holds the current root key)" if holds_root else " (no root key)"))
             return 0
+        if args.root_cmd == "import":
+            keys = _open_files([args.recovery_file])[0]
+            phrase = _ask("New root passphrase for this node (14+ characters): ", confirm=True)
+            moved = groups.import_root(session, settings, group, identity, keys, phrase, args.old_root, cli=True)
+            print(f"the group root is now on this node; other members learn it from {moved['id']}")
+            print("this node is resyncing: run `atlas group sync` (or `atlas group resync --skip` if the old root "
+                  "node is gone for good) before any root operation")
+            return 0
+        if args.root_cmd == "succession":
+            out = Path(args.recovery_out) if args.recovery_out else None
+            files = _open_files(args.recovery_file)
+            one_of_one = group.recovery["threshold"] == 1 and len(group.recovery["keys"]) == 1
+            if one_of_one and (out is None or not out.is_dir()):
+                raise groups.GroupError("--recovery-out DIR is needed: a 1-of-1 succession writes a new recovery file")
+            exclude = tuple(n.strip() for n in args.exclude_node or [])
+            root_phrase = _ask("Passphrase for the new root key (14+ characters): ", confirm=True)
+            rec_phrase = _ask("Passphrase for the new recovery file (14+ characters): ", confirm=True) \
+                if one_of_one else None
+            obj, new_files = groups.issue_succession(session, settings, group, identity, files, root_phrase,
+                                                     exclude_nodes=exclude, reason=args.reason,
+                                                     delay_hours=args.delay_hours, new_recovery_passphrase=rec_phrase,
+                                                     cli=True)
+            body = obj["body"]
+            print(f"succession {body['index']}: new root {groups.gc_fp(body['new_root_key_id'])}, "
+                  f"{len(body['carry'])} members carried, activates in {body['activation_delay_hours']} h")
+            for data in new_files:
+                path = out / f"atlas-group-{group.group_id}-recovery-succession-{body['index']}.json"  # type: ignore[operator]
+                path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+                print(f"new recovery file: {path}  (store it offline; the old file holds the replaced root key)")
+            return 0
+        if args.root_cmd == "succession-cancel":
+            obj = groups.cancel_succession(session, settings, group, _open_files(args.recovery_file),
+                                           index=args.index, cli=True)
+            print(f"succession {obj['body']['index']} cancelled; other members learn it on their next pull")
+            return 0
         return _err("unknown root command", 2)
 
     try:
         return _run(run)
     except gc.WrongPassphrase:
         return _err("wrong passphrase")
+    except gc.GroupCryptoError as exc:
+        return _err(str(exc))
 
 
 def register(sub) -> None:
@@ -365,4 +413,20 @@ def register(sub) -> None:
     vr = roa.add_parser("verify-recovery")
     vr.add_argument("--recovery-file", required=True)
     vr.set_defaults(fn=cmd_root)
+    im = roa.add_parser("import", help="move the group root to this member from a recovery file holding it")
+    im.add_argument("--recovery-file", required=True)
+    im.add_argument("--old-root", required=True, choices=("decommissioned", "running"),
+                    help="is the old root node destroyed, or still running?")
+    im.set_defaults(fn=cmd_root)
+    sc = roa.add_parser("succession", help="replace a stolen or lost root key with a recovery quorum")
+    sc.add_argument("--recovery-file", action="append", required=True, help="repeat for a 2-of-3 quorum")
+    sc.add_argument("--exclude-node", action="append", metavar="NODE_ID", help="do not carry this member")
+    sc.add_argument("--reason", choices=("compromised", "lost"), default="compromised")
+    sc.add_argument("--delay-hours", type=int, help="activation delay (at least the genesis policy, 24 by default)")
+    sc.add_argument("--recovery-out", help="directory for the new recovery file (1-of-1)")
+    sc.set_defaults(fn=cmd_root)
+    cc = roa.add_parser("succession-cancel", help="cancel a pending root succession with a recovery quorum")
+    cc.add_argument("--recovery-file", action="append", required=True)
+    cc.add_argument("--index", type=int)
+    cc.set_defaults(fn=cmd_root)
 

@@ -13,12 +13,14 @@
 </section>
 <section class="card" aria-labelledby="group-create"><h2 id="group-create">Create a group on this node</h2>
   <p class="small muted">This node keeps the group root, encrypted with a passphrase you choose and with ATLAS_SECRET_KEY. You also get a recovery file: keep it offline. Without it, losing this node means creating a new group.</p>
+  <p class="small" data-group-honest-risk>A stolen database without ATLAS_SECRET_KEY gives nothing. A stolen database (or backup) plus ATLAS_SECRET_KEY does not reveal the group root key directly, but it allows unthrottled offline guessing of the root passphrase at scrypt cost (N=2^17, r=8: about 128 MiB and 0.3-0.5 s per guess per core). A random 14-character passphrase resists that; a human-chosen phrase may not. Owners who keep backups together with the secret key should use the offline-root mode; this release does not offer it yet, so until then keep backups apart from ATLAS_SECRET_KEY and use a random root passphrase.</p>
   <form method="post" action="/admin/group/create">{{ csrf(p.csrf) }}
     <label for="g-name">Group name</label><input id="g-name" name="name" type="text" required maxlength="80" value="My nodes">
     <label for="g-root">Root passphrase (at least 14 characters, not a common password)</label><input id="g-root" name="root_passphrase" type="password" required minlength="14" maxlength="256" autocomplete="new-password">
     <label for="g-root2">Root passphrase again</label><input id="g-root2" name="root_passphrase2" type="password" required minlength="14" maxlength="256" autocomplete="new-password">
     <label for="g-rec">Recovery-file passphrase (different from the root passphrase)</label><input id="g-rec" name="recovery_passphrase" type="password" required minlength="14" maxlength="256" autocomplete="new-password">
     <label for="g-rec2">Recovery-file passphrase again</label><input id="g-rec2" name="recovery_passphrase2" type="password" required minlength="14" maxlength="256" autocomplete="new-password">
+    <label for="g-create-pw">Your current account password</label><input id="g-create-pw" name="password" type="password" maxlength="256" autocomplete="current-password">
     <p><button type="submit">Create group</button></p>
   </form>
 </section>
@@ -27,6 +29,7 @@
 {% if recovery_pending %}
 <section class="card error" aria-labelledby="g-recovery" data-group-recovery="pending"><h2 id="g-recovery">Download the recovery file to finish</h2>
   <p>Root operations stay locked until the recovery file is downloaded and its passphrase confirmed once more.</p>
+  <p class="small" data-group-recovery-risk>{% if group.recovery.threshold == 1 %}This file holds the recovery key and the root key. Anyone who has it and guesses its passphrase can take over the group: a root succession they issue stays pending for 24 hours, is shown on every member, and can be cancelled with your own copy of the file (the two then conflict, which means creating a new group).{% else %}Each file holds one recovery key and never the root key; any two of the three can sign a root succession.{% endif %} Store it offline. If it is lost while the root is fine, export a new one (<code>atlas group root export-recovery</code>); replacing the recovery key itself needs a root succession.</p>
   <p><a class="btn" href="/admin/group/recovery.json" download>Download recovery file</a></p>
   <form method="post" action="/admin/group/recovery/confirm">{{ csrf(p.csrf) }}
     <label><input type="checkbox" name="downloaded"> I downloaded it and stored it offline.</label>
@@ -70,14 +73,18 @@
       <label for="r-{{ m.node_id }}">Reason</label><select id="r-{{ m.node_id }}" name="reason"><option value="removed">removed</option><option value="key_compromise">compromised</option></select>
       <label for="s-{{ m.node_id }}">Suspect since (compromised only, UTC)</label><input id="s-{{ m.node_id }}" name="suspect_since" type="datetime-local">
       {% if group.root_state == 'holder' %}<label for="rp-{{ m.node_id }}">Root passphrase</label><input id="rp-{{ m.node_id }}" name="root_passphrase" type="password" maxlength="256" autocomplete="off">{% endif %}
+      <label for="rpw-{{ m.node_id }}">Your current account password</label><input id="rpw-{{ m.node_id }}" name="password" type="password" maxlength="256" autocomplete="current-password">
       <p><button class="secondary small" type="submit" data-confirm="Revoke {{ fp(m.node_id) }}? It loses every group permission on every member.">Revoke</button></p>
     </form></details>{% endif %}</td>
 </tr>{% endfor %}
 </tbody></table></div></section>
 {% if group.root_state == 'holder' %}
 <section class="card" aria-labelledby="g-renew"><h2 id="g-renew">Renew certificates</h2>
-  <form method="post" action="/admin/group/renew">{{ csrf(p.csrf) }}<label for="g-renew-pw">Root passphrase</label><input id="g-renew-pw" name="root_passphrase" type="password" required maxlength="256" autocomplete="off"><p><button class="secondary" type="submit">Renew every root-issued certificate</button></p></form>
+  <form method="post" action="/admin/group/renew">{{ csrf(p.csrf) }}<label for="g-renew-pw">Root passphrase</label><input id="g-renew-pw" name="root_passphrase" type="password" required maxlength="256" autocomplete="off"><label for="g-renew-acct">Your current account password</label><input id="g-renew-acct" name="password" type="password" maxlength="256" autocomplete="current-password"><p><button class="secondary" type="submit">Renew every root-issued certificate</button></p></form>
 </section>{% endif %}
+<section class="card" aria-labelledby="g-recover"><h2 id="g-recover">Recovery</h2>
+  <p class="small muted" data-group-recovery-commands>Recovery runs on the command line of a member: <code>atlas group root import --recovery-file F</code> moves the root to that member (when the root node is lost); <code>atlas group root succession --recovery-file F</code> replaces a stolen root key with a recovery quorum (pending {{ group.genesis.body.policy.succession_delay_hours }} h); <code>atlas group root succession-cancel</code> cancels a succession that is not yours. Offline root signing, box-key rotation and member updates are not available in this release.</p>
+</section>
 {% if can_invite %}
 <section class="card" aria-labelledby="g-invite"><h2 id="g-invite">Add a node</h2>
   <p class="small muted">Creates a one-time code valid for 10 minutes. Both administrators then compare a 12-digit number on their screens.</p>

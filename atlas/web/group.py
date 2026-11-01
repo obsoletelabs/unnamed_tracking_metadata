@@ -17,6 +17,18 @@ from .routes import render, when
 
 router = APIRouter()
 PW = Annotated[str, Form(max_length=256)]
+ROOT_LIMIT, ROOT_WINDOW = 5, 3600  # C10 §1.2: throttle(p, "group-root:<user>", 5, 3600)
+REAUTH = "Confirm your current account password for this group operation."
+
+
+def _root_gate(p: Page, password: str, uses_root: bool) -> str | None:
+    """§1.2: a local admin (the dependency), `accounts.reauthenticated`, then the root passphrase under the
+    group-root throttle. Returns an error message, or None when the operation may go on."""
+    if uses_root:
+        throttle(p, f"group-root:{p.me.id}", ROOT_LIMIT, ROOT_WINDOW, "Too many root operations")
+    if not accounts.reauthenticated(p.me, password, p.login):
+        return REAUTH
+    return None
 
 
 def _ctx(p: Page) -> tuple:
@@ -29,7 +41,7 @@ def _page(p: Page, error: str | None = None, status: int = 200, **extra):
     ctx: dict = {"group": group, "error": error, "fp": groups.gc_fp, "when": when, "identity": identity,
                  "settings": settings, "recovery_pending": groups.recovery_pending(p.session), **extra}
     if group is not None:
-        tr = groups.rebuild(p.session, group, identity.node_id, settings=settings)
+        tr = groups.refresh(p.session, group, identity.node_id, settings=settings)
         rows = list(p.session.scalars(select(GroupMember).where(GroupMember.group_id == group.group_id)
                                       .order_by(GroupMember.name)))
         certs = {m.node_id: tr.certs.get(m.serial) for m in rows}
@@ -67,9 +79,11 @@ def group_page(p: Annotated[Page, Depends(admin_page)]):
 
 @router.post("/admin/group/create", response_class=HTMLResponse)
 def create(p: Annotated[Page, Depends(admin_form)], name: Annotated[str, Form(max_length=80)], root_passphrase: PW,
-           root_passphrase2: PW, recovery_passphrase: PW, recovery_passphrase2: PW):
+           root_passphrase2: PW, recovery_passphrase: PW, recovery_passphrase2: PW, password: PW = ""):
     settings, identity = _ctx(p)
     throttle(p, f"group-create:{p.me.id}", 5, 3600)
+    if (why := _root_gate(p, password, uses_root=False)):
+        return _page(p, why, 400)
     if root_passphrase != root_passphrase2 or recovery_passphrase != recovery_passphrase2:
         return _page(p, "The two entries of a passphrase differ.", 400)
     try:
@@ -86,6 +100,9 @@ def recovery_download(p: Annotated[Page, Depends(admin_page)]):
     group = groups.load(p.session)
     if not files or group is None:
         return go("/admin/group")
+    groups.audit(p.session, p.me.id, "group_root_exported", group.group_id,
+                 {"download": True, "contains": files[0].get("contains")})
+    p.session.commit()
     return Response(json.dumps(files[0], indent=1), media_type="application/json",
                     headers={"Content-Disposition": f'attachment; filename="atlas-group-{group.group_id}-recovery.json"',
                              "Cache-Control": "no-store"})
@@ -95,7 +112,7 @@ def recovery_download(p: Annotated[Page, Depends(admin_page)]):
 def recovery_confirm(p: Annotated[Page, Depends(admin_form)], passphrase: PW,
                      downloaded: Annotated[str, Form()] = ""):
     settings, _ = _ctx(p)
-    throttle(p, f"group-root:{p.me.id}", 10, 900)
+    throttle(p, f"group-recovery:{p.me.id}", ROOT_LIMIT, ROOT_WINDOW)
     if downloaded != "on":
         return _page(p, "Download the recovery file and keep it offline first.", 400)
     try:
@@ -165,7 +182,7 @@ def enrolment(eid: str, p: Annotated[Page, Depends(admin_page)]):
 
 @router.post("/admin/group/enrolment/{eid}/confirm", response_class=HTMLResponse)
 def enrolment_confirm(eid: str, p: Annotated[Page, Depends(admin_form)], matches: Annotated[str, Form()] = "",
-                      root_passphrase: PW = ""):
+                      root_passphrase: PW = "", password: PW = ""):
     settings, identity = _ctx(p)
     if matches != "on":
         return _enrolment(p, eid, "Tick the box only when the numbers match on both screens.", 400)
@@ -174,7 +191,10 @@ def enrolment_confirm(eid: str, p: Annotated[Page, Depends(admin_form)], matches
         return _page(p, "No such enrolment.", 404)
     try:
         if row.side == "inviter":
-            throttle(p, f"group-root:{p.me.id}", 10, 900)
+            group = groups.load(p.session)
+            uses_root = group is not None and group.root_state == "holder"
+            if (why := _root_gate(p, password, uses_root)):
+                return _enrolment(p, eid, why, 400)
             group_enrol.confirm_inviter(p.session, settings, groups.load(p.session), identity, eid,
                                         root_passphrase or None, http=p.st.http, actor=p.me.id)
         else:
@@ -200,10 +220,13 @@ def enrolment_cancel(eid: str, p: Annotated[Page, Depends(admin_form)]):
 
 @router.post("/admin/group/members/{node_id}/revoke", response_class=HTMLResponse)
 def revoke(node_id: str, p: Annotated[Page, Depends(admin_form)], reason: Annotated[str, Form(max_length=20)],
-           root_passphrase: PW = "", suspect_since: Annotated[str, Form(max_length=40)] = ""):
+           root_passphrase: PW = "", suspect_since: Annotated[str, Form(max_length=40)] = "", password: PW = ""):
     settings, identity = _ctx(p)
-    throttle(p, f"group-root:{p.me.id}", 10, 900)
     group = groups.load(p.session)
+    if group is None:
+        return _page(p, "This node is not in a group.", 409)
+    if (why := _root_gate(p, password, group.root_state == "holder")):
+        return _page(p, why, 400)
     try:
         root = groups.unlock_root(p.session, settings, group, root_passphrase) if group.root_state == "holder" else None
         suspect = groups.gc.parse_time(suspect_since + ("" if suspect_since.endswith("Z") else ":00Z")) \
@@ -217,9 +240,10 @@ def revoke(node_id: str, p: Annotated[Page, Depends(admin_form)], reason: Annota
 
 @router.post("/admin/group/renew", response_class=HTMLResponse)
 def renew(p: Annotated[Page, Depends(admin_form)], root_passphrase: PW,
-          node_id: Annotated[str, Form(max_length=16)] = ""):
+          node_id: Annotated[str, Form(max_length=16)] = "", password: PW = ""):
     settings, identity = _ctx(p)
-    throttle(p, f"group-root:{p.me.id}", 10, 900)
+    if (why := _root_gate(p, password, uses_root=True)):
+        return _page(p, why, 400)
     group = groups.load(p.session)
     try:
         root = groups.unlock_root(p.session, settings, group, root_passphrase)

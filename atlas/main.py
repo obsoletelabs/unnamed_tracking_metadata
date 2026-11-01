@@ -179,7 +179,8 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) ->
 
 def group_round(maker: sessionmaker[Session], ctx: Ctx, client) -> dict[str, str]:
     """One owner-group round (CONTRACT-C10 §3.8): expire enrolments, purge nonces, pull every member's state and
-    sign this node's view. Does nothing on a node in no group."""
+    sign this node's view. Does nothing on a node in no group. A halted group keeps pulling: `ingest_state` then
+    takes only CRLs, rotations and views, because revocation keeps working (§1.8)."""
     from . import groups
     from .api import group_routes
 
@@ -187,7 +188,7 @@ def group_round(maker: sessionmaker[Session], ctx: Ctx, client) -> dict[str, str
         groups.expire_enrolments(session)
         groups.purge_nonces(session)
         group = groups.active(session)
-        if group is None or group.status == "halted":
+        if group is None:
             session.commit()
             return {}
         groups.rebuild(session, group, ctx.identity.node_id, settings=ctx.settings)

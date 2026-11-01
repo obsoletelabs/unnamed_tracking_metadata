@@ -10,10 +10,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from atlas import groups
-from atlas.models import GroupEnrolment, GroupRevoked, User
+from atlas.models import AuditEntry, GroupCert, GroupEnrolment, GroupRevoked, User
 
 from .group_harness import REC_PW, ROOT_PW, Dispatcher, fast_kdf, make_node
-from .test_web import signup, token
+from .test_web import PW, signup, token
 
 
 @pytest.fixture
@@ -38,7 +38,8 @@ def csrf(client, path):
 def create_via_ui(a, ca):
     r = ca.post("/admin/group/create", data={"csrf": csrf(ca, "/admin/group"), "name": "Home nodes",
                                               "root_passphrase": ROOT_PW, "root_passphrase2": ROOT_PW,
-                                              "recovery_passphrase": REC_PW[0], "recovery_passphrase2": REC_PW[0]})
+                                              "recovery_passphrase": REC_PW[0], "recovery_passphrase2": REC_PW[0],
+                                              "password": PW})
     assert r.status_code == 303
     page = ca.get("/admin/group").text
     assert 'data-group-recovery="pending"' in page
@@ -78,13 +79,21 @@ def test_group_admin_flow(ui):
 
     # The box must be ticked; the root passphrase must be right.
     no_tick = ca.post(f"/admin/group/enrolment/{eid}/confirm",
-                      data={"csrf": csrf(ca, f"/admin/group/enrolment/{eid}"), "root_passphrase": ROOT_PW})
+                      data={"csrf": csrf(ca, f"/admin/group/enrolment/{eid}"), "root_passphrase": ROOT_PW,
+                            "password": PW})
     assert no_tick.status_code == 400
-    wrong = ca.post(f"/admin/group/enrolment/{eid}/confirm", data={
-        "csrf": csrf(ca, f"/admin/group/enrolment/{eid}"), "matches": "on", "root_passphrase": "not the root phrase"})
-    assert wrong.status_code == 403
-    ok = ca.post(f"/admin/group/enrolment/{eid}/confirm", data={
+    no_reauth = ca.post(f"/admin/group/enrolment/{eid}/confirm", data={
         "csrf": csrf(ca, f"/admin/group/enrolment/{eid}"), "matches": "on", "root_passphrase": ROOT_PW})
+    assert no_reauth.status_code == 400 and "current account password" in no_reauth.text
+    wrong = ca.post(f"/admin/group/enrolment/{eid}/confirm", data={
+        "csrf": csrf(ca, f"/admin/group/enrolment/{eid}"), "matches": "on", "root_passphrase": "not the root phrase",
+        "password": PW})
+    assert wrong.status_code == 403
+    with a.session() as s:  # neither attempt issued anything
+        assert s.scalars(select(GroupCert).where(GroupCert.node_id == b.node_id)).first() is None
+    ok = ca.post(f"/admin/group/enrolment/{eid}/confirm", data={
+        "csrf": csrf(ca, f"/admin/group/enrolment/{eid}"), "matches": "on", "root_passphrase": ROOT_PW,
+        "password": PW})
     assert ok.status_code == 303
     done = cb.post(f"/admin/group/enrolment/{eid}/confirm",
                    data={"csrf": csrf(cb, f"/admin/group/enrolment/{eid}"), "matches": "on"})
@@ -95,8 +104,13 @@ def test_group_admin_flow(ui):
         assert f'data-member="{node.node_id}"' in members_b and groups.gc_fp(node.node_id) in members_b
     assert "profile.sync" in members_b and 'data-member-status="active"' in members_b
 
+    no_reauth = ca.post(f"/admin/group/members/{b.node_id}/revoke", data={
+        "csrf": csrf(ca, "/admin/group"), "reason": "removed", "root_passphrase": ROOT_PW, "password": "wrong"})
+    assert no_reauth.status_code == 400 and "current account password" in no_reauth.text
+    with a.session() as s:
+        assert s.scalars(select(GroupRevoked).where(GroupRevoked.node_id == b.node_id)).first() is None
     revoke = ca.post(f"/admin/group/members/{b.node_id}/revoke", data={
-        "csrf": csrf(ca, "/admin/group"), "reason": "removed", "root_passphrase": ROOT_PW})
+        "csrf": csrf(ca, "/admin/group"), "reason": "removed", "root_passphrase": ROOT_PW, "password": PW})
     assert revoke.status_code == 303
     with a.session() as s:
         assert s.scalars(select(GroupRevoked).where(GroupRevoked.node_id == b.node_id)).first().reason == "removed"
@@ -117,5 +131,50 @@ def test_weak_passphrase_rejected_in_ui(ui):
     _, _, ca, _ = ui
     r = ca.post("/admin/group/create", data={"csrf": csrf(ca, "/admin/group"), "name": "Home",
                                               "root_passphrase": "password12345678", "root_passphrase2": "password12345678",
-                                              "recovery_passphrase": REC_PW[0], "recovery_passphrase2": REC_PW[0]})
+                                              "recovery_passphrase": REC_PW[0], "recovery_passphrase2": REC_PW[0],
+                                              "password": PW})
     assert r.status_code == 400 and "passphrase refused" in r.text
+
+
+def test_create_states_the_offline_guessing_risk_and_needs_reauth(ui):
+    """§1.2: the create form says the at-rest guarantee in the contract's words; creation needs reauth."""
+    a, _, ca, _ = ui
+    page = ca.get("/admin/group").text
+    assert "allows unthrottled offline guessing of the root passphrase at scrypt cost" in page
+    assert "A random 14-character passphrase resists that; a human-chosen phrase may not." in page
+    assert "offline-root mode" in page
+    r = ca.post("/admin/group/create", data={"csrf": csrf(ca, "/admin/group"), "name": "Home",
+                                              "root_passphrase": ROOT_PW, "root_passphrase2": ROOT_PW,
+                                              "recovery_passphrase": REC_PW[0], "recovery_passphrase2": REC_PW[0]})
+    assert r.status_code == 400 and "current account password" in r.text
+    with a.session() as s:
+        assert groups.load(s) is None
+
+
+def test_recovery_download_is_audited(ui):
+    """§1.9: the download itself is audited as group_root_exported, not only the confirmation."""
+    a, _, ca, _ = ui
+    create_via_ui(a, ca)
+    with a.session() as s:
+        rows = s.scalars(select(AuditEntry).where(AuditEntry.action == "group_root_exported")).all()
+        assert any((row.detail or {}).get("download") for row in rows)
+        assert any((row.detail or {}).get("confirmed") for row in rows)
+    assert 'data-group-recovery-risk' not in ca.get("/admin/group").text  # shown only while the file is pending
+
+
+def test_root_passphrase_throttle_is_5_per_hour(ui):
+    """§1.2: throttle(p, "group-root:<user>", 5, 3600) on every root operation; the sixth try is refused even
+    with the right passphrase, and nothing is renewed."""
+    a, _, ca, _ = ui
+    create_via_ui(a, ca)
+    with a.session() as s:
+        before = s.scalars(select(GroupCert)).all()
+    for _ in range(5):
+        r = ca.post("/admin/group/renew", data={"csrf": csrf(ca, "/admin/group"), "root_passphrase": "wrong guess",
+                                                "password": PW})
+        assert r.status_code == 403
+    sixth = ca.post("/admin/group/renew", data={"csrf": csrf(ca, "/admin/group"), "root_passphrase": ROOT_PW,
+                                                "password": PW})
+    assert sixth.status_code == 429
+    with a.session() as s:
+        assert len(s.scalars(select(GroupCert)).all()) == len(before)
