@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import timedelta
 
 import pytest
@@ -163,6 +164,7 @@ def test_metrics_and_logs_carry_no_private_data(pair, caplog):
     assert r.status_code == 200
     assert 'atlas_group_entries{disposition="applied"}' in r.text
     assert "atlas_profile_conflicts_open 1" in r.text
+    assert re.search(r"^atlas_group_change_rows [1-9]\d*$", r.text, re.M)
     assert f'atlas_group_stream_lag{{origin="{b.node_id}"}} 0' in r.text
     logged = "\n".join(f"{rec.getMessage()} {rec.__dict__}" for rec in caplog.records)
     for needle in (uid, SECRET_VALUE, "Other Private 77aa"):
@@ -567,3 +569,214 @@ def test_epoch_rate_limit(pair):
         assert s.scalar(select(func.count()).select_from(GroupStream).where(
             GroupStream.origin == b.node_id, GroupStream.scope == "_node",
             GroupStream.blocked_reason.is_(None))) == 4
+
+
+# ---- review fixes: snapshot key binding, elision of account kinds, fork recovery, sign-out authority -----------
+
+def _rotate(a, b, ub):
+    """Rotate b's signing key, let a learn the rotation epoch. Returns (old identity, b's last old-epoch entry)."""
+    from atlas import key_rotation
+
+    from .channel_harness import group_routes_pull
+
+    uid = uid_of(b, ub)
+    edit(b, ub, "theme", "dark")
+    sync(a)
+    old, last = b.identity, entries_of(b, b.node_id, uid)[-1]
+    with b.session() as s:
+        successor = key_rotation.rotate(s, b.identity.key_id, b.settings)
+        s.commit()
+    b.st.ctx.identity = successor
+    with b.session() as s:
+        group = groups.load(s)
+        groups.rebuild(s, group, b.node_id, settings=b.settings)
+        group_channel.ensure_epoch(s, group, successor)
+        s.commit()
+    group_routes_pull(a)
+    sync(a)
+    return old, last
+
+
+def _signed(node_gid: str, identity, e: dict) -> dict:
+    e = dict(e, key_id=identity.key_id, body_hash=body_hash(e["body"]))
+    e["sig"] = sign_message(identity.private, gc.DOMAINS["change"], group_channel.entry_parts(node_gid, e))
+    return e
+
+
+def _install(dst, uid: str, snap: dict, served_by: str) -> dict:
+    from atlas import profile_schema
+
+    with dst.session() as s:
+        group = groups.load(s)
+        rx = group_channel.Rx(s, dst.settings, dst.identity, group,
+                              groups.trust(s, group, own_node=dst.node_id), groups.utcnow(), served_by)
+        out = group_channel.install_snapshot(rx, uid, snap, set(profile_schema.fields()))
+        s.commit()
+        return out
+
+
+def test_snapshot_cannot_install_values_under_a_rotated_out_key(pair):
+    """A11-h2 for the snapshot path (§1.7, §3.4 step 1): a fake epoch, or an old epoch above its bound, signed by a
+    stolen rotated-out key installs nothing."""
+    a, b, ua, ub = pair
+    uid = uid_of(b, ub)
+    old, last = _rotate(a, b, ub)
+    g = gid(a)
+    now = gc.stamp(groups.utcnow())
+    epoch_body = {"_v": 1, "epoch": "0badc0df", "previous": None, "reason": "manual", "issued_at": now}
+    fake_epoch = _signed(g, old, {"origin": b.node_id, "epoch": "0badc0df", "scope": "_node", "seq": 1,
+                                  "kind": "stream.epoch", "subject": "-", "body": epoch_body})
+    value = {"_v": 1, "issued_at": now, **value_body(b, uid, "ui.density", "compact")}
+    in_fake = _signed(g, old, {"origin": b.node_id, "epoch": "0badc0df", "scope": uid, "seq": 1,
+                               "kind": "profile.field.set", "subject": "ui.density", "body": value})
+    above_bound = _signed(g, old, {"origin": b.node_id, "epoch": last["epoch"], "scope": uid, "seq": last["seq"] + 1,
+                                   "kind": "profile.field.set", "subject": "ui.density", "body": value})
+    with b.session() as s:  # the genuine old epoch entry, as a real snapshot would carry it
+        first = group_channel.row_entry(s.get(GroupChange, (g, b.node_id, last["epoch"], "_node", 1)))
+    out = _install(a, uid, {"epochs": [fake_epoch, first], "entries": [in_fake, above_bound]}, b.node_id)
+    assert out == {"links": 0, "values": 0, "refused": 2}
+    assert shown(a, ua, "ui.density") is None
+    with a.session() as s:
+        assert s.get(GroupStream, (g, b.node_id, "0badc0df", "_node")) is None
+        assert s.scalar(select(func.count()).select_from(ProfileVersion).where(
+            ProfileVersion.field == "ui.density")) == 0
+
+
+def test_snapshot_under_the_current_key_still_installs(pair):
+    a, b, ua, ub = pair
+    uid = uid_of(b, ub)
+    _rotate(a, b, ub)
+    edit(b, ub, "ui.density", "compact")
+    with b.session() as s:
+        group = groups.load(s)
+        snap = group_channel.serve_snapshot(s, group, b.node_id, a.node_id, {"account_uid": uid,
+                                                                              "accept": ["ui.density"]})
+    assert _install(a, uid, snap, b.node_id)["values"] == 1
+    assert shown(a, ua, "ui.density") == "compact"
+
+
+@pytest.mark.parametrize("kind", ["account.unlink", "account.link", "account.signout_all"])
+def test_elided_account_entries_are_bad_elision(pair, kind):
+    """§3.4: only profile entries are ever elided; an elided account.* entry would suppress it for good."""
+    a, b, ua, ub = pair
+    uid = uid_of(b, ub)
+    if kind == "account.unlink":
+        with b.session() as s:
+            assert group_channel.unlink(s, b.settings, b.identity, s.get(User, ub))
+            s.commit()
+        e = entries_of(b, b.node_id, uid)[-1]
+    elif kind == "account.link":
+        e = sign_into(b, uid, kind, link_body(b, uid, minted=True))
+    else:
+        e = sign_into(b, uid, kind, {"account_uid": uid, "before": gc.stamp(groups.utcnow())})
+    assert e["kind"] == kind
+    out = deliver(a, [dict(e, body=None, elided=True)], served_by=b.node_id)
+    assert out == [(e["seq"], None, "bad_elision")]
+    assert audited(a, "group_peer_suspect")[-1]["reason"] == "bad_elision"
+    with a.session() as s:
+        assert s.get(GroupChange, (gid(a), b.node_id, e["epoch"], uid, e["seq"])) is None
+        assert s.get(GroupStream, (gid(a), b.node_id, e["epoch"], uid)).hwm == e["seq"] - 1
+    if kind == "account.unlink":
+        sync(a)  # the genuine entry from the origin still applies
+        with a.session() as s:
+            assert s.get(GroupAccountNode, (gid(a), uid, b.node_id)).status == "unlinked"
+            assert not group_channel.may_serve_account(s, gid(a), b.node_id, uid)
+
+
+def _fork_b_at_a(a, b, ub) -> dict:
+    uid = uid_of(b, ub)
+    edit(b, ub, "theme", "dark")
+    sync(a)
+    original = entries_of(b, b.node_id, uid)[-1]
+    body = dict(original["body"], value="light")
+    clone = dict(original, body=body, body_hash=body_hash(body))
+    clone["sig"] = sign_message(b.identity.private, gc.DOMAINS["change"], group_channel.entry_parts(gid(a), clone))
+    with a.session() as s:
+        group = groups.load(s)
+        rx = group_channel.Rx(s, a.settings, a.identity, group, groups.trust(s, group, own_node=a.node_id),
+                              groups.utcnow(), b.node_id)
+        assert group_channel.receive(rx, clone, {"theme"}).reason == "fork"
+        s.commit()
+    return original
+
+
+def test_a_new_epoch_from_the_real_node_lifts_a_fork_halt(pair):
+    """§3.6: the ways forward from a fork are a revocation or a new epoch from the real node."""
+    a, b, ua, ub = pair
+    original = _fork_b_at_a(a, b, ub)
+    edit(b, ub, "theme", "auto")
+    sync(a)
+    assert shown(a, ua, "theme") == "dark"  # halted
+    with b.session() as s:
+        new = group_channel.open_epoch(s, groups.load(s), b.identity, "manual")
+        s.commit()
+    edit(b, ub, "ui.density", "compact")
+    sync(a)
+    assert shown(a, ua, "ui.density") == "compact"  # the new epoch's entries apply again
+    # the disputed history stays closed at a's hwm: "auto" (seq 3 of the forked epoch) is never taken, so a later
+    # theme edit naming it as base waits as missing_base (released after group_hold_timeout, §4.4)
+    edit(b, ub, "theme", "light")
+    sync(a)
+    assert [r.reason for r in changes(a, origin=b.node_id, subject="theme", epoch=new)] == ["missing_base"]
+    with a.session() as s:
+        assert b.node_id not in group_channel.forked(s)
+        assert s.get(GroupStream, (gid(a), b.node_id, new, "_node")).closed_at is None
+        forked_stream = s.get(GroupStream, (gid(a), b.node_id, original["epoch"], original["scope"]))
+        assert forked_stream.closed_at is not None and forked_stream.key_bound_seq == forked_stream.hwm
+    assert audited(a, "group_stream_fork_cleared")[-1]["how"] == "new_epoch"
+
+
+def test_revocation_lifts_a_fork_halt(pair):
+    a, b, ua, ub = pair
+    _fork_b_at_a(a, b, ub)
+    with a.session() as s:
+        group = groups.load(s)
+        groups.revoke_node(s, a.settings, group, a.identity, b.node_id, "key_compromise",
+                           root=groups.unlock_root(s, a.settings, group, ROOT_PW),
+                           suspect_since=groups.utcnow() - timedelta(hours=1))
+        s.commit()
+    sync(a)
+    with a.session() as s:
+        assert group_channel.forked(s) == {}
+    assert audited(a, "group_stream_fork_cleared")[-1]["how"] == "revoked"
+
+
+def _session_of(node, user_id: str) -> str:
+    with node.session() as s:
+        _, row = accounts.create_session(s, node.settings, s.get(User, user_id))
+        row.created_at = groups.utcnow() - timedelta(minutes=5)
+        s.commit()
+        return row.id
+
+
+def test_signout_all_needs_a_linked_origin_and_a_bounded_before(pair):
+    """§5.6: only a node linked to the account can end its sessions, and `before` is the entry's `issued_at`."""
+    a, b, ua, ub = pair
+    uid = uid_of(b, ub)
+    sid = _session_of(a, ua)
+    far = gc.stamp(groups.utcnow() + timedelta(days=3650))
+    future = sign_into(b, uid, "account.signout_all", {"account_uid": uid, "before": far})
+    garbage = sign_into(b, uid, "account.signout_all", {"account_uid": uid, "before": "not a time"})
+    assert [o[1:] for o in deliver(a, [future, garbage], served_by=b.node_id)] == [("rejected", "invalid")] * 2
+    with a.session() as s:
+        assert s.get(UserSession, sid) is not None
+    # the stream is not wedged: a valid sign-out from a linked node applies
+    ok = sign_into(b, uid, "account.signout_all", {"account_uid": uid, "before": gc.stamp(groups.utcnow())})
+    assert deliver(a, [ok], served_by=b.node_id)[0][1] == "applied"
+    with a.session() as s:
+        assert s.get(UserSession, sid) is None
+
+
+def test_signout_all_from_an_unlinked_node_is_refused(pair):
+    a, b, ua, ub = pair
+    uid = uid_of(b, ub)
+    with b.session() as s:
+        assert group_channel.unlink(s, b.settings, b.identity, s.get(User, ub))
+        s.commit()
+    sync(a)
+    sid = _session_of(a, ua)
+    e = sign_into(b, uid, "account.signout_all", {"account_uid": uid, "before": gc.stamp(groups.utcnow())})
+    assert deliver(a, [e], served_by=b.node_id) == [(e["seq"], "rejected", "not_linked")]
+    with a.session() as s:
+        assert s.get(UserSession, sid) is not None
+        assert s.get(GroupChange, (gid(a), b.node_id, e["epoch"], uid, e["seq"])).body is None
