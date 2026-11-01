@@ -25,7 +25,7 @@ from typing import Any
 from cryptography.hazmat.primitives import serialization
 from sqlalchemy import BigInteger, DateTime, Engine, Integer, LargeBinary, Table, delete, func, select, text, update
 
-from . import __version__, client_changes
+from . import __version__, client_changes, db
 from .models import Base
 from .settings import Settings
 
@@ -107,7 +107,7 @@ def create(settings: Settings, engine: Engine, out: Path, *, include_media: bool
         if engine.dialect.name == "postgresql":
             conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
         elif engine.dialect.name == "sqlite":
-            conn.exec_driver_sql("BEGIN")  # sqlite3 legacy transaction mode does not begin for SELECTs
+            db.begin_snapshot(conn)
         revision = _revision(conn)
         # Protect signing keys and account data while the archive is being written too.
         descriptor = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
