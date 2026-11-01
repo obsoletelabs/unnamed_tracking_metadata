@@ -42,6 +42,9 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_EMIT_PROTOCOL` | — | Newest federation protocol this node's own feed may use. Unset = `min_follower_protocol`. Raise it in Admin → Peers once every follower is upgraded. **live** |
 | `ATLAS_GROUP_VIEW_MAX_AGE_HOURS` | `24` | Node groups: how recent (hours, 1-168) a third member's view must be before delegated or privileged group actions. |
 | `ATLAS_GROUP_SYNC_INTERVAL` | `60` | Node groups: seconds between pulls of every member's state (30-86400). |
+| `ATLAS_GROUP_PROFILE_SYNC` | `true` | Node groups: sync the preferences linked users chose over the private group channel. Off sends and applies nothing. **live** |
+| `ATLAS_GROUP_PROFILE_FIELDS` | — | Node groups: space-separated preference names that may be synced; empty means every registry field the user agrees to. **live** |
+| `ATLAS_GROUP_HOLD_TIMEOUT_DAYS` | `7` | Node groups: days a received preference waits for its missing history before it is applied with a review entry (1-90). |
 | `ATLAS_INHERIT_SCHEMA` | `true` | Adopt the upstream authority's media types and custom fields (yours always take precedence). Editable in Admin → Settings. **live** |
 | `ATLAS_OIDC_PROVIDER_ENABLED` | `false` | Let other nodes and the Tracking App sign users in with accounts on this node (OpenID Connect). Editable in Admin → Settings. **live** |
 

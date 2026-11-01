@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Link a node · {{ app_name }}{% endblock %}
+{% block body_class %}consent-page{% endblock %}
+{% block content %}
+<div class="consent-layout"><div class="narrow card consent-card">
+<p class="fingerprint" aria-label="Node fingerprint">{{ fp }}</p>
+<h1>Link this node to your account {{ p.user.username }}?</h1>
+<p><strong>{{ member.name }}</strong>, <span class="mono small">{{ member.url }}</span>{% if not member.url_verified %} <span class="badge warn">address not verified</span>{% endif %}</p>
+<p class="small muted">Check that the fingerprint above is the one {{ member.name }} shows under Admin → Node group. Linking lets that node keep the preferences you tick below in step with this one. It never receives your password, sessions, email address or sign-in factors.</p>
+<form method="post" action="/group/authorize/continue">{{ csrf(p.csrf) }}
+  <input type="hidden" name="h" value="{{ handle }}">
+  <fieldset class="prefs-consent"><legend>Preferences this node may share</legend>
+  {% for name, f in fields.items() %}{% if name in policy %}
+    <label><input type="checkbox" name="c.{{ name }}" {{ 'checked' if name in consent }}> {{ f.label }}{% if not f.consent %} <span class="hint">off unless you tick it</span>{% endif %}</label>
+  {% endif %}{% endfor %}
+  </fieldset>
+  <p><button name="decision" value="approve" type="submit">Link</button> <button class="secondary" name="decision" value="deny" type="submit">Cancel</button></p>
+</form>
+</div></div>
+{% endblock %}

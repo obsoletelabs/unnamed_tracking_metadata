@@ -79,6 +79,45 @@ proxies and logs see only `POST /api/v2/group/call`.
 After a **restore from backup** a node is `resyncing`: it pulls every member's state before any root or
 delegated action. `atlas group resync --skip` (or the button, with your password) skips that and is audited.
 
+## Linked accounts and synced preferences
+
+Accounts are never matched by email or username. A person links their accounts explicitly:
+
+1. On the node where they want the link (say *Laptop*), **Linked nodes** (`/me/linked-nodes`) → choose the other
+   node → confirm with the current password.
+2. They sign in on the other node (*Home*) with its own password and second factor, check the **fingerprint** of
+   *Laptop* (shown first, larger than the name) and tick what *Home* may share.
+3. Back on *Laptop* the link wizard shows every preference where the two nodes differ ("keep this node's" or
+   "keep the other node's") and what *Laptop* may share. Linking never creates a conflict.
+
+From then on the ticked preferences travel over the encrypted member channel (`POST /api/v2/group/call`, ops
+`heads`, `changes`, `snapshot`, `notify`). They never enter the public signed feed, `/api/v2/sync/*`,
+`/api/v2/changes`, mirrors, backups of other nodes or the metrics labels. Passwords, second factors, sessions,
+tokens, email addresses, roles and local ids are never synced, whatever a node sends.
+
+**What may be synced** (the registry; each user ticks fields per node, an administrator may narrow the list with
+`ATLAS_GROUP_PROFILE_FIELDS` or switch everything off with `ATLAS_GROUP_PROFILE_SYNC=false`): display name,
+avatar style and colour, language, locale, date and time format, theme, time zone, reduced motion, high contrast,
+text size, underlined links, density, hidden achievements, default list order; and, only when the user ticks them,
+the bio, public-profile visibility and informational sign-in references. Language and locale are stored and
+synced now and take effect once the interface is translated.
+
+**Conflicts.** Every preference keeps its own history with a hybrid clock and the versions each edit had seen.
+All nodes show the same value whatever order changes arrive in; the newest user edit is shown. When the same
+preference is changed on two nodes before they hear of each other, both values are kept and the person sees a
+**Decide** badge: `/me/conflicts` offers either value or a new one, and the decision clears the queue on every
+node. Two cases always wait for a decision instead of applying: another node making a private profile **public**,
+and a value or link that came from a node later revoked as **compromised**.
+
+**Unlinking and deletion.** Unlinking (with the password) keeps the values as plain local settings and tells the
+others to stop. Deleting an account removes its preferences and links here and tells the others the account is
+gone; the accounts on the other nodes stay (deletion never propagates).
+
+**Revoked and expired nodes.** Changes from a revoked node are refused, even when backdated. After a node's
+certificate expires, only changes it had announced before expiry are taken, for 72 hours; it sends again after
+renewal. A node that sends two different histories (a cloned VM) is stopped until it is revoked. After a restore
+from backup a node starts a new history and fetches what it lost from the others.
+
 ## Leaving, and losing the root
 
 - `atlas group leave` revokes this node's own certificate; the others learn it on their next pull.
@@ -106,8 +145,15 @@ delegated action. `atlas group resync --skip` (or the button, with your password
 - Anyone who may scrape `/metrics` learns that this node is in a group and the member node ids (the `group`
   collector appears only while the node is in a group). Restrict `/metrics` with the `metrics` token scope if
   that matters.
+- `/metrics` also carries channel counts (`atlas_group_stream_lag`, `atlas_group_entries`, `atlas_group_rejected`
+  by closed reason, `atlas_profile_conflicts_open`): never a field name, value or account.
 
 ## Downgrading
 
 Migration `0028` adds the group tables. Downgrading below it is refused while this node is in a group or holds
 the sealed root; leave the group first.
+
+Migration `0029` adds the channel and profile tables and copies every account's bio and profile visibility into
+them; `app_user.bio` and `app_user.profile_public` stay up to date for older code. Downgrading to `0028` drops
+those tables: accounts keep their bio and visibility, but other preferences, their history, the review queue
+and the account links are lost.

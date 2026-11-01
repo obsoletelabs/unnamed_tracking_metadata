@@ -47,6 +47,12 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "group_view_max_age_hours": ("Federation", "Node groups: how recent (hours, 1-168) a third member's view must be "
                                  "before delegated or privileged group actions."),
     "group_sync_interval": ("Federation", "Node groups: seconds between pulls of every member's state (30-86400)."),
+    "group_profile_sync": ("Federation", "Node groups: sync the preferences linked users chose over the private "
+                           "group channel. Off sends and applies nothing."),
+    "group_profile_fields": ("Federation", "Node groups: space-separated preference names that may be synced; empty "
+                             "means every registry field the user agrees to."),
+    "group_hold_timeout_days": ("Federation", "Node groups: days a received preference waits for its missing history "
+                                "before it is applied with a review entry (1-90)."),
     "sync_batch_size": ("Federation", "Feed entries fetched per request."),
     "sync_max_parked_backlog": ("Federation", "Entries a follower keeps downloading, verifying and relaying after the "
                                 "first entry it had to park (it needs a newer release). Above this it pauses downloading "
