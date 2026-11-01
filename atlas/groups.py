@@ -17,7 +17,7 @@ from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-from sqlalchemy import delete, select
+from sqlalchemy import delete, event, select
 from sqlalchemy.orm import Session
 
 from . import group_crypto as gc
@@ -804,6 +804,30 @@ def trust(session: Session, group: OwnerGroup, now: datetime | None = None, extr
                  grants=grants)
 
 
+_REQUEST_TRUST = "atlas_request_trust"  # Session.info: the read-only Trust built for this request's checks
+
+
+def request_trust(session: Session, group: OwnerGroup, own_node: str) -> Trust:
+    """`trust(..., own_node=own_node)` built once for a request's read-only checks (the federated-session check,
+    the effective-rights computation and its freshness checks). Any flush, commit or rollback of the session drops
+    it, so nothing written later is judged against a stale certificate or grant set."""
+    key = (group.group_id, own_node)
+    cached = session.info.get(_REQUEST_TRUST)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    tr = trust(session, group, own_node=own_node)
+    session.info[_REQUEST_TRUST] = (key, tr)
+    return tr
+
+
+def _drop_request_trust(session: Session, *_args) -> None:
+    session.info.pop(_REQUEST_TRUST, None)
+
+
+for _event in ("after_flush", "after_commit", "after_rollback"):
+    event.listen(Session, _event, _drop_request_trust)
+
+
 # ---- loading, secrets, audit ------------------------------------------------------------------------------------
 
 def load(session: Session) -> OwnerGroup | None:
@@ -1299,9 +1323,12 @@ def ingest_cancel(session: Session, group: OwnerGroup, obj: Any, now: datetime) 
 
 
 def _release_held(session: Session, group: OwnerGroup) -> None:
-    for row in session.scalars(select(GroupCert).where(GroupCert.group_id == group.group_id,
-                                                       GroupCert.held_reason == "succession_pending")):
-        row.held_reason = None
+    """A cancelled or activated succession releases every object held for it (§1.4 step 7, §1.8): certificates
+    and grants alike are then judged on every read, by the carry rule after an activation."""
+    for model in (GroupCert, GroupGrant):
+        for row in session.scalars(select(model).where(model.group_id == group.group_id,
+                                                       model.held_reason == "succession_pending")):
+            row.held_reason = None
 
 
 def activate_successions(session: Session, group: OwnerGroup, now: datetime) -> int:
@@ -1644,14 +1671,15 @@ class Freshness:
 
 
 def freshness(session: Session, group: OwnerGroup, own_node: str, depends_on: str | None, max_age_hours: int,
-              now: datetime | None = None) -> Freshness:
-    """May this node take a privileged action that depends on `depends_on`'s authority now?"""
+              now: datetime | None = None, tr: Trust | None = None) -> Freshness:
+    """May this node take a privileged action that depends on `depends_on`'s authority now? A caller that already
+    built `trust(..., own_node=own_node)` for this request passes it, so the certificate set is loaded once."""
     now = now or utcnow()
     if group.status == "resyncing":
         return Freshness(False, reason="resyncing")
     if group.status == "halted":
         return Freshness(False, reason="halted")
-    tr = trust(session, group, now, own_node=own_node)
+    tr = tr or trust(session, group, now, own_node=own_node)
     live = set(tr.members()) - {own_node, depends_on}
     if not live:
         return Freshness(True, waived=True, reason="freshness cannot be confirmed by a third node")

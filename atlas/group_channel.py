@@ -1467,7 +1467,14 @@ def _pull_member(rx: Rx, member: dict, heads: Any, call: Any, http: Any) -> None
             for scope, head in scopes.items():
                 if type(head) is not int or head < 1:
                     continue
-                if scope != NODE_SCOPE and link_by_uid(s, rx.gid, scope) is None:
+                if scope != NODE_SCOPE and link_by_uid(s, rx.gid, scope) is None and not (
+                        origin == node and getattr(rx.settings, "group_auto_provision", False)
+                        and groups.ACCOUNT_UID.match(str(scope))):
+                    # An account not linked here is pulled only from its own holder, which serves it to this node
+                    # only after its user consented to signing in here (`may_serve_account`), and only while
+                    # auto-provisioning is on: that is how the holder's own `account.link` arrives before the
+                    # sign-in may provision (§5.4). Profile values of such a scope are never applied or kept
+                    # (`_apply` strips them: not linked here; `accept` is empty, so the holder elides them).
                     continue
                 stream = s.get(GroupStream, (rx.gid, origin, epoch, scope))
                 if valid_now and stream is not None and (stream.advertised_head or 0) < head:

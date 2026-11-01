@@ -286,7 +286,7 @@ def token_create(p: Annotated[Ctx, Depends(admin_form)], name: Annotated[str, Fo
             raise ValueError
     except ValueError:
         return _tokens_page(p, None, 400, "Expiry must be a number of days between 1 and 3650.")
-    if "admin" in scopes and not p.is_local_admin:  # C10 §6.3: never through a group grant
+    if not p.is_local_admin:  # C10 §6.3, §6.4: a token is a standing credential that would outlive a group grant
         return _tokens_page(p, None, 403, LOCAL_ADMIN_ONLY)
     try:
         row, secret = auth.create_token(p.session, name.strip() or "token", scopes, expires)

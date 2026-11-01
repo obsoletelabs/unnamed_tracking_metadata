@@ -1,7 +1,7 @@
 {# Grants table and issue form (C10 §8.1); included by admin_group.html and admin_group_grants.html. #}
 <section class="card" aria-labelledby="g-grants" data-group-grants><h2 id="g-grants">Delegation grants</h2>
   <p class="small muted">A grant, signed by the group root or by a member allowed to grant, adds rights for one group account on the nodes it names. On this node it adds at most <strong>{{ cap }}</strong> (the local policy below){% if cap == 'none' %}, so grants add nothing here today{% endif %}. A grant never removes or reduces local rights.</p>
-  {% if grants %}<div class="table-scroll"><table data-grants-table><thead><tr><th scope="col">Account</th><th scope="col">Role</th><th scope="col">Nodes</th><th scope="col">Issuer</th><th scope="col">Expires</th><th scope="col">Status</th><th scope="col">Here</th><th scope="col"></th></tr></thead><tbody>
+  {% if grants %}<div class="table-scroll"><table data-grants-table><thead><tr><th scope="col">Account</th><th scope="col">Role</th><th scope="col">Nodes</th><th scope="col">Issuer</th><th scope="col">Expires</th><th scope="col">Status</th><th scope="col">On this node</th><th scope="col"></th></tr></thead><tbody>
   {% for g in grants %}<tr data-grant="{{ g.serial }}" data-grant-status="{{ g.status }}">
     <td>{{ g.account_label or '—' }}<div class="mono small">{{ g.account_uid }}</div></td>
     <td><span class="chip">{{ g.role }}</span></td>
@@ -9,7 +9,7 @@
     <td class="small">{{ 'root' if g.issuer == 'root' else fp(g.issuer) }}{% if g.authorized_by_grant %}<div class="muted">on behalf of grant <span class="mono">{{ g.authorized_by_grant }}</span></div>{% endif %}<div class="mono muted">{{ g.serial }}</div></td>
     <td class="small">{{ g.not_after }}</td>
     <td><span class="badge {{ 'ok' if g.status == 'valid' else 'bad' }}">{{ g.status }}</span></td>
-    <td>{% if g.here and cap != 'none' %}<span class="badge ok">applies (up to {{ cap }})</span>{% elif g.here %}<span class="badge">capped to none</span>{% else %}—{% endif %}</td>
+    <td>{% if g.serial in in_effect %}<span class="badge ok" data-grant-here="in-effect">in effect for you now</span>{% elif g.here and g.status == 'valid' and cap != 'none' %}<span class="badge" data-grant-here="within-cap">names this node, within cap {{ cap }}</span><div class="small muted">Applies only when the holder's session passes this node's gates (two-factor, group sign-in policy, a recent group view).</div>{% elif g.here and g.status == 'valid' %}<span class="badge" data-grant-here="capped">capped to none</span>{% elif g.here %}<span class="badge" data-grant-here="not-valid">not valid</span>{% else %}—{% endif %}</td>
     <td>{% if g.status == 'valid' and may_grant %}<details><summary class="small">Revoke…</summary>
       <form method="post" action="/admin/group/grants/revoke">{{ csrf(p.csrf) }}<input type="hidden" name="serial" value="{{ g.serial }}">
         {% if g.issuer != identity_node and grant_as_root %}<label for="gr-rp-{{ loop.index }}">Root passphrase</label><input id="gr-rp-{{ loop.index }}" name="root_passphrase" type="password" maxlength="256" autocomplete="off">{% endif %}

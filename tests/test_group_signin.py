@@ -224,6 +224,7 @@ def test_c_auto_provision_off_refuses_and_on_creates_a_plain_user_without_passwo
         assert s.scalars(select(AuditEntry).where(AuditEntry.action == "group_signin_refused")).first() is not None
         assert s.scalars(select(User).where(User.username.like("dora%"))).first() is None
     setp(b, group_auto_provision=True)
+    rounds(a, b)  # dora consented to b: b now pulls her account scope from a and sees a's own account.link (§5.4)
     rp = browser(b, "b")
     started = rp.post("/group/signin", data={"csrf": token(rp), "node_id": a.node_id})
     approved = consent(dora_browser, hidden(started.text, "request"))
@@ -474,7 +475,7 @@ def test_o_signout_all_propagates_only_where_consented(fed):
     assert local_b.get("/me").status_code in (303, 401)
 
 
-def test_r_login_page_shows_no_group_by_default_and_tickets_are_single_use(fed):
+def test_login_page_shows_no_group_by_default(fed):
     net, a, b, ca, uid = fed
     page = browser(b, "b").get("/login").text
     assert "/group/signin" not in page and "Node A" not in page
@@ -496,7 +497,7 @@ def test_r_login_page_shows_no_group_by_default_and_tickets_are_single_use(fed):
     assert browser(b, "b").post("/group/start", data={}).status_code == 404
 
 
-def test_s_stale_view_blocks_signin(fed, monkeypatch, tmp_path):
+def test_stale_view_blocks_signin_and_delegated_rights(fed, monkeypatch, tmp_path):
     """With a third member, b needs a view newer than 24 h from someone other than itself and the issuer."""
     net, a, b, ca, uid = fed
     c = make_node(tmp_path, net, "c")
@@ -535,7 +536,7 @@ def test_s_two_member_group_waives_freshness(fed):
     assert done.status_code == 303
 
 
-def test_w_login_csrf_foreign_assertion_refused(fed):
+def test_login_csrf_foreign_assertion_refused(fed):
     """mallory's valid sign-in assertion posted into the victim's browser does not sign the victim in as anyone."""
     net, a, b, ca, uid = fed
     relogin(ca, "alice")  # the attacker controls alice's account for this test
@@ -589,3 +590,114 @@ def test_session_scoping_federated_session_is_valid_on_b_only(fed):
         row = s.scalars(select(UserSession).where(UserSession.via_group.isnot(None))).one()
         assert row.id != cookie and cookie not in json.dumps([r.detail for r in s.scalars(select(AuditEntry))])
     assert accounts.LOCAL_OTP not in (row.amr or [])
+
+
+def test_auto_provision_refuses_a_uid_the_issuer_is_not_known_to_hold(fed):
+    """§5.4 / T8: with auto-provisioning on, a member's assertion for an account uid this node has not yet seen
+    held by that member binds nothing (no squatted uid, no password-less user); after the sync it provisions."""
+    net, a, b, ca, uid = fed
+    setp(b, group_auto_provision=True, group_signin_public=True)
+    signup(browser(a, "a"), "dora")
+    dora_browser = browser(a, "a")
+    relogin(dora_browser, "dora")
+    rp = browser(b, "b")
+    started = rp.post("/group/signin", data={"csrf": token(rp), "node_id": a.node_id})
+    assert started.status_code == 200
+    approved = consent(dora_browser, hidden(started.text, "request"))  # a mints dora's uid now; b has not synced
+    done = deliver(b, rp, hidden(approved.text, "assertion"))
+    assert done.status_code == 400 and "not yet confirmed" in done.text
+    with a.session() as s:
+        dora_uid = group_channel.local_link(s, groups.load(s).group_id, uid_by_name(a, "dora")).account_uid
+    with b.session() as s:
+        assert s.scalars(select(User).where(User.username.like("dora%"))).first() is None
+        assert s.scalars(select(GroupAccountLink).where(GroupAccountLink.account_uid == dora_uid)).first() is None
+        assert s.scalars(select(UserSession).where(UserSession.via_group.isnot(None))).first() is None
+    rounds(a, b)  # a's account.link for dora arrives: now the issuer is known to hold the uid
+    rp = browser(b, "b")
+    started = rp.post("/group/signin", data={"csrf": token(rp), "node_id": a.node_id})
+    done = deliver(b, rp, hidden(consent(dora_browser, hidden(started.text, "request")).text, "assertion"))
+    assert done.status_code == 303, done.text
+    with b.session() as s:
+        dora = s.scalars(select(User).where(User.username.like("dora%"))).one()
+        assert s.scalars(select(GroupAccountLink).where(GroupAccountLink.account_uid == dora_uid)).one().user_id == \
+            dora.id
+
+
+def test_auto_provision_refuses_a_known_uid_not_held_by_the_issuer(fed):
+    """The other branch of the same check: b knows the uid, but not as held by the asserting node."""
+    net, a, b, ca, uid = fed
+    signup(browser(a, "a"), "dora")
+    dora_browser = browser(a, "a")
+    relogin(dora_browser, "dora")
+    setp(b, group_signin_public=True, group_auto_provision=True)
+    rp = browser(b, "b")
+    started = rp.post("/group/signin", data={"csrf": token(rp), "node_id": a.node_id})
+    done = deliver(b, rp, hidden(consent(dora_browser, hidden(started.text, "request")).text, "assertion"))
+    assert done.status_code == 400 and "not yet confirmed" in done.text  # b has not seen a's link yet
+    rounds(a, b)
+    with a.session() as s:
+        dora_uid = group_channel.local_link(s, groups.load(s).group_id, uid_by_name(a, "dora")).account_uid
+    with b.session() as s:  # as if a's link had been withdrawn: the uid is known here, not as held by a
+        row = s.get(GroupAccountNode, (groups.load(s).group_id, dora_uid, a.node_id))
+        assert row is not None and row.status == "linked"
+        row.status = "unlinked"
+        s.commit()
+    rp = browser(b, "b")
+    started = rp.post("/group/signin", data={"csrf": token(rp), "node_id": a.node_id})
+    done = deliver(b, rp, hidden(consent(dora_browser, hidden(started.text, "request")).text, "assertion"))
+    assert done.status_code == 400
+    with b.session() as s:
+        assert s.scalars(select(GroupAccountLink).where(GroupAccountLink.account_uid == dora_uid)).first() is None
+        assert s.scalars(select(User).where(User.username.like("dora%"))).first() is None
+
+
+def test_federated_session_cannot_enrol_a_factor_for_a_passwordless_admin_under_local_mfa(fed):
+    """§5.5 local_mfa: an OIDC-only (password-less) administrator's federated session may not pass reauth, so a
+    compromised IdP cannot enrol its own TOTP on b and unlock the local admin role."""
+    net, a, b, ca, uid = fed
+    bob = uid_by_name(b, "bob")
+    with b.session() as s:
+        u = s.get(User, bob)
+        u.role, u.password_hash = "admin", "!"
+        s.commit()
+    setp(b, group_federated_privilege="local_mfa")
+    relogin(ca, "alice")
+    rp, done = signin(ca, a, b)
+    assert done.status_code == 303
+    assert rp.get("/admin").status_code == 403
+    with b.session() as s:
+        login_ = s.scalars(select(UserSession).where(UserSession.via_group.isnot(None))).one()
+        assert not accounts.reauthenticated(s.get(User, bob), "", login_)  # a fresh federated session is no reauth
+    r = rp.post("/me/security/start", data={"csrf": token(rp, "/me/security"), "password": ""})
+    assert r.status_code == 403 and "Sign in on this node itself" in r.text
+    with b.session() as s:
+        from atlas.models import UserMfa
+
+        assert s.get(UserMfa, bob) is None  # nothing was enrolled
+        row = s.scalars(select(UserSession).where(UserSession.via_group.isnot(None))).one()
+        assert accounts.LOCAL_OTP not in (row.amr or [])
+    assert rp.get("/admin").status_code == 403
+    assert rp.post("/me/security/enable", data={"csrf": token(rp, "/me/security"), "code": "000000"}).status_code \
+        == 400
+
+
+def test_assertion_amr_is_oidc_for_a_passwordless_account_and_future_auth_time_is_refused(fed):
+    net, a, b, ca, uid = fed
+    relogin(ca, "alice")
+    with a.session() as s:  # alice becomes password-less (OIDC-only) while her session stays
+        s.get(User, uid_by_name(a, "alice")).password_hash = "!"
+        s.commit()
+    rp, done = signin(ca, a, b)
+    assert done.status_code == 303
+    with b.session() as s:
+        row = s.scalars(select(UserSession).where(UserSession.via_group.isnot(None))).one()
+        assert row.amr == ["oidc"]
+    # auth_time in the future (beyond the clock skew) is refused at b, whatever else verifies
+    with a.session() as s:
+        for row in s.scalars(select(UserSession).where(UserSession.user_id == uid_by_name(a, "alice"))):
+            row.created_at = groups.utcnow() + timedelta(hours=1)
+        s.commit()
+    rp, done = signin(ca, a, b)
+    assert done.status_code == 400 and "expired" in done.text
+    with b.session() as s:
+        assert s.scalar(select(func.count()).select_from(UserSession).where(UserSession.via_group.isnot(None))) == 1
