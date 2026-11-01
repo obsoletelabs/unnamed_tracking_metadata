@@ -91,6 +91,12 @@ REGISTRY: tuple[Spec, ...] = (
       "Matches at or above this are merged automatically.", lo=50, hi=100),
     S("review_threshold", "Review confidence (percent)", "Matching", "int",
       "Weaker matches below the auto threshold but above this open a duplicate review.", lo=0, hi=100),
+    S("group_profile_sync", "Sync user preferences in the owner group", "Federation", "bool",
+      "Linked accounts may share the preferences each user chose with the other nodes of your group. Off: nothing "
+      "is sent or applied; local preferences keep working."),
+    S("group_profile_fields", "Preferences that may be synced", "Federation", "str",
+      "Space-separated preference names, for example 'theme language a11y.font_scale'. Empty = every preference "
+      "the user agrees to.", max_len=600),
     S("inherit_schema", "Adopt the upstream media types and fields", "Federation", "bool",
       "Mirrors and local nodes copy the authority's custom fields; yours always take precedence."),
     S("media_cache_enabled", "Download and cache artwork", "Artwork", "bool"),

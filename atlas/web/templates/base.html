@@ -1,6 +1,7 @@
 {% from "macros.html" import csrf %}
 <!doctype html>
-<html lang="en"{% if s.default_theme != 'auto' %} data-theme="{{ s.default_theme }}"{% endif %}>
+{% set theme = prefs.get('theme') if prefs and prefs.get('theme') else s.default_theme %}
+<html lang="en"{% if theme != 'auto' %} data-theme="{{ theme }}"{% endif %}{% if prefs %} class="{{ 'a11y-reduced-motion' if prefs.get('a11y.reduced_motion') }} {{ 'a11y-high-contrast' if prefs.get('a11y.high_contrast') }} {{ 'a11y-underline-links' if prefs.get('a11y.underline_links') }} {{ 'density-compact' if prefs.get('ui.density') == 'compact' }} {{ 'font-scale-' ~ (prefs.get('a11y.font_scale') * 100)|int if prefs.get('a11y.font_scale') }}"{% endif %}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -24,6 +25,7 @@
     {% if p.user %}
       <a href="/new">Add a record</a>
       <a href="/notifications" aria-label="Notifications">Inbox{% if unread %} <span class="badge warn">{{ unread }}</span>{% endif %}</a>
+      {% if conflicts_open %}<a href="/me/conflicts" aria-label="Preferences that need your decision">Decide <span class="badge warn">{{ conflicts_open }}</span></a>{% endif %}
       {% if p.can_review %}<a href="/import">Import</a>
       <a href="/review">Review{% if pending_count %} <span class="badge warn">{{ pending_count }}</span>{% endif %}</a>{% endif %}
       {% if p.is_admin %}<a href="/admin">Admin</a>{% endif %}

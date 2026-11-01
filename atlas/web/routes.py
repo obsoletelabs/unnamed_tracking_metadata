@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import re
 from datetime import UTC, datetime
@@ -10,7 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import case, func, select
 
-from .. import accounts, auth, custom, facets, feed, integrations, mail, proposals, service, social
+from .. import accounts, auth, custom, facets, feed, integrations, mail, profile, proposals, service, social
 from .. import media as images
 from ..api.routes import _guard_upstream, media_response
 from ..merge import SCALAR_FIELDS, UNION_FIELDS
@@ -79,10 +80,18 @@ def render(p: Page, name: str, status: int = 200, anon_csrf: bool = False, **ctx
                                 "can": i.allow_all_users or p.user.oidc_allowed}
                                for i in p.session.scalars(select(OidcIssuer).where(OidcIssuer.enabled.is_(True)))]
         ctx["has_password"] = p.user.password_hash != "!"
+        from .profile_pages import preference_rows
+
+        ctx["pref_rows"] = preference_rows(p)
+        ctx["prefs_linked"] = any(r["synced"] for r in ctx["pref_rows"])
     unread = social.unread_count(p.session, p.user.id) if p.user else 0
+    prefs = profile.values(p.session, s, p.user) if p.user else {}
+    if p.user and "when" in ctx:  # dates in the viewer's own format and time zone (C10 §4.2)
+        ctx["when"] = functools.partial(when, prefs=prefs)
     resp = templates.TemplateResponse(p.request, name, {
         "p": p, "s": s, "app_name": s.app_name, "unread": unread, "registration_open": s.registration == "open",
-        "pending_count": pending, "nav_pages": nav_pages, **ctx}, status_code=status)
+        "pending_count": pending, "nav_pages": nav_pages, "prefs": prefs,
+        "conflicts_open": profile.open_count(p.session, p.user.id) if p.user else 0, **ctx}, status_code=status)
     resp.headers["Cache-Control"] = "private, no-store" if p.user or anon_csrf else "public, max-age=30"
     if anon_csrf and p.new_cookie:
         set_anon_cookie(resp, p)
@@ -225,10 +234,28 @@ def live_game(p: Page, cid: str) -> tuple[Canonical, str | None]:
     return service.get_canonical(p.session, cid)
 
 
-def when(dt) -> str:
+_DATE_FORMATS = {"iso": "%Y-%m-%d", "dmy": "%d.%m.%Y", "mdy": "%m/%d/%Y", "ymd": "%Y/%m/%d"}
+_TIME_FORMATS = {"24h": "%H:%M", "12h": "%I:%M %p"}
+
+
+def when(dt, prefs: dict | None = None) -> str:
+    """A timestamp for display: UTC ISO-like by default, or in the viewer's date format, time format and time zone
+    preferences ("locale" falls back to the default until the interface is translated, H18)."""
     if dt is None:
         return ""
-    return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).strftime("%Y-%m-%d %H:%M")
+    dt = dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    prefs = prefs or {}
+    zone = prefs.get("time_zone")
+    if zone:
+        try:
+            from zoneinfo import ZoneInfo
+
+            dt = dt.astimezone(ZoneInfo(zone))
+        except Exception:  # noqa: BLE001 - no tz database on this platform: keep UTC
+            pass
+    date = _DATE_FORMATS.get(prefs.get("date_format") or "", "%Y-%m-%d")
+    clock = _TIME_FORMATS.get(prefs.get("time_format") or "", "%H:%M")
+    return dt.strftime(f"{date} {clock}")
 
 
 def title_of(p: Page, cid: str | None) -> str:

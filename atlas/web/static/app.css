@@ -221,3 +221,52 @@ form.user-edit select { width: auto; }
 code.fingerprint.big { font-size: 1.4rem; }
 .sas { font-size: 2.6rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; margin: .2em 0; }
 .invite-code { word-break: break-all; }
+
+/* Preferences (CONTRACT-C10 §4.2): applied from the viewer's own settings; the site theme is only the default. */
+.prefs .pref { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.prefs .pref:last-of-type { border-bottom: 0; }
+.prefs .pref-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.prefs .pref-head label { margin: 0; font-weight: 600; }
+.prefs .pref.has-conflict { background: var(--surface-2); border-radius: 8px; padding-left: 8px; padding-right: 8px; }
+.prefs select, .prefs input[type=text], .prefs input[type=number] { max-width: 22rem; }
+.prefs-consent { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 4px 16px; }
+.prefs-consent label { margin: 0; }
+.conflict .choices { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0; }
+.conflict .choice { display: flex; flex-direction: column; align-items: flex-start; text-align: left; min-width: 12rem; max-width: 100%; }
+.conflict .choice .choice-value { font-size: 1.05rem; overflow-wrap: anywhere; }
+/* The shown value is a primary button: its details keep the button's text colour so they stay readable. */
+.conflict .choice:not(.secondary) .muted { color: inherit; }
+.holders { list-style: none; padding: 0; margin: 0 0 8px; } .holders li { padding: 4px 0; }
+p.fingerprint { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.6rem; letter-spacing: .06em; margin: 0 0 .3em; }
+table.diff td label { margin: 0; font-weight: 400; }
+html.a11y-underline-links a { text-decoration: underline; }
+html.a11y-high-contrast { --muted: var(--text); --border: var(--text); }
+html.a11y-reduced-motion *, html.a11y-reduced-motion *::before, html.a11y-reduced-motion *::after {
+  animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+html.density-compact .card { padding: 10px; margin-bottom: 10px; }
+html.density-compact body { line-height: 1.35; }
+html.font-scale-80 body { font-size: 12.8px; }
+html.font-scale-85 body { font-size: 13.6px; }
+html.font-scale-90 body { font-size: 14.4px; }
+html.font-scale-95 body { font-size: 15.2px; }
+html.font-scale-100 body { font-size: 16.0px; }
+html.font-scale-105 body { font-size: 16.8px; }
+html.font-scale-110 body { font-size: 17.6px; }
+html.font-scale-115 body { font-size: 18.4px; }
+html.font-scale-120 body { font-size: 19.2px; }
+html.font-scale-125 body { font-size: 20.0px; }
+html.font-scale-130 body { font-size: 20.8px; }
+html.font-scale-135 body { font-size: 21.6px; }
+html.font-scale-140 body { font-size: 22.4px; }
+html.font-scale-145 body { font-size: 23.2px; }
+html.font-scale-150 body { font-size: 24.0px; }
+html.font-scale-155 body { font-size: 24.8px; }
+html.font-scale-160 body { font-size: 25.6px; }
+html.font-scale-165 body { font-size: 26.4px; }
+html.font-scale-170 body { font-size: 27.2px; }
+html.font-scale-175 body { font-size: 28.0px; }
+html.font-scale-180 body { font-size: 28.8px; }
+html.font-scale-185 body { font-size: 29.6px; }
+html.font-scale-190 body { font-size: 30.4px; }
+html.font-scale-195 body { font-size: 31.2px; }
+html.font-scale-200 body { font-size: 32.0px; }

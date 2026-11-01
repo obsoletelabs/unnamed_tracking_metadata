@@ -17,15 +17,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 from starlette.concurrency import run_in_threadpool
 
+from .. import group_channel, group_enrol, groups, key_rotation, ratelimit
 from .. import group_crypto as gc
-from .. import group_enrol, groups, key_rotation, ratelimit
 from ..models import GroupNonce, OwnerGroup
 from ..signing import NodeIdentity, canonical_json
 from .deps import AppState
 
 router = APIRouter(include_in_schema=False)
 CALL_CAP = 256 * 1024
-CALL_OPS = ("hello", "state", "rotations")  # A10; A11 adds heads/changes/snapshot/notify
+CALL_OPS = ("hello", "state", "rotations", "heads", "changes", "snapshot", "notify")  # A10 + A11 (§3.3)
 NOT_FOUND = {"detail": "Not Found"}
 
 
@@ -209,7 +209,10 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
         if error is None and throttled:
             error = "throttled"
         if error is None:
-            result = _op(session, st, group, identity, inner, cert)
+            try:
+                result = _op(session, st, group, identity, inner, cert)
+            except _OpError as exc:
+                error = str(exc)
         server_time = gc.stamp(nowdt)
         outcome = {"result": result, "error": error, "server_time": server_time}
         parts = gc.response_parts(group.group_id, identity.node_id, identity.key_id, inner["n"], inner["r"],
@@ -228,8 +231,8 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
 def _op(session, st: AppState, group: OwnerGroup, identity: NodeIdentity, inner: dict, cert: dict) -> Any:
     op, params = inner["op"], inner["params"]
     if op == "hello":
-        return {"group_protocol": groups.GROUP_PROTOCOL, "min_group_protocol": groups.MIN_GROUP_PROTOCOL,
-                "ops": list(CALL_OPS), "node_id": identity.node_id}
+        return {**group_channel.hello_result(identity), "group_protocol": groups.GROUP_PROTOCOL,
+                "min_group_protocol": groups.MIN_GROUP_PROTOCOL, "ops": list(CALL_OPS), "node_id": identity.node_id}
     if op == "state":
         groups.refresh(session, group, identity.node_id, settings=st.ctx.settings)
         state = groups.export_state(session, group, identity)
@@ -242,7 +245,27 @@ def _op(session, st: AppState, group: OwnerGroup, identity: NodeIdentity, inner:
             return key_rotation.own_history(session, identity.node_id)
         row = session.get(groups.GroupMember, (group.group_id, node)) if isinstance(node, str) else None
         return row.rotations if row is not None else []
+    tr = groups.trust(session, group, own_node=identity.node_id)
+    if op == "heads":
+        return group_channel.serve_heads(session, group, identity.node_id, inner["n"], tr)
+    if op == "changes":
+        return _or_error(group_channel.serve_changes(session, group, identity.node_id, inner["n"], tr, params))
+    if op == "snapshot":
+        return _or_error(group_channel.serve_snapshot(session, group, identity.node_id, inner["n"], params))
+    if op == "notify":
+        group_channel.WAKE.set()  # a hint only: the next round pulls (§3.8)
+        return {"ok": True}
     return None
+
+
+class _OpError(Exception):
+    pass
+
+
+def _or_error(result: Any) -> Any:
+    if isinstance(result, str):
+        raise _OpError(result)
+    return result
 
 
 @router.post("/api/v2/group/call")
