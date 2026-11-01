@@ -270,7 +270,7 @@ class Achievement(Base):
     global_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     redistributable: Mapped[bool] = mapped_column(Boolean, default=False)
     kind: Mapped[str | None] = mapped_column(String(16), nullable=True)  # progression | missable | win_condition
-    tier: Mapped[str | None] = mapped_column(String(8), nullable=True)  # bronze | silver | gold
+    tier: Mapped[str | None] = mapped_column(String(8), nullable=True)  # bronze | silver | gold | platinum
     points: Mapped[int | None] = mapped_column(Integer, nullable=True)
     locked_icon_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     # cached, verified icon bytes (content-addressed, same store and rules as artwork)

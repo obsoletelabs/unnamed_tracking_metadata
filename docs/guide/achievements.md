@@ -10,7 +10,7 @@ Atlas keeps the **list** of achievements for a game: what exists, how rare it is
 | `name`, `description` | Text. Up to 200 / 2000 characters. |
 | `hidden` | A secret achievement. See [Hidden achievements](#hidden-achievements). |
 | `kind` | `progression`, `missable` or `win_condition`; absent when unknown. |
-| `tier` | `bronze`, `silver`, `gold`; absent when the source has none. |
+| `tier` | `bronze`, `silver`, `gold`, `platinum`; absent when the source has none. |
 | `points` | Whole number 0–100000 (Steam has none, RetroAchievements and Xbox use them). |
 | `global_percent` | Share of all players who have it, 0–100. |
 | `icon_url`, `locked_icon_url` | Atlas's own verified copy of the unlocked / locked image (`/api/v2/media/<sha256>`), or `null` while it is not cached yet. |
@@ -36,7 +36,7 @@ Signed-in members use **Edit achievements** on the game page. Each achievement i
 * **Preview before proposing.** *Preview changes* shows exactly what will be added, removed, changed (field by field, old and new) and whether the order changes. Only then does *Submit proposal* appear. Saving **replaces** the community list with the rows shown (removals included); it goes through the normal review, can be reverted, and is applied at once for reviewers and trusted members.
 ![Preview of what will change](img/achievement-editor-preview.png)
 
-* **Bulk import.** The old one-per-line format (`Name | Description | extras`; extras in any order: `progression` / `missable` / `win condition`, `bronze` / `silver` / `gold`, a number, `hidden`, icon addresses) is still available under *Bulk import* in the editor. It only **adds** entries.
+* **Bulk import.** The old one-per-line format (`Name | Description | extras`; extras in any order: `progression` / `missable` / `win condition`, `bronze` / `silver` / `gold` / `platinum`, a number, `hidden`, icon addresses) is still available under *Bulk import* in the editor. It only **adds** entries.
 
 ## Reading
 

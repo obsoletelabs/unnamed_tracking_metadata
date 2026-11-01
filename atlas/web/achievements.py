@@ -21,7 +21,8 @@ router = APIRouter()
 
 KIND_CHOICES = (("", "Not set"), ("progression", "Progression"), ("missable", "Missable"),
                 ("win_condition", "Win condition"))
-TIER_CHOICES = (("", "Not set"), ("bronze", "Bronze"), ("silver", "Silver"), ("gold", "Gold"))
+TIER_CHOICES = (("", "Not set"), ("bronze", "Bronze"), ("silver", "Silver"), ("gold", "Gold"),
+                ("platinum", "Platinum"))
 FIELDS = ("kind", "tier", "points", "hidden", "icon_url", "locked_icon_url")
 FIELD_LABELS = {"description": "Description", "kind": "Kind", "tier": "Tier", "points": "Points", "hidden": "Hidden",
                 "icon_url": "Icon", "locked_icon_url": "Locked icon"}

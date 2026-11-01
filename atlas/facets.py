@@ -55,7 +55,7 @@ def clean_artwork(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 ACH_KINDS = ("progression", "missable", "win_condition")
-ACH_TIERS = ("bronze", "silver", "gold")
+ACH_TIERS = ("bronze", "silver", "gold", "platinum")
 HIDDEN_NAME = "Hidden achievement"
 MAX_POINTS = 100000
 
