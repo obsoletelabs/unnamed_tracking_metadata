@@ -12,6 +12,7 @@ import uuid
 from collections import Counter
 
 from sqlalchemy import case, func, select
+from starlette.requests import ClientDisconnect
 
 from . import backup, feed, readiness
 from .models import NodeState, Outbox, Peer, SyncCursor
@@ -271,8 +272,10 @@ class RequestTelemetry:
             # server failure, so it must not count as a 500. Re-raised so cancellation still propagates.
             error_class = "client_disconnect"
             raise
-        except Exception:
-            error_class = "unhandled_exception"
+        except Exception as exc:
+            # Starlette raises ClientDisconnect when the client hangs up mid-body (an upload): not a server fault.
+            error_class = ("client_disconnect" if disconnected or isinstance(exc, ClientDisconnect)
+                           else "unhandled_exception")
             raise
         finally:
             self.stats.end()

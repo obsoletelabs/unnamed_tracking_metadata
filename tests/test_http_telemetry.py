@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 
 from atlas import auth, main, readiness
 from atlas.models import Outbox
@@ -116,6 +117,31 @@ def test_a_disconnect_after_the_response_completed_is_not_counted():
     stats, go = run_asgi(finishes_then_sees_disconnect, receive)
     asyncio.run(go())
     assert sum(stats.errors.values()) == 0 and stats.counts[("GET", "unmatched", "200")] == 1
+
+
+def test_a_client_that_hangs_up_while_the_body_is_read_is_a_disconnect_not_a_500():
+    from starlette.requests import ClientDisconnect
+
+    async def upload(scope, receive, send):
+        raise ClientDisconnect  # what Starlette raises from request.body()/stream() on http.disconnect
+
+    stats, go = run_asgi(upload)
+    with pytest.raises(ClientDisconnect):
+        asyncio.run(go())
+    assert stats.errors["client_disconnect"] == 1 and stats.errors["unhandled_exception"] == 0
+    assert stats.counts[("GET", "unmatched", "499")] == 1 and ("GET", "unmatched", "500") not in stats.counts
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def fails_after_the_peer_left(scope, receive, send):
+        await receive()
+        raise RuntimeError("late failure")
+
+    stats, go = run_asgi(fails_after_the_peer_left, receive)
+    with pytest.raises(RuntimeError):
+        asyncio.run(go())
+    assert stats.errors["client_disconnect"] == 1 and stats.errors["unhandled_exception"] == 0
 
 
 def test_an_exception_that_escapes_is_an_unhandled_exception_and_a_500():
@@ -247,17 +273,36 @@ def test_unwritable_media_degrades_but_keeps_serving(tmp_path):
         assert "blocker" not in response.text and "blocker" not in c.get("/metrics", headers=headers).text
 
 
-def test_an_unreachable_database_is_not_ready_instead_of_a_500(tmp_path, monkeypatch):
+def test_an_unreachable_database_is_not_ready_instead_of_a_500(tmp_path):
     app = make_app(tmp_path)
+    headers = scraper(app)
     with TestClient(app) as c:
-        # a real database error from the readiness query (the table does not exist)
-        monkeypatch.setattr(readiness, "select", lambda *a: text("SELECT * FROM table_that_does_not_exist"))
+        assert c.get("/api/v2/ready").status_code == 200
+        st = app.state.atlas
+        real = st.maker
+        before = Stats_errors(c, headers)
+        # a real outage: the sessionmaker now points at a database that cannot be opened
+        dead = create_engine(f"sqlite:///{tmp_path}/no_such_dir/gone.db")
+        st.maker = sessionmaker(bind=dead)
+        st._checked = 0.0  # the settings refresh is due, as it is on a probe period of 5 s or more
         response = c.get("/api/v2/ready")
         assert response.status_code == 503 and response.json() == {"status": "not_ready"}
+        assert response.headers["cache-control"] == "no-store"
         assert c.get("/api/v2/health").status_code == 200
-        with app.state.atlas.maker() as session:
-            result = readiness.check(session, app.state.atlas.ctx.settings)
+        with st.maker() as session:
+            result = readiness.check(session, st.ctx.settings)
         assert (result.database, result.schema, result.status) == (False, "unknown", "not_ready")
+        st.maker = real
+        after = Stats_errors(c, headers)
+        assert after["unhandled_exception"] == before["unhandled_exception"] == 0
+        assert after["server_error"] == before["server_error"] + 1  # the probe's own 503, nothing else
+        st._checked = 0.0
+        assert c.get("/api/v2/ready").status_code == 200  # and it recovers
+    dead.dispose()
+
+
+def Stats_errors(client, headers):
+    return by_label(client.get("/metrics", headers=headers).text, "atlas_http_request_errors_total", "class")
 
 
 # ---- collector isolation ----------------------------------------------------------------------------------

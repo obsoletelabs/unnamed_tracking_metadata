@@ -93,11 +93,15 @@ def health(st: St) -> dict[str, str]:
 
 
 @router.get("/ready", tags=["ops"])
-def ready(session: Sess, st: St, response: Response) -> dict[str, str]:
+def ready(st: St, response: Response) -> dict[str, str]:
     """Minimal on purpose (public). 503 `not_ready` when the database does not answer or migrations are pending;
     200 `degraded` when only artwork storage is unwritable; 200 `ready` otherwise. Unlike `/health` (liveness)
-    this touches the database, so an orchestrator holds traffic, not restarts the process, while it fails."""
-    result = readiness.check(session, st.ctx.settings)
+    this touches the database, so an orchestrator holds traffic, not restarts the process, while it fails.
+
+    Deliberately not the `Sess` dependency: that one refreshes admin settings with a database query, which would
+    raise (a 500) before the check ran during a real outage."""
+    with st.maker() as session:
+        result = readiness.check(session, st.ctx.settings)
     response.headers["Cache-Control"] = "no-store"
     if not result.serving:
         response.status_code = 503
