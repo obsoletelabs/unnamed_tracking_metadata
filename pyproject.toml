@@ -35,7 +35,7 @@ build-backend = "setuptools.build_meta"
 include = ["atlas*"]
 
 [tool.setuptools.package-data]
-atlas = ["migrations/script.py.mako", "web/templates/*.html", "web/static/*"]
+atlas = ["migrations/script.py.mako", "web/templates/*.html", "web/static/*", "data/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
