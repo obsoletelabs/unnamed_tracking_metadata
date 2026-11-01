@@ -268,6 +268,10 @@ class Stats:
         open_n = session.scalar(select(func.count()).select_from(ProfileConflict).where(
             ProfileConflict.status == "open")) or 0
         lines += ["# TYPE atlas_profile_conflicts_open gauge", f"atlas_profile_conflicts_open {open_n}"]
+        # group_change keeps every entry (new members and snapshots need contiguous streams): watch its growth
+        total = session.scalar(select(func.count()).select_from(GroupChange).where(
+            GroupChange.group_id == group.group_id)) or 0
+        lines += ["# TYPE atlas_group_change_rows gauge", f"atlas_group_change_rows {total}"]
         return lines
 
     def _collectors(self, session) -> tuple[str, ...]:

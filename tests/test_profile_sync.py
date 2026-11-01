@@ -252,16 +252,24 @@ def test_expired_certificate_cannot_open_an_epoch(pair):
         s.commit()
     epoch = next(e for e in entries_of(b, b.node_id, group_schema.NODE_SCOPE)
                  if e["kind"] == "stream.epoch" and e["body"]["reason"] == "manual")
-    assert deliver(a, [epoch], now=end + timedelta(hours=1))[0][1:] == ("rejected", "origin_expired")
+    assert deliver(a, [epoch], now=end + timedelta(hours=1))[0][1:] == (None, "origin_expired")
+    with a.session() as s:  # not refused for good: a renewed certificate lets the same epoch through
+        assert s.get(GroupStream, (groups.load(s).group_id, b.node_id, epoch["epoch"], "_node")) is None
+    assert deliver(a, [epoch])[0][1:] == ("applied", "epoch")
 
 
 def test_deleted_account_unlinks_and_never_propagates(pair):
     a, b, ua, ub = pair
     edit(a, ua, "theme", "dark")
+    edit(b, ub, "display_name", "Deleted Person 7c1a")
     rounds(a, b)
     from atlas import social
     from atlas.service import Ctx
 
+    uid = uid_of(b, ub)
+    with b.session() as s:
+        assert any(r.body for r in s.scalars(select(GroupChange).where(GroupChange.scope == uid,
+                                                                       GroupChange.origin == a.node_id)))
     other = user(b, "bob")
     with b.session() as s:
         s.get(User, other).role, s.get(User, other).status = "admin", "active"  # the only admin cannot leave
@@ -271,6 +279,21 @@ def test_deleted_account_unlinks_and_never_propagates(pair):
     with b.session() as s:
         for model in (ProfileField, ProfileVersion, ProfileConflict, GroupAccountLink):
             assert s.scalar(select(func.count()).select_from(model).where(model.user_id == ub)) == 0
+        # no synced personal data of the account stays in b's change log, own or relayed (§4.5)
+        rows = list(s.scalars(select(GroupChange).where(GroupChange.scope == uid)))
+        assert {r.origin for r in rows} == {b.node_id}
+        assert {r.kind for r in rows if r.body is not None} <= {"account.link", "account.unlink"}
+        assert "Deleted Person 7c1a" not in json.dumps([r.body for r in rows])
+        assert any(r.kind == "profile.field.set" and r.body is None and r.body_hash for r in rows)  # envelope kept
+        assert s.scalar(select(func.count()).select_from(GroupStream).where(
+            GroupStream.scope == uid, GroupStream.origin != b.node_id)) == 0
+        for node in s.scalars(select(GroupAccountNode).where(GroupAccountNode.account_uid == uid)):
+            assert (node.evidence or {}).get("evidence") is None
+        group = groups.load(s)
+        served = group_channel.serve_changes(
+            s, group, b.node_id, a.node_id, groups.trust(s, group, own_node=b.node_id),
+            {"origin": b.node_id, "epoch": rows[0].epoch, "scope": uid, "since": 0, "accept": ["display_name"]})
+        assert "Deleted Person 7c1a" not in json.dumps(served)
     sync(a)
     uid = uid_of(a, ua)
     with a.session() as s:
