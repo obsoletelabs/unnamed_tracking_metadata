@@ -44,6 +44,9 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "trusted_keys": ("Federation", "JSON object `{\"<node id>\": \"<base64 public key>\"}` of upstream nodes whose signed feed "
                      "you trust. Required when `upstream_url` is set. Get the values from `atlas node` on the upstream."),
     "sync_interval_seconds": ("Federation", "How often to pull from peers (minimum 5)."),
+    "group_view_max_age_hours": ("Federation", "Node groups: how recent (hours, 1-168) a third member's view must be "
+                                 "before delegated or privileged group actions."),
+    "group_sync_interval": ("Federation", "Node groups: seconds between pulls of every member's state (30-86400)."),
     "sync_batch_size": ("Federation", "Feed entries fetched per request."),
     "sync_max_parked_backlog": ("Federation", "Entries a follower keeps downloading, verifying and relaying after the "
                                 "first entry it had to park (it needs a newer release). Above this it pauses downloading "

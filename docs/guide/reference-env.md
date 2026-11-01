@@ -40,6 +40,8 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_SYNC_MAX_PARKED_BACKLOG` | `50000` | Entries a follower keeps downloading, verifying and relaying after the first entry it had to park (it needs a newer release). Above this it pauses downloading and reports `backlog_full`. |
 | `ATLAS_MIN_FOLLOWER_PROTOCOL` | `1.0` | Lowest federation protocol a follower must speak to sync from this node (followers below it refuse). Default: the previous release's protocol. |
 | `ATLAS_EMIT_PROTOCOL` | — | Newest federation protocol this node's own feed may use. Unset = `min_follower_protocol`. Raise it in Admin → Peers once every follower is upgraded. **live** |
+| `ATLAS_GROUP_VIEW_MAX_AGE_HOURS` | `24` | Node groups: how recent (hours, 1-168) a third member's view must be before delegated or privileged group actions. |
+| `ATLAS_GROUP_SYNC_INTERVAL` | `300` | Node groups: seconds between pulls of every member's state (30-86400). |
 | `ATLAS_INHERIT_SCHEMA` | `true` | Adopt the upstream authority's media types and custom fields (yours always take precedence). Editable in Admin → Settings. **live** |
 | `ATLAS_OIDC_PROVIDER_ENABLED` | `false` | Let other nodes and the Tracking App sign users in with accounts on this node (OpenID Connect). Editable in Admin → Settings. **live** |
 
