@@ -364,7 +364,10 @@ class _AnonPage:
     csrf = ""
     flash = None
     can_review = False
+    can_moderate = False
     is_admin = False
+    is_local_admin = False
+    rights = None
 
 
 def app_factory() -> FastAPI:  # `uvicorn atlas.main:app_factory --factory`

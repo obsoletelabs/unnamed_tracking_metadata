@@ -468,7 +468,7 @@ def test_evidence_check_negative_cases(pair):
     good = assertion(a, ua2, b)
     uid = good["body"]["account_uid"]
     rounds(a, b)
-    bad_purpose = resign(a, dict(good, body=dict(good["body"], purpose="signin")))
+    bad_purpose = resign(a, dict(good, body=dict(good["body"], purpose="consent")))
     bad_aud = resign(a, dict(good, body=dict(good["body"], aud_node=a.node_id)))
     long_ttl = resign(a, dict(good, body=dict(good["body"], not_after=gc.stamp(
         gc.parse_time(good["body"]["issued_at"]) + timedelta(seconds=600)))))
@@ -482,6 +482,19 @@ def test_evidence_check_negative_cases(pair):
                    served_by=b.node_id)
     assert [o[2] for o in outs] == ["bad_evidence"] * 5 + ["evidence_time"]
     ok = deliver(a, [sign_into(b, uid, "account.link", link_body(b, uid, evidence=good))], served_by=b.node_id)
+    assert ok[0][1] == "applied"
+    with a.session() as s:
+        assert s.get(GroupAccountNode, (gid(a), uid, b.node_id)).status == "linked"
+
+
+def test_signin_assertion_is_link_evidence_for_auto_provision(pair):
+    """A12 (CONTRACT-AMENDMENTS): an auto-provisioned account at b links with the sign-in assertion as evidence."""
+    a, b, ua, ub = pair
+    good = assertion(a, user(a, "cleo"), b)
+    uid = good["body"]["account_uid"]
+    rounds(a, b)
+    signin = resign(a, dict(good, body=dict(good["body"], purpose="signin")))
+    ok = deliver(a, [sign_into(b, uid, "account.link", link_body(b, uid, evidence=signin))], served_by=b.node_id)
     assert ok[0][1] == "applied"
     with a.session() as s:
         assert s.get(GroupAccountNode, (gid(a), uid, b.node_id)).status == "linked"

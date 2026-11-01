@@ -230,6 +230,14 @@ class Stats:
         for result, states in (("issued", ("issued", "active")), ("burned", ("burned",)), ("expired", ("expired",)),
                                ("aborted", ("aborted",))):
             lines.append(f'atlas_group_enrolments{{result="{result}"}} {sum(r in states for r in rows)}')
+        from .models import AuditEntry
+
+        day = now - timedelta(days=1)
+        lines.append("# TYPE atlas_group_signins gauge")  # A12 (§8.3): sign-ins through the group, last 24 h
+        for result, action in (("ok", "group_signin"), ("refused", "group_signin_refused")):
+            count = session.scalar(select(func.count()).select_from(AuditEntry).where(
+                AuditEntry.action == action, AuditEntry.created_at >= day)) or 0
+            lines.append(f'atlas_group_signins{{result="{result}"}} {count}')
         lines += ["# TYPE atlas_group_resyncing gauge", f"atlas_group_resyncing {int(group.status == 'resyncing')}"]
         lines += self._channel(session, group, now, [m.node_id for m in members[:32]])
         return lines

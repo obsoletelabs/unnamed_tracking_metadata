@@ -19,6 +19,7 @@ from ..models import OidcAccess, OidcClient, OidcIssuer, OidcLink, User
 from ..service import AtlasError
 from . import CSP
 from .deps import (
+    LOCAL_ADMIN_ONLY,
     SESSION_COOKIE,
     admin_form,
     admin_page,
@@ -337,6 +338,8 @@ def issuer_add(p: Annotated[Ctx, Depends(admin_form)], iid: Annotated[str, Form(
                authorization_endpoint: Annotated[str, Form(max_length=400)],
                token_endpoint: Annotated[str, Form(max_length=400)], auto_create: Annotated[str, Form()] = "",
                allow_all_users: Annotated[str, Form()] = "", trust_email: Annotated[str, Form()] = ""):
+    if (auto_create == "on" or trust_email == "on") and not p.is_local_admin:
+        raise HTTPException(403, LOCAL_ADMIN_ONLY)  # C10 §6.3
     base = clean_url(issuer_url)
     try:
         enc = secrets_box.encrypt(p.st.ctx.settings, client_secret)
@@ -365,6 +368,9 @@ def issuer_update(iid: str, p: Annotated[Ctx, Depends(admin_form)], enabled: Ann
     row = p.session.get(OidcIssuer, iid)
     if row is None:
         raise HTTPException(404, "No such provider.")
+    if ((auto_create == "on" and not row.auto_create) or (trust_email == "on" and not row.trust_email)) \
+            and not p.is_local_admin:
+        raise HTTPException(403, LOCAL_ADMIN_ONLY)  # C10 §6.3: enabling either is for local administrators
     row.enabled, row.auto_create = enabled == "on", auto_create == "on"
     row.allow_all_users, row.trust_email = allow_all_users == "on", trust_email == "on"
     accounts.audit(p.session, p.me.id, "oidc_issuer_update", iid)
