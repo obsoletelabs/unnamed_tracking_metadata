@@ -56,7 +56,7 @@ scrape_configs:
 | `atlas_http_requests_total` | Requests by bounded method, route template and status. Status `499` is a client that left before any response was started; it is never counted as a 500 |
 | `atlas_http_request_duration_seconds` | Request duration histogram, sum and count, in seconds. Buckets (`le`): 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, +Inf |
 | `atlas_http_requests_in_flight` | Requests running now, including the scrape that reads it (an idle server reads 1). Released in a `finally`, so a cancelled or failed request is not leaked |
-| `atlas_http_request_errors_total` | Requests that did not succeed, by `class`: `client_error` (4xx), `server_error` (a 5xx a handler returned), `unhandled_exception` (an exception escaped; the client sees a generic 500) or `client_disconnect`. One class per request; all four are always exported |
+| `atlas_http_request_errors_total` | Requests that did not succeed, by `class`: `client_error` (4xx), `server_error` (a 5xx a handler returned), `unhandled_exception` (an exception escaped; the client sees a generic 500) or `client_disconnect`. One class per request, never more: a disconnect takes precedence over a status or exception the same request also produced. All four are always exported |
 | `atlas_ready` | One when `/api/v2/ready` would answer 200 (`ready` or `degraded`), zero when it would answer 503 |
 | `atlas_ready_check` | One series per dependency, `check` is `database`, `schema` or `media`; zero is the failing one. `media` at zero is `degraded`, not an outage |
 | `atlas_schema_state` | One-hot over `state` = `current`, `behind`, `unknown` |
@@ -200,10 +200,10 @@ guarantee: counters show what this process saw, not what clients experienced.
 atlas_ready == 0
 atlas_ready_check == 0
 
-# Request rate, and the 5xx ratio over 5 minutes, excluding the scrape itself
-sum by (instance) (rate(atlas_http_requests_total{route!="/metrics"}[5m]))
-sum(rate(atlas_http_requests_total{status=~"5..",route!="/metrics"}[5m]))
-  / sum(rate(atlas_http_requests_total{route!="/metrics"}[5m]))
+# Request rate, and the 5xx ratio over 5 minutes, excluding the scrape and the health probes (a failing readiness probe answers 503 on every poll; `atlas_ready` and `AtlasNotReady` cover that state)
+sum by (instance) (rate(atlas_http_requests_total{route!~"/metrics|/api/v2/ready|/api/v2/health"}[5m]))
+sum(rate(atlas_http_requests_total{status=~"5..",route!~"/metrics|/api/v2/ready|/api/v2/health"}[5m]))
+  / sum(rate(atlas_http_requests_total{route!~"/metrics|/api/v2/ready|/api/v2/health"}[5m]))
 
 # p95 latency of one route (always aggregate by le)
 histogram_quantile(0.95, sum by (le) (rate(atlas_http_request_duration_seconds_bucket{route="/game/{cid}"}[5m])))
@@ -297,7 +297,7 @@ error classes and scrape cost:
       },
       "targets": [
         {
-          "expr": "sum by (status) (rate(atlas_http_requests_total{instance=~\"$instance\",route!=\"/metrics\"}[5m]))",
+          "expr": "sum by (status) (rate(atlas_http_requests_total{instance=~\"$instance\",route!~\"/metrics|/api/v2/ready|/api/v2/health\"}[5m]))",
           "legendFormat": "{{status}}",
           "datasource": "${DS_PROMETHEUS}"
         }
@@ -316,7 +316,7 @@ error classes and scrape cost:
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(atlas_http_request_duration_seconds_bucket{instance=~\"$instance\",route!=\"/metrics\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(atlas_http_request_duration_seconds_bucket{instance=~\"$instance\",route!~\"/metrics|/api/v2/ready|/api/v2/health\"}[5m])))",
           "legendFormat": "{{route}}",
           "datasource": "${DS_PROMETHEUS}"
         }
