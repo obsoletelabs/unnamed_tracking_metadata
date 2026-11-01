@@ -21,6 +21,9 @@ router = APIRouter()
 def _reauth(p: Page, password: str) -> None:
     throttle(p, f"mfa:manage:{p.me.id}", 10, 900)
     if not accounts.reauthenticated(p.me, password, p.login):
+        if p.login.via_group is not None and p.me.password_hash == "!":
+            raise HTTPException(403, "You signed in through your node group. Sign in on this node itself to "
+                                "change two-factor settings.")
         raise HTTPException(400, "Confirm your current password, or sign in again with your linked provider.")
 
 
@@ -79,7 +82,9 @@ def enable(p: Annotated[Page, Depends(user_form)], code: Annotated[str, Form(max
     factor.enabled_at = now()
     codes = mfa.recovery_codes(factor)
     p.login.mfa_verified_at = now()
-    if p.login.via_group is not None:  # this node's own factor, completed in a federated session (C10 §5.5)
+    if p.login.via_group is not None and p.me.password_hash != "!":
+        # this node's own factor, enrolled in a federated session after the local password was confirmed (C10 §5.5);
+        # a password-less account cannot reach here (`_reauth` refuses federated sessions without a password)
         p.login.amr = [*(p.login.amr or []), accounts.LOCAL_OTP]
     p.session.execute(delete(UserSession).where(UserSession.user_id == p.me.id, UserSession.id != p.login.id))
     accounts.audit(p.session, p.me.id, "mfa_enabled", p.me.id)

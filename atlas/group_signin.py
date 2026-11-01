@@ -33,6 +33,8 @@ ACTIVITY_ACTIONS = ("group_signin", "group_signin_refused", "group_assertion_iss
                     "account_unlinked", "group_signout_all", "group_sessions_ended")
 _NAME_CLEAN = re.compile(r"[^a-z0-9_-]")
 NOT_LINKED = "No account here is linked. Sign in with your password, then link."
+NOT_CONFIRMED = ("This node has not yet confirmed that the other node holds your account. Try again after the next "
+                 "sync, or sign in with your password.")
 
 
 class SigninRefused(Exception):
@@ -158,21 +160,22 @@ def _provision(session: Session, hint: str) -> User:
 def signin_user(session: Session, settings: Settings, identity: Any, group: OwnerGroup,
                 a: dict) -> tuple[User, bool]:
     """The local account an already-verified sign-in assertion opens: (user, provisioned now). Refuses unless a
-    live link `(account_uid -> local user)` exists here and the issuer's own `account.link` is live (§5.4), or
-    auto-provisioning is on and registration is open (§5.5)."""
+    live link `(account_uid -> local user)` exists here, or auto-provisioning is on and registration is open (§5.5);
+    in both cases the issuer's own `account.link` must already be live here (§5.4)."""
     b = a["body"]
     if not settings.group_signin:
         raise SigninRefused("Sign-in through the group is turned off on this node.")
     uid, iss = b["account_uid"], b["iss_node"]
     link = group_channel.link_by_uid(session, group.group_id, uid)
     held = session.get(GroupAccountNode, (group.group_id, uid, iss))
+    live = held is not None and held.status == "linked"
     if link is None:
-        known = session.scalars(select(GroupAccountNode.node_id).where(
-            GroupAccountNode.group_id == group.group_id, GroupAccountNode.account_uid == uid)).first()
         if not (settings.group_auto_provision and settings.registration == "open"):
             raise SigninRefused(NOT_LINKED)
-        if known is not None and (held is None or held.status != "linked"):
-            raise SigninRefused(NOT_LINKED)  # the group knows this account, and not as held by the issuer
+        if not live:
+            # §5.4: nothing is bound to this uid until the issuer's own account.link has arrived here, so a member
+            # cannot provision (and squat) an account uid it does not hold (T8)
+            raise SigninRefused(NOT_CONFIRMED)
         user = _provision(session, b["username_hint"])
         session.add(GroupAccountLink(group_id=group.group_id, account_uid=uid, user_id=user.id, minted_here=False,
                                      linked_at=groups.utcnow()))
@@ -181,9 +184,8 @@ def signin_user(session: Session, settings: Settings, identity: Any, group: Owne
             group_channel.emit_link(session, group, identity, uid, minted=False, evidence=a)
         groups.audit(session, user.id, "account_linked", user.id, {"idp_node": iss, "provisioned": True})
         return user, True
-    if held is None or held.status != "linked":
-        raise SigninRefused("This node has not yet confirmed that the other node holds your account. Try again "
-                            "after the next sync, or sign in with your password.")
+    if not live:
+        raise SigninRefused(NOT_CONFIRMED)
     user = session.get(User, link.user_id)
     if user is None or user.deleted_at is not None or user.status != "active":
         raise SigninRefused("This account cannot sign in here.")
@@ -199,8 +201,9 @@ def open_session(session: Session, settings: Settings, user: User, group: OwnerG
     row.via_group, row.origin_node, row.assertion_id = group.group_id, b["iss_node"], b["jti"]
     row.amr = list(b["amr"])
     factor = session.get(UserMfa, user.id)
+    auth_time = gc.parse_time(b["auth_time"])
     if factor is not None and factor.enabled_at is not None and settings.group_trust_remote_mfa \
-            and "otp" in b["amr"] and gc.parse_time(b["auth_time"]) >= now() - REMOTE_MFA_WINDOW:
+            and "otp" in b["amr"] and now() - REMOTE_MFA_WINDOW <= auth_time <= now() + groups.SKEW:
         row.mfa_verified_at = now()
     session.flush()
     return secret, row
@@ -218,7 +221,7 @@ def session_still_valid(session: Session, settings: Settings, identity: Any, use
     elif not settings.group_signin:
         reason = "signin_off"
     else:
-        tr = groups.trust(session, group, own_node=identity.node_id)
+        tr = groups.request_trust(session, group, identity.node_id)
         link = group_channel.local_link(session, group.group_id, user.id)
         held = session.get(GroupAccountNode, (group.group_id, link.account_uid, login.origin_node)) if link else None
         if asserting_member(tr, login.origin_node or "", identity.node_id) is None:
