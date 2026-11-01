@@ -1,7 +1,10 @@
-"""Linking an account across the owner group (CONTRACT-C10 §5.3-§5.4, link purpose; D10.19).
+"""Linking an account across the owner group, and signing in through another member (CONTRACT-C10 §5.3-§5.5).
 
-B (where the user is signed in) starts; A (where the account already lives) authenticates the user, asks for
-consent and signs a `group.assertion`; B verifies it and runs the link wizard. Every browser payload (the authreq
+Link (A11): B (where the user is signed in) starts; A (where the account already lives) authenticates the user, asks
+for consent and signs a `group.assertion`; B verifies it and runs the link wizard. Sign-in (A12) is the same flow
+with `purpose: "signin"` and no B session: it starts from A ("Open <node> signed in", a sealed `group.start` ticket
+posted to B's `/group/start`) or, when the operator opts in, from B's login page; B then opens an ordinary session
+with provenance columns. Every browser payload (the authreq
 and the assertion) is sealed to the receiving node's box key. Every cross-site POST only parks its payload under a
 random single-use handle and answers 303 to a same-origin GET, where the checks run against the dedicated
 `atlas_grp_bind` cookie (SameSite=Lax cookies never ride a cross-site POST). Unknown handles, garbage and
@@ -21,14 +24,25 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.exc import IntegrityError
 
-from .. import accounts, group_channel, groups, ids, profile, profile_schema
+from .. import accounts, group_channel, group_signin, groups, ids, profile, profile_schema
 from .. import group_crypto as gc
 from ..api.group_routes import NOT_FOUND
 from ..models import GroupAssertionSeen, GroupIdpConsent, GroupSigninState, GroupWebHandle
 from ..signing import body_hash, verify_message
 from . import CSP
+from .deps import (
+    SESSION_COOKIE,
+    LoginRequired,
+    client_ip,
+    csrf_form,
+    go,
+    page,
+    secure_cookies,
+    throttle,
+    user_form,
+    user_page,
+)
 from .deps import Page as Ctx
-from .deps import go, page, secure_cookies, throttle, user_form, user_page
 from .profile_pages import describe, linked_context
 from .routes import render
 
@@ -72,9 +86,10 @@ def _purge(session) -> None:
     from sqlalchemy import delete
 
     now = groups.utcnow()
-    session.execute(delete(GroupWebHandle).where(GroupWebHandle.expires_at < now))
-    session.execute(delete(GroupSigninState).where(GroupSigninState.expires_at < now))
-    session.execute(delete(GroupAssertionSeen).where(GroupAssertionSeen.expires_at < now))
+    quiet = {"synchronize_session": False}  # rows loaded in this request may hold naive SQLite datetimes
+    session.execute(delete(GroupWebHandle).where(GroupWebHandle.expires_at < now).execution_options(**quiet))
+    session.execute(delete(GroupSigninState).where(GroupSigninState.expires_at < now).execution_options(**quiet))
+    session.execute(delete(GroupAssertionSeen).where(GroupAssertionSeen.expires_at < now).execution_options(**quiet))
 
 
 def _autopost(p: Ctx, url: str, field: str, value: str, title: str, text: str) -> HTMLResponse:
@@ -129,26 +144,115 @@ def link_start(p: Annotated[Ctx, Depends(user_form)], node_id: Annotated[str, Fo
         return refuse("This account is already linked in the group. Link the other node from there, or unlink "
                       "first.")
     tr = groups.trust(s, group, own_node=identity.node_id)
-    cert = tr.in_force(node_id)
-    if cert is None or node_id == identity.node_id or "identity.assert" not in cert["body"]["scopes"]:
+    cert = group_signin.asserting_member(tr, node_id, identity.node_id)
+    if cert is None:
         return refuse("That node cannot confirm accounts in this group.")
+    resp = _begin(p, group, cert, node_id, "link", p.me.id, "/me/linked-nodes")
+    groups.audit(s, p.me.id, "group_link_started", p.me.id, {"idp_node": node_id})
+    return resp
+
+
+def _begin(p: Ctx, group, cert: dict, idp_node: str, purpose: str, link_user_id: str | None, next_url: str):
+    """§5.3 steps 2-3 for either purpose: the state row bound to a fresh `atlas_grp_bind` cookie, and the sealed
+    authreq auto-posted to the asserting member's own (certificate) address."""
+    s, identity = p.session, p.st.ctx.identity
     _purge(s)
     member = cert["body"]["member"]
     state, bind, nonce, now = secrets.token_urlsafe(32), secrets.token_urlsafe(32), ids.ulid(), groups.utcnow()
-    s.add(GroupSigninState(id=_h(state), group_id=group.group_id, idp_node=node_id, purpose="link", nonce=nonce,
-                           binding=_h(bind), link_user_id=p.me.id, next_url="/me/linked-nodes",
+    s.add(GroupSigninState(id=_h(state), group_id=group.group_id, idp_node=idp_node, purpose=purpose, nonce=nonce,
+                           binding=_h(bind), link_user_id=link_user_id, next_url=next_url,
                            expires_at=now + STATE_TTL))
-    body = {"rp_node": identity.node_id, "idp_node": node_id, "purpose": "link", "state_hash": _h(state),
+    body = {"rp_node": identity.node_id, "idp_node": idp_node, "purpose": purpose, "state_hash": _h(state),
             "nonce": nonce, "issued_at": gc.stamp(now), "not_after": gc.stamp(now + AUTHREQ_TTL)}
     env = gc.make_object("group.authreq", group.group_id, f"authreq:{nonce}", body,
                          {"kind": "node", "id": identity.node_id, "key_id": identity.key_id}, identity.private)
-    sealed = gc.seal_request(member["box_public_key"], group.group_id, node_id, env)
+    sealed = gc.seal_request(member["box_public_key"], group.group_id, idp_node, env)
+    text = (f"Sign in on {member['name']} to confirm it is your account." if purpose == "link"
+            else f"Sign in on {member['name']} to open your account here.")
     resp = _autopost(p, member["url"].rstrip("/") + "/group/authorize", "request", json.dumps(sealed),
-                     f"Continue on {member['name']}", f"Sign in on {member['name']} to confirm it is your account.")
+                     f"Continue on {member['name']}", text)
     resp.set_cookie(BIND_COOKIE, bind, httponly=True, samesite="lax", secure=secure_cookies(p), path="/group/",
                     max_age=int(STATE_TTL.total_seconds()))
-    groups.audit(s, p.me.id, "group_link_started", p.me.id, {"idp_node": node_id})
     return resp
+
+
+# ---- B: sign-in starts (§5.5) -----------------------------------------------------------------------------------
+
+@router.post("/group/start")
+async def start_park(request: Request, p: Annotated[Ctx, Depends(page)]):
+    """The IdP-initiated start (cross-site POST): uniform 404 unless the sealed ticket decrypts, is signed by an
+    in-force member with `identity.assert` for this node, is fresh, and its nonce is unseen (insert-or-fail)."""
+    raw = await _form_field(request, "ticket")
+    s, settings, identity = p.session, p.st.ctx.settings, p.st.ctx.identity
+    group = groups.active(s)
+    if group is None or not settings.group_signin:
+        return not_found()
+    env = _sealed_field(raw, s, settings, group, identity.node_id)
+    tr = groups.trust(s, group, own_node=identity.node_id)
+    b = group_signin.start_ticket_ok(env, tr, group, identity.node_id) if env is not None else None
+    if b is None:
+        return not_found()
+    try:
+        with s.begin_nested():
+            s.add(GroupAssertionSeen(group_id=group.group_id, jti=b["nonce"], iss_node=b["idp_node"],
+                                     expires_at=gc.parse_time(b["not_after"]) + groups.SKEW))
+    except IntegrityError:
+        return not_found()  # a replayed ticket
+    _purge(s)
+    handle = _park(s, "start", {"idp": b["idp_node"]})
+    return go(f"/group/start/continue?h={handle}")
+
+
+@router.get("/group/start/continue", response_class=HTMLResponse)
+def start_continue(request: Request, p: Annotated[Ctx, Depends(page)]):
+    s, settings, identity = p.session, p.st.ctx.settings, p.st.ctx.identity
+    group = groups.active(s)
+    row = _peek(s, "start", request.query_params.get("h")) if group is not None else None
+    if row is None or not settings.group_signin:
+        return not_found()
+    s.delete(row)
+    if group.status != "active":
+        return render(p, "login.html", status=409, anon_csrf=True, next="/", error=RESYNCING)
+    cert = group_signin.asserting_member(groups.trust(s, group, own_node=identity.node_id), row.payload["idp"],
+                                         identity.node_id)
+    if cert is None:
+        return not_found()
+    return _begin(p, group, cert, row.payload["idp"], "signin", None, "/")
+
+
+@router.post("/group/signin")
+def signin_button(p: Annotated[Ctx, Depends(csrf_form)], node_id: Annotated[str, Form(max_length=16)]):
+    """A login-page button (only while `group_signin_public` is on, H27)."""
+    s, settings, identity = p.session, p.st.ctx.settings, p.st.ctx.identity
+    throttle(p, f"group-signin:{client_ip(p.request)}", 20, 600)
+    group = groups.active(s)
+    if group is None or node_id not in {m["node_id"] for m in group_signin.login_page_members(s, settings, identity)}:
+        return not_found()
+    cert = group_signin.asserting_member(groups.trust(s, group, own_node=identity.node_id), node_id,
+                                         identity.node_id)
+    if cert is None:
+        return not_found()
+    return _begin(p, group, cert, node_id, "signin", None, "/")
+
+
+# ---- A: the start ticket ("Open <node> signed in", §5.5 item 1) ------------------------------------------------
+
+@router.post("/me/linked-nodes/open")
+def open_signed_in(p: Annotated[Ctx, Depends(user_form)], node_id: Annotated[str, Form(max_length=16)]):
+    s, identity = p.session, p.st.ctx.identity
+    throttle(p, f"group-open:{p.me.id}", 20, 600)
+    if p.login is not None and p.login.via_group is not None:
+        return render(p, "me_linked_nodes.html", status=403, **linked_context(p, NO_CHAINING))
+    target = next((t for t in group_signin.open_targets(s, identity, p.me) if t["node_id"] == node_id), None)
+    group = groups.active(s)
+    if target is None or group is None:
+        return render(p, "me_linked_nodes.html", status=400,
+                      **linked_context(p, "Your account is not linked on that node, or it is not a member now."))
+    cert = groups.trust(s, group, own_node=identity.node_id).in_force(node_id)
+    member = cert["body"]["member"]
+    sealed = group_signin.start_ticket(group, identity, member, node_id)
+    return _autopost(p, member["url"].rstrip("/") + "/group/start", "ticket", json.dumps(sealed),
+                     f"Opening {member['name']}", f"Signing you in on {member['name']}.")
 
 
 # ---- A: authorize (§5.3 steps 4-7) ----------------------------------------------------------------------------
@@ -162,7 +266,8 @@ def _authreq_ok(env: Any, tr: groups.Trust, group, own: str) -> dict | None:
         b, signer = env["body"], env["signer"]
         if set(b) != {"rp_node", "idp_node", "purpose", "state_hash", "nonce", "issued_at", "not_after"}:
             return None
-        if b["idp_node"] != own or b["rp_node"] == own or b["purpose"] != "link" or signer.get("kind") != "node" \
+        if b["idp_node"] != own or b["rp_node"] == own or b["purpose"] not in ("link", "signin") \
+                or signer.get("kind") != "node" \
                 or signer.get("id") != b["rp_node"] or env["id"] != f"authreq:{b['nonce']}":
             return None
         if body_hash(b) != env["body_hash"] or tr.in_force(b["rp_node"]) is None:
@@ -210,6 +315,16 @@ def _authorize_context(p: Ctx, handle: str | None):
     return group, tr, row, b
 
 
+NO_CHAINING = ("This session was opened through another node, so it cannot vouch for you elsewhere. Sign in here "
+               "with your password first.")
+RESYNCING = "This node is resynchronizing with the group; try again in a minute."
+
+
+def _chained(p: Ctx) -> bool:
+    """A refuses when its own session was created by a group assertion (no chaining, D10.22, T16)."""
+    return p.login is not None and p.login.via_group is not None
+
+
 @router.get("/group/authorize/continue", response_class=HTMLResponse)
 def authorize_consent(request: Request, p: Annotated[Ctx, Depends(user_page)]):
     found = _authorize_context(p, request.query_params.get("h"))
@@ -217,6 +332,11 @@ def authorize_consent(request: Request, p: Annotated[Ctx, Depends(user_page)]):
         return not_found()
     group, tr, row, b = found
     member = tr.in_force(b["rp_node"])["body"]["member"]
+    if _chained(p):
+        return render(p, "me_linked_nodes.html", status=403, **linked_context(p, NO_CHAINING))
+    if b["purpose"] == "signin":
+        return render(p, "group_signin_consent.html", handle=request.query_params["h"], member=member,
+                      fp=groups.gc_fp(b["rp_node"]))
     consent = set(profile.consent_fields(p.session, p.me.id, group.group_id))
     return render(p, "group_link_consent.html", handle=request.query_params["h"], member=member,
                   fp=groups.gc_fp(b["rp_node"]), fields=profile_schema.REGISTRY, consent=consent,
@@ -233,11 +353,17 @@ async def authorize_decide(request: Request, p: Annotated[Ctx, Depends(user_form
     group, tr, row, b = found
     s, settings, identity = p.session, p.st.ctx.settings, p.st.ctx.identity
     s.delete(row)  # single use
+    if _chained(p):
+        groups.audit(s, p.me.id, "group_assertion_refused", p.me.id, {"rp_node": b["rp_node"], "reason": "chained"})
+        return render(p, "me_linked_nodes.html", status=403, **linked_context(p, NO_CHAINING))
+    signin = b["purpose"] == "signin"
     if form.get("decision") != "approve":
-        groups.audit(s, p.me.id, "group_link_declined", p.me.id, {"rp_node": b["rp_node"]})
+        groups.audit(s, p.me.id, "group_signin_declined" if signin else "group_link_declined", p.me.id,
+                     {"rp_node": b["rp_node"]})
         return go("/me/linked-nodes", "dismissed")
-    chosen = [n for n in profile_schema.REGISTRY if form.get(f"c.{n}") == "on"]
-    profile.set_consent(s, p.me.id, group.group_id, chosen)
+    if not signin:
+        chosen = [n for n in profile_schema.REGISTRY if form.get(f"c.{n}") == "on"]
+        profile.set_consent(s, p.me.id, group.group_id, chosen)
     link = group_channel.mint_account(s, settings, group, identity, p.me)
     s.merge(GroupIdpConsent(user_id=p.me.id, group_id=group.group_id, rp_node=b["rp_node"],
                             granted_at=groups.utcnow()))
@@ -245,13 +371,14 @@ async def authorize_decide(request: Request, p: Annotated[Ctx, Depends(user_form
     auth_time = groups.aware(p.login.created_at) if p.login is not None else groups.utcnow()
     assertion = group_channel.sign_assertion(s, group, identity, aud_node=b["rp_node"], uid=link.account_uid,
                                              nonce=b["nonce"], state_hash=b["state_hash"], auth_time=auth_time,
-                                             amr=amr, username_hint=p.me.username)
-    groups.audit(s, p.me.id, "group_assertion_issued", p.me.id, {"aud_node": b["rp_node"], "purpose": "link",
+                                             amr=amr, username_hint=p.me.username, purpose=b["purpose"])
+    groups.audit(s, p.me.id, "group_assertion_issued", p.me.id, {"aud_node": b["rp_node"], "purpose": b["purpose"],
                                                                  "jti": assertion["body"]["jti"]})
     member = tr.in_force(b["rp_node"])["body"]["member"]
     sealed = gc.seal_request(member["box_public_key"], group.group_id, b["rp_node"], assertion)
     return _autopost(p, member["url"].rstrip("/") + "/group/callback", "assertion", json.dumps(sealed),
-                     f"Back to {member['name']}", f"Returning to {member['name']} to finish linking.")
+                     f"Back to {member['name']}", f"Returning to {member['name']} to finish "
+                     f"{'signing in' if signin else 'linking'}.")
 
 
 # ---- B: callback and wizard (§5.3 steps 8-9, §5.4) -------------------------------------------------------------
@@ -278,21 +405,31 @@ class LinkRefused(Exception):
 
 def verify_link_assertion(s, settings, identity, group, a: dict, binding_cookie: str | None, user_id: str) -> None:
     """The relying-party checks of §5.4 for `purpose: link`. Consumes the state row and the `jti`."""
+    verify_assertion(s, settings, identity, group, a, binding_cookie, "link", user_id)
+
+
+def verify_assertion(s, settings, identity, group, a: dict, binding_cookie: str | None, purpose: str,
+                     user_id: str | None = None) -> GroupSigninState:
+    """The relying-party checks of §5.4 for either purpose. Consumes the state row and the `jti`, success or not.
+    For a sign-in, the state has no user (`link_user_id` is null) and the browser need not be signed in here."""
     b = a["body"]
+    noun = "link" if purpose == "link" else "sign-in"
     state = s.get(GroupSigninState, b["state_hash"]) if isinstance(b.get("state_hash"), str) else None
     if state is not None:
         s.delete(state)  # single use, success or not
         s.flush()
     if state is None or groups.aware(state.expires_at) < groups.utcnow():
-        raise LinkRefused("This link request expired or was already used. Start again from Linked nodes.")
+        raise LinkRefused(f"This {noun} request expired or was already used. Start again.")
     if not binding_cookie or _h(binding_cookie) != state.binding:
-        raise LinkRefused("This link was not started in this browser.")
-    if state.link_user_id != user_id or state.purpose != "link" or b["purpose"] != "link":
+        raise LinkRefused(f"This {noun} was not started in this browser.")
+    if state.purpose != purpose or b["purpose"] != purpose:
+        raise LinkRefused(f"The answer does not belong to this {noun} request.")
+    if purpose == "link" and state.link_user_id != user_id:
         raise LinkRefused("This link was started by another account.")
     if b["iss_node"] != state.idp_node or b["nonce"] != state.nonce or state.group_id != group.group_id:
-        raise LinkRefused("The answer does not belong to this link request.")
+        raise LinkRefused(f"The answer does not belong to this {noun} request.")
     if group.status != "active":
-        raise LinkRefused("This node is resynchronizing with the group; try again in a minute.")
+        raise LinkRefused(RESYNCING)
     tr = groups.trust(s, group, own_node=identity.node_id)
     cert = tr.in_force(b["iss_node"])
     key = tr.current_key(b["iss_node"])
@@ -312,16 +449,22 @@ def verify_link_assertion(s, settings, identity, group, a: dict, binding_cookie:
                                      expires_at=na + groups.SKEW))
     except IntegrityError:
         raise LinkRefused("This confirmation was already used.") from None
+    return state
 
 
 @router.get("/group/callback/finish", response_class=HTMLResponse)
-def callback_finish(request: Request, p: Annotated[Ctx, Depends(user_page)]):
+def callback_finish(request: Request, p: Annotated[Ctx, Depends(page)]):
     s, settings, identity = p.session, p.st.ctx.settings, p.st.ctx.identity
     group = groups.active(s)
     row = _peek(s, "callback", request.query_params.get("h")) if group is not None else None
     if row is None:
         return not_found()
     a = row.payload["a"]
+    if a["body"]["purpose"] == "signin":
+        s.delete(row)
+        return _signin_finish(request, p, group, a)
+    if p.user is None:
+        raise LoginRequired  # a link finishes in the B session that started it (the handle stays for after)
     s.delete(row)
     try:
         verify_link_assertion(s, settings, identity, group, a, request.cookies.get(BIND_COOKIE), p.me.id)
@@ -335,6 +478,33 @@ def callback_finish(request: Request, p: Annotated[Ctx, Depends(user_page)]):
         resp.delete_cookie(BIND_COOKIE, path="/group/")
         return resp
     resp = _wizard(p, group, a)
+    resp.delete_cookie(BIND_COOKIE, path="/group/")
+    return resp
+
+
+def _signin_finish(request: Request, p: Ctx, group, a: dict):
+    """§5.4 sign-in checks, then a federated `UserSession` (§5.5). Every refusal is audited and shown on the login
+    page; the binding cookie is cleared either way."""
+    s, settings, identity = p.session, p.st.ctx.settings, p.st.ctx.identity
+    b = a["body"]
+    try:
+        state = verify_assertion(s, settings, identity, group, a, request.cookies.get(BIND_COOKIE), "signin")
+        user, provisioned = group_signin.signin_user(s, settings, identity, group, a)
+    except (LinkRefused, group_signin.SigninRefused) as exc:
+        groups.audit(s, None, "group_signin_refused", b.get("iss_node", "")[:16],
+                     {"reason": str(exc)[:120], "idp_node": b.get("iss_node"), "jti": b.get("jti")})
+        resp = render(p, "login.html", status=400, anon_csrf=True, next="/", error=str(exc))
+        resp.delete_cookie(BIND_COOKIE, path="/group/")
+        return resp
+    accounts.end_session(s, request.cookies.get(SESSION_COOKIE))  # never two sessions in one browser
+    secret, row = group_signin.open_session(s, settings, user, group, a)
+    groups.audit(s, user.id, "group_signin", user.id,
+                 {"via": "group", "group_id": group.group_id, "origin_node": b["iss_node"], "idp_node": b["iss_node"],
+                  "assertion_id": b["jti"], "amr": list(b["amr"]), "provisioned": provisioned,
+                  "mfa_trusted": row.mfa_verified_at is not None, "session": "federated"})
+    resp = go(state.next_url or "/")
+    resp.set_cookie(SESSION_COOKIE, secret, httponly=True, samesite="lax", secure=secure_cookies(p), path="/",
+                    max_age=settings.session_ttl_days * 86400)
     resp.delete_cookie(BIND_COOKIE, path="/group/")
     return resp
 
@@ -434,4 +604,4 @@ async def wizard_finish(request: Request, p: Annotated[Ctx, Depends(user_form)])
     return go("/me/linked-nodes", "saved")
 
 
-__all__ = ["router", "verify_link_assertion", "BIND_COOKIE"]
+__all__ = ["router", "verify_link_assertion", "verify_assertion", "BIND_COOKIE"]

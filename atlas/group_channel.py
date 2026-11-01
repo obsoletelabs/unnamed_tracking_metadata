@@ -416,6 +416,9 @@ def unlink(session: Session, settings: Any, identity: Any, user: User, reason: s
     session.execute(delete(GroupIdpConsent).where(GroupIdpConsent.user_id == user.id,
                                                   GroupIdpConsent.group_id == group.group_id))
     session.delete(link)
+    from . import group_signin
+
+    group_signin.end_user_federated(session, user.id, group.group_id, None, "unlinked_here")  # §5.6; local stay
     groups.audit(session, actor or user.id, "account_unlinked", user.id, {"reason": reason})
     session.flush()
     return True
@@ -879,6 +882,10 @@ def _apply(rx: Rx, e: dict, body: dict, issued: datetime, accept: set[str]) -> O
         _record_node(s, rx.gid, uid, e["origin"], "unlinked", {"reason": body["reason"]},
                      ref(e["origin"], e["epoch"], uid, e["seq"]), issued)
         link = link_by_uid(s, rx.gid, uid)
+        if link is not None:  # §5.6: sessions that node asserted for this account end here
+            from . import group_signin
+
+            group_signin.end_user_federated(s, link.user_id, rx.gid, e["origin"], "unlinked_there")
         if link is not None and body["reason"] == "deleted":
             from . import social
             from .service import Ctx
@@ -996,8 +1003,8 @@ def evidence_check(rx: Rx, uid: str, origin: str, a: Any, link_issued: datetime)
     if not assertion_shape_ok(a, rx.gid):
         return "bad_evidence"
     b = a["body"]
-    if b["purpose"] != "link" or b["account_uid"] != uid or b["aud_node"] != origin:
-        return "bad_evidence"
+    if b["purpose"] not in ("link", "signin") or b["account_uid"] != uid or b["aud_node"] != origin:
+        return "bad_evidence"  # a sign-in assertion is evidence for an auto-provisioned link (CONTRACT-AMENDMENTS A12)
     iss, ia, na = b["iss_node"], _t(b["issued_at"]), _t(b["not_after"])
     if iss == origin or na - ia > ASSERTION_TTL or na < ia:
         return "bad_evidence"
@@ -1406,14 +1413,16 @@ def fetch_snapshot(session: Session, settings: Any, identity: Any, group: OwnerG
                              {"account_uid": uid, "accept": accept}, http)
 
 
-# ---- link assertions (§5.4, link purpose) -----------------------------------------------------------------------
+# ---- assertions (§5.4: link, A11; sign-in, A12) -----------------------------------------------------------------------
 
 def sign_assertion(session: Session, group: OwnerGroup, identity: Any, *, aud_node: str, uid: str, nonce: str,
                    state_hash: str, auth_time: datetime, amr: list[str], username_hint: str,
-                   now: datetime | None = None) -> dict:
+                   now: datetime | None = None, purpose: str = "link") -> dict:
+    if purpose not in ("link", "signin"):
+        raise ChannelError("unknown assertion purpose")
     now = now or utcnow()
     jti = ids.ulid()
-    body = {"jti": jti, "iss_node": identity.node_id, "aud_node": aud_node, "purpose": "link", "account_uid": uid,
+    body = {"jti": jti, "iss_node": identity.node_id, "aud_node": aud_node, "purpose": purpose, "account_uid": uid,
             "nonce": nonce, "state_hash": state_hash, "auth_time": gc.stamp(auth_time), "amr": amr,
             "issued_at": gc.stamp(now), "not_after": gc.stamp(now + ASSERTION_TTL),
             "username_hint": username_hint[:32]}

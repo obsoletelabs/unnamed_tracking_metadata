@@ -77,8 +77,11 @@ def create_invite(session: Session, settings: Settings, group: OwnerGroup, ident
     if delegate is not None:
         if kind != "root":
             raise GroupError("only the root may delegate (depth 1)", "forbidden")
-        if not groups._delegate_ok(delegate, group.genesis["body"]["policy"]):
+        if not groups._delegate_ok(_with_self(delegate, None), group.genesis["body"]["policy"]):
             raise GroupError("the delegate limits are out of bounds")
+        if ("grant.issue" in scopes) != bool(delegate["may_grant_roles"]) or (
+                "grant.issue" in scopes and not delegate["may_grant_nodes"]):
+            raise GroupError("grant.issue needs the roles and the nodes the new member may grant, and only it")
     groups.expire_enrolments(session, now)
     # Serialise invite creation per group (PostgreSQL READ COMMITTED would let two requests both see 2 open).
     session.scalars(select(OwnerGroup).where(OwnerGroup.group_id == group.group_id).with_for_update()).one()
@@ -96,6 +99,15 @@ def create_invite(session: Session, settings: Settings, group: OwnerGroup, ident
     session.flush()
     groups.audit(session, actor, "group_invite_created", row.id, {"scopes": scopes, "delegate": bool(delegate)}, cli)
     return row, gc.encode_code(invite)
+
+
+SELF = "self"  # in an invite's `may_grant_nodes`: the joining node itself, resolved when the certificate is issued
+
+
+def _with_self(delegate: dict, node_id: str | None) -> dict:
+    """The delegate with `self` replaced by the joiner's node id (or dropped, for checking the invite)."""
+    nodes = [node_id if n == SELF else n for n in delegate.get("may_grant_nodes") or [] if n != SELF or node_id]
+    return {**delegate, "may_grant_nodes": list(dict.fromkeys(nodes))}
 
 
 def _fail(session: Session, row: GroupEnrolment, why: str) -> GroupError:
@@ -311,8 +323,9 @@ def confirm_inviter(session: Session, settings: Settings, group: OwnerGroup, ide
     row.url_verified = check_url(http, row)
     policy = group.genesis["body"]["policy"]
     days = policy["delegate_max_days"] if row.delegate else policy["cert_max_days"]
+    delegate = _with_self(row.delegate, member["node_id"]) if row.delegate else None
     cert = groups.issue_cert(session, group, identity, member, hello_body["joiner"]["member_pop"], list(row.scopes),
-                             row.delegate, signer_root=root, days=days,
+                             delegate, signer_root=root, days=days,
                              enrolment={"id": row.id, "transcript_hash": row.transcript_hash},
                              url_verified=row.url_verified, now=now, actor=actor, cli=cli)
     del root

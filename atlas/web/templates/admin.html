@@ -18,7 +18,8 @@
   <p>{{ users|length }} account{{ '' if users|length == 1 else 's' }}: {{ users|selectattr('role', 'equalto', 'admin')|list|length }} administrator{{ '' if users|selectattr('role', 'equalto', 'admin')|list|length == 1 else 's' }}, {{ users|selectattr('role', 'equalto', 'curator')|list|length }} curator{{ '' if users|selectattr('role', 'equalto', 'curator')|list|length == 1 else 's' }}, {{ users|selectattr('status', 'equalto', 'suspended')|list|length }} suspended.</p>
   <p><a class="btn small" href="/admin/users">Manage users</a> <span class="small muted">Roles, suspension, email confirmation and external sign-in.</span></p></div>
 <h2>Recent activity</h2>
-<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th></tr></thead><tbody>
-{% for a in audit %}<tr><td class="small">{{ a.when }}</td><td>{{ a.who }}</td><td>{{ a.action }}</td><td class="small">{{ a.target }}</td></tr>{% endfor %}
+<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Via group</th></tr></thead><tbody>
+{% for a in audit %}<tr><td class="small">{{ a.when }}</td><td>{{ a.who }}</td><td>{{ a.action }}</td><td class="small">{{ a.target }}</td>
+<td class="small">{% if a.via %}{% if a.via.origin %}<span class="mono">{{ a.via.origin }}</span>{% else %}local session{% endif %}{% if a.via.grant %} · grant <span class="mono">{{ a.via.grant }}</span>{% endif %}{% endif %}</td></tr>{% endfor %}
 </tbody></table>
 {% endblock %}

@@ -20,6 +20,16 @@
 </details>
 {% else %}<p class="muted">This account is not linked to any other node yet.</p>{% endif %}
 </div>
+{% if open_targets %}
+<div class="card">
+<h2>Open another node signed in</h2>
+<p class="small muted">Signs you in on that node with the account linked there. That node applies its own rules: it may ask for its own two-factor code, and administrator rights there need its own password.</p>
+{% if chained %}<p class="muted">This session was itself opened through another node, so it cannot sign you in elsewhere. Sign in here with your password first.</p>
+{% else %}<form method="post" action="/me/linked-nodes/open">{{ csrf(p.csrf) }}
+{% for t in open_targets %}<p><button class="secondary" name="node_id" value="{{ t.node_id }}" type="submit">Open {{ t.name }} signed in</button> <span class="mono small">{{ t.fp }}</span>{% if not t.url_verified %} <span class="badge warn">address not verified</span>{% endif %}</p>{% endfor %}
+</form>{% endif %}
+</div>
+{% endif %}
 {% if not link %}
 <div class="card">
 <h2>Link with another node</h2>
