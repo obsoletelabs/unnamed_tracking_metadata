@@ -692,3 +692,176 @@ class OidcLink(Base):
     subject: Mapped[str] = mapped_column(String(200), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# ---- owner federation groups (CONTRACT-C10 §9.1, migration 0028) -----------------------------------------
+
+class OwnerGroup(Base):
+    """This node's owner group. One group per node in v1 (D10.5); keys and invite secrets are `enc:v1:`."""
+
+    __tablename__ = "owner_group"
+
+    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    genesis: Mapped[dict[str, Any]] = mapped_column(JSON)
+    succession: Mapped[list[Any]] = mapped_column(JSON)  # active successions, in order
+    root_key_id: Mapped[str] = mapped_column(String(16))
+    recovery: Mapped[dict[str, Any]] = mapped_column(JSON)  # the currently pinned {threshold, keys}
+    root_sealed: Mapped[str | None] = mapped_column(Text, nullable=True)  # enc:v1:<fernet(passphrase-wrapped G)>
+    box_sealed: Mapped[str] = mapped_column(Text)  # enc:v1: X25519 private key of this node for this group
+    self_serial: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    root_state: Mapped[str] = mapped_column(String(10), default="none", server_default="none")  # holder|moved|none
+    succession_pending: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(16))  # active|resyncing|left|revoked|halted
+    state_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    # Additions to the C10 §9.1 sketch (CONTRACT-AMENDMENTS A10): the newest signed root_moved, recovery-quorum
+    # cancels kept for relaying, and the box-key rekey window (§1.7: the old key opens responses for 15 minutes).
+    root_moved: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    succession_cancels: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    box_previous_sealed: Mapped[str | None] = mapped_column(Text, nullable=True)
+    box_previous_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    box_pending_sealed: Mapped[str | None] = mapped_column(Text, nullable=True)  # after rekey-box, until renewed
+
+
+class GroupCert(Base):
+    """Every membership and delegating certificate this node holds, all versions (signed envelopes)."""
+
+    __tablename__ = "group_cert"
+
+    group_id: Mapped[str] = mapped_column(ForeignKey("owner_group.group_id", ondelete="CASCADE"), primary_key=True)
+    serial: Mapped[str] = mapped_column(String(40), primary_key=True)
+    issuer: Mapped[str] = mapped_column(String(16))
+    serial_n: Mapped[int] = mapped_column(BigInteger)
+    serial_r: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    parent_serial: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    authorized_by_grant: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    node_id: Mapped[str] = mapped_column(String(16))
+    member_rev: Mapped[int] = mapped_column(Integer)
+    body: Mapped[dict[str, Any]] = mapped_column(JSON)
+    body_hash: Mapped[str] = mapped_column(String(64))
+    not_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    held_reason: Mapped[str | None] = mapped_column(String(24), nullable=True)
+
+    __table_args__ = (Index("ix_group_cert_node", "group_id", "node_id", "not_after"),)
+
+
+class GroupBannedNode(Base):
+    """Node identities banned by a `removed` or `key_compromise` entry; never deleted (§1.6)."""
+
+    __tablename__ = "group_banned_node"
+
+    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    root_public_key: Mapped[str] = mapped_column(String(100))
+    reason: Mapped[str] = mapped_column(String(24))
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    crl_serial: Mapped[str] = mapped_column(String(40))
+
+
+class GroupView(Base):
+    """The newest signed freshness view per member (§1.6)."""
+
+    __tablename__ = "group_view"
+
+    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    body: Mapped[dict[str, Any]] = mapped_column(JSON)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class GroupMember(Base):
+    """Derived current view of each member, rebuilt from group_cert and the revocation index."""
+
+    __tablename__ = "group_member"
+
+    group_id: Mapped[str] = mapped_column(ForeignKey("owner_group.group_id", ondelete="CASCADE"), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    root_public_key: Mapped[str] = mapped_column(String(100))
+    box_public_key: Mapped[str] = mapped_column(String(100))
+    url: Mapped[str] = mapped_column(String(300))
+    name: Mapped[str] = mapped_column(String(80))
+    serial: Mapped[str] = mapped_column(String(40))
+    scopes: Mapped[list[str]] = mapped_column(JSON)
+    delegate: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    not_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16))  # active|expiring|expired|revoked|left|fork
+    rotations: Mapped[list[Any]] = mapped_column(JSON)  # validated key_rotation proofs
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_protocol: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class GroupCrl(Base):
+    """Every signature-valid CRL seen, forks included, so `state` can serve them again (§1.6)."""
+
+    __tablename__ = "group_crl"
+
+    group_id: Mapped[str] = mapped_column(ForeignKey("owner_group.group_id", ondelete="CASCADE"), primary_key=True)
+    issuer: Mapped[str] = mapped_column(String(16), primary_key=True)
+    crl_seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    body: Mapped[dict[str, Any]] = mapped_column(JSON)
+    body_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class GroupRevoked(Base):
+    """Append-only revocation index (§1.6): rows are never deleted, only upgraded."""
+
+    __tablename__ = "group_revoked"
+
+    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    serial: Mapped[str] = mapped_column(String(40), primary_key=True)
+    issuer: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str] = mapped_column(String(24))
+    node_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    root_public_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    suspect_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class GroupEnrolment(Base):
+    """One enrolment, on the inviter's side or on the joiner's side (§2)."""
+
+    __tablename__ = "group_enrolment"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)  # enrolment_id (ULID)
+    side: Mapped[str] = mapped_column(String(8))  # inviter|joiner
+    group_id: Mapped[str] = mapped_column(String(16))
+    invite_hash: Mapped[str] = mapped_column(String(64), unique=True)  # sha256(invite_id)
+    secret_enc: Mapped[str] = mapped_column(Text)  # enc:v1: k (joiner: k and its new box key)
+    peer_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    peer_node_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    scopes: Mapped[list[str]] = mapped_column(JSON)
+    delegate: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    transcript: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    transcript_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    commit_j: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    nonce_j: Mapped[str | None] = mapped_column(String(44), nullable=True)
+    url_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    state: Mapped[str] = mapped_column(String(16))
+    # open|hello|revealed|confirmed|issued|activating|active|burned|expired|aborted
+    failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cert_serial: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("ix_group_enrolment_expiry", "expires_at"),)
+
+
+class GroupNonce(Base):
+    """Request nonces seen from members, kept 15 minutes (§3.2 step 8)."""
+
+    __tablename__ = "group_nonce"
+
+    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    nonce: Mapped[str] = mapped_column(String(32), primary_key=True)
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("ix_group_nonce_seen", "seen_at"),)

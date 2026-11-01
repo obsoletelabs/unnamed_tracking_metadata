@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from . import __version__, auth, backup, client_changes, custom, mail, media, oidc, ratelimit, sync
 from .api.deps import AppState, get_session, require
+from .api.group_routes import router as group_router
 from .api.routes import router
 from .db import make_engine, make_sessionmaker, upgrade
 from .observability import RequestTelemetry, Stats, configure_logging
@@ -31,6 +32,7 @@ from .web.admin import router as admin_router
 from .web.backups import router as backups_router
 from .web.deps import LoginRequired, MfaRequired
 from .web.federation import router as federation_router
+from .web.group import router as group_web_router
 from .web.importing import router as import_router
 from .web.mfa import router as mfa_router
 from .web.oidc import router as oidc_router
@@ -175,6 +177,35 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) ->
             stop.wait(wait)
 
 
+def group_round(maker: sessionmaker[Session], ctx: Ctx, client) -> dict[str, str]:
+    """One owner-group round (CONTRACT-C10 §3.8): expire enrolments, purge nonces, pull every member's state and
+    sign this node's view. Does nothing on a node in no group."""
+    from . import groups
+    from .api import group_routes
+
+    with maker() as session:
+        groups.expire_enrolments(session)
+        groups.purge_nonces(session)
+        group = groups.active(session)
+        if group is None or group.status == "halted":
+            session.commit()
+            return {}
+        groups.rebuild(session, group, ctx.identity.node_id, settings=ctx.settings)
+        outcomes = group_routes.pull(session, ctx.settings, ctx.identity, group, client)
+        session.commit()
+        return outcomes
+
+
+def _group_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
+    with httpx.Client(timeout=15, trust_env=False) as client:
+        while not stop.wait(ctx.settings.group_sync_interval):
+            try:
+                group_round(maker, ctx, client)
+            except Exception as exc:  # noqa: BLE001 - the next round retries; local service continues
+                log.warning("group sync failed", extra={"atlas_event": {"event": "group.sync_failed",
+                                                                        "error_type": type(exc).__name__}})
+
+
 def _warn_key_at_rest(settings: Settings, at_rest: str | None) -> None:
     """Warn on every start while the signing key is plaintext (C9.1). Decision H4: a production authority will
     refuse to start in this state in the release after signed updates (A10); this release only warns."""
@@ -220,6 +251,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             threading.Thread(target=_backups, args=(engine, ctx, stop), daemon=True, name="atlas-backup").start()
         if True:  # peers can be added at runtime, so the loop always runs
             threading.Thread(target=_sync_loop, args=(maker, ctx, stop), daemon=True, name="atlas-sync").start()
+        threading.Thread(target=_group_loop, args=(maker, ctx, stop), daemon=True, name="atlas-group").start()
         yield
         stop.set()
 
@@ -252,6 +284,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(import_router)
     app.include_router(backups_router)
     app.include_router(oidc_router)
+    app.include_router(group_router)
+    app.include_router(group_web_router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.middleware("http")

@@ -202,7 +202,7 @@ def test_rewrap_moves_every_secret_to_the_new_key(tmp_path):
         counts = secrets_box.rewrap(session, rotated)
         session.commit()
     assert counts == {"signing_key": 1, "peer_tokens": 1, "oidc_client_secrets": 0, "integration_secrets": 1,
-                      "mfa_secrets": 0}
+                      "mfa_secrets": 0, "group_secrets": 0}
     only_new = build_settings(secret_key=OTHER)
     with db.make_sessionmaker(engine, only_new)() as session:
         assert load_identity(session).public_b64 == identity.public_b64
@@ -388,14 +388,14 @@ def test_migration_0024_encrypts_and_downgrade_decrypts(url):  # noqa: F811
     engine, identity = legacy_db(url)
     plain = stored(engine)
     settings = build_settings(database_url=url, secret_key=SECRET)
-    db.upgrade(url, settings=settings)
+    db.upgrade(url, "0024", settings=settings)  # this revision exactly; later ones (0028) do not touch the key
     value = stored(engine)
     assert value.startswith(ENC_PREFIX) and plain not in value
     with db.make_sessionmaker(engine, settings)() as session:
         again = load_identity(session)
         assert (again.node_id, again.key_id, raw_b64(again)) == (identity.node_id, identity.key_id, plain)
         session.commit()
-    db.upgrade(url, settings=settings)  # idempotent at head
+    db.upgrade(url, "0024", settings=settings)  # idempotent once applied
 
     with pytest.raises(RuntimeError, match="set ATLAS_SECRET_KEY"):  # no secret: refused, nothing changed
         db.downgrade(url, "0023", settings=build_settings(database_url=url, secret_key=None))

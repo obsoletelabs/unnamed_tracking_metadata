@@ -195,6 +195,8 @@ def verify(path: Path) -> dict[str, Any]:
 
 # table -> column holding a secrets_box token (the signing key and integration settings are handled apart)
 _SECRET_COLUMNS = {"peer": "token_enc", "oidc_issuer": "client_secret_enc", "user_mfa": "secret_enc"}
+_GROUP_SECRETS = {"owner_group": ("root_sealed", "box_sealed", "box_previous_sealed", "box_pending_sealed"),
+                  "group_enrolment": ("secret_enc",)}
 
 
 def _rows(path: Path, table: str) -> Iterator[dict[str, Any]]:
@@ -228,6 +230,12 @@ def secret_check(settings: Settings, path: Path) -> dict[str, Any]:
     tokens = [(table, row.get(column)) for table, column in _SECRET_COLUMNS.items() for row in _rows(path, table)]
     keys = {integrations.PREFIX + field for field in integrations.SECRET_FIELDS}
     tokens += [("setting", row.get("value")) for row in _rows(path, "setting") if row.get("key") in keys]
+    for table, columns in _GROUP_SECRETS.items():  # owner-group secrets are stored as enc:v1:<token>
+        for row in _rows(path, table):
+            for column in columns:
+                value = row.get(column)
+                if isinstance(value, str) and value.startswith(signing.ENC_PREFIX):
+                    tokens.append((table, value[len(signing.ENC_PREFIX):]))
     for table, token in tokens:
         if not isinstance(token, str) or not token:
             continue
@@ -330,6 +338,11 @@ def restore(settings: Settings, engine: Engine, path: Path, *, force: bool = Fal
             node_state = tables["node_state"]
             conn.execute(delete(node_state).where(node_state.c.key == client_changes.EPOCH))
             conn.execute(node_state.insert().values(key=client_changes.EPOCH, value=client_changes.new_epoch()))
+        if "owner_group" in tables:
+            # A restored node may have missed revocations and successions: it pulls every member's state
+            # before any privileged group action (CONTRACT-C10 §3.6).
+            owner_group = tables["owner_group"]
+            conn.execute(update(owner_group).where(owner_group.c.status == "active").values(status="resyncing"))
     if include_media and manifest.get("media_included"):
         _restore_media(settings, path)
     return loaded
