@@ -105,7 +105,9 @@ def _grants_ctx(p: Page, group, tr) -> dict:
             "grant_accounts": accounts_here, "grant_days": groups.GRANT_DAYS,
             "grant_max_days": group.genesis["body"]["policy"]["grant_max_days"],
             "may_grant": bool(roles) and (p.is_local_admin or _group_admin_serial(p) is not None),
-            "cap": settings.group_max_delegated_role, "identity_node": identity.node_id}
+            "cap": settings.group_max_delegated_role, "identity_node": identity.node_id,
+            # §8.1 'effective here': the grants that add rights to this viewer's session right now
+            "in_effect": {g["serial"] for g in (p.rights.sources if p.rights is not None else [])}}
 
 
 def _grants_page(p: Page, error: str | None = None, status: int = 200):

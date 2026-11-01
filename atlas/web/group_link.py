@@ -188,8 +188,9 @@ async def start_park(request: Request, p: Annotated[Ctx, Depends(page)]):
     if group is None or not settings.group_signin:
         return not_found()
     env = _sealed_field(raw, s, settings, group, identity.node_id)
-    tr = groups.trust(s, group, own_node=identity.node_id)
-    b = group_signin.start_ticket_ok(env, tr, group, identity.node_id) if env is not None else None
+    if env is None:  # before any trust work: an anonymous POST that does not decrypt costs nothing (T23)
+        return not_found()
+    b = group_signin.start_ticket_ok(env, groups.trust(s, group, own_node=identity.node_id), group, identity.node_id)
     if b is None:
         return not_found()
     try:
@@ -367,7 +368,9 @@ async def authorize_decide(request: Request, p: Annotated[Ctx, Depends(user_form
     link = group_channel.mint_account(s, settings, group, identity, p.me)
     s.merge(GroupIdpConsent(user_id=p.me.id, group_id=group.group_id, rp_node=b["rp_node"],
                             granted_at=groups.utcnow()))
-    amr = ["pwd"] + (["otp"] if p.login is not None and p.login.mfa_verified_at is not None else [])
+    # how this session signed in here: a password-less account (OIDC-only) never claims `pwd`
+    amr = ["oidc" if p.me.password_hash == "!" else "pwd"] + (
+        ["otp"] if p.login is not None and p.login.mfa_verified_at is not None else [])
     auth_time = groups.aware(p.login.created_at) if p.login is not None else groups.utcnow()
     assertion = group_channel.sign_assertion(s, group, identity, aud_node=b["rp_node"], uid=link.account_uid,
                                              nonce=b["nonce"], state_hash=b["state_hash"], auth_time=auth_time,
@@ -441,7 +444,8 @@ def verify_assertion(s, settings, identity, group, a: dict, binding_cookie: str 
         raise LinkRefused("This node has no recent view of the group; try again after the next sync.")
     now = groups.utcnow()
     ia, na = gc.parse_time(b["issued_at"]), gc.parse_time(b["not_after"])
-    if ia > now + groups.SKEW or now > na or na - ia > group_channel.ASSERTION_TTL:
+    if ia > now + groups.SKEW or now > na or na - ia > group_channel.ASSERTION_TTL \
+            or gc.parse_time(b["auth_time"]) > now + groups.SKEW:
         raise LinkRefused("The confirmation expired. Start again from Linked nodes.")
     try:
         with s.begin_nested():

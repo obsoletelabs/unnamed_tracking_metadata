@@ -214,7 +214,7 @@ def test_forged_grant_is_not_stored(trio):
         s.commit()
 
 
-def test_u_delegate_cannot_grant_group_admin_or_star_or_outside_its_nodes(trio):
+def test_delegate_cannot_grant_group_admin_or_star(trio):
     a, b, c, uid, who = trio
     for role, nodes, msg in (("group_admin", [c.node_id], "only the group root"),
                              ("moderator", ["*"], "only the group root"),
@@ -245,7 +245,7 @@ def test_u_delegate_cannot_grant_group_admin_or_star_or_outside_its_nodes(trio):
         assert tr.grant_valid(esc).reason == "node_escalation"
 
 
-def test_t_revoking_issuer_grant_cascades_to_child_grants(trio):
+def test_revoking_issuer_grant_cascades_to_child_grants(trio):
     a, b, c, uid, who = trio
     with a.session() as s:
         boss_uid = group_channel.mint_account(s, a.settings, groups.load(s), a.identity, s.get(User, who["alice"]))
@@ -355,6 +355,37 @@ def test_f_delegated_admin_cannot_change_group_policy_keys_restore_or_tokens(web
         with pytest.raises(accounts.AtlasError, match="local administrator"):
             accounts.set_role(s, me, boss, "user")
     assert obj["body"]["role"] == "admin"
+
+
+def test_delegated_admin_mints_no_token_or_role_that_outlives_the_grant(web_pair):
+    """§6.4: no privilege remains after a grant is revoked. A delegated admin can mint no API token (any scope)
+    and set no role (a sock puppet made curator), so revoking the grant leaves nothing of it behind."""
+    from atlas.models import Token
+
+    a, b, cb, uid, bob = web_pair
+    obj = grant(a, uid, "admin", [b.node_id])
+    sync_state(a, b)
+    setp(b, group_max_delegated_role="admin", group_delegated_requires_mfa=False)
+    with b.session() as s:
+        puppet = accounts.register(s, b.settings, "puppet", "synthetic-Pass-for-tests-4821")
+        s.commit()
+        puppet_id = puppet.id
+    csrf = token(cb, "/admin")
+    for scopes in (["curate"], ["sync"], ["contribute"], ["metrics"], ["curate", "sync", "contribute", "metrics"]):
+        r = cb.post("/admin/tokens", data={"csrf": csrf, "name": "standing", "scopes": scopes})
+        assert r.status_code == 403 and "Only an administrator of this node" in r.text, scopes
+    r = cb.post(f"/admin/users/{puppet_id}", data={"csrf": csrf, "role": "curator", "status": "active"})
+    assert r.status_code == 409 and "only a local administrator may change roles" in r.text
+    with b.session() as s:
+        assert s.scalars(select(Token).where(Token.name == "standing")).first() is None
+        assert s.get(User, puppet_id).role == "user"
+    revoke(a, obj["body"]["serial"])
+    sync_state(a, b)
+    assert not rights(b, bob).admin
+    with b.session() as s:  # nothing the grant holder did while it was valid still stands
+        assert s.scalars(select(Token).where(Token.name == "standing")).first() is None
+        assert s.get(User, puppet_id).role == "user"
+        assert not accounts.local_can_review(b.settings, s.get(User, puppet_id))
 
 
 def test_m_audit_provenance_on_delegated_actions(web_pair):

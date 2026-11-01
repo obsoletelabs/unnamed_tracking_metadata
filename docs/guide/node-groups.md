@@ -142,7 +142,15 @@ session, second factor or email address ever leaves a node.
   administrator (`group_federated_privilege`: `deny`; `local_mfa` asks for this node's own code; `allow`). A banner
   says how to get the rights back: sign in here with your password.
 - **New accounts** are created at a group sign-in only with **Create an account here on first group sign-in**
-  (`group_auto_provision`, off) and open registration: role user, no password, no email address.
+  (`group_auto_provision`, off) and open registration: role user, no password, no email address. The other node
+  must first be confirmed as holding that group account: the very first sign-in is refused with "try again after the
+  next sync". While this setting is on, this node fetches the account's link record from the node that holds it,
+  once the person agreed to sign in here. Profile values are never fetched for an account that is not linked here.
+- **Two-factor and other confirmations** in a session opened through another node need this node's own password.
+  An account without a password here (sign-in only through another provider) cannot set up two-factor or confirm
+  sensitive changes from such a session. It signs in on this node directly to do that.
+- **Delegated administrators** (a group grant) cannot create API tokens or change anyone's role: both would outlive
+  the grant.
 - **Ending sessions.** A session opened through another node ends on its next request when that node is revoked or
   no longer holds your account, when you unlink, or when group sign-in is turned off (`group_signin`). **Security →
   Sign out of all nodes** ends your sessions here and asks every linked node to end its own; each one follows the

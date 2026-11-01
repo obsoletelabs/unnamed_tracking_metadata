@@ -149,9 +149,10 @@ REAUTH_WINDOW = timedelta(minutes=15)
 
 def reauthenticated(user: User, password: str, login: UserSession | None) -> bool:
     """Confirm a sensitive action. Accounts that sign in only through another provider have no password; for them a
-    sign-in within the last 15 minutes counts."""
+    sign-in within the last 15 minutes counts, but never a session opened by a group sign-in assertion: that sign-in
+    happened on another node, so it proves nothing here (C10 §5.5, T8)."""
     if user.password_hash == "!":
-        if login is None:
+        if login is None or login.via_group is not None:
             return False
         created = login.created_at if login.created_at.tzinfo else login.created_at.replace(tzinfo=now().tzinfo)
         return now() - created <= REAUTH_WINDOW
@@ -267,7 +268,7 @@ def _add_grants(session: Session, settings: Settings, user: User, login: UserSes
                                                           GroupAccountLink.user_id == user.id)).first()
     if link is None or link.account_uid in settings.group_denied_accounts.split():
         return
-    tr = groups.trust(session, group, own_node=own_node)
+    tr = groups.request_trust(session, group, own_node)  # once per request, shared with every freshness check
     grants = tr.grants_for(link.account_uid, own_node)
     if not grants:
         return
@@ -285,7 +286,7 @@ def _add_grants(session: Session, settings: Settings, user: User, login: UserSes
     for g in grants:
         b = g["body"]
         issuer = None if b["issuer"] == "root" else b["issuer"]
-        fresh = groups.freshness(session, group, own_node, issuer, settings.group_view_max_age_hours)
+        fresh = groups.freshness(session, group, own_node, issuer, settings.group_view_max_age_hours, tr=tr)
         if not fresh.ok:
             r.banner = f"Your group role is paused on this node: {fresh.reason}."
             continue
@@ -328,8 +329,11 @@ def set_role(session: Session, actor: User, target: User, role: str) -> None:
         raise AtlasError("administrators only", "forbidden")
     if role not in ("user", "curator", "admin"):
         raise AtlasError("unknown role")
-    if not is_local_admin(actor) and (target.role == "admin" or role == "admin"):
-        raise AtlasError("only a local administrator may make or change an administrator (C10 §6.3)", "forbidden")
+    if not is_local_admin(actor):
+        # A role is a standing right that would outlive the grant that let the actor set it (C10 §6.4: no
+        # privilege remains after revocation), so roles are changed by local administrators only.
+        raise AtlasError("only a local administrator may change roles: a role would outlive the group grant "
+                         "(C10 §6.3, §6.4)", "forbidden")
     if target.id == actor.id and role != "admin":
         raise AtlasError("you cannot demote yourself", "conflict")
     target.role = role
