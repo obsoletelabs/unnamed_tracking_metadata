@@ -88,7 +88,10 @@ Accounts are never matched by email or username. A person links their accounts e
 2. They sign in on the other node (*Home*) with its own password and second factor, check the **fingerprint** of
    *Laptop* (shown first, larger than the name) and tick what *Home* may share.
 3. Back on *Laptop* the link wizard shows every preference where the two nodes differ ("keep this node's" or
-   "keep the other node's") and what *Laptop* may share. Linking never creates a conflict.
+   "keep the other node's") and what *Laptop* may share. Linking never creates a conflict. Only the fields
+   *Laptop* already accepts are fetched for the comparison; a field ticked here is fetched when the wizard
+   finishes. Finish within about seven minutes: the other node's confirmation is only valid that long, and a
+   slower wizard links nothing and asks to start again.
 
 From then on the ticked preferences travel over the encrypted member channel (`POST /api/v2/group/call`, ops
 `heads`, `changes`, `snapshot`, `notify`). They never enter the public signed feed, `/api/v2/sync/*`,
@@ -115,7 +118,9 @@ gone; the accounts on the other nodes stay (deletion never propagates).
 
 **Revoked and expired nodes.** Changes from a revoked node are refused, even when backdated. After a node's
 certificate expires, only changes it had announced before expiry are taken, for 72 hours; it sends again after
-renewal. A node that sends two different histories (a cloned VM) is stopped until it is revoked. After a restore
+renewal. A node that sends two different histories (a cloned VM) is stopped until it is revoked or opens a new
+history (`atlas group new-epoch` on the real node, after the clone is shut down); the disputed history is not
+continued. After a restore
 from backup a node starts a new history and fetches what it lost from the others.
 
 ## Signing in through another node
@@ -215,8 +220,8 @@ another node, is audited with the group, the vouching node and the grant serial.
   collector appears only while the node is in a group). Restrict `/metrics` with the `metrics` token scope if
   that matters.
 - `/metrics` also carries channel counts (`atlas_group_stream_lag`, `atlas_group_entries`, `atlas_group_rejected`
-  by closed reason, `atlas_profile_conflicts_open`) and `atlas_group_signins{result="ok|refused"}` over the last
-  24 hours: never a field name, value or account.
+  by closed reason, `atlas_profile_conflicts_open`, `atlas_group_change_rows`) and `atlas_group_signins{result="ok|refused"}`
+  over the last 24 hours: never a field name, value or account.
 
 ## Downgrading
 

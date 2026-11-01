@@ -49,7 +49,9 @@ from .routes import render
 router = APIRouter()
 BIND_COOKIE = "atlas_grp_bind"
 STATE_TTL = timedelta(seconds=600)
-HANDLE_TTL = timedelta(seconds=600)  # also the wizard's lifetime (A11 amendment: §5.3 states no wizard TTL)
+HANDLE_TTL = timedelta(seconds=120)  # authorize / callback handles (§5.3)
+WIZARD_TTL = timedelta(seconds=600)  # the linkform wizard, capped by the evidence window (see `_wizard_deadline`)
+WIZARD_MARGIN = timedelta(seconds=30)
 AUTHREQ_TTL = timedelta(seconds=600)
 FORM_CAP = 64 * 1024
 
@@ -63,9 +65,10 @@ def not_found() -> JSONResponse:
     return JSONResponse(NOT_FOUND, status_code=404)
 
 
-def _park(session, kind: str, payload: dict) -> str:
+def _park(session, kind: str, payload: dict, expires_at=None) -> str:
     handle = secrets.token_urlsafe(32)
-    session.add(GroupWebHandle(id=_h(handle), kind=kind, payload=payload, expires_at=groups.utcnow() + HANDLE_TTL))
+    session.add(GroupWebHandle(id=_h(handle), kind=kind, payload=payload,
+                               expires_at=expires_at or groups.utcnow() + HANDLE_TTL))
     session.flush()
     return handle
 
@@ -486,6 +489,7 @@ def callback_finish(request: Request, p: Annotated[Ctx, Depends(page)]):
     return resp
 
 
+
 def _signin_finish(request: Request, p: Ctx, group, a: dict):
     """§5.4 sign-in checks, then a federated `UserSession` (§5.5). Every refusal is audited and shown on the login
     page; the binding cookie is cleared either way."""
@@ -513,9 +517,19 @@ def _signin_finish(request: Request, p: Ctx, group, a: dict):
     return resp
 
 
-def _snapshot(p: Ctx, group, a: dict) -> tuple[dict, dict]:
+
+def _wizard_deadline(a: dict):
+    """The latest moment the wizard may emit `account.link`: every receiver's evidence check requires the link's
+    `issued_at ≤ A.not_after + SKEW` (§4.3), so a slower wizard would produce a link the group refuses."""
+    return gc.parse_time(a["body"]["not_after"]) + groups.SKEW - WIZARD_MARGIN
+
+
+def _snapshot(p: Ctx, group, a: dict, accept: list[str]) -> tuple[dict, dict]:
+    """A's signed snapshot of the fields in `accept` only: operator policy ∩ this user's consent here (the default
+    consent before the user has chosen), so values the user has not agreed to receive never land on this node."""
     s, settings, identity = p.session, p.st.ctx.settings, p.st.ctx.identity
-    accept = profile.policy_fields(settings)
+    if not accept:
+        return {}, {}
     try:
         snap = group_channel.fetch_snapshot(s, settings, identity, group, a["body"]["iss_node"],
                                             a["body"]["account_uid"], accept, p.st.http)
@@ -527,10 +541,21 @@ def _snapshot(p: Ctx, group, a: dict) -> tuple[dict, dict]:
         rx, a["body"]["account_uid"], snap, set(accept))
 
 
+def _merge_snapshots(first: dict, second: dict) -> dict:
+    out = {"entries": list(first.get("entries") or []), "epochs": list(first.get("epochs") or [])}
+    for key in ("entries", "epochs"):
+        extra = second.get(key) if isinstance(second, dict) else None
+        if isinstance(extra, list):
+            out[key] += [e for e in extra if e not in out[key]]
+    return out
+
+
 def _wizard(p: Ctx, group, a: dict, error: str | None = None) -> HTMLResponse:
     """The link wizard: per field, this node's value against the other node's, and this node's consent."""
-    snap, theirs = _snapshot(p, group, a)
-    handle = _park(p.session, "linkform", {"a": a, "snap": snap, "user": p.me.id})
+    accept = profile.accept(p.session, p.st.ctx.settings, p.me.id, group.group_id)
+    snap, theirs = _snapshot(p, group, a, accept)
+    expires = min(groups.utcnow() + WIZARD_TTL, _wizard_deadline(a))
+    handle = _park(p.session, "linkform", {"a": a, "snap": snap, "fetched": accept, "user": p.me.id}, expires)
     return render(p, "group_link_wizard.html", handle=handle, rows=_diff(p, theirs), error=error,
                   idp=_member_name(p, group, a["body"]["iss_node"]), fields=profile_schema.REGISTRY,
                   consent=set(profile.consent_fields(p.session, p.me.id, group.group_id)),
@@ -565,27 +590,40 @@ async def wizard_finish(request: Request, p: Annotated[Ctx, Depends(user_form)])
     s, settings, identity = p.session, p.st.ctx.settings, p.st.ctx.identity
     group = groups.active(s)
     handle = form.get("h") if isinstance(form.get("h"), str) else None
-    row = _peek(s, "linkform", handle) if group is not None else None
-    if row is None or row.payload.get("user") != p.me.id:
+    row = None
+    if group is not None and handle and len(handle) <= 100:
+        row = s.get(GroupWebHandle, _h(handle))
+    if row is None or row.kind != "linkform" or row.payload.get("user") != p.me.id:
         return not_found()
     payload = row.payload
     s.delete(row)
     a = payload["a"]
+    now = groups.utcnow()
     if form.get("decision") != "link":
         groups.audit(s, p.me.id, "group_link_declined", p.me.id, {"idp_node": a["body"]["iss_node"]})
         return go("/me/linked-nodes", "dismissed")
+    if now > groups.aware(row.expires_at) or now > _wizard_deadline(a):
+        # the confirmation from the other node is too old for the group to accept this link (§4.3)
+        groups.audit(s, p.me.id, "group_link_refused", p.me.id, {"reason": "wizard expired"})
+        return render(p, "me_linked_nodes.html", status=400, **linked_context(
+            p, "This link page was open too long and the other node's confirmation has expired. Nothing was "
+               "linked. Start again from Linked nodes."))
     try:
-        link = group_channel.complete_link(s, settings, group, identity, p.me, a["body"]["account_uid"], a)
+        link = group_channel.complete_link(s, settings, group, identity, p.me, a["body"]["account_uid"], a, now=now)
     except group_channel.ChannelError as exc:
         return render(p, "me_linked_nodes.html", status=409, **linked_context(p, str(exc)))
     chosen = [n for n in profile_schema.REGISTRY if form.get(f"c.{n}") == "on"]
     profile.set_consent(s, p.me.id, group.group_id, chosen, form.get("signout") == "on")
     accept = set(profile.accept(s, settings, p.me.id, group.group_id))
+    snap = payload["snap"]
+    extra = sorted(accept - set(payload.get("fetched") or []))
+    if extra:  # fields the user ticked in the wizard: fetched only now that they are consented
+        snap = _merge_snapshots(snap, _snapshot(p, group, a, extra)[0])
     rx = group_channel.Rx(s, settings, identity, group, groups.trust(s, group, own_node=identity.node_id),
                           groups.utcnow(), a["body"]["iss_node"])
     mine = {n: s.get(profile.ProfileField, (p.me.id, n)) for n in accept}
     mine_values = {n: (r.value if r is not None else None) for n, r in mine.items()}
-    group_channel.install_snapshot(rx, link.account_uid, payload["snap"], accept)
+    group_channel.install_snapshot(rx, link.account_uid, snap, accept)
     resolved = 0
     for name in accept:
         pick = form.get(f"k.{name}")

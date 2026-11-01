@@ -6,6 +6,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,12 +17,15 @@ from atlas import group_crypto as gc
 from atlas.models import (
     AuditEntry,
     GroupAccountLink,
+    GroupAccountNode,
     GroupAssertionSeen,
     GroupSigninState,
+    GroupWebHandle,
     ProfileConflict,
     ProfileField,
     User,
 )
+from atlas.web import group_link
 
 from .channel_harness import group_of, heads, rounds, shown
 from .group_harness import Dispatcher, fast_kdf, make_node
@@ -293,3 +297,76 @@ def test_preferences_form_saves_versions_and_applies_theme_and_a11y(web):
     assert "m=nochange" in again.headers["location"]  # an unchanged form writes no new version
     bad = ca.post("/me/preferences", data={"csrf": hidden(page, "csrf"), "f.time_zone": "Not/AZone!"})
     assert bad.status_code == 400
+
+
+# ---- review fixes: the wizard stays inside the evidence window; values without consent are not fetched -------
+
+def _linkform(node):
+    with node.session() as s:
+        rows = list(s.scalars(select(GroupWebHandle).where(GroupWebHandle.kind == "linkform")))
+        s.expunge_all()
+        return rows
+
+
+def test_a_slow_wizard_is_refused_instead_of_emitting_a_link_the_group_rejects(web, monkeypatch):
+    """§4.3: receivers require account.link's issued_at ≤ A.not_after + SKEW. A wizard finished after that window
+    links nothing and says to start again (it used to link B alone, and every receiver refused the link)."""
+    net, a, b, ca, cb = web
+    assertion = authorize(ca, start(cb, a))
+    wizard = callback(b, cb, assertion)
+    assert wizard.status_code == 200
+    (row,) = _linkform(b)
+    with b.session() as s:
+        stored = s.get(GroupWebHandle, row.id).payload["a"]["body"]["not_after"]
+    assert groups.aware(row.expires_at) <= gc.parse_time(stored) + groups.SKEW  # capped by the evidence window
+    real = groups.utcnow
+    monkeypatch.setattr(groups, "utcnow", lambda: real() + timedelta(seconds=400))
+    r = finish(cb, wizard.text)
+    monkeypatch.setattr(groups, "utcnow", real)
+    assert r.status_code == 400 and "Start again" in r.text
+    ub, uid = uid_of_name(b, "alicia")
+    assert uid is None
+    with b.session() as s:
+        assert s.scalar(select(func.count()).select_from(GroupAccountLink)) == 0
+        assert s.scalar(select(func.count()).select_from(GroupAccountNode)) == 0
+        assert s.scalar(select(func.count()).select_from(GroupWebHandle).where(GroupWebHandle.kind == "linkform")) == 0
+    # a fresh flow still links, and the group accepts it
+    finish(cb, callback(b, cb, authorize(ca, start(cb, a))).text)
+    rounds(a, b)
+    _, uid = uid_of_name(b, "alicia")
+    with a.session() as s:
+        assert s.get(GroupAccountNode, (groups.load(s).group_id, uid, b.node_id)).status == "linked"
+
+
+def test_authorize_and_callback_handles_live_120_seconds(web):
+    net, a, b, ca, cb = web
+    r = TestClient(a.app, base_url="http://a.test").post("/group/authorize", data={"request": start(cb, a)},
+                                                         follow_redirects=False)
+    assert r.status_code == 303
+    with a.session() as s:
+        (row,) = s.scalars(select(GroupWebHandle).where(GroupWebHandle.kind == "authorize"))
+        assert groups.aware(row.expires_at) - groups.utcnow() <= group_link.HANDLE_TTL
+    assert group_link.HANDLE_TTL.total_seconds() == 120
+
+
+def test_wizard_fetches_only_consented_fields_until_the_user_ticks_more(web):
+    """D10.18: before the user chooses, B fetches policy ∩ default consent (bio is off by default); a field ticked
+    in the wizard is fetched at the finish step, once it is consented."""
+    net, a, b, ca, cb = web
+    ua, _ = uid_of_name(a, "alice")
+    ub, _ = uid_of_name(b, "alicia")
+    assertion = authorize(ca, start(cb, a), fields=("theme", "display_name", "bio"))
+    with a.session() as s:
+        profile.set_local(s, a.settings, a.identity, s.get(User, ua), "bio", "Synthetic private bio 3e9f")
+        profile.set_local(s, a.settings, a.identity, s.get(User, ua), "theme", "dark")
+        s.commit()
+    wizard = callback(b, cb, assertion)
+    assert wizard.status_code == 200
+    (row,) = _linkform(b)
+    assert "Synthetic private bio 3e9f" not in json.dumps(row.payload)
+    assert "bio" not in row.payload["fetched"] and "theme" in row.payload["fetched"]
+    assert "Synthetic private bio 3e9f" not in wizard.text
+    r = finish(cb, wizard.text, **{"c.bio": "on"})
+    assert r.status_code == 303
+    assert shown(b, ub, "theme") == "dark"
+    assert shown(b, ub, "bio") == "Synthetic private bio 3e9f"  # fetched once consented
