@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Sign in on another node · {{ app_name }}{% endblock %}
+{% block body_class %}consent-page{% endblock %}
+{% block content %}
+<div class="consent-layout"><div class="narrow card consent-card">
+<p class="fingerprint" aria-label="Node fingerprint">{{ fp }}</p>
+<h1>Sign in to this node as {{ p.user.username }}?</h1>
+<p><strong>{{ member.name }}</strong>, <span class="mono small">{{ member.url }}</span>{% if not member.url_verified %} <span class="badge warn">address not verified</span>{% endif %}</p>
+<p class="small muted">Check that the fingerprint above is the one {{ member.name }} shows under Admin → Node group. That node opens the account linked to yours there. It never receives your password, sessions, email address or sign-in factors, and it decides on its own what you may do there.</p>
+<form method="post" action="/group/authorize/continue">{{ csrf(p.csrf) }}
+  <input type="hidden" name="h" value="{{ handle }}">
+  <p><button name="decision" value="approve" type="submit">Sign in on {{ member.name }}</button> <button class="secondary" name="decision" value="deny" type="submit">Cancel</button></p>
+</form>
+</div></div>
+{% endblock %}

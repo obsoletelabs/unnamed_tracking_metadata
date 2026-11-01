@@ -20,6 +20,10 @@
   </div>
   <p><button type="submit">Sign in</button> <a class="small" href="/forgot">Forgot password?</a></p>
 </form>
+{% if group_members %}<hr><p class="small muted">Or sign in with your account on another node of this group</p>
+<form method="post" action="/group/signin">{{ csrf(p.csrf) }}
+{% for m in group_members %}<p><button class="secondary" name="node_id" value="{{ m.node_id }}" type="submit"><span class="mono">{{ m.fp }}</span> {{ m.name }}</button></p>{% endfor %}
+</form>{% endif %}
 {% if issuers %}<hr><p class="small muted">Or sign in with</p>{% for i in issuers %}<p><a class="btn secondary" href="/oidc/start/{{ i.id }}?next={{ next|urlencode }}">{{ i.name }}</a></p>{% endfor %}{% endif %}
 {% if registration_open %}<p class="small muted">No account? <a href="/register">Create one</a>.</p>{% endif %}
 </div>

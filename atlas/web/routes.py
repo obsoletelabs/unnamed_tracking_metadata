@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import case, func, select
 
-from .. import accounts, auth, custom, facets, feed, integrations, mail, profile, proposals, service, social
+from .. import accounts, auth, custom, facets, feed, groups, integrations, mail, profile, proposals, service, social
 from .. import media as images
 from ..api.routes import _guard_upstream, media_response
 from ..merge import SCALAR_FIELDS, UNION_FIELDS
@@ -74,6 +74,10 @@ def render(p: Page, name: str, status: int = 200, anon_csrf: bool = False, **ctx
                                        .order_by(PageRow.position, PageRow.slug)))
     if name in ("login.html", "register.html"):
         ctx["issuers"] = list(p.session.scalars(select(OidcIssuer).where(OidcIssuer.enabled.is_(True))))
+    if name == "login.html":  # C10 §5.5: no group buttons unless the operator opted in (H27)
+        from .. import group_signin
+
+        ctx["group_members"] = group_signin.login_page_members(p.session, s, p.st.ctx.identity)
     if name == "me_settings.html" and p.user:
         links = {link.issuer_id for link in p.session.scalars(select(OidcLink).where(OidcLink.user_id == p.user.id))}
         ctx["oidc_issuers"] = [{"i": i, "linked": i.id in links,
@@ -1018,8 +1022,13 @@ def admin(p: Annotated[Page, Depends(admin_page)]):
     audit = []
     for a in s.scalars(select(AuditEntry).order_by(AuditEntry.created_at.desc()).limit(40)):
         who = s.get(User, a.actor_id) if a.actor_id else None
+        d = a.detail if isinstance(a.detail, dict) else {}
+        via = None
+        if d.get("via") == "group":  # C10 §6.4 provenance: the asserting node and the grant used
+            via = {"origin": groups.gc_fp(d["origin_node"]) if d.get("origin_node") else None,
+                   "grant": d.get("grant_serial"), "session": d.get("session")}
         audit.append({"when": when(a.created_at), "who": who.username if who else "system", "action": a.action,
-                      "target": a.target})
+                      "target": a.target, "via": via})
     return render(p, "admin.html", users=users, audit=audit, role=ctx.settings.role, node_id=ctx.identity.node_id,
                   public_key=ctx.identity.public_b64, feed_head=feed.head_seq(s), upstream=ctx.settings.upstream_url,
                   providers=sorted(p.st.providers.providers), registration=ctx.settings.registration,

@@ -63,7 +63,7 @@
 {% for m in members %}{% set cert = certs[m.node_id] %}<tr data-member="{{ m.node_id }}" data-member-status="{{ m.status }}">
   <td><code class="fingerprint"><strong>{{ fp(m.node_id) }}</strong></code><div class="small">{{ m.name }}{% if m.node_id == me_id %} <span class="badge">this node</span>{% endif %}</div></td>
   <td class="small">{{ m.url }}{% if cert and not cert.body.member.url_verified %}<div class="badge warn">address not verified</div>{% endif %}</td>
-  <td><ul class="chips">{% for s in m.scopes %}<li class="chip">{{ s }}</li>{% endfor %}</ul>{% if m.delegate %}<div class="small muted">may enrol up to {{ m.delegate.max_members }} nodes</div>{% endif %}</td>
+  <td><ul class="chips">{% for s in m.scopes %}<li class="chip">{{ s }}</li>{% endfor %}</ul>{% if m.delegate %}<div class="small muted">{% if m.delegate.may_enrol and 'group.enrol' in m.scopes %}may enrol up to {{ m.delegate.max_members }} nodes{% endif %}{% if 'grant.issue' in m.scopes %}{% if m.delegate.may_enrol and 'group.enrol' in m.scopes %}; {% endif %}may grant {{ m.delegate.may_grant_roles|join(', ') or 'nothing' }} on {{ m.delegate.may_grant_nodes|length }} node(s){% endif %}</div>{% endif %}</td>
   <td class="small"><code>{{ m.serial }}</code><div class="muted">{% if cert %}{{ 'root' if cert.body.issuer == 'root' else 'by ' ~ fp(cert.body.issuer) }} · {% endif %}expires {{ when(m.not_after) }}</div></td>
   <td><span class="badge {{ 'ok' if m.status == 'active' else ('warn' if m.status in ('expiring', 'expired') else 'bad') }}">{{ m.status }}</span></td>
   <td class="small">{% if m.last_seen_at %}{{ when(m.last_seen_at) }}{% else %}—{% endif %}{% if m.last_error %}<div class="error">{{ m.last_error }}</div>{% endif %}</td>
@@ -78,6 +78,18 @@
     </form></details>{% endif %}</td>
 </tr>{% endfor %}
 </tbody></table></div></section>
+{% include "_group_grants.html" %}
+<section class="card" aria-labelledby="g-policy" data-group-policy><h2 id="g-policy">Local policy</h2>
+  <p class="small muted">What this node accepts from the group. Only an administrator of this node, signed in here, can change it; a group grant never can.</p>
+  <form method="post" action="/admin/group/policy">{{ csrf(p.csrf) }}
+  {% for it in policy %}{% set sp = it.spec %}
+    <div class="setting"><div><label for="gp_{{ sp.key }}">{{ sp.label }}</label>{% if sp.help %}<div class="small muted">{{ sp.help }}</div>{% endif %}</div>
+    <div>{% if sp.kind == 'bool' %}<input id="gp_{{ sp.key }}" type="checkbox" name="{{ sp.key }}" {{ 'checked' if it.value }}>
+    {% elif sp.kind == 'choice' %}<select id="gp_{{ sp.key }}" name="{{ sp.key }}">{% for c in sp.choices %}<option {{ 'selected' if c == it.value }}>{{ c }}</option>{% endfor %}</select>
+    {% else %}<input id="gp_{{ sp.key }}" type="text" name="{{ sp.key }}" value="{{ it.value }}" maxlength="{{ sp.max_len }}">{% endif %}</div></div>
+  {% endfor %}
+  <p><button type="submit">Save policy</button></p></form>
+</section>
 {% if group.root_state == 'holder' %}
 <section class="card" aria-labelledby="g-renew"><h2 id="g-renew">Renew certificates</h2>
   <form method="post" action="/admin/group/renew">{{ csrf(p.csrf) }}<label for="g-renew-pw">Root passphrase</label><input id="g-renew-pw" name="root_passphrase" type="password" required maxlength="256" autocomplete="off"><label for="g-renew-acct">Your current account password</label><input id="g-renew-acct" name="password" type="password" maxlength="256" autocomplete="current-password"><p><button class="secondary" type="submit">Renew every root-issued certificate</button></p></form>
@@ -90,6 +102,13 @@
   <p class="small muted">Creates a one-time code valid for 10 minutes. Both administrators then compare a 12-digit number on their screens.</p>
   <form method="post" action="/admin/group/invite">{{ csrf(p.csrf) }}
     <label for="g-del">Let the new node enrol other nodes (0 = no)</label><input id="g-del" name="delegate_enrol" type="number" min="0" max="8" value="0">
+    {% if group.root_state == 'holder' %}<fieldset><legend>Let the new node sign delegation grants (optional)</legend>
+      {% for r in ('moderator', 'curator', 'admin') %}<label><input type="checkbox" name="grant_roles" value="{{ r }}"> {{ r }}</label>{% endfor %}
+      <p class="small muted">On these nodes:</p>
+      <label><input type="checkbox" name="grant_nodes" value="self"> the new node itself</label>
+      {% for m in members %}<label><input type="checkbox" name="grant_nodes" value="{{ m.node_id }}"> <span class="mono">{{ fp(m.node_id) }}</span> {{ m.name }}</label>{% endfor %}
+      <label for="g-adm">To allow <em>admin</em>, type "grant administrator rights"</label><input id="g-adm" name="confirm_admin" type="text" maxlength="40" autocomplete="off">
+    </fieldset>{% endif %}
     <p><button type="submit">Create invite</button></p></form>
 </section>{% endif %}
 {% if enrolments %}<section class="card" aria-labelledby="g-enrol"><h2 id="g-enrol">Recent enrolments</h2><ul>

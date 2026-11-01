@@ -352,8 +352,8 @@ def delete_comment(session: Session, user: User, cid: str) -> None:
 
 
 def moderate(session: Session, ctx: Ctx, moderator: User, cid: str, action: str) -> Comment:
-    if not accounts.can_review(ctx.settings, moderator):
-        raise AtlasError("review rights required", "forbidden")
+    if not accounts.can_moderate(ctx.settings, moderator):
+        raise AtlasError("moderator or review rights required", "forbidden")
     row = session.get(Comment, cid)
     if row is None or row.status == "deleted":
         raise AtlasError("no such comment", "not_found")
@@ -402,7 +402,7 @@ def thread(session: Session, *, canonical_id: str | None = None, proposal_id: st
     for c in rows:
         by_parent.setdefault(c.parent_id, []).append(c)
     users = {u.id: u for u in session.scalars(select(User).where(User.id.in_({c.user_id for c in rows})))} if rows else {}
-    mod = bool(viewer and accounts.can_review(ctx.settings, viewer))
+    mod = bool(viewer and accounts.can_moderate(ctx.settings, viewer))
     out: list[dict[str, Any]] = []
 
     def walk(parent: str | None, depth: int) -> None:

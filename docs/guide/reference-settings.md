@@ -49,8 +49,6 @@ These can be changed live in **Admin → Settings** without restarting. Each cha
 | Setting | Type | Default | Notes |
 | --- | --- | --- | --- |
 | **Act as a sign-in provider (OIDC)** (`oidc_provider_enabled`) | on/off | `False` | Lets other nodes you register under Admin → Sign-in sharing let your users sign in with their account here. |
-| **Sync user preferences in the owner group** (`group_profile_sync`) | on/off | `True` | Linked accounts may share the preferences each user chose with the other nodes of your group. Off: nothing is sent or applied; local preferences keep working. |
-| **Preferences that may be synced** (`group_profile_fields`) | text | — | Space-separated preference names, for example 'theme language a11y.font_scale'. Empty = every preference the user agrees to. |
 | **Adopt the upstream media types and fields** (`inherit_schema`) | on/off | `True` | Mirrors and local nodes copy the authority's custom fields; yours always take precedence. |
 
 ## Security
@@ -70,6 +68,23 @@ These can be changed live in **Admin → Settings** without restarting. Each cha
 | --- | --- | --- | --- |
 | **Auto-match confidence (percent)** (`auto_match_threshold`) | number (50–100) | `8500` | Matches at or above this are merged automatically. |
 | **Review confidence (percent)** (`review_threshold`) | number (0–100) | `6000` | Weaker matches below the auto threshold but above this open a duplicate review. |
+
+## Node group
+
+| Setting | Type | Default | Notes |
+| --- | --- | --- | --- |
+| **Sync user preferences in the owner group** (`group_profile_sync`) | on/off | `True` | Linked accounts may share the preferences each user chose with the other nodes of your group. Off: nothing is sent or applied; local preferences keep working. |
+| **Preferences that may be synced** (`group_profile_fields`) | text | — | Space-separated preference names, for example 'theme language a11y.font_scale'. Empty = every preference the user agrees to. |
+| **Highest role a group grant may give here** (`group_max_delegated_role`) | none / moderator / curator / admin | `none` | Grants signed by the group can add rights here up to this role. 'none' ignores every grant. |
+| **Rights in a session opened through another node** (`group_federated_privilege`) | deny / local_mfa / allow | `deny` | 'deny': ordinary user rights only. 'local_mfa': reviewer and administrator rights only after this node's own two-factor step. 'allow': as in a local session. |
+| **Accept the other node's two-factor step** (`group_trust_remote_mfa`) | on/off | `False` | Off: people with a second factor here always enter this node's code after signing in through another node. |
+| **Delegated rights need this node's two-factor step** (`group_delegated_requires_mfa`) | on/off | `True` | Rights that come from a group grant apply only after this node's own second factor in that session. |
+| **Create an account here on first group sign-in** (`group_auto_provision`) | on/off | `False` | Only while registration is open. The new account has user rights and no password on this node. |
+| **Sign-in through another node of the group** (`group_signin`) | on/off | `True` |  |
+| **Show group sign-in buttons on the login page** (`group_signin_public`) | on/off | `False` | Shows every visitor which nodes are in your group and their addresses (often a home address). Off: people start from the node they are signed in on, with 'Open ... signed in'. |
+| **Group accounts whose grants are ignored here** (`group_denied_accounts`) | text | — | Space-separated group account ids. Their grants add nothing on this node. |
+| **Freshness limit for privileged group actions (hours)** (`group_view_max_age_hours`) | number (1–168) | `24` | Sign-ins and delegated rights need a view of the group from a third node newer than this. |
+| **Days a preference waits for its missing history** (`group_hold_timeout_days`) | number (1–90) | `7` |  |
 
 ## Artwork
 

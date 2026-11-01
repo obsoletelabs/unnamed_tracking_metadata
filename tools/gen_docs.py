@@ -53,6 +53,23 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                              "means every registry field the user agrees to."),
     "group_hold_timeout_days": ("Federation", "Node groups: days a received preference waits for its missing history "
                                 "before it is applied with a review entry (1-90)."),
+    "group_max_delegated_role": ("Federation", "Node groups: the highest role a group grant may give here (`none`, "
+                                 "`moderator`, `curator`, `admin`). The default `none` ignores every grant."),
+    "group_federated_privilege": ("Federation", "Node groups: what a session opened through another node may do with "
+                                  "local reviewer or administrator rights: `deny` (default), `local_mfa` (after this "
+                                  "node's own second factor) or `allow`."),
+    "group_trust_remote_mfa": ("Federation", "Node groups: accept the other node's fresh (under 10 minutes) second "
+                               "factor in place of this node's own at a group sign-in. Off by default."),
+    "group_delegated_requires_mfa": ("Federation", "Node groups: rights from a group grant apply only after this "
+                                     "node's own second factor in the session. On by default."),
+    "group_auto_provision": ("Federation", "Node groups: create a plain account (role user, no password, no email) "
+                             "at a group sign-in when none is linked here. Needs open registration. Off by default."),
+    "group_signin": ("Federation", "Node groups: accept sign-ins confirmed by another member. Turning it off ends "
+                     "every session opened that way on the next request."),
+    "group_signin_public": ("Federation", "Node groups: show a sign-in button per member on the login page (this "
+                            "reveals group membership to visitors). Off by default."),
+    "group_denied_accounts": ("Federation", "Node groups: space-separated group account ids whose grants are "
+                              "ignored here."),
     "sync_batch_size": ("Federation", "Feed entries fetched per request."),
     "sync_max_parked_backlog": ("Federation", "Entries a follower keeps downloading, verifying and relaying after the "
                                 "first entry it had to park (it needs a newer release). Above this it pauses downloading "

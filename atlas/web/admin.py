@@ -57,6 +57,8 @@ def _groups(p: Ctx) -> list[tuple[str, list[dict[str, Any]]]]:
     overridden = {r.key for r in p.session.scalars(select(Setting))}
     groups: dict[str, list[dict[str, Any]]] = {}
     for spec in runtime.REGISTRY:
+        if spec.group == runtime.GROUP_POLICY:
+            continue  # edited on /admin/group, by local administrators only (C10 §6.3)
         attr = runtime.current_value(spec, s)
         groups.setdefault(spec.group, []).append({"spec": spec, "value": runtime.display(spec, attr),
                                                   "raw": runtime.from_attr(spec, attr), "overridden": spec.key in overridden})  # noqa: E501
@@ -73,6 +75,8 @@ async def settings_save(request: Request, p: Annotated[Ctx, Depends(admin_form)]
     form = await request.form()
     values: dict[str, Any] = {}
     for spec in runtime.REGISTRY:
+        if spec.group == runtime.GROUP_POLICY:
+            continue  # never from this form: /admin/group is the only (local-admin) way to change them
         if spec.kind == "bool":
             values[spec.key] = form.get(spec.key) == "on"
         elif spec.key in form:
@@ -88,7 +92,7 @@ async def settings_save(request: Request, p: Annotated[Ctx, Depends(admin_form)]
 
 @router.post("/admin/settings/reset/{key}")
 def settings_reset(key: str, p: Annotated[Ctx, Depends(admin_form)]):
-    if key not in runtime.BY_KEY:
+    if key not in runtime.BY_KEY or runtime.BY_KEY[key].group == runtime.GROUP_POLICY:
         raise HTTPException(404, "Unknown setting.")
     runtime.reset(p.session, p.me.id, key)
     p.st.refresh(p.session, force=True)

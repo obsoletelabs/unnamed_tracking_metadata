@@ -16,7 +16,7 @@
       <form method="post" action="/comments/{{ c.id }}/edit">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ where }}"><textarea name="body" required maxlength="2000" rows="3" aria-label="Edit comment">{{ c.body }}</textarea><button class="small" type="submit">Save</button></form></details>{% endif %}
     {% if t.mine %}<form class="inline" method="post" action="/comments/{{ c.id }}/delete">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ where }}"><button class="secondary small" data-confirm="Delete this comment?" type="submit">Delete</button></form>
     {% else %}<form class="inline" method="post" action="/comments/{{ c.id }}/report">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ where }}"><button class="secondary small" data-confirm="Report this comment to the moderators?" type="submit">Report</button></form>{% endif %}
-    {% if p.can_review %}<form class="inline" method="post" action="/comments/{{ c.id }}/moderate">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ where }}">
+    {% if p.can_moderate %}<form class="inline" method="post" action="/comments/{{ c.id }}/moderate">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ where }}">
       {% if c.status == 'hidden' %}<button class="secondary small" name="action" value="restore" type="submit">Restore</button>{% else %}<button class="danger small" name="action" value="hide" data-confirm="Hide this comment?" type="submit">Hide</button>{% endif %}</form>{% endif %}
   </div>{% endif %}
   {% endif %}

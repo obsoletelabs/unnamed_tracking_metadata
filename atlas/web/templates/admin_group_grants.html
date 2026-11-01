@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Group grants · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+{% if group %}
+<p class="small muted">{% if p.is_local_admin %}<a href="/admin/group">Back to the node group</a>{% else %}You administer this node through a group grant. Group policy, the group root, signing keys and administrator tokens stay with this node's own administrators.{% endif %}</p>
+{% include "_group_grants.html" %}
+{% endif %}
+{% endblock %}

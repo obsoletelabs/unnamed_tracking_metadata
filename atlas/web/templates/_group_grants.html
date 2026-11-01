@@ -1,0 +1,43 @@
+{# Grants table and issue form (C10 §8.1); included by admin_group.html and admin_group_grants.html. #}
+<section class="card" aria-labelledby="g-grants" data-group-grants><h2 id="g-grants">Delegation grants</h2>
+  <p class="small muted">A grant, signed by the group root or by a member allowed to grant, adds rights for one group account on the nodes it names. On this node it adds at most <strong>{{ cap }}</strong> (the local policy below){% if cap == 'none' %}, so grants add nothing here today{% endif %}. A grant never removes or reduces local rights.</p>
+  {% if grants %}<div class="table-scroll"><table data-grants-table><thead><tr><th scope="col">Account</th><th scope="col">Role</th><th scope="col">Nodes</th><th scope="col">Issuer</th><th scope="col">Expires</th><th scope="col">Status</th><th scope="col">Here</th><th scope="col"></th></tr></thead><tbody>
+  {% for g in grants %}<tr data-grant="{{ g.serial }}" data-grant-status="{{ g.status }}">
+    <td>{{ g.account_label or '—' }}<div class="mono small">{{ g.account_uid }}</div></td>
+    <td><span class="chip">{{ g.role }}</span></td>
+    <td class="small">{% if g.nodes == ['*'] %}every member{% else %}{% for n in g.nodes %}<span class="mono">{{ fp(n) }}</span> {{ grant_members.get(n, '') }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% endif %}</td>
+    <td class="small">{{ 'root' if g.issuer == 'root' else fp(g.issuer) }}{% if g.authorized_by_grant %}<div class="muted">on behalf of grant <span class="mono">{{ g.authorized_by_grant }}</span></div>{% endif %}<div class="mono muted">{{ g.serial }}</div></td>
+    <td class="small">{{ g.not_after }}</td>
+    <td><span class="badge {{ 'ok' if g.status == 'valid' else 'bad' }}">{{ g.status }}</span></td>
+    <td>{% if g.here and cap != 'none' %}<span class="badge ok">applies (up to {{ cap }})</span>{% elif g.here %}<span class="badge">capped to none</span>{% else %}—{% endif %}</td>
+    <td>{% if g.status == 'valid' and may_grant %}<details><summary class="small">Revoke…</summary>
+      <form method="post" action="/admin/group/grants/revoke">{{ csrf(p.csrf) }}<input type="hidden" name="serial" value="{{ g.serial }}">
+        {% if g.issuer != identity_node and grant_as_root %}<label for="gr-rp-{{ loop.index }}">Root passphrase</label><input id="gr-rp-{{ loop.index }}" name="root_passphrase" type="password" maxlength="256" autocomplete="off">{% endif %}
+        <label for="gr-pw-{{ loop.index }}">Your current account password</label><input id="gr-pw-{{ loop.index }}" name="password" type="password" maxlength="256" autocomplete="current-password">
+        <p><button class="secondary small" type="submit" data-confirm="Revoke this grant on every member? Grants issued on its authority fall with it.">Revoke</button></p></form></details>{% endif %}</td>
+  </tr>{% endfor %}
+  </tbody></table></div>{% else %}<p class="muted">No grants yet.</p>{% endif %}
+  {% if may_grant %}
+  <details class="grant-issue"><summary>Issue a grant</summary>
+  <form method="post" action="/admin/group/grants">{{ csrf(p.csrf) }}
+    <label for="ga-acct">Group account</label>
+    <select id="ga-acct" name="account_uid" required>{% for a in grant_accounts %}<option value="{{ a.uid }}">{{ a.username }} · {{ a.uid }}</option>{% endfor %}</select>
+    <p class="small muted">Only accounts linked in the group can hold a grant. People are never matched by email or name.</p>
+    <label for="ga-role">Role</label>
+    <select id="ga-role" name="role">{% for r in grant_roles %}<option value="{{ r }}" {{ 'selected' if r == 'moderator' }}>{{ r }}</option>{% endfor %}</select>
+    <fieldset><legend>Nodes</legend>
+      {% if grant_as_root %}<label><input type="checkbox" name="nodes" value="*"> every member, now and later (root only)</label>{% endif %}
+      {% for n, name in grant_members.items() %}{% if grant_as_root or (grant_delegate and n in grant_delegate.may_grant_nodes) %}<label><input type="checkbox" name="nodes" value="{{ n }}"> <span class="mono">{{ fp(n) }}</span> {{ name }}</label>{% endif %}{% endfor %}
+    </fieldset>
+    <label for="ga-days">Days (1-{{ grant_max_days }})</label><input id="ga-days" name="days" type="number" min="1" max="{{ grant_max_days }}" value="{{ grant_days }}">
+    <label for="ga-note">Note</label><input id="ga-note" name="note" type="text" maxlength="200">
+    {% if grant_as_root %}<fieldset><legend>Sign as</legend>
+      <label><input type="radio" name="signer" value="root" checked> the group root (passphrase)</label>
+      {% if grant_delegate %}<label><input type="radio" name="signer" value="node"> this node's delegation</label>{% endif %}
+    </fieldset>
+    <label for="ga-rp">Root passphrase</label><input id="ga-rp" name="root_passphrase" type="password" maxlength="256" autocomplete="off">
+    {% else %}<input type="hidden" name="signer" value="node">{% endif %}
+    <label for="ga-pw">Your current account password</label><input id="ga-pw" name="password" type="password" maxlength="256" autocomplete="current-password">
+    <p><button type="submit">Issue grant</button></p>
+  </form></details>{% endif %}
+</section>
