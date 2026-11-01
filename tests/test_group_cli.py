@@ -138,3 +138,27 @@ def test_cli_root_import_succession_and_cancel(env, capsys):
         assert s.get(groups.NodeState, groups.SUCCESSION_ROOT) is None
         actions = {e.action for e in s.scalars(select(AuditEntry))}
         assert {"group_root_imported", "group_succession_issued", "group_succession_cancel_issued"} <= actions
+
+
+def test_cli_new_epoch_opens_a_manual_epoch(env, capsys):
+    """§3.6 `atlas group new-epoch`: the way a real node recovers from a clone fork."""
+    from sqlalchemy import func
+
+    from atlas.models import GroupChange
+
+    from .group_harness import create, enrol, finish_creation
+
+    run, nodes, _ = env
+    a, b = nodes["a"], nodes["b"]
+    assert run("a", "new-epoch") == group_cli.NOT_MEMBER
+    create(a)
+    finish_creation(a)
+    enrol(a, b)
+    capsys.readouterr()
+    assert run("b", "new-epoch") == 0
+    epoch = re.search(r"new epoch ([0-9a-f]{8})", capsys.readouterr().out).group(1)
+    with b.session() as s:
+        row = s.get(GroupChange, (groups.load(s).group_id, b.node_id, epoch, "_node", 1))
+        assert row.kind == "stream.epoch" and row.body["reason"] == "manual"
+        assert s.scalar(select(func.count()).select_from(AuditEntry).where(
+            AuditEntry.action == "group_epoch_opened")) == 1
