@@ -89,6 +89,16 @@ class Settings(BaseSettings):
     group_profile_sync: bool = True
     group_profile_fields: str = ""
     group_hold_timeout_days: int = Field(default=7, ge=1, le=90)
+    # Delegation and federated sign-in (C10 §5.5, §6.3); the defaults are H15 and H27. Only a local admin
+    # changes them (the /admin/group policy form); a delegated admin never can.
+    group_max_delegated_role: Literal["none", "moderator", "curator", "admin"] = "none"
+    group_federated_privilege: Literal["deny", "local_mfa", "allow"] = "deny"
+    group_trust_remote_mfa: bool = False
+    group_delegated_requires_mfa: bool = True
+    group_auto_provision: bool = False
+    group_signin: bool = True
+    group_signin_public: bool = False
+    group_denied_accounts: str = ""  # space-separated group account ids whose delegated rights are dropped here
     tagline: str = "Media metadata, merged and sourced"
     footer_text: str = "Community metadata. Contributions are CC0."
     accent_color: str = "#6aa8ff"  # dark theme accent
