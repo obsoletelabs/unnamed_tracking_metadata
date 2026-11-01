@@ -29,7 +29,7 @@ def w(monkeypatch):
     world.engine.dispose()
 
 
-def test_domains_are_prefix_free_and_unique_including_the_feed():
+def test_domains_prefix_free():
     domains = gc.all_domains()
     assert signing.DOMAIN in domains
     assert len(set(domains)) == len(domains)
@@ -85,6 +85,19 @@ def test_root_wrap_round_trip_and_wrong_passphrase(monkeypatch):
         gc.unwrap_root(wrapped, ROOT_PW + "x", "9c1e4b7a2f30d811")
     with pytest.raises(gc.WrongPassphrase):  # bound to the group id (AAD)
         gc.unwrap_root(wrapped, ROOT_PW, "0000000000000000")
+
+
+def test_root_key_needs_passphrase_even_with_secret_key(w):
+    """c (T1): with ATLAS_SECRET_KEY available the sealed root opens only to the passphrase-wrapped blob; G itself
+    needs the root passphrase, and a wrong one is refused with a typed error."""
+    wrapped = json.loads(groups.open_secret(w.settings, w.group.root_sealed))
+    assert set(wrapped) >= {"kdf", "salt", "nonce", "ct"} and "root_private" not in json.dumps(wrapped)
+    with pytest.raises(gc.WrongPassphrase):
+        gc.unwrap_root(wrapped, "", w.gid)
+    with pytest.raises(groups.GroupError, match="wrong root passphrase") as exc:
+        groups.unlock_root(w.s, w.settings, w.group, ROOT_PW + " not it")
+    assert exc.value.code == "forbidden"
+    assert gc.key_id_of(gc.ed_public_b64(w.root())) == w.gid
 
 
 def test_production_kdf_parameters_are_stored():
@@ -174,6 +187,25 @@ def test_rewrap_covers_group_secrets_and_is_all_or_nothing(w):
         secrets_box.rewrap(w.s, rotated)
     w.s.rollback()
     assert w.group.root_sealed == snapshot
+
+
+def test_rewrap_covers_the_pending_succession_root(w):
+    """A G' created by `root succession` waits sealed in node_state; `rewrap` re-encrypts it too, and it still
+    becomes this node's root at activation under the new ATLAS_SECRET_KEY alone."""
+    from datetime import timedelta
+
+    phrase = "synthetic succession root phrase 51aa"
+    keys = gc.open_recovery_file(w.files[0], REC_PW[0])
+    obj, _ = groups.issue_succession(w.s, w.settings, w.group, w.me, [keys], phrase,
+                                     new_recovery_passphrase="synthetic succession recovery phrase 8e21")
+    before = w.s.get(groups.NodeState, groups.SUCCESSION_ROOT).value
+    rotated = build_settings(secret_key="synthetic-new-secret-0123456789abcdef", secret_key_previous=SECRET)
+    counts = secrets_box.rewrap(w.s, rotated)
+    assert counts["group_secrets"] == 3 and w.s.get(groups.NodeState, groups.SUCCESSION_ROOT).value != before
+    groups.activate_successions(w.s, w.group, groups.utcnow() + timedelta(hours=25))
+    only_new = build_settings(secret_key="synthetic-new-secret-0123456789abcdef")
+    root = groups.unlock_root(w.s, only_new, w.group, phrase)
+    assert gc.key_id_of(gc.ed_public_b64(root)) == obj["body"]["new_root_key_id"]
 
 
 def test_object_types_are_not_feed_kinds():

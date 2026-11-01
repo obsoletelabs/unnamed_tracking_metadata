@@ -10,9 +10,10 @@ from sqlalchemy import select
 
 from atlas import group_crypto as gc
 from atlas import groups
-from atlas.models import AuditEntry, GroupBannedNode, GroupCert, GroupMember, GroupRevoked, GroupView
+from atlas.models import AuditEntry, GroupBannedNode, GroupCert, GroupCrl, GroupMember, GroupRevoked, GroupView
 from atlas.signing import body_hash
 
+from .group_harness import REC_PW
 from .group_world import World, rotation, synth
 
 
@@ -66,7 +67,7 @@ def test_step2_tampered_body_and_moved_signature(w):
     assert w.verdict(moved) != "ok"
 
 
-def test_step2_member_pop_required_url_swap_refused(w):
+def test_url_swap_without_member_pop_refused(w):
     """n4: an issuer cannot change a member's url (or box key) without a new member_pop by that member."""
     x = synth()
     member = w.member(x)
@@ -90,7 +91,7 @@ def test_step3_expiry_and_skew_edges(w):
     assert w.verdict(cert, begin - timedelta(seconds=301)) == "not_yet_valid"
 
 
-def test_step4_member_without_delegate_cannot_enrol(w):
+def test_enrolment_by_member_without_delegate_rejected(w):
     """k / g: a member key signs a certificate for another node; every member rejects it (T1, T4)."""
     m, x = synth(), synth()
     parent = w.enrol(m)["body"]["serial"]
@@ -100,7 +101,7 @@ def test_step4_member_without_delegate_cannot_enrol(w):
     assert x.node_id not in w.trust().members()
 
 
-def test_step4_delegate_bounds(w):
+def test_delegate_max_members_and_depth(w):
     """l: max_members, depth 1 and not_after bounds."""
     d, x, y, z = synth(), synth(), synth(), synth()
     parent = w.delegate(d, max_members=1)["body"]["serial"]
@@ -136,7 +137,7 @@ def test_step6_revoked_serial_invalid(w):
     assert w.s.get(GroupBannedNode, (w.gid, x.node_id)).reason == "removed"
 
 
-def test_step8_new_root_key_for_existing_node_refused(w):
+def test_cert_for_existing_node_with_new_root_refused(w):
     """n: a certificate for an existing node id with another root key is refused (T5)."""
     x = synth()
     w.enrol(x)
@@ -170,7 +171,7 @@ def test_member_rev_cannot_regress(w):
 
 # ---- g, h: CRL scope ----------------------------------------------------------------------------------------
 
-def test_member_crl_revoking_others_is_invalid(w):
+def test_member_crl_revoking_others_invalid(w):
     m, x = synth(), synth()
     w.enrol(m)
     victim = w.enrol(x)
@@ -179,7 +180,7 @@ def test_member_crl_revoking_others_is_invalid(w):
     assert w.verdict(victim) == "ok" and revoked(w, victim["body"]["serial"]) is None
 
 
-def test_self_leave_crl_and_stolen_key_cannot_undo(w):
+def test_self_leave_not_undone_by_stolen_key(w):
     """p3: self CRL `left`, then a backdated empty self CRL at seq+1: the node stays revoked (T18)."""
     m = synth()
     cert = w.enrol(m)
@@ -268,7 +269,7 @@ def test_delegate_cap_deterministic(w):
 
 # ---- p: CRL monotonicity ------------------------------------------------------------------------------------
 
-def test_crl_rewind_changes_nothing(w):
+def test_crl_rewind_refused(w):
     x, y = synth(), synth()
     cx, cy = w.enrol(x), w.enrol(y)
     root = w.root()
@@ -315,7 +316,7 @@ def test_reason_upgrade_never_downgrade(w):
 
 # ---- r: feed signatures are not group objects ---------------------------------------------------------------
 
-def test_feed_signature_is_not_a_group_object(w):
+def test_feed_signature_not_valid_as_group_object(w):
     x = synth()
     cert = w.root_cert(x, 9)
     feed_sig = w.me.sign(1, "group.cert", cert["body_hash"])
@@ -336,7 +337,7 @@ def test_rotation_to_other_members_key_refused(w):
 
 # ---- i, i2, i3, y, z, j: root succession ---------------------------------------------------------------------
 
-def test_succession_needs_recovery_quorum(monkeypatch):
+def test_succession_needs_threshold_recovery_sigs(monkeypatch):
     w = World(monkeypatch, recovery=3)
     keys = w.recovery_keys()
     new = Ed25519PrivateKey.generate()
@@ -517,3 +518,223 @@ def test_leave_refused_while_root_sealed_without_verified_recovery(monkeypatch):
     crl = groups.leave(one.s, one.settings, one.group, one.me)
     assert crl["body"]["entries"][0]["reason"] == "left"
     assert one.group.status == "left" and one.group.root_sealed is None
+
+
+# ---- g, T1/T2: a member cannot sign for others, and cannot ban or cascade through unknown serials ---------------
+
+def test_member_key_cannot_sign_cert_or_crl_for_others(w):
+    """g (T1): an ordinary member's certificate for another node is not even stored, and its CRL naming another
+    node's certificate is invalid; neither changes who is a member."""
+    m, x, v = synth(), synth(), synth()
+    w.enrol(m)
+    victim = w.enrol(v)
+    forged = w.node_cert(m, x, 1, w.trust().in_force(m.node_id)["body"]["serial"])
+    assert groups.ingest_cert(w.s, w.group, forged, groups.utcnow()) == "issuer_cannot_enrol"
+    assert w.s.get(GroupCert, (w.gid, forged["body"]["serial"])) is None
+    assert w.apply(w.crl(m, [groups.crl_entry(victim, "removed", groups.utcnow())], 1)) == "invalid"
+    assert set(w.trust().members()) == {w.me.node_id, m.node_id, v.node_id}
+
+
+def _entry(serial, node_id, root_public, reason="key_compromise"):
+    now = groups.utcnow()
+    return {"serial": serial, "node_id": node_id, "root_public_key": root_public,
+            "revoked_at": gc.stamp(now), "reason": reason,
+            "suspect_since": gc.stamp(now - timedelta(days=1)) if reason == "key_compromise" else None}
+
+
+def test_member_crl_naming_unknown_serial_cannot_ban_or_cascade(w):
+    """Regression (review blocker): an ordinary member signs `crl:M/1` naming its own-prefix serial `M/1` with a
+    victim's node id. Nothing is taken from the entry's node_id: no ban, no cascade, the victims stay members."""
+    m, v, d, x = synth(), synth(), synth(), synth()
+    w.enrol(m)
+    w.enrol(v)
+    parent = w.delegate(d)["body"]["serial"]
+    child = w.node_cert(d, x, 1, parent)
+    w.ingest(child)
+    me = w.trust().in_force(w.me.node_id)
+    attacks = [_entry(f"{m.node_id}/1", v.node_id, v.trust_public_b64),
+               _entry(f"{m.node_id}/2", w.me.node_id, w.me.trust_public_b64, "removed"),
+               _entry(f"{m.node_id}/3", d.node_id, d.trust_public_b64, "removed"),
+               _entry(f"{m.node_id}/4", d.node_id, d.trust_public_b64, "left")]
+    assert w.apply(w.crl(m, attacks, 1)) == "invalid"  # an ordinary member issues nothing, so revokes nothing
+    stranger = synth()  # a signer this node holds no certificate for: never applied
+    w.apply(w.crl(stranger, [_entry(f"{stranger.node_id}/1", v.node_id, v.trust_public_b64)], 1))
+    assert w.s.scalars(select(GroupBannedNode)).all() == []
+    assert w.s.scalars(select(GroupRevoked)).all() == []
+    assert w.verdict(child) == "ok" and w.verdict(me) == "ok"
+    assert w.group.status == "active"
+    assert {w.me.node_id, m.node_id, v.node_id, d.node_id, x.node_id} <= set(w.trust().members())
+
+
+def _bare(cert):
+    return {k: v for k, v in cert["body"]["member"].items() if k != "url_verified"}
+
+
+def test_delegate_cannot_ban_a_node_it_did_not_enrol(w):
+    """A delegate may revoke what it issued, but a look-alike certificate it mints for a root-enrolled node (or
+    the root holder) only revokes that look-alike: no ban, no cascade. Its own enrolee can be banned."""
+    d, v, x = synth(), synth(), synth()
+    parent = w.delegate(d)["body"]["serial"]
+    victim = w.enrol(v)
+    own = w.node_cert(d, x, 1, parent)
+    w.ingest(own)
+    early = w.crl(d, [_entry(f"{d.node_id}/2", v.node_id, v.trust_public_b64)], 1)
+    assert w.apply(early) == "stored"  # it names a serial not seen yet: deferred, nothing applied
+    assert revoked(w, f"{d.node_id}/2") is None and w.s.get(GroupBannedNode, (w.gid, v.node_id)) is None
+    lookalike = w.node_cert(d, v, 2, parent, member=_bare(victim), pop=victim["body"]["member_pop"])
+    w.ingest(lookalike)
+    row = revoked(w, lookalike["body"]["serial"])
+    assert row is not None and row.node_id is None  # the deferred entry now revokes that serial only
+    assert w.s.get(GroupBannedNode, (w.gid, v.node_id)) is None and w.verdict(victim) == "ok"
+    me = w.trust().in_force(w.me.node_id)
+    root_lookalike = w.node_cert(d, w.me, 3, parent, member=_bare(me), pop=me["body"]["member_pop"])
+    assert groups.ingest_cert(w.s, w.group, root_lookalike, groups.utcnow()) == "stored"
+    w.apply(w.crl(d, [*early["body"]["entries"], groups.crl_entry(root_lookalike, "removed", groups.utcnow())], 2))
+    assert w.s.get(GroupBannedNode, (w.gid, w.me.node_id)) is None
+    assert w.verdict(me) == "ok" and w.group.status == "active"
+    w.apply(w.crl(d, [*early["body"]["entries"], groups.crl_entry(root_lookalike, "removed", groups.utcnow()),
+                      groups.crl_entry(own, "removed", groups.utcnow())], 3))
+    assert w.s.get(GroupBannedNode, (w.gid, x.node_id)).reason == "removed"  # its own enrolee: banned
+    assert w.verdict(own) == "revoked"
+
+
+# ---- T1, storage bounds ---------------------------------------------------------------------------------------
+
+def test_store_bounded_for_node_signed_objects(w):
+    """A delegate's certificates beyond max_serials are not stored; a node's cumulative CRLs compact to one row;
+    an oversized node CRL is invalid; a serial collision is audited once however often it is re-served."""
+    d = synth()
+    parent = w.delegate(d, max_members=1)["body"]["serial"]  # max_serials = 2
+    assert groups.ingest_cert(w.s, w.group, w.node_cert(d, synth(), 3, parent), groups.utcnow()) == \
+        "delegate_serials_exhausted"
+    first = w.node_cert(d, synth(), 1, parent)
+    w.ingest(first)
+    entries = [groups.crl_entry(first, "removed", groups.utcnow())]
+    for seq in range(1, 6):
+        assert w.apply(w.crl(d, entries, seq)) == "stored"
+    rows = w.s.scalars(select(GroupCrl).where(GroupCrl.issuer == d.node_id)).all()
+    assert [r.crl_seq for r in rows] == [5]
+    assert w.apply(w.crl(d, entries, 2)) == "known"  # an older, compacted CRL served again: not stored again
+    assert len(audited(w, "group_crl_rewind_refused")) == 1
+    for i in range(groups.MAX_NODE_CRLS + 2):  # forks at one seq beyond the per-issuer cap are refused
+        fork = w.crl(d, entries, 7, issued=groups.utcnow() - timedelta(seconds=i + 1))
+        w.apply(fork)
+    assert len(w.s.scalars(select(GroupCrl).where(GroupCrl.issuer == d.node_id)).all()) <= groups.MAX_NODE_CRLS
+    huge = [_entry(f"{d.node_id}/1", first["body"]["member"]["node_id"],
+                   first["body"]["member"]["root_public_key"])] * (groups.MAX_NODE_CRL_ENTRIES + 1)
+    assert groups.ingest_crl(w.s, w.group, w.crl(d, huge, 99), groups.utcnow()) == "invalid"
+    x = synth()
+    root = w.root()
+    member = w.member(x)
+    w.ingest(w.root_cert(x, 30, root=root, member=member))
+    other = w.root_cert(x, 30, root=root, member={**member, "rev": 2})
+    for _ in range(3):
+        assert groups.ingest_cert(w.s, w.group, other, groups.utcnow()) == "collision"
+    assert len(audited(w, "group_serial_collision")) == 1
+
+
+# ---- §1.7: a routine rotation keeps membership ----------------------------------------------------------------
+
+def test_rotation_keeps_membership(w):
+    """A member rotates its signing key (C10 §1.7: no certificate change). Its certificate, whose member_pop was
+    made under the superseded key, stays valid; renewal reuses it; a new member object still needs the current
+    key (strict), so the old key cannot introduce a new url or box key."""
+    x = synth()
+    cert = w.enrol(x)
+    new_key = Ed25519PrivateKey.generate()
+    assert groups.ingest_rotations(w.s, w.group, x.node_id, [rotation(x, x.node_id, 1, new_key)],
+                                   groups.utcnow()) == "stored"
+    groups.rebuild(w.s, w.group, w.me.node_id)
+    assert w.verdict(cert) == "ok"
+    assert w.s.get(GroupMember, (w.gid, x.node_id)).status == "active"
+    renewed = groups.renew(w.s, w.settings, w.group, w.me, [x.node_id], root=w.root())
+    assert len(renewed) == 1 and w.verdict(renewed[0]) == "ok"
+    member = {**_bare(cert), "url": "http://moved.test", "rev": cert["body"]["member"]["rev"] + 1}
+    stale = {"member": member, "member_pop": gc.member_pop(x.private, w.gid, member, x.key_id)}
+    with pytest.raises(groups.GroupError, match="member_pop"):
+        groups.renew(w.s, w.settings, w.group, w.me, [x.node_id], root=w.root(), member_update=stale)
+    rotated = groups.NodeIdentity(node_id=x.node_id, private=new_key, root_public_b64=x.trust_public_b64)
+    fresh = {"member": member, "member_pop": gc.member_pop(new_key, w.gid, member, rotated.key_id)}
+    out = groups.renew(w.s, w.settings, w.group, w.me, [x.node_id], root=w.root(), member_update=fresh)
+    assert out[0]["body"]["member"]["url"] == "http://moved.test"
+    assert w.s.get(GroupMember, (w.gid, x.node_id)).url == "http://moved.test"
+
+
+# ---- §1.8: revocation keeps working while halted --------------------------------------------------------------
+
+def test_halted_group_still_applies_crls_only(w):
+    x, y = synth(), synth()
+    cx = w.enrol(x)
+    root = w.root()
+    (rec,) = w.recovery_keys()
+    groups.ingest_succession(w.s, w.group, w.succession(1, Ed25519PrivateKey.generate(), [rec]), groups.utcnow())
+    groups.ingest_succession(w.s, w.group, w.succession(1, Ed25519PrivateKey.generate(), [rec]), groups.utcnow())
+    assert w.group.status == "halted"
+    state = groups.export_state(w.s, w.group, w.me)
+    crl = w.crl(None, [groups.crl_entry(cx, "removed", groups.utcnow())], 1, root=root)
+    new_cert = w.root_cert(y, 50, root=root)
+    state = {**state, "crls": [crl], "certs": [*state["certs"], new_cert]}
+    counts = groups.ingest_state(w.s, w.group, state, w.me.node_id)
+    assert counts.get("crl:stored") == 1
+    assert revoked(w, cx["body"]["serial"]).reason == "removed"
+    assert w.s.get(GroupCert, (w.gid, new_cert["body"]["serial"])) is None  # root-signed objects are refused
+    assert w.group.status == "halted"
+
+
+# ---- §1.8, §1.9: recovery operations --------------------------------------------------------------------------
+
+NEW_ROOT_PW = "synthetic succession root phrase 51aa"
+NEW_REC_PW = "synthetic succession recovery phrase 8e21"
+
+
+def _rk(world, i=0):
+    return gc.open_recovery_file(world.files[i], REC_PW[i])
+
+
+def test_succession_issued_with_recovery_file_activates_here(w):
+    """`root succession`: a recovery quorum and a new G' on this node; pending for 24 h; then active, with G'
+    unlockable here under the new passphrase, carried members valid and an excluded member dropped."""
+    x, bad = synth(), synth()
+    cx = w.enrol(x)
+    cbad = w.enrol(bad)
+    carried = {w.trust().in_force(n)["body"]["serial"] for n in (w.me.node_id, x.node_id)}
+    obj, files = groups.issue_succession(w.s, w.settings, w.group, w.me, [_rk(w)], NEW_ROOT_PW,
+                                         exclude_nodes=(bad.node_id,), new_recovery_passphrase=NEW_REC_PW)
+    assert groups.pending_successions(w.group) and audited(w, "group_succession_issued")
+    assert {c["serial"] for c in obj["body"]["carry"]} == carried
+    with pytest.raises(groups.GroupError, match="succession is pending"):
+        w.root()
+    later = groups.utcnow() + timedelta(hours=25)
+    groups.rebuild(w.s, w.group, w.me.node_id, later)
+    new_id = obj["body"]["new_root_key_id"]
+    assert w.group.root_key_id == new_id and w.group.root_state == "holder"
+    assert w.s.get(groups.NodeState, groups.SUCCESSION_ROOT) is None
+    new_root = groups.unlock_root(w.s, w.settings, w.group, NEW_ROOT_PW)
+    assert gc.key_id_of(gc.ed_public_b64(new_root)) == new_id
+    assert w.verdict(cx, later) == "ok" and w.verdict(cbad, later) == "not_carried"
+    reopened = gc.open_recovery_file(files[0], NEW_REC_PW)  # the 1-of-1 file now holds G'
+    assert gc.key_id_of(gc.ed_public_b64(reopened.root)) == new_id
+    y = synth()
+    member = w.member(y)
+    cert = groups.issue_cert(w.s, w.group, w.me, member, w.pop(y, member), list(groups.DEFAULT_SCOPES), None,
+                             signer_root=new_root, days=365, now=later)
+    assert cert["signer"]["key_id"] == new_id and w.verdict(cert, later) == "ok"
+
+
+def test_succession_cancel_by_recovery_quorum(w):
+    obj, _ = groups.issue_succession(w.s, w.settings, w.group, w.me, [_rk(w)], NEW_ROOT_PW,
+                                     new_recovery_passphrase=NEW_REC_PW)
+    cancel = groups.cancel_succession(w.s, w.settings, w.group, [_rk(w)])
+    assert cancel["body"]["succession_body_hash"] == obj["body_hash"]
+    assert not groups.pending_successions(w.group) and w.group.succession_cancels
+    assert w.s.get(groups.NodeState, groups.SUCCESSION_ROOT) is None  # G' destroyed
+    assert groups.activate_successions(w.s, w.group, groups.utcnow() + timedelta(days=3)) == 0
+    assert w.root()  # the old root works again
+
+
+def test_succession_refuses_a_file_of_another_group(w, monkeypatch):
+    other = World(monkeypatch)
+    with pytest.raises(groups.GroupError, match="another group"):
+        groups.issue_succession(w.s, w.settings, w.group, w.me, [_rk(other)], NEW_ROOT_PW,
+                                new_recovery_passphrase=NEW_REC_PW)
+    assert not groups.pending_successions(w.group)

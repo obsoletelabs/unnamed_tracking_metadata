@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     node_operator: str = ""
     # Owner groups (CONTRACT-C10): the freshness gate for privileged actions (H28) and the member pull interval.
     group_view_max_age_hours: int = Field(default=24, ge=1, le=168)
-    group_sync_interval: int = Field(default=300, ge=30, le=86400)
+    group_sync_interval: int = Field(default=60, ge=30, le=86400)  # C10 §3.8
     tagline: str = "Media metadata, merged and sourced"
     footer_text: str = "Community metadata. Contributions are CC0."
     accent_color: str = "#6aa8ff"  # dark theme accent

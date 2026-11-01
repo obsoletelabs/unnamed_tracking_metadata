@@ -96,3 +96,45 @@ def test_cli_weak_passphrase_refused(env, capsys):
     assert run("a", "create", "--name", "Home", "--recovery-out", str(tmp),
                answers=["password12345678", "password12345678", REC_PW[0], REC_PW[0]]) == 1
     assert "passphrase refused" in capsys.readouterr().err
+
+
+def test_cli_root_import_succession_and_cancel(env, capsys):
+    """§8.2 recovery commands: `root import` moves G to another member (resyncing until synced or skipped);
+    `root succession` signs a pending succession with the recovery file; `succession-cancel` cancels it."""
+    from .group_harness import enrol
+
+    run, nodes, tmp = env
+    a, b = nodes["a"], nodes["b"]
+    assert run("a", "create", "--name", "Home", "--recovery-out", str(tmp),
+               answers=[ROOT_PW, ROOT_PW, REC_PW[0], REC_PW[0]]) == 0
+    enrol(a, b)
+    (file,) = [str(p) for p in tmp.glob("atlas-group-*-recovery-1.json")]
+    new_root, new_rec, root2 = ("synthetic imported root phrase 3f2a", "synthetic new recovery phrase 0d1e",
+                                "synthetic successor root phrase 4a55")
+    assert run("b", "root", "import", "--recovery-file", file, "--old-root", "decommissioned",
+               answers=["not the file passphrase!!"]) == 1
+    assert "wrong passphrase" in capsys.readouterr().err
+    assert run("b", "root", "import", "--recovery-file", file, "--old-root", "decommissioned",
+               answers=[REC_PW[0], new_root, new_root]) == 0
+    with b.session() as s:
+        group = groups.load(s)
+        assert group.root_state == "holder" and group.status == "resyncing" and group.root_moved
+    assert run("b", "resync", "--skip") == 0
+    out_dir = tmp / "succ"
+    out_dir.mkdir()
+    assert run("b", "root", "succession", "--recovery-file", file, "--recovery-out", str(out_dir),
+               answers=[REC_PW[0], root2, root2, new_rec, new_rec]) == 0
+    assert "activates in 24 h" in capsys.readouterr().out
+    (new_file,) = list(out_dir.glob("*.json"))
+    assert json.loads(new_file.read_text())["contains"] == ["recovery_key", "root_key"]
+    assert run("b", "status") == group_cli.DEGRADED  # a pending succession is degraded
+    with b.session() as s:
+        assert groups.pending_successions(groups.load(s))
+        assert s.get(groups.NodeState, groups.SUCCESSION_ROOT) is not None
+    assert run("b", "root", "succession-cancel", "--recovery-file", file, answers=[REC_PW[0]]) == 0
+    with b.session() as s:
+        group = groups.load(s)
+        assert not groups.pending_successions(group) and group.succession_cancels
+        assert s.get(groups.NodeState, groups.SUCCESSION_ROOT) is None
+        actions = {e.action for e in s.scalars(select(AuditEntry))}
+        assert {"group_root_imported", "group_succession_issued", "group_succession_cancel_issued"} <= actions
