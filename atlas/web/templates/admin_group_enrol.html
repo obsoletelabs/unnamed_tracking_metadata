@@ -39,6 +39,7 @@
   <form method="post" action="/admin/group/enrolment/{{ row.id }}/confirm">{{ csrf(p.csrf) }}
     <label><input type="checkbox" name="matches" required> The numbers match on both screens.</label>
     {% if needs_root %}<label for="e-root">Root passphrase</label><input id="e-root" name="root_passphrase" type="password" required maxlength="256" autocomplete="off">{% endif %}
+    {% if row.side == 'inviter' %}<label for="e-acct">Your current account password</label><input id="e-acct" name="password" type="password" maxlength="256" autocomplete="current-password">{% endif %}
     <p><button type="submit">{{ 'Issue certificate' if row.side == 'inviter' else ('Join group' if row.state == 'revealed' else 'Check again') }}</button></p>
   </form>{% endif %}
   {% if row.state not in ('active', 'aborted', 'burned', 'expired') %}

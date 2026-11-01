@@ -8,12 +8,13 @@ import pytest
 from sqlalchemy import func, select
 
 from atlas import group_crypto as gc
-from atlas import group_enrol, groups
+from atlas import group_enrol, groups, key_rotation
 from atlas.api import group_routes
 from atlas.models import AuditEntry, GroupCert, GroupEnrolment, GroupMember, OwnerGroup
 from atlas.signing import canonical_json
 
 from .group_harness import (
+    REC_PW,
     ROOT_PW,
     Dispatcher,
     create,
@@ -164,7 +165,7 @@ def _forged_hello(b, code, mutate=None):
             "mac": gc.enrol_mac(inv.k, "joiner-hello", t1)}, inv
 
 
-def test_five_mac_failures_burn_the_invite(pair, net):
+def test_invite_burns_after_failures(pair, net):
     a, b = pair
     code = invite(a)
     body, _ = _forged_hello(b, code)
@@ -190,7 +191,7 @@ def test_hello_with_a_pop_by_another_key_is_refused(pair, net):
         assert s.scalars(select(GroupEnrolment)).one().failures == 1
 
 
-def test_mitm_swapping_joiner_keys_breaks_the_inviter_pop(pair, net):
+def test_enrolment_key_swap_detected_by_pop_i(pair, net):
     """A relay that holds the code but substitutes its own hello gets a transcript J never computed (§2.4)."""
     a, b = pair
     code = invite(a)
@@ -220,7 +221,7 @@ def test_reflection_of_a_mac_between_roles_fails(pair, net):
         assert s.get(GroupEnrolment, eid).failures == 1
 
 
-def test_wrong_reveal_commitment_counts_as_failure(pair, net):
+def test_sas_commitment_enforced(pair, net):
     a, b = pair
     code = invite(a)
     body, inv = _forged_hello(b, code)
@@ -428,3 +429,228 @@ def test_restore_sets_resyncing_and_secret_check_covers_group_secrets(pair, tmp_
     engine.dispose()
     with a.session() as s:  # the source is untouched
         assert groups.load(s).status == "active"
+
+
+# ---- o, o4, q: MITM, PoP reflection, wrong group or inviter ---------------------------------------------------
+
+def test_pop_reflection_between_roles_refused(pair, net):
+    """o4 (T21): a joiner PoP made for another role or step (abort, the url ping) is refused at complete even
+    with a valid complete MAC; it counts as a failure and delivers nothing."""
+    a, b = pair
+    code = invite(a)
+    with b.session() as s:
+        row, _, _ = group_enrol.start_join(s, b.settings, b.identity, "http://a.test", code, net)
+        s.commit()
+        eid, th = row.id, row.transcript_hash
+        k = gc.unb64(json.loads(groups.open_secret(b.settings, row.secret_enc))["k"], 16)
+    with a.session() as s:
+        group_enrol.confirm_inviter(s, a.settings, groups.load(s), a.identity, eid, ROOT_PW, http=net)
+        s.commit()
+    mac = gc.enrol_mac(k, "joiner-complete", f"{th}\n{eid}".encode())
+    reflected = [gc.enrol_pop(b.identity.private, "joiner-abort", th, eid),
+                 gc.enrol_pop(b.identity.private, "joiner-url", th),
+                 gc.enrol_pop(b.identity.private, "joiner-hello", th, eid)]
+    for pop in reflected:
+        r = net.post("http://a.test/api/v2/group/enrol/complete", json={"enrolment_id": eid, "pop": pop, "mac": mac})
+        assert r.status_code == 404 and r.json() == {"detail": "Not Found"}
+    with a.session() as s:
+        row = s.get(GroupEnrolment, eid)
+        assert row.failures == 3 and row.state == "issued"  # nothing delivered
+    good = gc.enrol_pop(b.identity.private, "joiner-complete", th, eid)
+    assert net.post("http://a.test/api/v2/group/enrol/complete",
+                    json={"enrolment_id": eid, "pop": good, "mac": mac}).status_code == 200
+
+
+def test_join_refuses_wrong_group_or_inviter(pair, net):
+    """q (T7): the code names the inviter and the group; an answer from another node or for another group is
+    refused before any SAS is shown, and nothing is stored on the joiner."""
+    a, b = pair
+    c = net.node("c")
+    code = invite(a)
+    inv = gc.decode_code(code)
+    wrong_inviter = gc.encode_code(gc.Invite(inv.group_id, c.node_id, inv.invite_id, inv.k))
+    with b.session() as s, pytest.raises(groups.GroupError, match="another node or group"):
+        group_enrol.start_join(s, b.settings, b.identity, "http://a.test", wrong_inviter, net)
+    with b.session() as s:
+        assert s.scalars(select(GroupEnrolment)).all() == [] and groups.load(s) is None
+    code = invite(a)
+    inv = gc.decode_code(code)
+    body, _ = _forged_hello(b, code)
+    reply = net.post("http://a.test/api/v2/group/enrol/hello", json=body).json()
+    t1 = canonical_json({k: v for k, v in body.items() if k not in ("pop", "mac")})
+    assert group_enrol._verify_reply(inv, t1, reply)["node_id"] == a.node_id  # the genuine pair verifies
+    for fake in (gc.Invite("0123456789abcdef", inv.inviter, inv.invite_id, inv.k),
+                 gc.Invite(inv.group_id, c.node_id, inv.invite_id, inv.k)):
+        with pytest.raises(groups.GroupError, match="another node or group"):
+            group_enrol._verify_reply(fake, t1, reply)
+    # J also checks the inviter's own certificate: a root holder cannot pose as a delegate, nor show another cert
+    shadow = OwnerGroup(group_id=inv.group_id, genesis=reply["group"]["genesis"], succession=[],
+                        recovery=reply["group"]["genesis"]["body"]["recovery"])
+    with pytest.raises(groups.GroupError, match="not delegated"):
+        group_enrol._inviter_cert_ok(shadow, reply["inviter"], {**reply, "inviter_kind": "delegate"})
+    with pytest.raises(groups.GroupError):
+        group_enrol._inviter_cert_ok(shadow, {**reply["inviter"], "url": "http://elsewhere.test"}, reply)
+
+
+def test_enrolment_mitm_changes_sas(pair, net):
+    """o (T5): someone who learned the code can only enrol itself in J's place. The inviter's screen then shows
+    the intruder's fingerprint and a SAS the real joiner never sees; nothing is issued without the inviter's
+    confirmation, and cancelling ends it."""
+    a, b = pair
+    mallory = net.node("m")
+    code = invite(a)
+    with mallory.session() as s:
+        row_m, sas_m, _ = group_enrol.start_join(s, mallory.settings, mallory.identity, "http://a.test", code, net)
+        s.commit()
+        eid = row_m.id
+    with b.session() as s, pytest.raises(groups.GroupError, match="does not know this code"):
+        group_enrol.start_join(s, b.settings, b.identity, "http://a.test", code, net)
+    with b.session() as s:
+        assert s.scalars(select(GroupEnrolment)).all() == []  # the real joiner has no SAS that could match
+    with a.session() as s:
+        row = s.get(GroupEnrolment, eid)
+        assert group_enrol.sas_of(a.settings, row) == sas_m and row.peer_node_id == mallory.node_id != b.node_id
+    with mallory.session() as s:
+        assert group_enrol.confirm_joiner(s, mallory.settings, mallory.identity, eid, net) == "pending"
+        s.commit()
+    with a.session() as s:
+        assert s.scalars(select(GroupCert).where(GroupCert.node_id == mallory.node_id)).all() == []
+        group_enrol.cancel(s, a.settings, a.identity, eid)
+        s.commit()
+    with mallory.session() as s:
+        assert group_enrol.confirm_joiner(s, mallory.settings, mallory.identity, eid, net) == "aborted"
+        s.commit()
+    with a.session() as s:
+        assert s.scalars(select(GroupCert).where(GroupCert.node_id == mallory.node_id)).all() == []
+        assert s.get(GroupEnrolment, eid).state == "aborted"
+
+
+# ---- T3 (A10 side), t: removed callers and the skew edge of the sealed call -----------------------------------
+
+def test_revoked_member_call_gets_404(pair, net):
+    a, b = pair
+    enrol(a, b)
+    with a.session() as s:
+        group = groups.load(s)
+        groups.revoke_node(s, a.settings, group, a.identity, b.node_id, "removed",
+                           root=groups.unlock_root(s, a.settings, group, ROOT_PW))
+        s.commit()
+    with b.session() as s, pytest.raises(group_routes.CallError, match="HTTP 404"):
+        group_routes.call(s, b.settings, b.identity, groups.load(s), _member(a), "state", {}, net)
+    assert "group_request_auth_failed" in actions(a)
+    with a.session() as s:
+        assert s.get(GroupMember, (groups.load(s).group_id, b.node_id)).status == "revoked"
+
+
+def _sealed_call(b, a_member, group, t, nonce):
+    inner = {"v": 1, "g": group.group_id, "n": b.node_id, "aud": a_member["node_id"], "k": b.identity.key_id,
+             "t": t, "r": gc.b64(nonce), "proto": "1.0", "op": "hello", "params": {}}
+    return gc.seal_request(a_member["box_public_key"], group.group_id, a_member["node_id"],
+                           gc.sign_request(b.identity.private, inner))
+
+
+def test_call_clock_skew_exact_edges(pair, net):
+    """t: a request exactly SKEW (300 s) away is served; one second more answers `clock_skew` (signed, sealed)."""
+    a, b = pair
+    enrol(a, b)
+    a_member = _member(a)
+    base = int(groups.utcnow().timestamp())
+    with b.session() as s:
+        group = groups.load(s)
+        keys = groups.box_keys(b.settings, group)
+        cases = [(base, base + gc.SKEW, None), (base, base - gc.SKEW, None),
+                 (base, base + gc.SKEW + 1, "clock_skew"), (base, base - gc.SKEW - 1, "clock_skew")]
+        for i, (t, now, expected) in enumerate(cases):
+            nonce = bytes([i + 1]) * 16
+            resp = group_routes.serve_call(a.st, _sealed_call(b, a_member, group, t, nonce), now=now)
+            opened = gc.open_response(keys, nonce, group.group_id, a.node_id, b.node_id, json.loads(resp.body))
+            assert opened["error"] == expected, (t, now)
+            assert (opened["result"] is None) == (expected is not None)
+
+
+# ---- §1.7 end to end: rotate, and the node stays a member on itself and on its peers ---------------------------
+
+def test_rotation_keeps_membership_on_self_and_peers(pair, net):
+    a, b = pair
+    enrol(a, b)
+    with b.session() as s:
+        successor = key_rotation.rotate(s, b.identity.key_id, b.settings)
+        s.commit()
+    b.st.ctx.identity = successor
+    with b.session() as s:
+        group = groups.load(s)
+        groups.rebuild(s, group, b.node_id, settings=b.settings)
+        s.commit()
+        assert group.status == "active"
+        assert s.get(GroupMember, (group.group_id, b.node_id)).status == "active"
+    assert pull(a) == {b.node_id: "ok"}  # a learns b's rotation from b's own history and verifies the answer
+    with a.session() as s:
+        group = groups.load(s)
+        tr = groups.trust(s, group, own_node=a.node_id)
+        assert tr.current_key(b.node_id)[0] == successor.key_id
+        assert b.node_id in tr.members()
+        assert s.get(GroupMember, (group.group_id, b.node_id)).status == "active"
+    assert pull(b) == {a.node_id: "ok"}  # b's requests, signed by its new key, are accepted by a
+    assert set(members(a)) == set(members(b)) == {a.node_id, b.node_id}
+
+
+# ---- §1.8: a halted node keeps pulling revocations ---------------------------------------------------------------
+
+def test_halted_node_keeps_receiving_revocations(net):
+    from atlas import main
+
+    a, b, c = net.node("a"), net.node("b"), net.node("c")
+    create(a)
+    finish_creation(a)
+    enrol(a, b)
+    enrol(a, c)
+    with b.session() as s:
+        groups.load(s).status = "halted"  # as after conflicting successions
+        s.commit()
+    with a.session() as s:
+        group = groups.load(s)
+        groups.revoke_node(s, a.settings, group, a.identity, c.node_id, "removed",
+                           root=groups.unlock_root(s, a.settings, group, ROOT_PW))
+        s.commit()
+    assert main.group_round(b.st.maker, b.st.ctx, net).get(a.node_id) == "ok"
+    with b.session() as s:
+        group = groups.load(s)
+        assert group.status == "halted"
+        assert s.scalars(select(groups.GroupRevoked).where(groups.GroupRevoked.node_id == c.node_id)).first() \
+            is not None
+        assert c.node_id not in groups.trust(s, group, own_node=b.node_id).members()
+
+
+# ---- §1.9: moving the root with a recovery file ------------------------------------------------------------------
+
+NEW_ROOT_PW = "synthetic imported root phrase 3f2a"
+
+
+def test_root_import_moves_root_and_disables_old_holder(net):
+    a, b, c = net.node("a"), net.node("b"), net.node("c")
+    created = create(a)
+    finish_creation(a)
+    enrol(a, b)
+    keys = gc.open_recovery_file(created.recovery_files[0], REC_PW[0])
+    with b.session() as s:
+        group = groups.load(s)
+        moved = groups.import_root(s, b.settings, group, b.identity, keys, NEW_ROOT_PW, "running")
+        s.commit()
+        assert moved["body"]["to_node"] == b.node_id
+        assert group.root_state == "holder" and group.status == "resyncing"
+        with pytest.raises(groups.GroupError, match="resyncing"):
+            groups.unlock_root(s, b.settings, group, NEW_ROOT_PW)
+    assert pull(b) == {a.node_id: "ok"}
+    with b.session() as s:
+        assert groups.load(s).status == "active"
+        assert "group_root_imported" in actions(b)
+    assert pull(a) == {b.node_id: "ok"}
+    with a.session() as s:
+        group = groups.load(s)
+        assert group.root_state == "moved"
+        with pytest.raises(groups.GroupError, match="not on this node"):
+            groups.unlock_root(s, a.settings, group, ROOT_PW)
+    enrol(b, c, passphrase=NEW_ROOT_PW)  # the new holder issues
+    assert c.node_id in members(b)
+    with b.session() as s, pytest.raises(groups.GroupError, match="already holds"):
+        groups.import_root(s, b.settings, groups.load(s), b.identity, keys, NEW_ROOT_PW, "running")

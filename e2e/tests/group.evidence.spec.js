@@ -5,7 +5,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { test } = require('./fixtures');
+const { test, PASSWORD } = require('./fixtures');
 
 const DIR = process.env.E2E_EVIDENCE_DIR;
 const PHASE = process.env.E2E_EVIDENCE_PHASE || 'after';
@@ -46,6 +46,7 @@ test('evidence: node group admin pages', async ({ page, baseURL }, info) => {
     await page.fill('#g-root2', ROOT_PW);
     await page.fill('#g-rec', REC_PW);
     await page.fill('#g-rec2', REC_PW);
+    await page.fill('#g-create-pw', PASSWORD);
     await page.getByRole('button', { name: 'Create group' }).click();
     await page.locator('[data-group-recovery=pending]').waitFor();
     await shoot(page, 'group-recovery', info);
@@ -70,6 +71,7 @@ test('evidence: node group admin pages', async ({ page, baseURL }, info) => {
   await shoot(page, 'group-sas', info);
   await page.getByLabel('The numbers match on both screens.').check();
   await page.fill('#e-root', ROOT_PW);
+  await page.fill('#e-acct', PASSWORD);
   await page.getByRole('button', { name: 'Issue certificate' }).click();
   await page.locator(`[data-member="${j.node_id}"]`).waitFor();
   await shoot(page, 'group-members', info);

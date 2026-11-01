@@ -63,6 +63,7 @@ NODE_SERIAL = re.compile(r"^([0-9a-f]{16})/([1-9][0-9]{0,17})\Z")
 NODE_ID = re.compile(r"^[0-9a-f]{16}\Z")
 RECOVERY_PENDING = "group_recovery_pending"  # NodeState key: enc:v1 recovery file awaiting download + confirm
 RECOVERY_VERIFIED = "group_recovery_verified"  # NodeState key: when a recovery file holding G was verified
+SUCCESSION_ROOT = "group_succession_root"  # NodeState key: {index, key_id, sealed} of a G' this node created
 
 
 class GroupError(Exception):
@@ -334,7 +335,7 @@ class Trust:
     now: datetime
     _memo: dict[str, Verdict] = field(default_factory=dict)
     _busy: set[str] = field(default_factory=set)
-    _keys: dict[str, tuple[str, str] | None] = field(default_factory=dict)
+    _keys: dict[str, tuple[str, dict[str, str]] | None] = field(default_factory=dict)
 
     @property
     def group_id(self) -> str:
@@ -354,23 +355,28 @@ class Trust:
                  if c["body"]["member"]["node_id"] == node_id}
         return found.pop() if len(found) == 1 else None
 
+    def _history(self, node_id: str, root_public: str) -> tuple[str, dict[str, str]] | None:
+        """(current key id, every key id -> public) from the node's validated rotation history (§1.7)."""
+        cache = f"{node_id}:{root_public}"
+        if cache in self._keys:
+            return self._keys[cache]
+        history = self.rotations.get(node_id) or []
+        try:
+            tip = history[-1]["body"]["key_id"] if history else node_id
+            _, keys = key_rotation.validate_history(node_id, root_public, history, tip)
+            found: tuple[str, dict[str, str]] | None = (tip, keys)
+        except (key_rotation.RotationError, KeyError, TypeError, IndexError):
+            found = None
+        self._keys[cache] = found
+        return found
+
     def current_key(self, node_id: str, root_public: str | None = None) -> tuple[str, str] | None:
         """(key_id, public_b64) of the node's current signing key per its validated rotation history (§1.7)."""
         root_public = root_public or self.root_public(node_id)
         if root_public is None:
             return None
-        cache = f"{node_id}:{root_public}"
-        if cache in self._keys:
-            return self._keys[cache]
-        history = self.rotations.get(node_id) or []
-        tip = history[-1]["body"]["key_id"] if history else node_id
-        try:
-            _, keys = key_rotation.validate_history(node_id, root_public, history, tip)
-            found = (tip, keys[tip])
-        except key_rotation.RotationError:
-            found = None
-        self._keys[cache] = found
-        return found
+        found = self._history(node_id, root_public)
+        return (found[0], found[1][found[0]]) if found else None
 
     def all_keys(self, node_id: str) -> set[str]:
         root = self.root_public(node_id)
@@ -396,13 +402,25 @@ class Trust:
             return current is not None and current[0] == signer["key_id"] and gc.verify_object(obj, current[1])
         return False
 
-    def member_pop_ok(self, body: dict) -> bool:
+    def member_pop_ok(self, body: dict, strict: bool = False) -> bool:
+        """The member signed its own member object (§1.3).
+
+        `strict` (a new or changed member object: enrolment hello, member update) needs the node's current key.
+        Otherwise (verifying a certificate already issued, or a renewal that reuses the member object) any key in
+        the node's validated history is accepted, so a routine signing-key rotation needs no certificate change
+        (§1.7; CONTRACT-AMENDMENTS A10.11). An issuer only ever signs a member object whose PoP was checked
+        strictly, so a superseded key cannot introduce a new url, name or box key."""
         member, pop = body["member"], body.get("member_pop")
-        if not isinstance(pop, dict):
+        if not isinstance(pop, dict) or not isinstance(pop.get("key_id"), str):
             return False
-        current = self.current_key(member["node_id"], member["root_public_key"])
-        return current is not None and pop.get("key_id") == current[0] and \
-            gc.verify_member_pop(current[1], self.group_id, member, pop)
+        found = self._history(member["node_id"], member["root_public_key"])
+        if found is None:
+            return False
+        tip, keys = found
+        if strict and pop["key_id"] != tip:
+            return False
+        public = keys.get(pop["key_id"])
+        return public is not None and gc.verify_member_pop(public, self.group_id, member, pop)
 
     def carried(self, obj: dict, key: RootKey) -> Verdict:
         """§1.4 step 7: objects of an older root key must be carried by content by every later succession."""
@@ -570,6 +588,30 @@ class Trust:
             return None
         return max(pool, key=lambda c: parse_serial(c["body"]["serial"]).order)  # type: ignore[union-attr]
 
+    def may_enrol_now(self, node_id: str) -> dict | None:
+        """The node's in-force certificate when it currently carries `group.enrol` with a delegate, else None."""
+        p = self.in_force(node_id)
+        if p is None or p["body"]["issuer"] != "root" or "group.enrol" not in p["body"]["scopes"]:
+            return None
+        delegate = p["body"]["delegate"]
+        return p if delegate and delegate.get("may_enrol") else None
+
+    def was_delegate(self, node_id: str) -> bool | None:
+        """Whether any genuine root-issued certificate ever gave `node_id` the right to enrol (whatever its state
+        now: a revoked delegate may still revoke what it issued, §1.6). None when no root certificate of the node
+        is known yet (a CRL that depends on it is deferred, not refused)."""
+        roots = [c for c in self.node_certs(node_id) if c["body"]["issuer"] == "root" and self.genuine(c)]
+        if not roots:
+            return None
+        return any("group.enrol" in c["body"]["scopes"] and (c["body"]["delegate"] or {}).get("may_enrol")
+                   for c in roots)
+
+    def sole_issuer(self, node_id: str, issuer: str) -> bool:
+        """True when every genuine certificate of `node_id` was issued by `issuer`: only then may that issuer's
+        revocation ban the node or cascade over what the node signed (§1.4 step 8 'who may (re)issue', §1.6)."""
+        genuine = [c for c in self.node_certs(node_id) if self.genuine(c)]
+        return bool(genuine) and all(c["body"]["issuer"] == issuer for c in genuine)
+
     def nodes(self) -> list[str]:
         return sorted({c["body"]["member"]["node_id"] for c in self.certs.values()})
 
@@ -682,8 +724,13 @@ def _cert_row(group: OwnerGroup, obj: dict, now: datetime, held: str | None = No
 
 
 def ingest_cert(session: Session, group: OwnerGroup, obj: Any, now: datetime, tr: Trust | None = None) -> str:
-    """Store a certificate whose shape and signature verify. Returns 'stored', 'known', 'held', 'collision' or
-    a rejection reason. Validity (§1.4) is evaluated on every read, at the reader's time."""
+    """Store a certificate whose shape and signature verify and whose signer may issue at all. Returns 'stored',
+    'known', 'held', 'collision' or a rejection reason. Validity (§1.4) is evaluated on every read, at the
+    reader's time.
+
+    A node-signed certificate is stored only while its signer holds `group.enrol` and only within the signer's
+    `max_serials`, so a compromised ordinary member cannot fill the store (or every member's `state`) with
+    certificates it has no authority to sign."""
     tr = tr or trust(session, group, now)
     shape = tr.shape_ok(obj)
     if not shape.ok:
@@ -693,9 +740,12 @@ def ingest_cert(session: Session, group: OwnerGroup, obj: Any, now: datetime, tr
     if existing is not None:
         if existing.body_hash == obj["body_hash"]:
             return "known"
-        audit(session, None, "group_serial_collision", b["serial"],
-              {"stored": existing.body_hash, "received": obj["body_hash"]})
-        notify_admins(session, f"group-collision:{b['serial']}", "Two different group certificates share one serial")
+        if not tr.signature_ok(obj):
+            return "bad_signature"  # an unsigned look-alike is no collision
+        if _audit_once(session, "group_serial_collision", b["serial"],  # once per serial, not every sync round
+                       {"stored": existing.body_hash, "received": obj["body_hash"]}):
+            notify_admins(session, f"group-collision:{b['serial']}",
+                          "Two different group certificates share one serial")
         if any(existing.body["body"].get(f) != b.get(f) for f in AUTHORITY_FIELDS):
             existing.held_reason = "collision"  # both rejected: they disagree on authority (§1.3)
             return "collision"
@@ -704,6 +754,12 @@ def ingest_cert(session: Session, group: OwnerGroup, obj: Any, now: datetime, tr
         return "collision"
     if not tr.signature_ok(obj):
         return "bad_signature"
+    if obj["signer"]["kind"] == "node":
+        p = tr.may_enrol_now(obj["signer"]["id"])
+        if p is None:
+            return "issuer_cannot_enrol"
+        if parse_serial(b["serial"]).n > p["body"]["delegate"]["max_serials"]:  # type: ignore[union-attr]
+            return "delegate_serials_exhausted"
     held = None
     if obj["signer"]["kind"] == "root" and pending_successions(group):
         held = "succession_pending"  # §1.8: a G thief gains nothing during the window
@@ -712,34 +768,74 @@ def ingest_cert(session: Session, group: OwnerGroup, obj: Any, now: datetime, tr
     return "held" if held else "stored"
 
 
+MAX_NODE_CRL_ENTRIES = 4 * MAX_MEMBERS + 128  # a delegate's max_serials plus its own certificates (§1.3)
+MAX_NODE_CRLS = 8  # stored CRL rows per non-root issuer after compaction (forks included)
+
+
+def _entry_scope(tr: Trust, signer: dict, entry: Any) -> str:
+    """One CRL entry against §1.6 'who may revoke what': 'ok', 'deferred' (it names a certificate, or depends on
+    a delegation, this node has not seen yet: nothing of it is applied) or 'invalid'.
+
+    For a node signer an entry is in scope only when the named certificate is known and matches the entry:
+    - its own certificate, reason `left`, `node_id` = the signer (self-leave); or
+    - a certificate the signer issued (serial `<signer>/<n>`), and a genuine root certificate once gave the
+      signer `group.enrol`. An ordinary member never issues, so any such entry from it is invalid.
+    Nothing is taken from an entry's own `node_id` for a certificate this node has not seen."""
+    if not isinstance(entry, dict):
+        return "invalid"
+    s = parse_serial(entry.get("serial"))
+    if s is None or entry.get("reason") not in REASONS:
+        return "invalid"
+    try:
+        t(entry["revoked_at"])
+        if entry.get("suspect_since") is not None:
+            t(entry["suspect_since"])
+    except (KeyError, gc.GroupCryptoError):
+        return "invalid"
+    cert = tr.certs.get(entry["serial"])
+    if cert is not None and (cert["body"]["member"]["node_id"] != entry.get("node_id")
+                             or cert["body"]["member"]["root_public_key"] != entry.get("root_public_key")):
+        return "invalid"
+    if signer["kind"] == "root":
+        return "ok"
+    issuer = signer["id"]
+    if s.issuer == issuer:  # a delegate revokes what it issued (depth 1: no further descendants)
+        delegate = tr.was_delegate(issuer)
+        if delegate is False:
+            return "invalid"  # an ordinary member may only revoke its own serial, with reason `left`
+        return "deferred" if delegate is None or cert is None else "ok"
+    if entry["reason"] != "left" or entry.get("node_id") != issuer:
+        return "invalid"
+    return "deferred" if cert is None else "ok"  # self-leave, applied once the signer's certificate is known
+
+
 def _crl_scope_ok(tr: Trust, crl: dict) -> str:
-    """'ok', 'deferred' (needs a certificate this node has not seen yet) or 'invalid' (§1.6 who may revoke)."""
+    """'ok', 'deferred' (some entry needs an object this node has not seen yet) or 'invalid' (§1.6: any entry out
+    of the signer's scope makes the whole CRL invalid)."""
     signer = crl["signer"]
-    body = crl["body"]
-    for entry in body["entries"]:
-        s = parse_serial(entry["serial"])
-        if s is None or entry.get("reason") not in REASONS:
-            return "invalid"
-        try:
-            t(entry["revoked_at"])
-            if entry.get("suspect_since") is not None:
-                t(entry["suspect_since"])
-        except gc.GroupCryptoError:
-            return "invalid"
-        cert = tr.certs.get(entry["serial"])
-        if cert is not None and (cert["body"]["member"]["node_id"] != entry.get("node_id")
-                                 or cert["body"]["member"]["root_public_key"] != entry.get("root_public_key")):
-            return "invalid"
-        if signer["kind"] == "root":
-            continue
-        issuer = signer["id"]
-        if s.issuer == issuer:
-            continue  # a delegate revokes what it issued (depth 1: no further descendants)
-        if entry["reason"] != "left" or entry.get("node_id") != issuer:
-            return "invalid"
-        if cert is None:
-            return "deferred"  # a self-revocation names a certificate of the signer, once that is known
-    return "ok"
+    if signer["kind"] != "root" and len(crl["body"]["entries"]) > MAX_NODE_CRL_ENTRIES:
+        return "invalid"
+    scopes = {_entry_scope(tr, signer, entry) for entry in crl["body"]["entries"]}
+    if "invalid" in scopes:
+        return "invalid"
+    return "deferred" if "deferred" in scopes else "ok"
+
+
+def _entry_node(tr: Trust, signer: dict, entry: dict) -> tuple[str | None, str | None]:
+    """(node_id, root_public_key) the entry may act on for bans and the cascade by reason (§1.6), or (None, None)
+    when it only revokes the serial itself. Root is trusted for any entry. A node signer acts on a node only for
+    its own self-leave, or for a node whose every genuine certificate it issued: a delegate cannot ban or
+    cascade over a root-enrolled node (or another delegate's node) by minting a look-alike certificate."""
+    if signer["kind"] == "root":
+        return entry.get("node_id"), entry.get("root_public_key")
+    issuer = signer["id"]
+    cert = tr.certs.get(entry["serial"])
+    if cert is None:
+        return None, None
+    node = cert["body"]["member"]["node_id"]
+    if (node == issuer and entry["reason"] == "left") or tr.sole_issuer(node, issuer):
+        return node, cert["body"]["member"]["root_public_key"]
+    return None, None
 
 
 def crl_signature_ok(tr: Trust, crl: Any) -> bool:
@@ -786,12 +882,23 @@ def ingest_crl(session: Session, group: OwnerGroup, crl: Any, now: datetime, tr:
         return "invalid"  # any entry out of the signer's scope makes the whole CRL invalid
     stored = list(session.scalars(select(GroupCrl).where(GroupCrl.group_id == group.group_id,
                                                          GroupCrl.issuer == issuer)))
-    if any(r.crl_seq == seq for r in stored):
-        audit(session, None, "group_crl_fork", issuer, {"crl_seq": seq, "body_hash": crl["body_hash"]})
-        notify_admins(session, f"group-crl-fork:{issuer}:{seq}", "A group revocation list was forked; both are applied")
+    key = crl["signer"].get("key_id")
     top = max((r.crl_seq for r in stored), default=0)
+    for row in stored:  # an older CRL already compacted away: a newer stored one of the same key covers it
+        if row.crl_seq > seq and row.body["signer"].get("key_id") == key and _covers(row.body, crl):
+            _audit_once(session, "group_crl_rewind_refused", f"{issuer}:{seq}", {"crl_seq": seq, "stored": top})
+            return "known"
+    redundant = [r for r in stored if r.crl_seq < seq and r.body["signer"].get("key_id") == key
+                 and _covers(crl, r.body)]
+    if issuer != "root" and len(stored) - len(redundant) + 1 > MAX_NODE_CRLS:
+        _audit_once(session, "group_crl_refused", issuer, {"crl_seq": seq, "why": "too_many_crls"})
+        return "refused"  # a node spamming forks or rewinds: keep what is stored, refuse the excess
+    if any(r.crl_seq == seq for r in stored):
+        if _audit_once(session, "group_crl_fork", f"{issuer}:{seq}", {"crl_seq": seq, "body_hash": crl["body_hash"]}):
+            notify_admins(session, f"group-crl-fork:{issuer}:{seq}",
+                          "A group revocation list was forked; both are applied")
     if seq < top:
-        audit(session, None, "group_crl_rewind_refused", issuer, {"crl_seq": seq, "stored": top})
+        _audit_once(session, "group_crl_rewind_refused", f"{issuer}:{seq}", {"crl_seq": seq, "stored": top})
     issued = t(body["issued_at"])
     listed = {e["serial"] for e in body["entries"]}
     missing = []
@@ -804,13 +911,40 @@ def ingest_crl(session: Session, group: OwnerGroup, crl: Any, now: datetime, tr:
             if entry["serial"] not in listed and not pruned:
                 missing.append(entry["serial"])
     if missing:
-        audit(session, None, "group_crl_shrink", issuer, {"crl_seq": seq, "missing": sorted(set(missing))[:50]})
-        notify_admins(session, f"group-crl-shrink:{issuer}:{seq}",
-                      "A group revocation list left out earlier revocations; they stay revoked")
+        if _audit_once(session, "group_crl_shrink", f"{issuer}:{seq}",
+                       {"crl_seq": seq, "missing": sorted(set(missing))[:50]}):
+            notify_admins(session, f"group-crl-shrink:{issuer}:{seq}",
+                          "A group revocation list left out earlier revocations; they stay revoked")
     session.add(GroupCrl(group_id=group.group_id, issuer=issuer, crl_seq=seq, body=crl, body_hash=crl["body_hash"],
                          received_at=now))
+    # Compaction: a lower-seq CRL of the same key whose every entry the new one lists again (with a reason at
+    # least as strong) is redundant. Its entries are already in the append-only `group_revoked` and the new CRL
+    # serves them to other members, so nothing is lost; it bounds storage, `state` and rebuild work.
+    for old in redundant:
+        session.delete(old)
     session.flush()
     return "stored"
+
+
+def _covers(new: dict, old: dict) -> bool:
+    """Every entry of `old` is listed in `new` with a reason at least as strong."""
+    strongest: dict[str, int] = {}
+    for e in new["body"]["entries"]:
+        if isinstance(e, dict) and e.get("reason") in REASONS:
+            strongest[e["serial"]] = max(strongest.get(e["serial"], 0), REASONS[e["reason"]])
+    return all(isinstance(e, dict) and REASONS.get(e.get("reason"), 9) <= strongest.get(e.get("serial"), 0)
+               for e in old["body"]["entries"])
+
+
+def _audit_once(session: Session, action: str, target: str, detail: dict) -> bool:
+    """Audit a diagnostic once per (action, target), so a relayed object does not re-audit every sync round."""
+    exists = session.scalars(select(AuditEntry.id).where(AuditEntry.action == action,
+                                                         AuditEntry.target == target[:128]).limit(1)).first()
+    if exists is not None:
+        return False
+    audit(session, None, action, target, detail)
+    session.flush()
+    return True
 
 
 def apply_crls(session: Session, group: OwnerGroup, now: datetime, actor: str | None = None) -> list[str]:
@@ -821,34 +955,38 @@ def apply_crls(session: Session, group: OwnerGroup, now: datetime, actor: str | 
     for row in session.scalars(select(GroupCrl).where(GroupCrl.group_id == group.group_id)
                                .order_by(GroupCrl.issuer, GroupCrl.crl_seq)):
         crl = row.body
-        if not crl_signature_ok(tr, crl) or _crl_scope_ok(tr, crl) != "ok":
+        if not crl_signature_ok(tr, crl) or _crl_scope_ok(tr, crl) == "invalid":
             continue
+        signer = crl["signer"]
         for entry in crl["body"]["entries"]:
+            if _entry_scope(tr, signer, entry) != "ok":
+                continue  # deferred: applied once the certificate (or delegation) it names is known (A10.4)
             serial, reason = entry["serial"], entry["reason"]
             at, suspect = t(entry["revoked_at"]), entry.get("suspect_since")
             suspect_at = t(suspect) if suspect else None
+            node, node_key = _entry_node(tr, signer, entry)
             current = revoked.get(serial)
             if current is None:
                 current = GroupRevoked(group_id=group.group_id, serial=serial, issuer=crl["body"]["issuer"],
-                                       reason=reason, node_id=entry.get("node_id"),
-                                       root_public_key=entry.get("root_public_key"), revoked_at=at,
+                                       reason=reason, node_id=node, root_public_key=node_key, revoked_at=at,
                                        suspect_since=suspect_at, first_seen_at=now)
                 session.add(current)
                 revoked[serial] = current
                 added.append(serial)
             else:  # never removed: the strongest reason, the earliest times (§1.6)
-                if REASONS[reason] > REASONS[current.reason]:
+                if REASONS[reason] > REASONS[current.reason] and (node is not None or current.node_id is None):
                     current.reason = reason
                 if at < aware(current.revoked_at):  # type: ignore[operator]
                     current.revoked_at = at
                 if suspect_at and (current.suspect_since is None or suspect_at < aware(current.suspect_since)):
                     current.suspect_since = suspect_at
-            if reason in BANNING and entry.get("node_id") and entry.get("root_public_key"):
-                ban = session.get(GroupBannedNode, (group.group_id, entry["node_id"]))
+                if current.node_id is None and node is not None:  # a later entry with authority over the node
+                    current.node_id, current.root_public_key = node, node_key
+            if reason in BANNING and node and node_key:
+                ban = session.get(GroupBannedNode, (group.group_id, node))
                 if ban is None:
-                    session.add(GroupBannedNode(group_id=group.group_id, node_id=entry["node_id"],
-                                                root_public_key=entry["root_public_key"], reason=reason,
-                                                revoked_at=at, crl_serial=serial))
+                    session.add(GroupBannedNode(group_id=group.group_id, node_id=node, root_public_key=node_key,
+                                                reason=reason, revoked_at=at, crl_serial=serial))
                     session.flush()
                 elif REASONS[reason] > REASONS[ban.reason]:
                     ban.reason = reason
@@ -952,7 +1090,14 @@ def activate_successions(session: Session, group: OwnerGroup, now: datetime) -> 
         group.root_key_id = obj["body"]["new_root_key_id"]
         group.recovery = obj["body"]["recovery"]
         group.succession_pending = [p for p in group.succession_pending or [] if p is not entry and p != entry]
-        if group.root_state == "holder":
+        mine = session.get(NodeState, SUCCESSION_ROOT)
+        held = json.loads(mine.value) if mine is not None else None
+        if held and held.get("index") == obj["body"]["index"] and \
+                held.get("key_id") == obj["body"]["new_root_key_id"]:
+            group.root_sealed, group.root_state = held["sealed"], "holder"  # this node signed the succession
+            session.delete(mine)
+            audit(session, None, "group_root_activated_here", group.group_id, {"index": obj["body"]["index"]})
+        elif group.root_state == "holder":
             group.root_state = "moved"  # the old G no longer signs anything (§1.8)
         audit(session, None, "group_root_succession", group.group_id,
               {"index": obj["body"]["index"], "new_root_key_id": obj["body"]["new_root_key_id"]})
@@ -1189,37 +1334,65 @@ def ingest_state(session: Session, group: OwnerGroup, state: Any, own_node: str,
         raise GroupError("malformed state")
     if state.get("genesis", {}).get("body_hash") != group.genesis["body_hash"]:
         raise GroupError("the member serves a different genesis for this group (§1.1); refused", "conflict")
-    for obj in list(state.get("succession") or []) + list(state.get("succession_pending") or []):
-        bump("succession:" + ingest_succession(session, group, obj, now))
-    for obj in state.get("succession_cancel") or []:
-        bump("cancel:" + ingest_cancel(session, group, obj, now))
-    activate_successions(session, group, now)
-    if state.get("root_moved"):
-        bump("root_moved:" + ingest_root_moved(session, group, state["root_moved"], own_node, now))
+    # Halted (conflicting successions, §1.8): no root-signed object, succession, enrolment or move is accepted,
+    # but revocation keeps working, so CRLs, the rotations needed to verify them, and views are still taken.
+    halted = group.status == "halted"
+    if not halted:
+        for obj in list(state.get("succession") or []) + list(state.get("succession_pending") or []):
+            bump("succession:" + ingest_succession(session, group, obj, now))
+            if group.status == "halted":
+                break
+    halted = group.status == "halted"
+    if not halted:
+        for obj in state.get("succession_cancel") or []:
+            bump("cancel:" + ingest_cancel(session, group, obj, now))
+        activate_successions(session, group, now)
+        if state.get("root_moved"):
+            bump("root_moved:" + ingest_root_moved(session, group, state["root_moved"], own_node, now))
     certs = [c for c in state.get("certs") or [] if isinstance(c, dict)]
-    rotations = state.get("rotations") or {}
-    # Certificates first by issuer depth (root, then delegates), rotations as soon as their root key is known.
-    for c in sorted(certs, key=lambda c: 0 if c.get("signer", {}).get("kind") == "root" else 1):
-        if c.get("signer", {}).get("kind") == "node":
-            node = c["signer"].get("id")
-            if node in rotations and node != own_node:
-                ingest_rotations(session, group, node, rotations[node], now)
-                rebuild(session, group, own_node, now, settings)
-        bump("cert:" + ingest_cert(session, group, c, now))
-    for crl in state.get("crls") or []:
-        bump("crl:" + ingest_crl(session, group, crl, now))
+    rotations = state.get("rotations") if isinstance(state.get("rotations"), dict) else {}
+
+    def take_rotations(count: bool) -> None:
+        for node, history in rotations.items():
+            if node != own_node and isinstance(node, str):
+                outcome = ingest_rotations(session, group, node, history, now)
+                if count:
+                    bump("rotations:" + outcome)
+
+    # Root certificates, then rotations (their root keys are now known), then delegate-signed certificates,
+    # CRLs and views, with one rebuild between the steps that depend on each other.
+    if not halted:
+        for c in certs:
+            if c.get("signer", {}).get("kind") == "root":
+                bump("cert:" + ingest_cert(session, group, c, now))
+    take_rotations(count=False)
     rebuild(session, group, own_node, now, settings)
-    for node, history in rotations.items():
-        if node != own_node and isinstance(node, str):
-            bump("rotations:" + ingest_rotations(session, group, node, history, now))
+    if not halted:
+        tr = trust(session, group, now, own_node=own_node)
+        for c in certs:
+            if c.get("signer", {}).get("kind") != "root":
+                bump("cert:" + ingest_cert(session, group, c, now, tr))
+                tr = trust(session, group, now, own_node=own_node)
+    take_rotations(count=True)  # nodes first certified by a delegate in this state
     rebuild(session, group, own_node, now, settings)
     tr = trust(session, group, now, own_node=own_node)
-    for crl in state.get("crls") or []:  # CRLs whose signer's certificate or key arrived later in this state
-        ingest_crl(session, group, crl, now, tr)
+    for crl in state.get("crls") or []:
+        bump("crl:" + ingest_crl(session, group, crl, now, tr))
     for view in state.get("views") or []:
         bump("view:" + ingest_view(session, group, view, now, tr))
     rebuild(session, group, own_node, now, settings)
     return counts
+
+
+def refresh(session: Session, group: OwnerGroup, own_node: str, now: datetime | None = None,
+            settings: Settings | None = None) -> Trust:
+    """For read paths (the admin page, a member's `state` call): rebuild only when the stored objects changed or
+    a succession is due; otherwise read without writing. The group loop rebuilds every round regardless."""
+    now = now or utcnow()
+    due = any(t(p["activates_at"]) <= now for p in pending_successions(group))
+    if due or group.state_hash is None or group.state_hash != state_hash(session, group):
+        return rebuild(session, group, own_node, now, settings)
+    return trust(session, group, now, own_node=own_node)
 
 
 # ---- freshness (§1.6) ------------------------------------------------------------------------------------------
@@ -1580,7 +1753,7 @@ def renew(session: Session, settings: Settings, group: OwnerGroup, identity: Nod
             new = member_update["member"]
             if new["root_public_key"] != member["root_public_key"] or new["rev"] <= member["rev"]:
                 raise GroupError("a member update keeps the root key and raises member.rev", "conflict")
-            if not tr.member_pop_ok({"member": new, "member_pop": member_update["member_pop"]}):
+            if not tr.member_pop_ok({"member": new, "member_pop": member_update["member_pop"]}, strict=True):
                 raise GroupError("the member update is not signed by the member (member_pop)", "conflict")
             member, pop = new, member_update["member_pop"]
         days = DELEGATE_DAYS if b["delegate"] else CERT_DAYS
@@ -1628,6 +1801,182 @@ def leave(session: Session, settings: Settings, group: OwnerGroup, identity: Nod
         row.state = "aborted"
     audit(session, actor, "group_left", group.group_id, {"crl": crl["id"] if crl else None}, cli)
     return crl
+
+
+# ---- recovery: moving the root, root succession and its cancellation (§1.8, §1.9) ------------------------------
+
+def import_root(session: Session, settings: Settings, group: OwnerGroup, identity: NodeIdentity,
+                keys: gc.RecoveryKeys, new_passphrase: str, old_root: str, *, now: datetime | None = None,
+                actor: str | None = None, cli: bool = False) -> dict:
+    """`atlas group root import`: put G from a recovery file on this member and sign `root_moved` (§1.9).
+
+    The owner says whether the old root node is decommissioned or still running; either way the new holder
+    signs `group.root_moved` at once, and a running old holder disables its root when it sees it. The new
+    holder is `resyncing` until it has pulled every member, so it starts from the full CRL and serial state."""
+    now = now or utcnow()
+    if old_root not in ("decommissioned", "running"):
+        raise GroupError("say whether the old root node is 'decommissioned' or still 'running'")
+    if keys.group_id != group.group_id:
+        raise GroupError("that recovery file belongs to another group")
+    if keys.root is None:
+        raise GroupError("this recovery file holds no root key (only a 1-of-1 file or an export-recovery file "
+                         "does); recover with a root succession instead", "conflict")
+    if gc.key_id_of(gc.ed_public_b64(keys.root)) != group.root_key_id:
+        raise GroupError("this file holds an older root key: a root succession replaced it", "conflict")
+    if group.status != "active":
+        raise GroupError(f"the group is {group.status} here; the root cannot be imported now", "conflict")
+    if pending_successions(group):
+        raise GroupError("a root succession is pending; the root cannot be imported until it is decided", "conflict")
+    if group.root_state == "holder" and group.root_sealed:
+        raise GroupError("this node already holds the group root", "conflict")
+    tr = rebuild(session, group, identity.node_id, now, settings)
+    if tr.in_force(identity.node_id) is None:
+        raise GroupError("only an active member can take the group root", "forbidden")
+    try:
+        gc.check_passphrase(new_passphrase, _names(settings, None, group.name))
+    except gc.WeakPassphrase as exc:
+        raise GroupError(f"passphrase refused: {exc}") from None
+    previous = group.root_moved["body"]["to_node"] if group.root_moved else None
+    body = {"from_node": previous, "to_node": identity.node_id, "old_root": old_root, "issued_at": gc.stamp(now)}
+    moved = gc.make_object("group.root_moved", group.group_id, f"root_moved:{identity.node_id}", body,
+                           {"kind": "root", "id": group.group_id, "key_id": group.root_key_id}, keys.root)
+    outcome = ingest_root_moved(session, group, moved, identity.node_id, now)
+    if outcome != "stored":
+        raise GroupError(f"the root_moved notice was not accepted ({outcome})", "conflict")
+    group.root_sealed = seal_secret(settings, canonical_json(gc.wrap_root(keys.root, new_passphrase, group.group_id)))
+    group.root_state = "holder"
+    group.status = "resyncing"  # root operations wait until every member's state is pulled (§1.9)
+    session.merge(NodeState(key=RECOVERY_VERIFIED, value=gc.stamp(now)))  # the file holding G was just opened
+    audit(session, actor, "group_root_imported", group.group_id, {"old_root": old_root, "from_node": previous}, cli)
+    notify_admins(session, "group-root-imported", "The group root was imported on this node from a recovery file")
+    session.flush()
+    return moved
+
+
+def _quorum_keys(group: OwnerGroup, files: list[gc.RecoveryKeys]) -> list[Ed25519PrivateKey]:
+    """Distinct recovery keys of the currently pinned set, at least `threshold` of them (§1.8)."""
+    pinned = {k["key_id"] for k in (group.recovery or {}).get("keys", [])}
+    keys: dict[str, Ed25519PrivateKey] = {}
+    for f in files:
+        if f.group_id != group.group_id:
+            raise GroupError("a recovery file belongs to another group")
+        if f.recovery is None:
+            raise GroupError("a file holds no recovery key (an export-recovery file holds the root key only)")
+        kid = gc.key_id_of(gc.ed_public_b64(f.recovery))
+        if kid not in pinned:
+            raise GroupError("a recovery file is not in the group's current recovery set (an older file?)", "conflict")
+        keys.setdefault(kid, f.recovery)
+    if len(keys) < group.recovery["threshold"]:
+        raise GroupError(f"this needs {group.recovery['threshold']} different recovery files", "conflict")
+    return list(keys.values())
+
+
+def _signed_by_quorum(group: OwnerGroup, t_: str, oid: str, body: dict, keys: list[Ed25519PrivateKey]) -> dict:
+    first = keys[0]
+    obj = gc.make_object(t_, group.group_id, oid, body,
+                         {"kind": "recovery", "id": group.group_id, "key_id": gc.key_id_of(gc.ed_public_b64(first))},
+                         first)
+    obj["cosigs"] = [{"key_id": gc.key_id_of(gc.ed_public_b64(k)), "sig": gc.co_sign(obj, k)} for k in keys[1:]]
+    return obj
+
+
+def issue_succession(session: Session, settings: Settings, group: OwnerGroup, identity: NodeIdentity,
+                     files: list[gc.RecoveryKeys], new_root_passphrase: str, *, exclude_nodes: tuple[str, ...] = (),
+                     reason: str = "compromised", delay_hours: int | None = None,
+                     new_recovery_passphrase: str | None = None, now: datetime | None = None,
+                     actor: str | None = None, cli: bool = False) -> tuple[dict, list[dict]]:
+    """`atlas group root succession`: a recovery quorum replaces G with a new root key G' held on this node.
+
+    Carries every current member's root-issued certificate by content except `exclude_nodes` (§1.8), bounds the
+    old root by its last serial and last CRL, and is pending for at least the genesis delay. G' is stored here
+    sealed with a new root passphrase and becomes this node's root when the succession activates. With a 1-of-1
+    recovery set a new recovery file (R and G') is returned, because the old file holds the old G."""
+    now = now or utcnow()
+    if group.status != "active":
+        raise GroupError(f"the group is {group.status} here; a succession cannot be issued now", "conflict")
+    if pending_successions(group):
+        raise GroupError("a root succession is already pending", "conflict")
+    if reason not in ("compromised", "lost"):
+        raise GroupError("the reason is 'compromised' or 'lost'")
+    keys = _quorum_keys(group, files)
+    policy = group.genesis["body"]["policy"]
+    delay = policy["succession_delay_hours"] if delay_hours is None else delay_hours
+    if delay < policy["succession_delay_hours"]:
+        raise GroupError(f"the activation delay is at least {policy['succession_delay_hours']} hours (genesis policy)")
+    names = _names(settings, None, group.name)
+    one_of_one = group.recovery["threshold"] == 1 and len(group.recovery["keys"]) == 1
+    try:
+        gc.check_passphrase(new_root_passphrase, names)
+        if one_of_one:
+            if not new_recovery_passphrase:
+                raise GroupError("a 1-of-1 recovery file holds the root key: give a passphrase for the new file")
+            gc.check_passphrase(new_recovery_passphrase, names)
+    except gc.WeakPassphrase as exc:
+        raise GroupError(f"passphrase refused: {exc}") from None
+    if new_recovery_passphrase and new_recovery_passphrase == new_root_passphrase:
+        raise GroupError("use a recovery-file passphrase that differs from the root passphrase")
+    if identity.node_id in exclude_nodes:
+        raise GroupError("this node signs the succession and is always carried", "conflict")
+    tr = rebuild(session, group, identity.node_id, now, settings)
+    if tr.in_force(identity.node_id) is None:
+        raise GroupError("only an active member can hold the new root", "forbidden")
+    carry = [{"serial": c["body"]["serial"], "body_hash": c["body_hash"]}
+             for node, c in sorted(tr.members().items()) if node not in exclude_nodes and c["signer"]["kind"] == "root"]
+    root_crls = [r for r in session.scalars(select(GroupCrl).where(GroupCrl.group_id == group.group_id,
+                                                                   GroupCrl.issuer == "root"))
+                 if r.body["signer"].get("key_id") == group.root_key_id]
+    last = max(root_crls, key=lambda r: (r.crl_seq, r.body_hash), default=None)
+    new_root = Ed25519PrivateKey.generate()
+    new_public = gc.ed_public_b64(new_root)
+    index = len(group.succession or []) + 1
+    body = {"index": index, "previous_root_key_id": group.root_key_id, "new_root_public_key": new_public,
+            "new_root_key_id": gc.key_id_of(new_public), "reason": reason, "issued_at": gc.stamp(now),
+            "carry": carry, "old_root_last_serial_n": next_root_n(session, group.group_id) - 1,
+            "old_root_last_crl": {"crl_seq": last.crl_seq, "body_hash": last.body_hash} if last
+            else {"crl_seq": 0, "body_hash": "none"},
+            "activation_delay_hours": delay, "recovery": group.recovery}
+    obj = _signed_by_quorum(group, "group.succession", f"succession:{index}", body, keys)
+    obj["new_root_pop"] = gc.co_sign(obj, new_root)
+    outcome = ingest_succession(session, group, obj, now)
+    if outcome != "pending":
+        raise GroupError(f"the succession was not accepted ({outcome})", "conflict")
+    sealed = seal_secret(settings, canonical_json(gc.wrap_root(new_root, new_root_passphrase, group.group_id)))
+    session.merge(NodeState(key=SUCCESSION_ROOT, value=json.dumps(
+        {"index": index, "key_id": body["new_root_key_id"], "sealed": sealed})))
+    files_out = []
+    if one_of_one:
+        files_out = [gc.make_recovery_file(group.genesis, [*(group.succession or []), obj], keys[0], new_root,
+                                           new_recovery_passphrase or "", gc.stamp(now))]
+    del new_root
+    audit(session, actor, "group_succession_issued", group.group_id,
+          {"index": index, "new_root_key_id": body["new_root_key_id"], "carry": len(carry),
+           "excluded": sorted(exclude_nodes), "activation_delay_hours": delay, "reason": reason}, cli)
+    activate_successions(session, group, now)  # a zero delay activates at once (H26)
+    session.flush()
+    return obj, files_out
+
+
+def cancel_succession(session: Session, settings: Settings, group: OwnerGroup, files: list[gc.RecoveryKeys], *,
+                      index: int | None = None, now: datetime | None = None, actor: str | None = None,
+                      cli: bool = False) -> dict:
+    """`atlas group root succession-cancel`: a recovery quorum of the pinned set cancels a pending succession
+    permanently on every member that receives it (§1.8). A G-signed cancel is never honoured."""
+    now = now or utcnow()
+    pending = [p for p in pending_successions(group) if index is None or p["body"]["body"]["index"] == index]
+    if not pending:
+        raise GroupError("no matching root succession is pending", "not_found")
+    target = pending[0]["body"]
+    keys = _quorum_keys(group, files)
+    body = {"index": target["body"]["index"], "succession_body_hash": target["body_hash"], "issued_at": gc.stamp(now)}
+    obj = _signed_by_quorum(group, "group.succession_cancel", f"succession_cancel:{body['index']}", body, keys)
+    if ingest_cancel(session, group, obj, now) != "cancelled":
+        raise GroupError("the cancellation was not accepted", "conflict")
+    mine = session.get(NodeState, SUCCESSION_ROOT)
+    if mine is not None and json.loads(mine.value).get("index") == body["index"]:
+        session.delete(mine)  # the G' this node created for the cancelled succession is destroyed
+    audit(session, actor, "group_succession_cancel_issued", group.group_id, {"index": body["index"]}, cli)
+    session.flush()
+    return obj
 
 
 def purge_nonces(session: Session, now: datetime | None = None) -> None:

@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 from starlette.concurrency import run_in_threadpool
 
 from .. import group_crypto as gc
@@ -78,6 +79,9 @@ def _run_enrol(st: AppState, step: str, payload: Any) -> JSONResponse:
             if exc.code == "not_found":
                 return not_found()
             return JSONResponse({"detail": str(exc)}, status_code=409 if exc.code == "conflict" else 400)
+        except StaleDataError:  # a concurrent request consumed the same invite or enrolment first
+            session.rollback()
+            return not_found()
     return JSONResponse(result[1], status_code=result[0])
 
 
@@ -227,7 +231,7 @@ def _op(session, st: AppState, group: OwnerGroup, identity: NodeIdentity, inner:
         return {"group_protocol": groups.GROUP_PROTOCOL, "min_group_protocol": groups.MIN_GROUP_PROTOCOL,
                 "ops": list(CALL_OPS), "node_id": identity.node_id}
     if op == "state":
-        groups.rebuild(session, group, identity.node_id, settings=st.ctx.settings)
+        groups.refresh(session, group, identity.node_id, settings=st.ctx.settings)
         state = groups.export_state(session, group, identity)
         if params.get("have") and params["have"] == state["state_hash"]:
             return {"unchanged": True, "state_hash": state["state_hash"], "views": state["views"]}
@@ -286,7 +290,9 @@ def call(session, settings, identity: NodeIdentity, group: OwnerGroup, member: d
     tr = groups.trust(session, group, own_node=identity.node_id)
     key = tr.current_key(member["node_id"])
     outcome = {"result": plain.get("result"), "error": plain.get("error"), "server_time": plain.get("server_time")}
-    rs = plain.get("rs") or {}
+    rs = plain.get("rs") if isinstance(plain.get("rs"), dict) else {}
+    if key is not None and isinstance(rs.get("key_id"), str) and rs["key_id"] != key[0]:
+        key = _learn_rotation(session, settings, identity, group, member, op, params, plain, http) or key
     if key is None or rs.get("key_id") != key[0] or not gc.verify_message(
             key[1], gc.DOMAINS["response"], gc.response_parts(group.group_id, member["node_id"], key[0],
                                                               identity.node_id, inner["r"], op, params, outcome),
@@ -295,6 +301,29 @@ def call(session, settings, identity: NodeIdentity, group: OwnerGroup, member: d
     if plain.get("error"):
         raise CallError(plain["error"])
     return plain.get("result")
+
+
+def _learn_rotation(session, settings, identity: NodeIdentity, group: OwnerGroup, member: dict, op: str,
+                    params: dict, plain: dict, http: Any) -> tuple[str, str] | None:
+    """The member answered under a key this node does not know: it rotated (§1.7). Fetch its `rotations`
+    history (or use this answer when it is that history), validate it from the root key in its certificate
+    (fork and key-uniqueness checks included) and return the member's current key. The history authenticates
+    itself, so it can be taken from an answer whose signature is not yet verifiable."""
+    node = member["node_id"]
+    if op == "rotations" and params.get("node_id") == node:
+        history = plain.get("result")
+    else:
+        try:
+            call(session, settings, identity, group, member, "rotations", {"node_id": node}, http)
+        except CallError:
+            return None
+        history = None
+    if history is not None:
+        outcome = groups.ingest_rotations(session, group, node, history, groups.utcnow())
+        if outcome not in ("stored", "known"):
+            return None
+        groups.rebuild(session, group, identity.node_id, settings=settings)
+    return groups.trust(session, group, own_node=identity.node_id).current_key(node)
 
 
 def pull(session, settings, identity: NodeIdentity, group: OwnerGroup, http: Any) -> dict[str, str]:

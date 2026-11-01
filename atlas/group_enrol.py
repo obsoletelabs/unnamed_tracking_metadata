@@ -14,7 +14,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from . import group_crypto as gc
@@ -80,6 +80,8 @@ def create_invite(session: Session, settings: Settings, group: OwnerGroup, ident
         if not groups._delegate_ok(delegate, group.genesis["body"]["policy"]):
             raise GroupError("the delegate limits are out of bounds")
     groups.expire_enrolments(session, now)
+    # Serialise invite creation per group (PostgreSQL READ COMMITTED would let two requests both see 2 open).
+    session.scalars(select(OwnerGroup).where(OwnerGroup.group_id == group.group_id).with_for_update()).one()
     open_count = session.scalar(select(func.count()).select_from(GroupEnrolment).where(
         GroupEnrolment.side == "inviter", GroupEnrolment.group_id == group.group_id,
         GroupEnrolment.state.in_(OPEN_STATES)))
@@ -97,10 +99,19 @@ def create_invite(session: Session, settings: Settings, group: OwnerGroup, ident
 
 
 def _fail(session: Session, row: GroupEnrolment, why: str) -> GroupError:
-    """Count a MAC or PoP failure; the fifth burns the invite (§2.5). The caller commits before answering."""
-    row.failures = (row.failures or 0) + 1
-    if row.failures >= MAX_FAILURES and row.state in OPEN_STATES:
-        row.state = "burned"
+    """Count a MAC or PoP failure; the fifth burns the invite (§2.5). The caller commits before answering.
+
+    Both writes are single atomic UPDATEs guarded by the current state, so concurrent failures are never lost
+    and the invite is burned exactly once."""
+    session.flush()
+    session.execute(update(GroupEnrolment).where(GroupEnrolment.id == row.id)
+                    .values(failures=func.coalesce(GroupEnrolment.failures, 0) + 1)
+                    .execution_options(synchronize_session=False))
+    burned = session.execute(update(GroupEnrolment).where(
+        GroupEnrolment.id == row.id, GroupEnrolment.failures >= MAX_FAILURES,
+        GroupEnrolment.state.in_(OPEN_STATES)).values(state="burned").execution_options(synchronize_session=False))
+    session.refresh(row)
+    if burned.rowcount:
         groups.audit(session, None, "group_invite_burned", row.id, {"failures": row.failures, "last": why})
     session.flush()
     return _not_found()
@@ -130,7 +141,8 @@ def hello(session: Session, settings: Settings, identity: NodeIdentity, body: An
     if not isinstance(body, dict) or not isinstance(body.get("invite_id"), str):
         raise _not_found()
     row = session.scalars(select(GroupEnrolment).where(
-        GroupEnrolment.invite_hash == _invite_hash(body["invite_id"]), GroupEnrolment.side == "inviter")).first()
+        GroupEnrolment.invite_hash == _invite_hash(body["invite_id"]), GroupEnrolment.side == "inviter")
+        .with_for_update()).first()  # a concurrent hello on the same invite waits, then sees it used
     if row is None or row.state != "open" or aware(row.expires_at) < now:  # type: ignore[operator]
         raise _not_found()  # unknown, used or expired invites look like a missing route (§2.5)
     group = session.get(OwnerGroup, row.group_id)
@@ -176,6 +188,7 @@ def hello(session: Session, settings: Settings, identity: NodeIdentity, body: An
                          "rotations": key_rotation.own_history(session, identity.node_id),
                          "box_public_key": own["body"]["member"]["box_public_key"],
                          "url": own["body"]["member"]["url"], "name": own["body"]["member"]["name"]},
+             "inviter_kind": _secret(settings, row).get("kind"), "inviter_cert": own,
              "offered_scopes": list(row.scopes), "nonce_i": gc.b64(secrets.token_bytes(32))}
     th = gc.transcript_hash(t1, canonical_json(reply))
     reply["transcript_hash"] = th
@@ -228,7 +241,7 @@ def _admission(session: Session, settings: Settings, group: OwnerGroup, member: 
 def _row(session: Session, eid: Any, side: str) -> GroupEnrolment:
     if not isinstance(eid, str) or len(eid) != 26:
         raise _not_found()
-    row = session.get(GroupEnrolment, eid)
+    row = session.scalars(select(GroupEnrolment).where(GroupEnrolment.id == eid).with_for_update()).first()
     if row is None or row.side != side:
         raise _not_found()
     return row
@@ -498,9 +511,38 @@ def _verify_reply(invite: gc.Invite, t1: bytes, reply: dict) -> dict:
         _, public = _joiner_key(inviter)
         if not gc.verify_enrol_pop(public, "inviter", reply["pop"], th):
             raise GroupError("the inviter's proof of possession does not verify")
+        _inviter_cert_ok(shadow, inviter, reply)
     except (KeyError, TypeError, AttributeError, GroupCryptoMismatch, gc.GroupCryptoError) as exc:
         raise GroupError(f"the inviter's answer is malformed or does not verify ({type(exc).__name__})") from None
     return inviter
+
+
+def _inviter_cert_ok(shadow: OwnerGroup, inviter: dict, reply: dict) -> None:
+    """J's check (§2.3): the inviter's own certificate verifies from the pinned genesis and binds the inviter's
+    keys, url and box key; a delegated inviter's certificate carries `group.enrol` with room in `delegate`."""
+    cert = reply.get("inviter_cert")
+    if not isinstance(cert, dict):
+        raise GroupError("the inviter sent no certificate")
+    rotations = {inviter["node_id"]: inviter.get("rotations") or []}
+    tr = groups.Trust(shadow, {cert["body"]["serial"]: cert}, {}, {}, rotations, utcnow())
+    kind = reply.get("inviter_kind")
+    if kind == "delegate" and cert["signer"]["kind"] != "root":
+        raise GroupError("a delegated inviter's certificate must be root-issued (depth 1)")
+    if cert["signer"]["kind"] == "root":  # a root holder enrolled by a delegate is checked at activation instead
+        verdict = tr.valid(cert)
+        if not verdict.ok:
+            raise GroupError(f"the inviter's certificate does not verify ({verdict.reason})")
+    member = cert["body"]["member"]
+    if member["node_id"] != inviter["node_id"] or member["root_public_key"] != inviter["root_public_key"] \
+            or member["box_public_key"] != inviter["box_public_key"] or member["url"] != inviter["url"]:
+        raise GroupError("the inviter's certificate is for another node or address")
+    if reply.get("inviter_kind") == "delegate":
+        delegate = cert["body"]["delegate"] or {}
+        if "group.enrol" not in cert["body"]["scopes"] or not delegate.get("may_enrol") \
+                or not set(reply.get("offered_scopes") or []) <= set(delegate.get("may_grant_scopes") or []):
+            raise GroupError("the inviter is not delegated to enrol nodes with these scopes")
+    elif reply.get("inviter_kind") != "root":
+        raise GroupError("the inviter does not say whether it enrols as root or as a delegate")
 
 
 def confirm_joiner(session: Session, settings: Settings, identity: NodeIdentity, eid: str, http: Any, *,
