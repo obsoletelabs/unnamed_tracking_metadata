@@ -423,12 +423,44 @@ def unlink(session: Session, settings: Any, identity: Any, user: User, reason: s
 
 def on_account_deleted(session: Session, settings: Any, identity: Any, user: User) -> None:
     """`social.delete_account`: emit `account.unlink {reason: deleted}`, then drop every group and profile row of
-    the user. Deletion never propagates (D10.21): the other nodes keep their own account and values."""
+    the user. Deletion never propagates (D10.21): the other nodes keep their own account and values.
+
+    The synced personal data of the account leaves this node too (§4.5): this node's own entries of the account
+    scope keep only their envelope (`body_hash`, `hlc`, signature, for gap and fork detection, as stripped rows
+    do), except its own `account.link` / `account.unlink`, which the other nodes still need to reach the unlink.
+    Entries relayed from other origins are deleted with their streams: this node no longer pulls or serves that
+    scope, and a later re-link fetches them afresh. Link evidence (it names the user on the asserting node) is
+    dropped from `group_account_node`; the rows stay, so the unlink can still be served to the linked nodes."""
+    scopes = [(r.group_id, r.account_uid) for r in session.scalars(select(GroupAccountLink).where(
+        GroupAccountLink.user_id == user.id))]
     if identity is not None:
         unlink(session, settings, identity, user, reason="deleted", actor=None)
+    own = identity.node_id if identity is not None else None
+    for group_id, uid in scopes:
+        scrub_account(session, group_id, uid, own)
     session.execute(delete(GroupAccountLink).where(GroupAccountLink.user_id == user.id))
     session.execute(delete(GroupIdpConsent).where(GroupIdpConsent.user_id == user.id))
     profile.delete_user(session, user.id)
+
+
+def scrub_account(session: Session, group_id: str, uid: str, own: str | None) -> int:
+    """Remove the personal data of a deleted account's scope from the change log (see `on_account_deleted`)."""
+    n = 0
+    for row in session.scalars(select(GroupChange).where(GroupChange.group_id == group_id, GroupChange.scope == uid)):
+        if row.origin != own:
+            session.delete(row)
+            n += 1
+        elif row.body is not None and row.kind not in ("account.link", "account.unlink"):
+            row.body = None
+            n += 1
+    session.execute(delete(GroupStream).where(GroupStream.group_id == group_id, GroupStream.scope == uid,
+                                              GroupStream.origin != (own or "")))
+    for node in session.scalars(select(GroupAccountNode).where(GroupAccountNode.group_id == group_id,
+                                                               GroupAccountNode.account_uid == uid)):
+        if isinstance(node.evidence, dict) and node.evidence.get("evidence") is not None:
+            node.evidence = {**node.evidence, "evidence": None}
+    session.flush()
+    return n
 
 
 # ---- serving (§3.3, §3.4 elision, §3.7 data minimisation) ------------------------------------------------------
@@ -610,12 +642,15 @@ def _fork(rx: Rx, e: dict, existing: GroupChange) -> Outcome:
     return Outcome(None, "fork", stop=True)
 
 
-def key_bound(session: Session, group_id: str, origin: str, epoch: str, scope: str) -> int | None:
+def key_bound(session: Session, group_id: str, origin: str, epoch: str, scope: str,
+              reason: str | None = None) -> int | None:
     """`previous.heads[scope]` of a rotation (or restore) epoch that closed `epoch`, once known (§1.7)."""
     for row in session.scalars(select(GroupChange).where(
             GroupChange.group_id == group_id, GroupChange.origin == origin, GroupChange.kind == "stream.epoch",
             GroupChange.scope == NODE_SCOPE, GroupChange.seq == 1)):
         prev = (row.body or {}).get("previous") or {}
+        if reason is not None and (row.body or {}).get("reason") != reason:
+            continue
         if prev.get("epoch") == epoch and row.disposition == "applied":
             return int((prev.get("heads") or {}).get(scope, 0))
     return None
@@ -657,11 +692,20 @@ def receive(rx: Rx, e: Any, accept: set[str]) -> Outcome:
         _suspect_peer(rx, "bad_signature")
         return Outcome(None, "malformed", stop=True)
     origin, epoch, scope, seq = e["origin"], e["epoch"], e["scope"], e["seq"]
-    if origin == rx.identity.node_id or origin in forked(s):
+    if origin == rx.identity.node_id:
         return Outcome(None, "skipped", stop=True)
     keys = _keys_of(rx.tr, origin)
     stream = s.get(GroupStream, (rx.gid, origin, epoch, scope))
     existing = s.get(GroupChange, (rx.gid, origin, epoch, scope, seq))
+    if origin in forked(s):
+        # §3.6: a halted origin's only way forward here is a new epoch from the real node (current key, valid now,
+        # within the rate limit); everything else of it waits
+        if scope == NODE_SCOPE and seq == 1 and stream is None and existing is None:
+            out = _accept_epoch(rx, e, keys)
+            if out.disposition == "applied":
+                _lift_fork(rx, origin, epoch, "new_epoch")
+            return out
+        return Outcome(None, "skipped", stop=True)
     if existing is not None:
         if existing.body_hash != e["body_hash"]:
             public = keys.get(e["key_id"])
@@ -710,7 +754,9 @@ def receive(rx: Rx, e: Any, accept: set[str]) -> Outcome:
         _advance(stream, seq, None)
         return Outcome("rejected", "key_superseded")
     if e.get("elided"):
-        if e["kind"] in PROFILE_KINDS and e["subject"] in accept:
+        # only profile entries are ever elided (§3.4); an elided account.* or stream.epoch entry would let a relay
+        # suppress an unlink or a sign-out for good, since the genuine entry later is a noop:repeat
+        if e["kind"] not in PROFILE_KINDS or e["subject"] in accept:
             _suspect_peer(rx, "bad_elision")
             return Outcome(None, "bad_elision", stop=True)
         _store(rx, e, "elided", None, body=None)
@@ -775,11 +821,71 @@ def _consistent(e: dict, body: dict) -> bool:
     return True
 
 
-def _accept_epoch(rx: Rx, e: dict, keys: dict[str, str]) -> Outcome:
-    """A new epoch from `origin` (§3.6): signed by its current key, newer than anything held from it, origin valid
-    now (no grace), at most 4 per 24 h. Older epochs are closed at this node's hwm (or the announced heads)."""
+def _epoch_rules(rx: Rx, e: dict, body: dict) -> tuple[str, bool] | None:
+    """The §3.6 acceptance rules of a new epoch, beyond its signature: None when it may open, else (reason, final).
+    A final refusal is stored and blocks that epoch; the others are retried later (nothing stored), because they can
+    change: a lapsed certificate may be renewed, the clock may catch up, the 24 h rate window moves on."""
     s, origin = rx.session, e["origin"]
     current = rx.tr.current_key(origin)
+    if current is None:
+        return "origin_unknown", False
+    if current[0] != e["key_id"]:
+        # the key is in the validated history (the signature verified) but is no longer its tip: a rotation
+        # proves it superseded, and that never changes back (§1.7)
+        return "key_superseded", True
+    if rx.tr.in_force(origin) is None:
+        if origin in rx.tr.banned or rx.tr.status_of(origin) in ("revoked", "left"):
+            return "origin_revoked", True
+        return "origin_expired", False  # no grace for epochs (§3.6), but a renewal lets it through later
+    try:
+        issued = _t(body["issued_at"])
+    except (gc.GroupCryptoError, KeyError, TypeError, ValueError):
+        return "invalid", True
+    newest = s.scalar(select(func.max(GroupStream.last_issued_at)).where(GroupStream.group_id == rx.gid,
+                                                                       GroupStream.origin == origin))
+    if newest is not None and issued < _aware(newest) - groups.SKEW:  # type: ignore[operator]
+        return "time_regression", True
+    if issued > rx.now + groups.SKEW:
+        return "future", False
+    recent = s.scalar(select(func.count()).select_from(GroupStream).where(
+        GroupStream.group_id == rx.gid, GroupStream.origin == origin, GroupStream.scope == NODE_SCOPE,
+        GroupStream.opened_at > rx.now - timedelta(hours=24), GroupStream.blocked_reason.is_(None))) or 0
+    if recent >= EPOCH_RATE:
+        return "epoch_rate", False
+    return None
+
+
+def _lift_fork(rx: Rx, origin: str, by: str, how: str) -> None:
+    halted = forked(rx.session)
+    if origin not in halted:
+        return
+    was = halted.pop(origin)
+    _set_json_state(rx.session, FORKED, halted)
+    groups.audit(rx.session, None, "group_stream_fork_cleared", origin, {"how": how, "by": by,
+                                                                       "forked_epoch": was.get("epoch")})
+    rx.session.flush()
+
+
+def lift_forks_of_revoked(session: Session, tr: groups.Trust) -> int:
+    """A revocation is the other way forward from a fork (§3.6): the origin's entries are refused as
+    `origin_revoked` from then on, so the halt is no longer needed."""
+    halted = forked(session)
+    gone = [o for o in halted if o in tr.banned or tr.status_of(o) in ("revoked", "left")]
+    for origin in gone:
+        was = halted.pop(origin)
+        groups.audit(session, None, "group_stream_fork_cleared", origin, {"how": "revoked",
+                                                                         "forked_epoch": was.get("epoch")})
+    if gone:
+        _set_json_state(session, FORKED, halted)
+        session.flush()
+    return len(gone)
+
+
+def _accept_epoch(rx: Rx, e: dict, keys: dict[str, str]) -> Outcome:
+    """A new epoch from `origin` (§3.6): signed by its current key, newer than anything held from it, origin valid
+    now (no grace), at most 4 per 24 h. Older epochs are closed at this node's hwm (or the announced heads); when
+    the origin was halted by a fork, always at this node's hwm (the history above it is disputed)."""
+    s, origin = rx.session, e["origin"]
     body = e.get("body")
     if e.get("elided") or not isinstance(body, dict) or body_hash(body) != e["body_hash"] \
             or e["kind"] != "stream.epoch":
@@ -799,29 +905,20 @@ def _accept_epoch(rx: Rx, e: dict, keys: dict[str, str]) -> Outcome:
     out = group_schema.classify("stream.epoch", body)
     if out.action != group_schema.APPLY or body.get("epoch") != e["epoch"] or e["subject"] != "-":
         return refuse("invalid")
-    if current is None or current[0] != e["key_id"]:
-        return refuse("key_superseded")
-    cert = rx.tr.in_force(origin)
-    if cert is None:
-        return refuse("origin_revoked" if rx.tr.status_of(origin) in ("revoked", "left") else "origin_expired")
+    verdict = _epoch_rules(rx, e, body)
+    if verdict is not None:
+        reason, final = verdict
+        return refuse(reason) if final else Outcome(None, reason, stop=True)
     issued = _t(body["issued_at"])
-    newest = s.scalar(select(func.max(GroupStream.last_issued_at)).where(GroupStream.group_id == rx.gid,
-                                                                       GroupStream.origin == origin))
-    if newest is not None and issued < _aware(newest) - groups.SKEW:  # type: ignore[operator]
-        return refuse("time_regression")
-    if issued > rx.now + groups.SKEW:
-        return Outcome(None, "future", stop=True)
-    recent = s.scalar(select(func.count()).select_from(GroupStream).where(
-        GroupStream.group_id == rx.gid, GroupStream.origin == origin, GroupStream.scope == NODE_SCOPE,
-        GroupStream.opened_at > rx.now - timedelta(hours=24), GroupStream.blocked_reason.is_(None))) or 0
-    if recent >= EPOCH_RATE:
-        return Outcome(None, "epoch_rate", stop=True)
+    halted = origin in forked(s)
     prev = body.get("previous") or {}
     heads = prev.get("heads") or {}
     for old in s.scalars(select(GroupStream).where(GroupStream.group_id == rx.gid, GroupStream.origin == origin,
                                                    GroupStream.closed_at.is_(None))):
         old.closed_at = rx.now
-        if old.epoch == prev.get("epoch"):
+        if halted:
+            old.key_bound_seq = old.hwm if old.key_bound_seq is None else min(old.key_bound_seq, old.hwm)
+        elif old.epoch == prev.get("epoch"):
             old.key_bound_seq = int(heads.get(old.scope, old.hwm)) if old.key_bound_seq is None else old.key_bound_seq
         elif old.key_bound_seq is None:
             old.key_bound_seq = old.hwm
@@ -891,11 +988,16 @@ def _apply(rx: Rx, e: dict, body: dict, issued: datetime, accept: set[str]) -> O
         _store(rx, e, "applied", None, issued=issued)
         return Outcome("applied")
     if kind == "account.signout_all":
+        # §5.6: only a node linked to the account may end its sessions; `before` was bounded by `issued_at` in
+        # classify, and a sign-out never reaches past this entry's own `issued_at`
+        node = s.get(GroupAccountNode, (rx.gid, uid, e["origin"]))
+        if node is None or node.status != "linked":
+            return _strip(rx, e, "not_linked", issued)
         link = link_by_uid(s, rx.gid, uid)
         if link is not None:
             row = profile.consent(s, link.user_id, rx.gid)
             if row is None or row.signout_propagation:
-                before = _t(body["before"])
+                before = min(_t(body["before"]), issued)
                 s.execute(delete(UserSession).where(UserSession.user_id == link.user_id,
                                                     UserSession.created_at < before))
         _store(rx, e, "applied", None, issued=issued)
@@ -1114,7 +1216,6 @@ def prune(session: Session, now: datetime | None = None) -> int:
 def verified_snapshot(rx: Rx, uid: str, snap: Any) -> tuple[list[tuple[dict, dict, datetime]], int]:
     """The snapshot entries of `uid` whose signature verifies under the key their epoch entry binds, whose body
     classifies and whose origin was authorized when it issued them. Returns (entries, refused count)."""
-    s = rx.session
     if not (isinstance(snap, dict) and isinstance(snap.get("entries"), list)
             and isinstance(snap.get("epochs"), list)):
         return [], 0
@@ -1123,9 +1224,8 @@ def verified_snapshot(rx: Rx, uid: str, snap: Any) -> tuple[list[tuple[dict, dic
         if (not shape_ok(ep) or ep.get("elided") or ep["kind"] != "stream.epoch" or ep["scope"] != NODE_SCOPE
                 or ep["seq"] != 1 or body_hash(ep["body"]) != ep["body_hash"]):
             continue
-        known = s.get(GroupStream, (rx.gid, ep["origin"], ep["epoch"], NODE_SCOPE))
         public = _keys_of(rx.tr, ep["origin"]).get(ep["key_id"])
-        if public is not None and verify_entry(public, rx.gid, ep) and (known is None or known.key_id == ep["key_id"]):
+        if public is not None and verify_entry(public, rx.gid, ep) and _snapshot_epoch_ok(rx, ep):
             epoch_keys[(ep["origin"], ep["epoch"])] = (ep["key_id"], public)
     out, refused = [], 0
     for e in snap["entries"]:
@@ -1134,7 +1234,7 @@ def verified_snapshot(rx: Rx, uid: str, snap: Any) -> tuple[list[tuple[dict, dic
             continue
         key = epoch_keys.get((e["origin"], e["epoch"]))
         if (key is None or key[0] != e["key_id"] or not verify_entry(key[1], rx.gid, e)
-                or body_hash(e["body"]) != e["body_hash"]):
+                or body_hash(e["body"]) != e["body_hash"] or not _within_key_bound(rx, e)):
             refused += 1
             continue
         cls = group_schema.classify(e["kind"], e["body"])
@@ -1151,6 +1251,43 @@ def verified_snapshot(rx: Rx, uid: str, snap: Any) -> tuple[list[tuple[dict, dic
     out.sort(key=lambda x: (x[0]["kind"] != "account.link", not x[1].get("minted"), x[0]["origin"], x[0]["epoch"],
                             x[0]["seq"]))
     return out, refused
+
+
+def _snapshot_epoch_ok(rx: Rx, ep: dict) -> bool:
+    """§1.7 / §3.4 step 1 for a snapshot: an epoch binds its key only when this node already accepted that epoch
+    with the same key, or when the epoch passes the full new-epoch rules of §3.6 now (current key, origin valid
+    now, time order, rate limit). A stolen, rotated-out key therefore cannot vouch for a fake epoch here either.
+    This node's own epochs (lost in a restore) bind only under its current key."""
+    s, origin = rx.session, ep["origin"]
+    known = s.get(GroupStream, (rx.gid, origin, ep["epoch"], NODE_SCOPE))
+    if known is not None:
+        return known.key_id == ep["key_id"] and known.blocked_reason is None
+    if group_schema.classify("stream.epoch", ep["body"]).action != group_schema.APPLY \
+            or ep["body"].get("epoch") != ep["epoch"] or ep["subject"] != "-":
+        return False
+    if origin == rx.identity.node_id:
+        return ep["key_id"] == rx.identity.key_id
+    if origin in forked(s):
+        return False
+    return _epoch_rules(rx, ep, ep["body"]) is None
+
+
+def _within_key_bound(rx: Rx, e: dict) -> bool:
+    """An entry of an epoch whose key was rotated out counts only up to the rotation epoch's `previous.heads` (or
+    this node's hwm when that epoch was closed here); with no bound known yet, an old-key entry is not trusted."""
+    s, origin = rx.session, e["origin"]
+    if origin == rx.identity.node_id:
+        # this node's own entries lost in a restore lie above the heads its restore epoch announced; only a
+        # rotation of its own key bounds them
+        bound = key_bound(s, rx.gid, origin, e["epoch"], e["scope"], reason="rotation")
+        return bound is None or e["seq"] <= bound
+    stream = s.get(GroupStream, (rx.gid, origin, e["epoch"], e["scope"]))
+    bound = stream.key_bound_seq if stream is not None and stream.key_bound_seq is not None else key_bound(
+        s, rx.gid, origin, e["epoch"], e["scope"])
+    if bound is not None and e["seq"] > bound:
+        return False
+    current = rx.tr.current_key(origin)
+    return bound is not None or (current is not None and current[0] == e["key_id"])
 
 
 def snapshot_values(rx: Rx, uid: str, snap: Any, accept: set[str]) -> dict[str, tuple[Any, bool, str]]:
@@ -1251,6 +1388,7 @@ def sync(session: Session, settings: Any, identity: Any, group: OwnerGroup, http
     outcomes: dict[str, str] = {}
     tr = groups.trust(session, group, now, own_node=identity.node_id)
     review_revocations(session, settings, group, now)
+    lift_forks_of_revoked(session, tr)
     if session.scalar(select(func.count()).select_from(GroupAccountLink).where(
             GroupAccountLink.group_id == group.group_id)) and may_emit(session, group, identity, tr):
         ensure_epoch(session, group, identity, now)

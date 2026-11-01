@@ -10,8 +10,10 @@ Group kinds are never registered in `feed_schema`, so `feed.append` refuses them
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 from typing import Any
 
+from . import group_crypto as gc
 from . import profile_schema
 from .feed_schema import (
     APPLY,
@@ -171,6 +173,12 @@ def _invalid_reason(kind: str, b: dict) -> str | None:
     elif kind == "account.signout_all":
         if not isinstance(b.get("before"), str):
             return "before is missing"
+        try:  # §5.6: `before` is the emitter's `issued_at`; a sign-out never reaches into the future
+            before, issued = gc.parse_time(b["before"]), gc.parse_time(b["issued_at"])
+        except (gc.GroupCryptoError, TypeError, ValueError):
+            return "before or issued_at is not a timestamp"
+        if before > issued + timedelta(seconds=gc.SKEW):
+            return "before is later than issued_at"
     elif kind == "stream.epoch":
         prev = b.get("previous")
         if not (isinstance(b.get("epoch"), str) and EPOCH.match(b["epoch"])) or b.get("reason") not in EPOCH_REASONS:
