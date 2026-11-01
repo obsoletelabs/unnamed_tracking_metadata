@@ -5,6 +5,7 @@ not what one session believes."""
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -144,6 +145,44 @@ def test_write_lock_inside_a_savepoint_keeps_the_savepoint(maker):
             session.add(NodeState(key="x", value="1"))
         session.commit()
     assert _value(maker, "x") == "1"
+
+
+def test_a_write_in_a_savepoint_after_reads_and_another_commit_succeeds(maker):
+    """Legacy pysqlite began a fresh transaction at SAVEPOINT; the recipe drops the earlier read snapshot when
+    the outermost savepoint opens, so the write inside it waits for the writer lock instead of failing."""
+    with maker() as session, maker() as other:
+        assert session.get(NodeState, "mine") is None  # pins a read snapshot
+        other.add(NodeState(key="other", value="1"))
+        other.commit()
+        with session.begin_nested():
+            session.add(NodeState(key="mine", value="1"))
+            session.flush()
+        session.commit()
+    assert _value(maker, "other") == "1" and _value(maker, "mine") == "1"
+
+
+def test_a_failed_write_lock_leaves_a_transaction_that_still_rolls_back(maker):
+    """BEGIN IMMEDIATE past busy_timeout raises; the session must still have a real transaction afterwards,
+    or its later writes would be autocommitted and survive the rollback."""
+    with maker() as holder, maker() as session:
+        service.write_lock(holder)
+        holder.add(NodeState(key="holder", value="1"))
+        holder.flush()  # holds SQLite's writer lock
+        session.connection().exec_driver_sql("PRAGMA busy_timeout=50")
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            service.write_lock(session)
+        assert session.connection().connection.dbapi_connection.in_transaction
+        holder.rollback()  # the lock is free again
+        session.add(NodeState(key="probe", value="must not persist"))
+        session.flush()  # takes the writer lock now (BEGIN IMMEDIATE), inside the session's transaction
+        session.rollback()
+        session.connection().exec_driver_sql("PRAGMA busy_timeout=5000")  # back to make_engine's value
+    assert _value(maker, "probe") is None and _value(maker, "holder") is None
+    with maker() as session:  # the connection is usable for a normal write afterwards
+        service.write_lock(session)
+        session.add(NodeState(key="after", value="1"))
+        session.commit()
+    assert _value(maker, "after") == "1"
 
 
 def test_snapshot_helper_works_with_and_without_the_recipe(tmp_path):
