@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Needs your decision · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Needs your decision</h1>
+{% if not cards %}
+<div class="card"><p class="muted">Nothing to review. When the same preference is changed on two linked nodes at once, both values wait here until you choose.</p></div>
+{% endif %}
+{% for c in cards %}
+<section class="card conflict" aria-labelledby="c-{{ c.row.id }}">
+<h2 id="c-{{ c.row.id }}">{{ c.label }} <span class="badge warn">{{ c.title }}</span></h2>
+{% if c.options %}
+<form method="post" action="/me/conflicts/{{ c.row.id }}">{{ csrf(p.csrf) }}
+<div class="choices">
+{% for o in c.options %}
+  <button class="choice{{ '' if o.shown else ' secondary' }}" name="choice" value="{{ o.choice }}" type="submit">
+    <span class="choice-value">{{ o.value }}</span>
+    <span class="small muted">{{ o.where }} · {{ o.at }}{% if o.shown %} · shown now{% endif %}</span>
+  </button>
+{% endfor %}
+</div>
+{% if c.spec and c.spec.kind not in ('bool', 'list') %}
+<details><summary>Enter another value</summary>
+  <label for="cv-{{ c.row.id }}" class="sr">New value</label>
+  {% if c.spec.kind == 'choice' %}<select id="cv-{{ c.row.id }}" name="custom">{% for ch in c.spec.choices %}<option>{{ ch }}</option>{% endfor %}</select>
+  {% else %}<input id="cv-{{ c.row.id }}" type="text" name="custom" maxlength="500">{% endif %}
+  <p><button class="secondary" name="choice" value="custom" type="submit">Use this value</button></p>
+</details>
+{% endif %}
+</form>
+{% else %}
+<p>{{ c.note }}</p>
+<form method="post" action="/me/conflicts/{{ c.row.id }}">{{ csrf(p.csrf) }}
+{% if c.row.kind == 'privacy_widen' %}
+  <button name="choice" value="accept" type="submit">Make my profile public</button>
+  <button class="secondary" name="choice" value="dismiss" type="submit">Keep it private here</button>
+{% elif c.row.kind == 'suspect_link' %}
+  <button class="danger" name="choice" value="remove" type="submit">Remove that node from my account</button>
+  <button class="secondary" name="choice" value="keep" type="submit">Keep it (it stays inert)</button>
+{% else %}
+  <button name="choice" value="winner" type="submit">Keep the current value</button>
+  <button class="secondary" name="choice" value="loser" type="submit">Reset to the default</button>
+{% endif %}
+</form>
+{% endif %}
+</section>
+{% endfor %}
+{% if resolved %}
+<h2>Recently decided</h2>
+<ul class="small muted">{% for r in resolved %}<li>{{ labels.get(r.field, r.field) }}: {{ titles.get(r.kind, r.kind)|lower }}, {{ r.status }}{% if r.resolved_at %} {{ when(r.resolved_at) }}{% endif %}</li>{% endfor %}</ul>
+{% endif %}
+{% endblock %}

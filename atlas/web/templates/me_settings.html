@@ -10,6 +10,27 @@
   <label><input type="checkbox" name="email_notifications" {{ 'checked' if p.user.email_notifications }}> Email me about notifications (needs a confirmed address)</label>
   <p><button type="submit">Save</button> <a class="btn secondary" href="/u/{{ p.user.username }}">View profile</a></p>
 </form>
+<h2 id="preferences">Preferences</h2>
+<form class="card prefs" method="post" action="/me/preferences">{{ csrf(p.csrf) }}
+  <p class="small muted">{% if prefs_linked %}Marked preferences are kept in step with your <a href="/me/linked-nodes">linked nodes</a>; the others stay on this node.{% else %}Kept on this node. <a href="/me/linked-nodes">Linked nodes</a> can share them across your owner group.{% endif %}</p>
+  {% for r in pref_rows if r.editable %}{% set f = r.spec %}
+  <div class="pref{{ ' has-conflict' if r.conflict }}">
+    <div class="pref-head">
+      <label for="f-{{ loop.index }}">{{ f.label }}</label>
+      {% if r.synced %}<span class="badge ok" title="Shared with your linked nodes">synced</span>{% else %}<span class="badge" title="Not shared">this node only</span>{% endif %}
+      {% if r.origin %}<span class="small muted">set on {{ r.origin }}</span>{% endif %}
+      {% if r.conflict %}<a class="badge warn" href="/me/conflicts">{% if r.competing %}also "{{ r.competing }}" on another node{% else %}needs a decision{% endif %}</a>{% endif %}
+    </div>
+    {% if f.kind == 'bool' %}<input type="hidden" name="present.{{ r.name }}" value="1"><label class="inline"><input id="f-{{ loop.index }}" type="checkbox" name="f.{{ r.name }}" {{ 'checked' if r.value }}> On</label>
+    {% elif f.kind == 'choice' %}<select id="f-{{ loop.index }}" name="f.{{ r.name }}"><option value="">Default</option>{% for c in f.choices %}<option value="{{ c }}" {{ 'selected' if r.value == c and r.stored }}>{{ c }}</option>{% endfor %}</select>
+    {% elif f.kind == 'number' %}<input id="f-{{ loop.index }}" type="number" name="f.{{ r.name }}" min="0.8" max="2" step="0.05" value="{{ r.value if r.stored else '' }}" placeholder="1.0">
+    {% elif f.kind == 'color' %}<input id="f-{{ loop.index }}" type="text" name="f.{{ r.name }}" maxlength="7" pattern="#[0-9a-fA-F]{6}" value="{{ r.value if r.stored else '' }}" placeholder="#3366ff">
+    {% else %}<input id="f-{{ loop.index }}" type="text" name="f.{{ r.name }}" maxlength="64" value="{{ r.value if r.stored else '' }}">{% endif %}
+    {% if f.help %}<span class="hint">{{ f.help }}</span>{% endif %}
+  </div>
+  {% endfor %}
+  <p><button type="submit">Save preferences</button></p>
+</form>
 {% if oidc_issuers %}<h2>Linked sign-ins</h2>
 <div class="card">
 {% for o in oidc_issuers %}<p><strong>{{ o.i.name }}</strong>

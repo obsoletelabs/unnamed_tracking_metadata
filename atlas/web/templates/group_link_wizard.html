@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Finish linking · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Finish linking with {{ idp }}</h1>
+{% if error %}<div class="flash error" role="alert">{{ error }}</div>{% endif %}
+<form method="post" action="/group/link/finish">{{ csrf(p.csrf) }}
+<input type="hidden" name="h" value="{{ handle }}">
+<div class="card">
+<h2>Where the two nodes differ</h2>
+{% set differ = rows|rejectattr('same')|list %}
+{% if differ %}
+<p class="small muted">Choose which value both nodes keep. Nothing is lost: the other value stays in the history.</p>
+<table class="diff">
+<thead><tr><th scope="col">Preference</th><th scope="col">This node</th><th scope="col">{{ idp }}</th></tr></thead>
+<tbody>{% for r in differ %}<tr>
+  <th scope="row">{{ r.label }}</th>
+  <td data-label="This node"><label><input type="radio" name="k.{{ r.name }}" value="mine" checked> {{ r.mine }}</label></td>
+  <td data-label="{{ idp }}"><label><input type="radio" name="k.{{ r.name }}" value="theirs"> {{ r.theirs }}</label></td>
+</tr>{% endfor %}</tbody>
+</table>
+{% else %}<p class="muted">The two nodes agree on every shared preference.</p>{% endif %}
+</div>
+<div class="card">
+<h2>What this node shares</h2>
+<fieldset class="prefs-consent"><legend class="sr">Preferences this node may share</legend>
+{% for name, f in fields.items() %}{% if name in policy %}
+  <label><input type="checkbox" name="c.{{ name }}" {{ 'checked' if name in consent }}> {{ f.label }}{% if not f.consent %} <span class="hint">off unless you tick it</span>{% endif %}</label>
+{% endif %}{% endfor %}
+<label><input type="checkbox" name="signout" checked> "Sign out everywhere" on a linked node also signs me out here</label>
+</fieldset>
+<p><button name="decision" value="link" type="submit">Link accounts</button> <button class="secondary" name="decision" value="cancel" type="submit">Cancel</button></p>
+</div>
+</form>
+{% endblock %}
