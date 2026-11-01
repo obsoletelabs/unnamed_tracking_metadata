@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from . import client_changes, feed
 from .contract import ObservationBatchV1
+from .db import sqlite_write_lock
 from .ids import canonical_id as new_canonical_id
 from .ids import ulid
 from .merge import Obs, merge
@@ -51,10 +52,15 @@ def _epoch(dt: datetime) -> int:
 
 
 def write_lock(session: Session) -> None:
-    """Serialise writers on PostgreSQL (transaction-scoped). Resolution is read-then-write, so concurrent
-    writers could otherwise both create a record for the same identity. SQLite already has one writer."""
-    if session.get_bind().dialect.name == "postgresql":
+    """Serialise writers for the rest of the transaction. Resolution is read-then-write, so concurrent
+    writers could otherwise both create a record for the same identity. PostgreSQL: a transaction-scoped
+    advisory lock. SQLite: the transaction re-opens with BEGIN IMMEDIATE (the single writer lock), unless it
+    already wrote (then it holds that lock) or a savepoint is open (`db.sqlite_write_lock`)."""
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
         session.execute(text("SELECT pg_advisory_xact_lock(727274)"))
+    elif dialect == "sqlite":
+        sqlite_write_lock(session)
 
 
 def _valid_type(session: Session, media_type: str | None) -> str:
