@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -114,6 +115,21 @@ class Node:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=5)
+        if self.process:
+            self._wait_until_gone()
+
+    def _wait_until_gone(self, timeout=10.0):
+        """On Windows a virtualenv's python.exe is a launcher: the server is its child and can still hold the
+        database (and the port) for a moment after `wait()` returns. Wait until nothing listens any more."""
+        port, deadline = int(self.url.rsplit(":", 1)[1]), time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    pass
+            except OSError:
+                return
+            time.sleep(0.05)
+        raise RuntimeError(f"{self.name} still listens on port {port} after it was stopped")
 
     def close(self):
         self.stop()
@@ -202,11 +218,42 @@ def ordinary_workflows(node, ordinary, other, cid):
     assert ordinary.post(path + "/delete", data={"csrf": csrf(ordinary)}).status_code == 303
 
 
+def remove_tree(folder, timeout=10.0):
+    """Remove the drill's folder once every node is closed. Windows refuses to delete a file another process
+    still has open (the antivirus scanner, or a server process that is still exiting), so retry for a short
+    while. Returns None, or the error when the folder is left behind: that is reported, not a failed drill."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            shutil.rmtree(folder)
+            return None
+        except FileNotFoundError:
+            return None
+        except PermissionError as exc:
+            if time.monotonic() >= deadline:
+                return f"{type(exc).__name__}: {exc}"
+            time.sleep(0.2)
+
+
 def run(postgres_admin_url=None):
     report = {"started_at": datetime.now(UTC).isoformat(), "checks": [],
               "transport": "isolated loopback HTTP, development mode; production TLS is not exercised"}
+    folder = tempfile.mkdtemp(prefix="atlas-topology-")
+    try:
+        _run(folder, postgres_admin_url, report)
+    finally:
+        # Every node (server process, in-process engine, clients, log file) is closed by now.
+        left = remove_tree(folder)
+        if left:
+            report["cleanup"] = f"temporary folder {folder} was left behind: {left}"
+            print(f"warning: {report['cleanup']}", file=sys.stderr)
+    report["status"] = "passed"
+    return report
+
+
+def _run(folder, postgres_admin_url, report):
     checks = report["checks"]
-    with tempfile.TemporaryDirectory(prefix="atlas-topology-") as folder, ExitStack() as stack:
+    with ExitStack() as stack:
         databases = stack.enter_context(postgres_databases(postgres_admin_url, 2))
         nodes = [Node(Path(folder), "authority-a", "authority", databases[0]),
                  Node(Path(folder), "authority-b", "authority", databases[1]),
@@ -305,8 +352,6 @@ def run(postgres_admin_url=None):
         assert deleted.status_code == 303
         assert a.client.get(f"/api/v2/games/{aid}", headers=a.headers(personal)).status_code == 401
         checks.append("ordinary-user deletion revokes personal credentials without deleting canonical games")
-    report["status"] = "passed"
-    return report
 
 
 def main_cli():

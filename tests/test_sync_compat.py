@@ -14,7 +14,7 @@ import random
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from atlas import auth, cli, feed, feed_schema, main, service, sync
 from atlas.ids import canonical_id, ulid
@@ -505,15 +505,57 @@ def test_pull_after_upgrade_also_converges_without_running_replay(net, relation_
     assert mirror.heads(authority)["in_sync"] and "After" in mirror.titles()
 
 
+def _persisted(node, origin):
+    """What a dry run or a rolled-back apply must leave exactly as it was, read from the database file."""
+    with node.st.maker() as session:
+        return {"view": sync.view_digest(session, origin.node_id),
+                "node_state": dict(session.execute(select(NodeState.key, NodeState.value)).all()),
+                "observations": session.scalar(select(func.count()).select_from(Observation)),
+                "cursor": [(c.upstream, c.last_seq) for c in session.scalars(select(SyncCursor))],
+                "failures": sorted((f.node_id, f.seq, f.disposition, f.reason, f.resolved_at is None)
+                                   for f in session.scalars(select(SyncFailure)))}
+
+
 def test_replay_dry_run_changes_nothing(net, relation_support, tmp_path, monkeypatch, capsys):
     authority, mirror, _ = net
     around(authority, "relation", RELATION)
     pull(mirror, authority)
     relation_support()
+    before = _persisted(mirror, authority)
     _cli_env(monkeypatch, mirror)
     assert cli.main(["sync", "replay", "--dry-run"]) == cli.EXIT_CONVERGED
     assert "would apply 2 entries" in capsys.readouterr().out
     assert mirror.heads(authority)["state"] == "parked"
+    # The relation's apply runs inside a savepoint that opens the SQLite transaction. pysqlite's legacy
+    # mode committed it on RELEASE, so the dry run persisted `relation:<seq>` (PHASE2 D1).
+    after = _persisted(mirror, authority)
+    assert not any(k.startswith("relation:") for k in after["node_state"])
+    assert after == before
+    assert "After" not in mirror.titles()
+    assert cli.main(["sync", "replay"]) == cli.EXIT_CONVERGED  # the real replay still has everything to do
+    assert "applied 2 entries" in capsys.readouterr().out
+    assert mirror.heads(authority)["in_sync"] and "After" in mirror.titles()
+
+
+def test_a_pull_that_rolls_back_after_applying_leaves_nothing_behind(net, relation_support, monkeypatch):
+    authority, mirror, _ = net
+    seq = around(authority, "relation", RELATION)
+    pull(mirror, authority)
+    relation_support()
+    before = _persisted(mirror, authority)
+
+    def fail(*_args, **_kw):
+        raise RuntimeError("simulated failure after the parked entries were applied")
+
+    monkeypatch.setattr(sync, "retry_failures", fail)
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        pull(mirror, authority)
+    assert _persisted(mirror, authority) == before
+    assert f"relation:{seq}" not in before["node_state"]
+    monkeypatch.undo()
+    relation_support()
+    pull(mirror, authority)
+    assert mirror.heads(authority)["in_sync"] and "After" in mirror.titles()
 
 
 def test_j_skip_is_audited_and_lets_later_entries_apply(net):

@@ -37,7 +37,7 @@ def candidate(settings: Settings, source_engine, authority: str, confirm_mirror:
         if source_engine.dialect.name == "postgresql":
             source.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
         elif source_engine.dialect.name == "sqlite":
-            source.execute(text("BEGIN"))
+            db.begin_snapshot(source)
         mirror = source.get(NodeState, "node_id")
         if mirror is None or confirm_mirror != mirror.value:
             raise PromotionError("confirm the source mirror's exact node ID")
