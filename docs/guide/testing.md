@@ -83,6 +83,7 @@ E2E_EVIDENCE_DIR=./evidence E2E_EVIDENCE_PHASE=after npx playwright test evidenc
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `E2E_PORT` | `8765` | Port of the throwaway node |
+| `E2E_ROLE` | `local` | Role of the throwaway node (`authority` shows the platinum emission gate) |
 | `E2E_SCREENSHOT_DIR` | unset | Write screenshots there |
 | `E2E_SERVER_COMMAND` | `uv run --frozen python e2e/server.py` | Start the node another way (run from the repository root) |
 | `E2E_PYTHON` | unset | Interpreter used for `e2e/seed.py` instead of `uv run` |

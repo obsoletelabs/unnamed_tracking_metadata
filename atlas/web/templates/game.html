@@ -24,7 +24,7 @@
       {% if v.get('user_score') is not none %}<dt>{{ lbl.user_score }}</dt><dd>{{ v.user_score }}/100</dd>{% endif %}
       {% if v.get('website') %}<dt>{{ lbl.website }}</dt><dd><a href="{{ v.website }}" rel="noopener noreferrer nofollow">{{ v.website }}</a></dd>{% endif %}
       {% if v.get('aliases') %}<dt>{{ lbl.aliases }}</dt><dd>{{ v.aliases|join(', ') }}</dd>{% endif %}
-      {% for d in details %}<dt>{{ d.f.label }}</dt><dd>{% if d.f.kind == 'list' %}{{ chips(d.value) }}{% elif d.f.kind == 'url' %}<a href="{{ d.value }}" rel="noopener noreferrer nofollow">{{ d.value }}</a>{% elif d.f.kind == 'bool' %}{{ 'Yes' if d.value else 'No' }}{% else %}{{ d.value }}{% endif %}</dd>{% endfor %}
+      {% for d in details %}<dt>{{ d.f.label }}</dt><dd>{% if d.f.kind == 'list' %}{{ chips(d.value) }}{% elif d.f.kind == 'url' %}<a href="{{ d.value }}" rel="noopener noreferrer nofollow">{{ d.value }}</a>{% elif d.f.kind == 'bool' %}{{ 'Yes' if d.value else 'No' }}{% elif d.derived %}<span data-derived="{{ d.f.key }}">{{ d.value }}</span> <span class="small muted">(maximum players is 1)</span>{% else %}{{ d.value }}{% endif %}</dd>{% endfor %}
       {% if mtype_label and g.media_type != 'game' %}<dt>Type</dt><dd>{{ mtype_label }}</dd>{% endif %}
       <dt>Provider IDs</dt><dd><code>{{ g.id }}</code>{% for ns, ident in (v.get('provider_ids') or {}).items() %}<br>{{ store_name(ns) }}: {% set link = store_link(ns, ident) %}{% if link %}<a href="{{ link }}" rel="noopener noreferrer nofollow">{{ ident }}</a>{% else %}{{ ident }}{% endif %}{% endfor %}</dd>
     </dl>
