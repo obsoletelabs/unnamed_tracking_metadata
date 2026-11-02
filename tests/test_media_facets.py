@@ -196,12 +196,12 @@ def test_achievement_merge_prefers_trusted_source_and_fills_gaps(session, ctx):
 def test_achievement_options_validate_and_merge(session, ctx):
     cid = seed(session, ctx)
     facets.set_achievements(session, ctx, cid, "curator", [{
-        "name": "Escape", "kind": "win_condition", "tier": "gold", "points": 50, "global_percent": 3.5,
+        "name": "Escape", "kind": "win_condition", "tier": "platinum", "points": 50, "global_percent": 3.5,
         "locked_icon_url": "https://x.test/l.png", "icon_url": "https://x.test/u.png"}])
     [m] = facets.merged_achievements(session, ctx, cid)
-    assert (m["kind"], m["tier"], m["points"]) == ("win_condition", "gold", 50)
+    assert (m["kind"], m["tier"], m["points"]) == ("win_condition", "platinum", 50)
     assert m["icon_url"] is None and m["locked_icon_url"] is None  # origin urls are never handed out
-    for bad in ({"kind": "weird"}, {"tier": "platinum"}, {"points": -1}, {"points": 1.5}, {"points": True},
+    for bad in ({"kind": "weird"}, {"tier": "diamond"}, {"points": -1}, {"points": 1.5}, {"points": True},
                 {"points": 100001}, {"icon_url": "javascript:alert(1)"}, {"locked_icon_url": "file:///etc/passwd"}):
         with pytest.raises(AtlasError):
             facets.set_achievements(session, ctx, cid, "curator", [{"name": "x", **bad}])
