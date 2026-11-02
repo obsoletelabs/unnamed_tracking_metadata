@@ -61,7 +61,7 @@ test('evidence: the record page shows a partial first release and the release ta
     ? { external_id: `E2E-DATES-${info.project.name}`, title, platforms: ['PC'],
       ext: { release: { first: { date: '2027-03', precision: 'month' }, entries: [
         { date: '2027-03', precision: 'month', platform: 'PC', region: 'ww', category: 'full' },
-        { date: '2026-10', precision: 'month', platform: 'PC', region: 'ww', category: 'early_access' },
+        { date: '2026-10', precision: 'month', platform: 'PC', region: 'ww', category: 'beta' },
         { date: '2027', precision: 'year', platform: 'Switch', region: 'jp', category: 'port' },
         { date: '2027-05-14', precision: 'day', platform: 'PS5', region: 'eu', edition: 'Deluxe', category: 'full' },
       ] } } }

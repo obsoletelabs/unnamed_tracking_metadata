@@ -360,7 +360,7 @@ def run_platinum(previous_ref: str, previous_dir: Path | None = None) -> dict[st
 RELEASE = {"first": {"date": "2027", "precision": "year"},
            "entries": [{"date": "2027", "precision": "year", "platform": "pc", "region": "ww", "category": "full"},
                        {"date": "2026-11", "precision": "month", "platform": "pc", "region": "ww",
-                        "category": "early_access"},
+                        "category": "beta"},
                        {"date": "2027-03-01", "precision": "day", "platform": "Switch", "region": "jp",
                         "category": "port"}]}
 

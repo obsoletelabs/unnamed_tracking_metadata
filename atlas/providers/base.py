@@ -94,7 +94,8 @@ def parse_release(text: str | None) -> tuple[str, str] | None:
     if not candidates and re.fullmatch(r"\d{4}", text, re.ASCII):
         candidates.append((text, "year"))
     for value, precision in candidates:
-        if dates.try_parse(value, precision) is not None:
+        # a day is the legacy `release_date` and keeps any year (C5.2); a year or a month uses the C5.1 range
+        if dates.try_parse(value, precision, any_year=precision == "day") is not None:
             return value, precision
     return None
 
@@ -110,10 +111,12 @@ def release_ext(first: tuple[str, str] | None, entries: list[dict[str, Any]] | N
     day = first[0] if first and first[1] == "day" else None
     if first is None or (first[1] == "day" and not entries):
         return day, None
-    release: dict[str, Any] = {"first": {"date": first[0], "precision": first[1]}}
+    release: dict[str, Any] = {}
+    if dates.try_parse(first[0], first[1]) is not None:  # a pre-1950 day lives in release_date alone
+        release["first"] = {"date": first[0], "precision": first[1]}
     if entries:
         release["entries"] = entries
-    return day, release
+    return day, release or None
 
 
 def epoch_to_date(value: int | None) -> str | None:

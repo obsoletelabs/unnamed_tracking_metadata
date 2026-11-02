@@ -387,9 +387,15 @@ def dates_gate_message(ctx: Ctx, feature: str) -> str:
     return str(feed_schema.EmitGateError(feature, DATES_PROTOCOL, feed_schema.emit_protocol(ctx.settings)))
 
 
-def clean_lock(field: str, value: Any) -> Any:
-    """Validate a lock value. `release_date` takes a PartialDate ("2011", "2011-04", "2011-04-19"); `releases`
-    takes at most five release entries (C5.1). Raises AtlasError."""
+def clean_lock(field: str, value: Any, *, replicated: bool = False) -> Any:
+    """Validate a lock value. `release_date` takes a PartialDate ("2011", "2011-04", "2011-04-19"; a day may
+    have any year, as the legacy key always allowed); `releases` takes at most five release entries (C5.1).
+    Raises AtlasError.
+
+    `replicated`: the value comes from a signed feed entry, which the authority may have written before C5,
+    when a `release_date` lock took any text ("TBA"). Such a value is stored as it is, so a follower that
+    applies or replays it matches the authority instead of quarantining the entry (the merge shows it in the
+    legacy key, as before). Only new local locks are held to the date rules."""
     from .merge import LOCK_FIELDS, SCALAR_FIELDS, UNION_FIELDS
 
     if field not in LOCK_FIELDS:
@@ -400,7 +406,9 @@ def clean_lock(field: str, value: Any) -> Any:
         raise AtlasError(f"{field} needs a string")
     try:
         if field == "release_date":
-            return dates.parse(value).value
+            if replicated and dates.try_parse_first(value) is None:
+                return value  # a pre-C5 free-text lock (checked to be a string above)
+            return dates.parse_first(value).value
         if field == "releases":
             return dates.clean_entries(value)
     except dates.DateError as exc:
@@ -418,7 +426,7 @@ def lock_needs_dates_protocol(field: str, value: Any) -> bool:
 
 def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, actor: str = "",
              local_only: bool = False, log: bool = True) -> Canonical:
-    value = clean_lock(field, value)
+    value = clean_lock(field, value, replicated=not log)
     signed = log and not local_only and ctx.settings.role == "authority"
     if signed and lock_needs_dates_protocol(field, value) and dates_gated(ctx):
         what = "a release-dates lock" if field == "releases" else "a partial release date lock"
