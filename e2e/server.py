@@ -34,7 +34,8 @@ def main() -> int:
         **os.environ,
         "PYTHONPATH": str(ROOT),
         "PYTHONUTF8": "1",
-        "ATLAS_ROLE": "local",
+        # E2E_ROLE=authority plays an authority (emit protocol 1.0: platinum is gated); the default is a local node.
+        "ATLAS_ROLE": os.environ.get("E2E_ROLE", "local"),
         "ATLAS_PUBLIC_URL": f"http://127.0.0.1:{PORT}",
         "ATLAS_DATABASE_URL": f"sqlite:///{(data / 'atlas.db').as_posix()}",
         "ATLAS_MEDIA_DIR": (data / "media").as_posix(),
@@ -44,6 +45,8 @@ def main() -> int:
         "ATLAS_STEAM_ENABLED": "false",
         "ATLAS_MEDIA_CACHE_ENABLED": "false",  # no outbound image fetches during tests
     }
+    if env["ATLAS_ROLE"] == "authority":  # an authority requires verified email by default; there is no mail here
+        env.setdefault("ATLAS_EMAIL_VERIFICATION", "optional")
     proc = None
     try:
         proc = subprocess.Popen(

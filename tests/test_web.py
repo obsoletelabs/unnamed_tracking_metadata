@@ -347,14 +347,18 @@ def test_achievement_proposal_lines_accept_extras_in_any_order(site):
         "name": "Escape", "description": "Leave", "tier": "gold", "kind": "win_condition", "points": 50,
         "hidden": True, "icon_url": "https://i.test/a.png", "locked_icon_url": "https://i.test/b.png"}
     assert parse_achievement_line("Plain") == {"name": "Plain", "description": ""}
+    assert parse_achievement_line("All | Everything | Platinum")["tier"] == "platinum"  # C7.1
     with pytest.raises(HTTPException):
-        parse_achievement_line("X | y | platinum")
+        parse_achievement_line("X | y | diamond")
     signup(site, "alice")
     t = token(site, f"/game/{site.gid}")
     ok = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | gold | 5"})
     assert ok.status_code == 303
-    bad = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | platinum"})
+    bad = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | diamond"})
     assert bad.status_code == 400
+    # A known tier this authority may not publish yet (emit protocol 1.0 < 1.2): refused, not misread (C1.6).
+    gated = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Finale | All of it | platinum"})
+    assert gated.status_code == 409 and "Raise federation emit protocol to 1.2 first" in gated.text
     page = site.get(f"/game/{site.gid}")
     assert page.status_code == 200 and "Edit achievements" in page.text
 

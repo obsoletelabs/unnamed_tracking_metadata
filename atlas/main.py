@@ -44,7 +44,8 @@ from .web.schema import router as schema_router
 from .web.social import router as social_router
 
 log = logging.getLogger("atlas")
-_STATUS = {"invalid": 400, "forbidden": 403, "not_found": 404, "conflict": 409}
+_STATUS = {"invalid": 400, "forbidden": 403, "not_found": 404, "conflict": 409,
+           "emit_protocol": 409}  # a valid request this node cannot publish yet (C1.6)
 
 
 class BodyLimit:

@@ -13,6 +13,11 @@ Rules (C1.1):
 * A major bump changes signature verification or the meaning of an existing field.
 * A field may be added in a later minor without parking 1.1 followers only if it is listed as
   reserved-optional here first. In 1.1 that is `achievements.items[].key` only.
+
+Protocol 1.2 (C7.1) adds the achievement tier `platinum`. An entry that carries it also lists the
+`_requires` token `tier-platinum`, so a 1.1 follower parks the whole list (`unsupported_capability`)
+instead of dropping it, and this release applies it. A token-less platinum entry still parks a 1.1
+follower, as `unsupported_value`.
 """
 
 from __future__ import annotations
@@ -23,10 +28,12 @@ from dataclasses import dataclass, field
 from functools import cache
 from typing import Any
 
+from . import vocab
+
 # ---- versions -------------------------------------------------------------------------------------------
 
 #: The federation wire protocol this release speaks and applies ("MAJOR.MINOR").
-PROTOCOL = "1.1"
+PROTOCOL = "1.2"
 #: Pre-A1 releases advertise no protocol; they speak this.
 LEGACY_PROTOCOL = "1.0"
 #: Version of the observation payload schema (`SourceObservationV1`).
@@ -38,6 +45,11 @@ PROTOCOL_HEADER = "Atlas-Protocol"
 
 #: Named optional features this node advertises and understands in `_requires`.
 CAPABILITIES: tuple[str, ...] = ("ext-v1",)
+#: Vocabulary tokens (C1.4 `_requires`) this release understands: one per value a later minor added, such
+#: as `tier-platinum` (1.2). They are not optional features, so `/sync/info.capabilities` does not list them.
+VOCAB_TOKENS: tuple[str, ...] = tuple(sorted(set(vocab.VALUE_TOKEN.values())))
+#: Operator-facing name of each gated vocabulary value, used in the emission gate's message.
+VALUE_FEATURE: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "the platinum achievement tier"}
 #: `_requires` tokens reserved by later protocol minors, with the protocol that ships them. A node
 #: never emits one before its `emit_protocol` reaches that protocol (H13); this release cannot apply them.
 RESERVED_TOKENS: dict[str, str] = {"tier-platinum": "1.2", "dates-v1": "1.3", "relation-v1": "1.4",
@@ -156,8 +168,8 @@ def vocabularies() -> dict[str, frozenset[str]]:
     return {
         "source_kind": frozenset({"host", "plugin", "manual", "metadata"}),
         "artwork_kind": frozenset(facets.KINDS),
-        "achievement_kind": frozenset(facets.ACH_KINDS),
-        "achievement_tier": frozenset(facets.ACH_TIERS),
+        "achievement_kind": frozenset(vocab.ACHIEVEMENT_KINDS),
+        "achievement_tier": frozenset(vocab.ACHIEVEMENT_TIERS),
         "field_kind": frozenset(custom.KINDS),
         "lock_field": frozenset(SCALAR_FIELDS) | frozenset(UNION_FIELDS),
     }
@@ -177,6 +189,12 @@ def kinds_advertised() -> dict[str, dict[str, int]]:
 
 def known_kinds() -> frozenset[str]:
     return frozenset(FEED_KINDS)
+
+
+def known_tokens() -> frozenset[str]:
+    """Every `_requires` token this release can apply: its capabilities and its vocabulary tokens.
+    Read at call time, so a test can play an older release by patching either tuple."""
+    return frozenset(CAPABILITIES) | frozenset(VOCAB_TOKENS)
 
 
 # ---- classification (follower side, C1.4) ---------------------------------------------------------------
@@ -266,7 +284,8 @@ def classify(kind: str, body: Any) -> Outcome:
     if requires is None:
         return _park("unsupported_capability", kind,
                      unknown=[f"_requires is not a list of at most {MAX_REQUIRES} short tokens"])
-    unknown_tokens = [t for t in requires if t not in CAPABILITIES]
+    tokens = known_tokens()
+    unknown_tokens = [t for t in requires if t not in tokens]
     if unknown_tokens:
         return _park("unsupported_capability", kind, requires=unknown_tokens)
 
@@ -354,8 +373,12 @@ def check_emit(kind: str, body: dict[str, Any], current: str) -> dict[str, Any]:
     Features that need a newer protocol than `current`:
     * a reserved kind (`relation`, 1.4): refused; callers keep it local and append nothing;
     * a `_requires` token reserved for a later minor (`tier-platinum`, 1.2): refused;
-    * `tier: "platinum"` in achievement items (1.2): refused with the operator-facing message;
-    * `observation.payload.ext.release` (1.3): removed from the signed copy (stored locally in full)."""
+    * a vocabulary value a later minor added (`tier: "platinum"`, 1.2): refused with the operator-facing
+      message. At or above that protocol the value is signed and its token (`tier-platinum`) is added to
+      `_requires` (C1.4), so older followers park the entry with an explicit reason;
+    * `observation.payload.ext.release` (1.3): removed from the signed copy (stored locally in full).
+
+    Bodies with none of these are returned unchanged, so version-1 bodies are signed exactly as before."""
     have = parse_protocol(current)
     if kind in RESERVED_KINDS:
         raise EmitGateError(f"feed kind {kind!r}", RESERVED_KINDS[kind], current)
@@ -368,10 +391,23 @@ def check_emit(kind: str, body: dict[str, Any], current: str) -> dict[str, Any]:
         needed = RESERVED_TOKENS.get(token)
         if needed and parse_protocol(needed) > have:
             raise EmitGateError(f"the {token!r} feature", needed, current)
-    if kind == "achievements":
-        for item in body.get("items") or []:
-            if isinstance(item, dict) and item.get("tier") == "platinum" and parse_protocol("1.2") > have:
-                raise EmitGateError("the platinum achievement tier", "1.2", current)
+    needed_tokens: list[str] = []
+    for path, name in spec.values.items():
+        parent, _, leaf = path.rpartition(".")
+        for _where, obj in _members(body, parent) if parent else [("", body)]:
+            value = obj.get(leaf)
+            needed = vocab.VALUE_PROTOCOL.get((name, value)) if isinstance(value, str) else None
+            if needed is None:
+                continue
+            if parse_protocol(needed) > have:
+                raise EmitGateError(VALUE_FEATURE.get((name, value), f"the {name} value {value!r}"), needed, current)
+            token = vocab.VALUE_TOKEN.get((name, value))
+            if token and token not in needed_tokens:
+                needed_tokens.append(token)
+    present = body.get("_requires") if isinstance(body.get("_requires"), list) else []
+    missing = [t for t in needed_tokens if t not in present]
+    if missing:
+        body = {**body, "_requires": [*present, *missing]}  # a new top-level dict: the caller's copy is untouched
     if kind == "obs":
         payload = (body.get("observation") or {}).get("payload")
         if isinstance(payload, dict) and isinstance(payload.get("ext"), dict) and "release" in payload["ext"] \

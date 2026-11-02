@@ -177,7 +177,12 @@ def test_registry_replaces_the_duplicated_kind_lists():
     ("obs", observation("x", facts={"new_fact": 1}), "parked", "unsupported_field"),
     ("obs", observation("x", ext={"release": {"precision": "month"}}), "apply", ""),
     ("obs", {**observation("x", ext={"release": {}}), "_requires": ["dates-v1"]}, "parked", "unsupported_capability"),
+    # platinum is known since 1.2 (C7.1); an unknown tier still parks (test_c covers a 1.1 follower)
     ("achievements", {"canonical_id": "atlas:x", "source": "curator", "items": [{"name": "A", "tier": "platinum"}]},
+     "apply", ""),
+    ("achievements", {"canonical_id": "atlas:x", "source": "curator", "items": [{"name": "A", "tier": "platinum"}],
+                      "_requires": ["tier-platinum"]}, "apply", ""),
+    ("achievements", {"canonical_id": "atlas:x", "source": "curator", "items": [{"name": "A", "tier": "diamond"}]},
      "parked", "unsupported_value"),
     ("achievements", {"canonical_id": "atlas:x", "source": "curator", "items": [{"name": "A", "key": "ak1:abc"}]},
      "apply", ""),
@@ -257,7 +262,9 @@ def test_platinum_stays_rejected_by_the_curator_api_while_emit_protocol_is_below
     r = authority.client.put(f"/api/v2/games/{cid}/achievements",
                              headers={"Authorization": f"Bearer {_admin(authority)}"},
                              json={"source": "curator", "items": [{"name": "All", "tier": "platinum"}]})
-    assert r.status_code == 400
+    assert r.status_code == 409  # valid request; this node's emit protocol is what refuses it (C1.6)
+    assert r.json()["error"]["code"] == "emit_protocol"
+    assert "Raise federation emit protocol to 1.2 first" in r.json()["error"]["message"]
     with authority.st.maker() as session:
         assert session.scalars(select(Achievement)).first() is None
         assert feed.head_seq(session) == 1  # only the observation; nothing signed for platinum
@@ -277,16 +284,16 @@ def test_sync_info_advertises_versions_and_records_follower_protocol(net):
     authority.publish("Hello")
     info = authority.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {authority.token}"}).json()
     assert info["contract"] == 1  # kept for pre-1.1 readers
-    assert (info["protocol"], info["min_follower_protocol"], info["emit_protocol"]) == ("1.1", "1.0", "1.0")
+    assert (info["protocol"], info["min_follower_protocol"], info["emit_protocol"]) == ("1.2", "1.0", "1.0")
     assert info["observation_schema"] == 1 and info["capabilities"] == ["ext-v1"]
     assert info["kinds"]["achievements"] == {"emit": 1, "apply": 1}
     with authority.st.maker() as session:
         assert session.get(FollowerSeen, authority.token_row.id) is None  # a plain reader is not a follower
 
     _, wire = pull(mirror, authority)
-    assert {protocol for _, protocol in wire.seen} == {"1.1"}
+    assert {protocol for _, protocol in wire.seen} == {"1.2"}
     with authority.st.maker() as session:
-        assert session.get(FollowerSeen, authority.token_row.id).protocol == "1.1"
+        assert session.get(FollowerSeen, authority.token_row.id).protocol == "1.2"
     # A pre-1.1 follower sends no header: recorded as 1.0 on /sync/changes.
     authority.client.get("/api/v2/sync/changes", headers={"Authorization": f"Bearer {authority.token}"})
     with authority.st.maker() as session:
@@ -294,7 +301,7 @@ def test_sync_info_advertises_versions_and_records_follower_protocol(net):
     # The relay advertises what it saw the relayed authority speak.
     relay = mirror.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {mirror.token}"}).json()
     [relayed] = relay["feeds"]
-    assert relayed["node_id"] == authority.node_id and relayed["protocol"] == "1.1"
+    assert relayed["node_id"] == authority.node_id and relayed["protocol"] == "1.2"
 
 
 # ---- C1.11 (a)-(f): parking and quarantine --------------------------------------------------------------
@@ -331,8 +338,11 @@ def test_b_extra_observation_field_parks_instead_of_silent_drop(net):
     assert detail["unknown"] == ["observation.payload.release_date_precision"]
 
 
-def test_c_platinum_tier_parks_the_whole_list_instead_of_dropping_it(net):
+def test_c_platinum_tier_parks_the_whole_list_instead_of_dropping_it(net, release_1_1):
+    """A 1.1 follower and a token-less platinum list: `unsupported_value` (the V4 regression). The 1.2
+    authority's own entries also carry `_requires: [tier-platinum]`; see tests/test_vocab_platinum.py."""
     authority, mirror, _ = net
+    release_1_1()
     cid = authority.publish("Trophy Game")
     seq = authority.emit("achievements", {"canonical_id": cid, "source": "curator",
                                           "items": [{"name": "Bronze one", "tier": "bronze"},
@@ -403,8 +413,8 @@ def test_ignorable_extension_member_applies_on_this_release(net):
 def test_g_refusal_when_this_node_is_older_than_the_upstream_minimum(net):
     authority, mirror, _ = net
     authority.publish("Hidden Behind A Refusal")
-    newer = {"protocol": "1.4", "min_follower_protocol": "1.2"}
-    with pytest.raises(sync.SyncRefused, match=r"needs protocol ≥ 1.2; this node speaks 1.1. Upgrade Atlas"):
+    newer = {"protocol": "1.4", "min_follower_protocol": "1.3"}
+    with pytest.raises(sync.SyncRefused, match=r"needs protocol ≥ 1.3; this node speaks 1.2. Upgrade Atlas"):
         _, wire = pull(mirror, authority, info=lambda body: {**body, **newer})
     with mirror.st.maker() as session:
         assert session.get(SyncCursor, authority.node_id) is None  # cursor untouched
@@ -452,6 +462,19 @@ def test_malformed_upstream_protocol_is_refused(net):
 
 
 # ---- C1.11 (i)-(j): replay and skip ---------------------------------------------------------------------
+
+@pytest.fixture
+def release_1_1(monkeypatch):
+    """Play a follower of the 1.1 release: it speaks 1.1, knows no `tier-platinum` token and no platinum tier.
+    Everything else is this release's code, which is what 1.1 had for these paths (classify, park, replay)."""
+    def install():
+        old = {k: (v - {"platinum"} if k == "achievement_tier" else v) for k, v in feed_schema.vocabularies().items()}
+        monkeypatch.setattr(feed_schema, "vocabularies", lambda: old)
+        monkeypatch.setattr(feed_schema, "VOCAB_TOKENS", ())
+        monkeypatch.setattr(feed_schema, "PROTOCOL", "1.1")
+        monkeypatch.setattr(sync, "PROTOCOL", "1.1")
+    return install
+
 
 @pytest.fixture
 def relation_support(monkeypatch):
@@ -1006,7 +1029,7 @@ def test_status_api_exposes_named_heads(net):
     up = status["upstreams"][authority.node_id]
     assert (up["applied_head"], up["verified_head"], up["parked"]["first_seq"]) == (seq - 1, seq + 1, seq)
     detail = mirror.client.get("/api/v2/sync/status", headers=admin).json()
-    assert detail["own_protocol"] == "1.1" and detail["upstreams"][authority.node_id]["state"] == "parked"
+    assert detail["own_protocol"] == feed_schema.PROTOCOL and detail["upstreams"][authority.node_id]["state"] == "parked"
     failures = mirror.client.get("/api/v2/sync/failures", headers=admin).json()
     assert failures["parked"] == 1 and failures["failures"][0]["reason"] == "unsupported_kind"
     assert mirror.client.get("/api/v2/sync/status", headers={"Authorization": f"Bearer {mirror.token}"}
@@ -1047,7 +1070,7 @@ def test_peer_records_the_remote_protocol(net):
         session.commit()
     pull(mirror, authority)
     with mirror.st.maker() as session:
-        assert session.scalars(select(Peer)).one().remote_protocol == "1.1"
+        assert session.scalars(select(Peer)).one().remote_protocol == feed_schema.PROTOCOL
 
 
 def test_follower_telemetry_upsert_tolerates_a_row_another_request_inserted(net):

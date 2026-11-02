@@ -98,8 +98,13 @@ You can also configure a single upstream with environment variables (`ATLAS_UPST
 ## Compatibility and upgrades
 
 Nodes of different releases can follow each other. Each release speaks a federation **protocol**
-(`MAJOR.MINOR`); this release speaks **1.1**. Releases before it did not advertise one and
-count as **1.0**.
+(`MAJOR.MINOR`); this release speaks **1.2**. Releases before protocol negotiation did not
+advertise one and count as **1.0**.
+
+| Protocol | Adds | A 1.0 follower | A 1.1 follower |
+| --- | --- | --- | --- |
+| 1.1 | negotiation, parking, named heads, `items[].key` on achievements (reserved-optional) | applies what it knows; drops what it does not | — |
+| **1.2** | the achievement tier `platinum` (an entry with it also lists the `_requires` token `tier-platinum`) | **drops the whole achievement list** of that game | **parks** it (`unsupported_capability`) and applies it after upgrading |
 
 ### What a follower does with entries it does not understand
 
@@ -166,7 +171,11 @@ to 1.2 first", and an extended release date is stored locally but left out of th
 observation. Raise it under **Admin → Peers → Federation protocol** only after every follower is
 upgraded: it asks for your password and a confirmation, like a key rotation, and is audited.
 Followers of releases before 1.1 cannot park and would silently drop newer constructs, so keep
-`emit_protocol` at 1.1 or lower until none remain.
+`emit_protocol` at 1.1 or lower until none remain. Raising it to **1.2** lets curators, the editor,
+proposals and bulk imports publish platinum achievements; until then those writes are refused with
+HTTP 409 (`"code": "emit_protocol"` in the API) and nothing is stored or signed. Mirrors and local
+nodes sign nothing, so they accept platinum whatever their own setting, and a mirror applies it from
+an upstream that emits 1.2.
 
 ### Upgrading a network
 

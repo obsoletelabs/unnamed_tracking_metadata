@@ -115,6 +115,22 @@ The two modes have separate cursors. Do not pass a cursor from one to the other,
 The route requires the `read` scope. It returns IDs and versions only; clients fetch changed records, achievements and artwork through their usual endpoints.
 
 
+### Shared vocabularies
+
+The closed value lists Atlas, the plugin and the Tracking App must agree on live in
+`contracts/vocab-v1.json` in the Atlas repository, with its SHA-256 in `vocab-v1.json.sha256`
+(contract C7.4): achievement `tier` (`bronze`, `silver`, `gold`, `platinum`) and `kind`, `crossplay`
+(`yes`, `partial`, `no`), and values reserved for later protocols (`relation_type`, `date_precision`,
+`release_category`). Atlas generates it from `atlas/vocab.py`, and a test fails when they disagree.
+
+* `tools/vocab_check.py` needs only the Python standard library for `verify` (a file and its digest)
+  and `compare` (exit 1 when the lists two or more files share differ; value order does not matter),
+  so the plugin and the Tracking App can vendor it and compare their own file with Atlas's.
+* Absent means unknown. `not_applicable` is never stored or sent: a single-player game
+  (`players_max == 1`) with no crossplay answer shows "Single-player" on its Atlas page only.
+* `platinum` arrives only from Atlas releases whose operators raised the emit protocol to 1.2. A client
+  that does not know a value yet should ignore that value, not reject the whole list.
+
 ### Limits to know
 
 * The app downloads artwork itself and refuses private addresses, so artwork needs a publicly reachable Atlas. Metadata works on a LAN.

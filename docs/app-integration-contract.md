@@ -30,6 +30,26 @@ Failure semantics for clients: assign only `reason` ∈ {`id`, `redirect`, `cros
 
 Host and plugin compatibility: the cases live as data in `tests/fixtures/resolve-contract-v1.json`, with its SHA-256 (over LF line endings) in `resolve-contract-v1.json.sha256`. The metadata-atlas plugin vendors that file and replays it against its own gateway. Nothing in it is host or user-library state: every record is synthetic. An older plugin that reads only `method` stops adopting conflicting ids, because a conflict now has `method: none` (decision H2).
 
+## Shared vocabularies
+
+Atlas, the metadata-atlas plugin and the Tracking App agree on the closed value lists in
+[`contracts/vocab-v1.json`](https://github.com/obsoletelabs/unnamed_tracking_metadata/blob/v2/contracts/vocab-v1.json)
+(contract C7.4): achievement `tier` (`bronze`, `silver`, `gold`, `platinum`) and `kind`, `crossplay`
+(`yes`, `partial`, `no`), and the values reserved for later protocols (`relation_type`,
+`date_precision`, `release_category`). `feed_kinds` is Atlas-only. Its SHA-256 (over LF line endings)
+is in `vocab-v1.json.sha256`.
+
+* Atlas generates the file from `atlas/vocab.py` (`python -m tools.vocab_check generate`), and
+  `tests/test_vocab_platinum.py` fails when the file, the digest or the code disagree.
+* `tools/vocab_check.py` needs only the Python standard library for `verify` and `compare`, so the
+  other repositories can vendor it: `python vocab_check.py verify vocab-v1.json` checks a file and its
+  digest, and `python vocab_check.py compare atlas.json plugin.json host.json` fails (exit 1) when the
+  lists they share differ. Value order does not matter; keys only one side has are not compared.
+* Absent means unknown in every list. `not_applicable` is never a stored or sent value; crossplay
+  derives it for display from `players_max == 1` (C7.2, C7.3).
+* A new value is a protocol minor (platinum is 1.2): a client or plugin must be ready to ignore a value
+  it does not know rather than reject the whole response.
+
 A self-hosted authority may return a local canonical ID. The client must accept that ID without requiring a central account. Hybrid instances may later expose a central mapping without requiring a destructive client-side merge.
 
 ## Images

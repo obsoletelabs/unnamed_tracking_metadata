@@ -159,6 +159,7 @@ details.inline { display: inline; } details.inline > form, details.inline > .car
   justify-content: center; background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); }
 .badge.tier-gold { color: var(--warn); border-color: var(--warn); } .badge.tier-silver { color: var(--muted); }
 .badge.tier-bronze { color: var(--accent); border-color: var(--accent); }
+.badge.tier-platinum { color: var(--text); border-color: var(--text); font-weight: 600; }
 @media (max-width: 640px) { .achievements th:nth-child(4), .achievements td:nth-child(4) { display: none; } }
 .achievements { display: block; overflow-x: auto; }
 
