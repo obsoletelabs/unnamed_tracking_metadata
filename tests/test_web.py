@@ -314,18 +314,18 @@ def test_achievement_proposal_lines_accept_extras_in_any_order(site):
 
     from atlas.web.routes import parse_achievement_line
 
-    assert parse_achievement_line("Escape | Leave | gold | win condition | 50 | hidden | https://i.test/a.png"
+    assert parse_achievement_line("Escape | Leave | platinum | win condition | 50 | hidden | https://i.test/a.png"
                                   " | https://i.test/b.png") == {
-        "name": "Escape", "description": "Leave", "tier": "gold", "kind": "win_condition", "points": 50,
+        "name": "Escape", "description": "Leave", "tier": "platinum", "kind": "win_condition", "points": 50,
         "hidden": True, "icon_url": "https://i.test/a.png", "locked_icon_url": "https://i.test/b.png"}
     assert parse_achievement_line("Plain") == {"name": "Plain", "description": ""}
     with pytest.raises(HTTPException):
-        parse_achievement_line("X | y | platinum")
+        parse_achievement_line("X | y | diamond")
     signup(site, "alice")
     t = token(site, f"/game/{site.gid}")
-    ok = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | gold | 5"})
+    ok = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | platinum | 5"})
     assert ok.status_code == 303
-    bad = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | platinum"})
+    bad = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | diamond"})
     assert bad.status_code == 400
     page = site.get(f"/game/{site.gid}")
     assert page.status_code == 200 and "Edit achievements" in page.text
