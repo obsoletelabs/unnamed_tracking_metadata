@@ -25,6 +25,15 @@ jobs:
       - run: uv sync --frozen --extra dev
       - run: uv run ruff check atlas tests tools e2e
       - run: uv run pytest -q
+      - name: Shared vocabulary file matches atlas/vocab.py (C7.4)
+        run: uv run python -m tools.vocab_check check && python3 -I tools/vocab_check.py verify contracts/vocab-v1.json
+      - name: Shared vocabulary file (C7.4, compared by the plugin and the Tracking App)
+        uses: actions/upload-artifact@v4
+        with:
+          name: vocab-v1
+          path: |
+            contracts/vocab-v1.json
+            contracts/vocab-v1.json.sha256
       - name: Resolve contract fixture (C4.5, vendored by the metadata-atlas plugin)
         uses: actions/upload-artifact@v4
         with:

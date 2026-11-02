@@ -346,6 +346,8 @@ def create(session: Session, ctx: Ctx, user: User, kind: str, canonical_id: str 
     if not mail.is_verified(s, user):
         raise AtlasError("confirm your email address before contributing (see your profile)", "forbidden")
     payload = _validate(session, kind, canonical_id, payload)
+    if kind == "achievements":  # refused at submission, not only when a reviewer approves it (C1.6)
+        facets.check_platinum_gate(ctx, payload["items"])
     if kind != "new_game":
         row = session.get(Canonical, canonical_id) if canonical_id else None
         if row is None or row.merged_into:

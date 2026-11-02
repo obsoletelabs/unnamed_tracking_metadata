@@ -21,7 +21,14 @@ router = APIRouter()
 
 KIND_CHOICES = (("", "Not set"), ("progression", "Progression"), ("missable", "Missable"),
                 ("win_condition", "Win condition"))
-TIER_CHOICES = (("", "Not set"), ("bronze", "Bronze"), ("silver", "Silver"), ("gold", "Gold"))
+# Platinum (C7.1) marks completing the whole list. The choice approach follows the external contribution in
+# obsoletelabs/unnamed_tracking_metadata#110; here it is also gated by the federation emit protocol (C1.6).
+TIER_CHOICES = (("", "Not set"), ("bronze", "Bronze"), ("silver", "Silver"), ("gold", "Gold"),
+                ("platinum", "Platinum"))
+PLATINUM_GATED_NOTE = ("Platinum cannot be published by this node yet: its federation emit protocol is below 1.2. "
+                       "An administrator raises it under Admin → Peers once every follower is upgraded.")
+EXTRA_PLATINUM_NOTE = ("Another row is already platinum. Platinum usually marks completing the whole list; "
+                       "keep more than one only if the game really has several.")
 FIELDS = ("kind", "tier", "points", "hidden", "icon_url", "locked_icon_url")
 FIELD_LABELS = {"description": "Description", "kind": "Kind", "tier": "Tier", "points": "Points", "hidden": "Hidden",
                 "icon_url": "Icon", "locked_icon_url": "Locked icon"}
@@ -107,7 +114,8 @@ def _others(p: Page, cid: str) -> list[dict[str, Any]]:
 def _editor_ctx(p: Page, g: Any, rows: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
     _decorate(p, g.id, rows)
     return {"g": g, "title": g.view.get("title"), "rows": rows, "kinds": KIND_CHOICES, "tiers": TIER_CHOICES,
-            "others": _others(p, g.id), "max_rows": MAX_ROWS, **extra}
+            "platinum_gated": facets.platinum_gated(p.st.ctx), "others": _others(p, g.id), "max_rows": MAX_ROWS,
+            **extra}
 
 
 # ---- reading the submitted rows ----------------------------------------------------------------------
@@ -166,6 +174,7 @@ async def _store_upload(p: Page, upload: Any) -> tuple[str | None, str | None]:
 async def _read_rows(p: Page, form: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """(rows as shown again in the editor, items for the rows that are valid and not removed)."""
     rows, items, seen = [], [], {}
+    platinum_seen = False
     keys = [k for k in form.getlist("row") if isinstance(k, str)][:MAX_ROWS]
     uploads_left = 6
     for k in keys:
@@ -195,6 +204,12 @@ async def _read_rows(p: Page, form: Any) -> tuple[list[dict[str, Any]], list[dic
                                         + ("icon." if which == "icon" else "locked icon."))
         item, more = _clean_row(row)
         problems += more
+        if row["tier"] == facets.PLATINUM:
+            if facets.platinum_gated(p.st.ctx):
+                problems.append(PLATINUM_GATED_NOTE)
+            elif platinum_seen:
+                row["notes"].append(EXTRA_PLATINUM_NOTE)  # a warning, not a refusal (C7.1)
+            platinum_seen = True
         norm = facets._norm_name(row["name"]) if row["name"] else ""
         if norm:
             if norm in seen:

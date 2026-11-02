@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "achievement_tier": [
+    "bronze",
+    "silver",
+    "gold",
+    "platinum"
+  ],
+  "achievement_kind": [
+    "progression",
+    "missable",
+    "win_condition"
+  ],
+  "crossplay": [
+    "yes",
+    "partial",
+    "no"
+  ],
+  "relation_type": [
+    "version_of",
+    "remake_of",
+    "remaster_of",
+    "port_of",
+    "dlc_of",
+    "expansion_of",
+    "standalone_expansion_of",
+    "mod_of",
+    "modpack_of",
+    "total_conversion_of",
+    "series_member",
+    "collection_member"
+  ],
+  "date_precision": [
+    "year",
+    "month",
+    "day"
+  ],
+  "release_category": [
+    "full",
+    "early_access",
+    "beta",
+    "rerelease",
+    "port",
+    "demo"
+  ],
+  "feed_kinds": [
+    "obs",
+    "artwork",
+    "achievements",
+    "custom",
+    "schema",
+    "merge",
+    "detach",
+    "lock",
+    "unlock",
+    "key_rotation"
+  ]
+}
