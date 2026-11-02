@@ -18,12 +18,12 @@ import re
 import tarfile
 import tempfile
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives import serialization
-from sqlalchemy import BigInteger, DateTime, Engine, Integer, LargeBinary, Table, delete, func, select, text, update
+from sqlalchemy import BigInteger, Date, DateTime, Engine, Integer, LargeBinary, Table, delete, func, select, text, update
 
 from . import __version__, client_changes, db
 from .models import Base
@@ -48,7 +48,7 @@ def _encode(table: Table, row: Any) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for col in table.columns:
         value = row._mapping[col]
-        if isinstance(value, datetime):
+        if isinstance(value, (datetime, date)):  # datetime is a date: both as ISO text
             value = value.isoformat()
         elif isinstance(value, bytes):
             value = base64.b64encode(value).decode()
@@ -66,6 +66,8 @@ def _decode(table: Table, data: dict[str, Any]) -> dict[str, Any]:
             value = datetime.fromisoformat(value)
             if value.tzinfo is None and getattr(col.type, "timezone", False):
                 value = value.replace(tzinfo=UTC)  # Atlas stores UTC; SQLite hands back naive values, PostgreSQL would guess
+        elif value is not None and isinstance(col.type, Date):  # `canonical.release_start/_end` (0031)
+            value = date.fromisoformat(value)
         elif value is not None and isinstance(col.type, LargeBinary):
             value = base64.b64decode(value)
         out[col.name] = value

@@ -289,9 +289,25 @@ def resolve(body: ResolveRequest, st: St, session: Sess, _: Annotated[auth.Princ
 
 @router.get("/games", tags=["read"])
 def list_games(session: Sess, st: St, _: Annotated[auth.Principal, Depends(require("read"))],
-               q: Annotated[str, Query(min_length=1, max_length=200)], limit: Annotated[int, Query(ge=1, le=100)] = 25,
-               type: Annotated[str | None, Query(max_length=32)] = None):
-    rows = service.search(session, q, limit, media_type=type)
+               q: Annotated[str, Query(max_length=200, description="Title search. Required unless a release "
+                                       "filter is given.")] = "",
+               limit: Annotated[int, Query(ge=1, le=100)] = 25,
+               type: Annotated[str | None, Query(max_length=32)] = None,
+               released_from: Annotated[str | None, Query(max_length=10, description=(
+                   "`YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Only records whose first release lies entirely on or "
+                   "after the start of this period."))] = None,
+               released_to: Annotated[str | None, Query(max_length=10, description=(
+                   "`YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Only records whose first release lies entirely on or "
+                   "before the end of this period. A year-only release matches a filter on its year, never "
+                   "one on a single month of it."))] = None,
+               sort: Annotated[Literal["relevance", "title", "release", "-release"], Query(description=(
+                   "`release` orders by the start of the first release, year before month before day, unknown "
+                   "last; `-release` newest first."))] = "relevance",
+               offset: Annotated[int, Query(ge=0, le=100_000)] = 0):
+    if not q.strip() and not released_from and not released_to:
+        raise HTTPException(422, "give q (a title search) or a release filter")
+    rows = service.search(session, q, limit, offset, media_type=type, released_from=released_from,
+                          released_to=released_to, sort=sort)
     return {"results": [game_out(r, None, session, st.ctx) for r in rows]}
 
 
@@ -334,7 +350,10 @@ class LockBody(BaseModel):
     value: (
         Annotated[str, Field(max_length=20000)]
         | Annotated[list[Annotated[str, Field(max_length=128)]], Field(max_length=100)]
-    )
+        # `releases` (C5.2, protocol 1.3): at most five entries; more are refused, not truncated
+        | Annotated[list[dict[str, Any]], Field(max_length=5)]
+    ) = Field(description="A string, a list of strings, or for `releases` a list of release entries. "
+                          "`release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.")
 
 
 @router.get("/games/{cid}/observations", tags=["curate"])

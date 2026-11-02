@@ -12,6 +12,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from . import dates
+
 CONTRACT_VERSION: Literal[1] = 1
 
 ProviderKey = Annotated[str, Field(pattern=r"^[a-z0-9._-]{1,50}$")]
@@ -82,6 +84,76 @@ class SourceConnectionRef(BaseModel):
         return self
 
 
+class ReleaseDateV1(BaseModel):
+    """C5.1 PartialDate plus its precision: `{"date": "2011-04", "precision": "month"}`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    date: str = Field(max_length=10)
+    precision: Literal["year", "month", "day"]
+
+    @model_validator(mode="after")
+    def shape(self) -> ReleaseDateV1:
+        try:
+            dates.parse(self.date, self.precision)
+        except dates.DateError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+
+class ReleaseEntryV1(ReleaseDateV1):
+    """C5.1 ReleaseEntry: one dated release, keyed by platform, region, edition and category."""
+
+    platform: str | None = Field(default=None, max_length=dates.MAX_PLATFORM)
+    region: str | None = Field(default=None, pattern=r"^(ww|eu|na|asia|oce|latam|[a-z]{2})$")
+    edition: str | None = Field(default=None, max_length=dates.MAX_EDITION)
+    category: Literal["full", "early_access", "beta", "rerelease", "port", "demo"]
+
+    @field_validator("platform", "edition", mode="after")
+    @classmethod
+    def one_line(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = " ".join("".join(c if c.isprintable() or c == " " else " " for c in value).split())
+        if not cleaned:
+            raise ValueError("Use printable text")
+        return cleaned
+
+
+class ReleaseInfoV1(BaseModel):
+    """`ext.release` (protocol 1.3): the source's first release and up to five dated releases."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    first: ReleaseDateV1 | None = None
+    entries: list[ReleaseEntryV1] = Field(default_factory=list, max_length=dates.MAX_RELEASES)
+
+    @model_validator(mode="after")
+    def distinct(self) -> ReleaseInfoV1:
+        if self.first is None and not self.entries:
+            raise ValueError("ext.release needs a first release or at least one entry")
+        keys = [dates.entry_key(e.model_dump(exclude_none=True)) for e in self.entries]
+        if len(set(keys)) != len(keys):
+            raise ValueError("release entries must differ in platform, region, edition or category")
+        return self
+
+    def reported(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if self.first is not None:
+            out["first"] = self.first.model_dump()
+        if self.entries:
+            out["entries"] = [e.model_dump(exclude_none=True) for e in self.entries]
+        return out
+
+
+class ObservationExtV1(BaseModel):
+    """Optional observation extensions (C1.4 `ext`). Each member ships with a protocol minor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    release: ReleaseInfoV1 | None = None
+
+
 class SourceObservationV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -90,11 +162,31 @@ class SourceObservationV1(BaseModel):
     platform: str | None = Field(default=None, max_length=50)
     platforms: list[Annotated[str, Field(max_length=50)]] | None = Field(default=None, max_length=20)  # Atlas extension
     edition: str | None = Field(default=None, max_length=100)
+    # Day precision only (unchanged meaning). A partial date goes in `ext.release.first` (C5.2).
     release_date: date | None = None
     provider_ids: dict[ProviderKey, ProviderIdentity] | None = Field(default=None, max_length=32)
     facts: ObservedFacts | None = None
     source_updated_at: int | None = Field(default=None, ge=0, le=4_102_444_800)
     available: bool | None = None
+    ext: ObservationExtV1 | None = None  # protocol 1.3 (`ext.release`); older followers park it
+
+    @model_validator(mode="after")
+    def release_consistent(self) -> SourceObservationV1:
+        """C5.2: `release_date` is set only when the first release is known to the day, and then equals it.
+        An entry's edition, when given, is this observation's edition (C5.1)."""
+        release = self.ext.release if self.ext else None
+        if release is None:
+            return self
+        first = release.first
+        if first is not None and self.release_date is not None and (
+                first.precision != "day" or first.date != self.release_date.isoformat()):
+            raise ValueError("release_date is the first release when that is known to the day; "
+                             "send a partial first release without release_date")
+        if self.edition:
+            for e in release.entries:
+                if e.edition and e.edition != self.edition:
+                    raise ValueError(f"release edition {e.edition!r} is not this observation's edition")
+        return self
 
     @field_validator("external_id")
     @classmethod
@@ -136,6 +228,8 @@ class SourceObservationV1(BaseModel):
             out["source_updated_at"] = self.source_updated_at
         if self.available is not None:
             out["available"] = self.available
+        if self.ext is not None and self.ext.release is not None:
+            out["ext"] = {"release": self.ext.release.reported()}
         return out
 
 

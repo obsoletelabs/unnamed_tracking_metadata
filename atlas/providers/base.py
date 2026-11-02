@@ -10,6 +10,8 @@ from typing import Any, Protocol
 
 import httpx
 
+from .. import dates
+
 
 class ProviderError(Exception):
     """Upstream failure (network, 5xx, bad payload)."""
@@ -20,7 +22,9 @@ class ProviderResult:
     external_id: str
     title: str
     platform: str | None = None
-    release_date: str | None = None
+    release_date: str | None = None  # day precision only (legacy key)
+    # C5.2 `ext.release`: {"first": {date, precision}, "entries": [...]} when the source knows more than a day
+    release: dict[str, Any] | None = None
     provider_ids: dict[str, str] = field(default_factory=dict)
     facts: dict[str, Any] = field(default_factory=dict)
     custom: dict[str, Any] = field(default_factory=dict)  # values for admin-defined fields, e.g. crossplay
@@ -33,6 +37,8 @@ class ProviderResult:
             item["platform"] = self.platform
         if self.release_date:
             item["release_date"] = self.release_date
+        if self.release:
+            item["ext"] = {"release": self.release}
         if self.provider_ids:
             item["provider_ids"] = self.provider_ids
         facts = {k: v for k, v in self.facts.items() if v not in (None, "", [])}
@@ -52,19 +58,62 @@ class Provider(Protocol):
 
 
 _DATE_FORMATS = ("%b %d, %Y", "%d %b, %Y", "%B %d, %Y", "%d %B, %Y", "%Y-%m-%d")
+_MONTH_FORMATS = ("%b %Y", "%B %Y", "%Y-%m")
+_QUARTER = re.compile(r"Q[1-4]\s+\d{4}\Z", re.IGNORECASE | re.ASCII)
 
 
 def parse_date(text: str | None) -> str | None:
-    """Return an ISO date or None. Month-only or year-only dates are not guessed."""
+    """Return an ISO day or None. Month-only or year-only dates are not guessed (see `parse_release`)."""
+    got = parse_release(text)
+    return got[0] if got and got[1] == "day" else None
+
+
+def parse_release(text: str | None) -> tuple[str, str] | None:
+    """A store's release text as (PartialDate, precision) (C5.2): "19 Apr, 2011" -> day, "Apr 2011" ->
+    month, "2011" -> year. A quarter ("Q3 2025") is None until the reserved `quarter` precision ships; so is
+    anything outside the release year range or not a date ("Coming soon", "TBA")."""
     if not text:
         return None
-    text = text.strip()
+    text = " ".join(text.split())
+    if _QUARTER.fullmatch(text):
+        return None
+    candidates: list[tuple[str, str]] = []
     for fmt in _DATE_FORMATS:
         try:
-            return datetime.strptime(text, fmt).date().isoformat()
+            candidates.append((datetime.strptime(text, fmt).date().isoformat(), "day"))
+            break
         except ValueError:
             continue
+    if not candidates:
+        for fmt in _MONTH_FORMATS:
+            try:
+                candidates.append((datetime.strptime(text, fmt).strftime("%Y-%m"), "month"))
+                break
+            except ValueError:
+                continue
+    if not candidates and re.fullmatch(r"\d{4}", text, re.ASCII):
+        candidates.append((text, "year"))
+    for value, precision in candidates:
+        if dates.try_parse(value, precision) is not None:
+            return value, precision
     return None
+
+
+def release_ext(first: tuple[str, str] | None, entries: list[dict[str, Any]] | None = None
+                ) -> tuple[str | None, dict[str, Any] | None]:
+    """(`release_date`, `ext.release`) for a provider result: the legacy key only for a day, and the
+    extension only when it says more than that key (a partial first release, or dated entries)."""
+    entries = entries or []
+    if first is None and entries:
+        derived = dates.first_of_entries(entries)
+        first = (derived.value, derived.precision) if derived else None
+    day = first[0] if first and first[1] == "day" else None
+    if first is None or (first[1] == "day" and not entries):
+        return day, None
+    release: dict[str, Any] = {"first": {"date": first[0], "precision": first[1]}}
+    if entries:
+        release["entries"] = entries
+    return day, release
 
 
 def epoch_to_date(value: int | None) -> str | None:
