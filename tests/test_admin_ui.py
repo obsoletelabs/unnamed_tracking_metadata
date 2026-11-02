@@ -169,7 +169,7 @@ def test_peers_page_shows_protocol_and_parked_entries(site):
         s.add(FollowerSeen(token_id="t" * 26, protocol="1.0", last_seen_at=now))
         s.commit()
     page = site.get("/admin/peers").text
-    assert 'data-protocol="own">1.2<' in page and 'data-protocol="emit"><strong>1.0<' in page
+    assert 'data-protocol="own">1.3<' in page and 'data-protocol="emit"><strong>1.0<' in page
     assert 'data-failure="7" data-disposition="parked"' in page and "unsupported kind" in page
     assert 'data-follower-protocol="1.0"' in page and "(deleted token)" in page
 

@@ -17,7 +17,7 @@
 {% if recent %}
 <ul class="grid">{% for g in recent %}
   <li class="tile"><a href="/game/{{ g.id }}"><div class="cover">{{ cover(g, art) }}</div>
-  <div class="meta"><div class="name">{{ g.view.get('title') }}</div><div class="muted small">{{ type_labels.get(g.media_type, g.media_type) }}{% if g.view.get('release_date') %} · {{ (g.view.get('release_date') or '')[:4] }}{% endif %}</div></div></a></li>
+  <div class="meta"><div class="name">{{ g.view.get('title') }}</div><div class="muted small">{{ type_labels.get(g.media_type, g.media_type) }}{% if release_year(g.view) %} · {{ release_year(g.view) }}{% endif %}</div></div></a></li>
 {% endfor %}</ul>
 {% else %}<p class="muted">No media records yet. {% if p.user %}<a href="/new">Add the first record.</a>{% else %}<a href="/login">Sign in</a> to add one.{% endif %}</p>{% endif %}
 {% endblock %}

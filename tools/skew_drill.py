@@ -26,6 +26,12 @@ this release at emit protocol 1.2 publishes a platinum achievement list; the 1.1
 (`unsupported_capability`, token `tier-platinum`), keep its previous complete list and hold back later
 entries, and converge after an in-place upgrade. No 1.1 release is tagged yet, so `--previous-ref` (or
 `--previous-dir`) is required for it.
+
+`--scenario dates` (skew-1.2, contract C5.6) runs a 1.2 release as the follower: an authority of this release
+at emit protocol 1.3 publishes an observation with partial and regional release dates (`ext.release`); the
+1.2 follower must park it (`unsupported_capability`, token `dates-v1`) rather than strip the dates, keep the
+record exactly as it was, hold back later entries, and converge after an in-place upgrade (which runs
+migration 0031 on its database). `--previous-ref`/`--previous-dir` must name a 1.2 release.
 """
 
 from __future__ import annotations
@@ -48,6 +54,7 @@ from typing import Any
 
 from atlas import feed, feed_schema, sync
 from atlas.ids import canonical_id, ulid
+from atlas.models import ChangeLog
 from atlas.signing import load_identity
 
 from .multinode_drill import PASSWORD, Node, free_port
@@ -232,7 +239,9 @@ def run(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) 
 
         # A newer construct, the 1.0 follower, then an in-place upgrade.
         unknown = _sign(new_authority, "relationship", {"canonical_id": "atlas:" + "0" * 26, "kind": "dlc_of"})
-        extended = _observation("Skew Extended Game", ext={"release": {"date": "2026"}})
+        # A valid 1.3 extension (C5.2): the previous release rejects the unknown `ext` key; this one applies it.
+        extended = _observation("Skew Extended Game",
+                                ext={"release": {"first": {"date": "2026", "precision": "year"}}})
         ext_seq = _sign(new_authority, "obs", extended)
         after = new_authority.publish("Skew After Newer Entries")
         assert old_local.sync(peer) is None  # the previous release passes over both silently (atlas#33)
@@ -256,7 +265,10 @@ def run(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) 
                                     headers=old_local.headers()).status_code == 404  # never out of order
         replay = old_local.cli("sync", "replay", "--historical")
         assert replay.returncode == 3 and "unsupported kind" in replay.stdout + replay.stderr, (replay.stdout, replay.stderr)
-        assert old_local.game(extended["canonical_id"])["title"] == "Skew Extended Game"
+        recovered = old_local.game(extended["canonical_id"])
+        assert recovered["title"] == "Skew Extended Game", recovered
+        assert recovered["first_release"] == {"date": "2026", "precision": "year"}, recovered
+        assert recovered["release_year"] == 2026 and "release_date" not in recovered, recovered
         assert old_local.game(after)["title"] == "Skew After Newer Entries"
         assert old_local.sync(peer) is None
         checks.append("after upgrading that follower in place, `atlas sync replay --rescan` records both (exit 3), "
@@ -345,19 +357,108 @@ def run_platinum(previous_ref: str, previous_dir: Path | None = None) -> dict[st
     return report
 
 
+RELEASE = {"first": {"date": "2027", "precision": "year"},
+           "entries": [{"date": "2027", "precision": "year", "platform": "pc", "region": "ww", "category": "full"},
+                       {"date": "2026-11", "precision": "month", "platform": "pc", "region": "ww",
+                        "category": "early_access"},
+                       {"date": "2027-03-01", "precision": "day", "platform": "Switch", "region": "jp",
+                        "category": "port"}]}
+
+
+def _post_release(node: Node, title: str, release: dict[str, Any]) -> str:
+    payload = {"connection": {"source_kind": "manual", "source": "manual", "source_scope": "release-drill"},
+               "observations": [{"external_id": title, "title": title, "facts": {"genres": ["Puzzle"]},
+                                 "ext": {"release": release}}]}
+    response = node.client.post("/api/v2/observations", headers=node.headers(node.admin_token), json=payload)
+    assert response.status_code == 200, f"publish on {node.name}: {response.status_code} {response.text[:300]}"
+    return response.json()["results"][0]["atlas"]["canonical_id"]
+
+
+def run_dates(previous_ref: str, previous_dir: Path | None = None) -> dict[str, Any]:
+    """skew-1.2: a real 1.2 follower meets partial and regional release dates from a 1.3 authority (C5.6)."""
+    report: dict[str, Any] = {"drill": "skew-1.2-dates", "started_at": datetime.now(UTC).isoformat(),
+                              "checks": [], "transport": "isolated loopback HTTP, development mode, SQLite"}
+    checks = report["checks"]
+    with tempfile.TemporaryDirectory(prefix="atlas-skew12-", ignore_cleanup_errors=True) as folder, ExitStack() as stack:
+        root = Path(folder)
+        source, python, commit = _prepare(root, previous_ref, previous_dir)
+        report["previous"] = {"ref": previous_ref if previous_dir is None else str(previous_dir), "commit": commit}
+        report["current"] = {"commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
+                                                      text=True).stdout.strip()}
+        authority = Node(root, "authority-1.3", "authority", extra_env={"ATLAS_EMIT_PROTOCOL": "1.3"})
+        follower = PreviousNode(root, "local-1.2", "local", source, python)
+        for node in (authority, follower):
+            stack.callback(node.close)
+            node.start()
+        old_info = follower.client.get("/api/v2/sync/info", headers=follower.headers()).json()
+        info = authority.client.get("/api/v2/sync/info", headers=authority.headers()).json()
+        assert old_info.get("protocol") == "1.2", old_info.get("protocol")
+        assert (info["protocol"], info["emit_protocol"]) == (feed_schema.PROTOCOL, "1.3"), info
+        assert "dates-v1" in info["capabilities"] and "dates-v1" not in old_info.get("capabilities", []), info
+        checks.append(f"the follower runs a 1.2 release; the authority speaks {info['protocol']} and emits 1.3")
+
+        title = "Skew Dated Game"
+        cid = authority.publish(title)
+        peer = follower.add_peer(authority)
+        assert follower.sync(peer) is None
+        before = follower.game(cid)
+        assert before["title"] == title and "first_release" not in before, before
+        assert _post_release(authority, title, RELEASE) == cid
+        with authority.state.maker() as session:
+            dated_seq = feed.head_seq(session)
+            body = session.get(ChangeLog, dated_seq).body
+        assert body["_requires"] == ["dates-v1"], body
+        assert body["observation"]["payload"]["ext"]["release"] == RELEASE, body
+        later = authority.publish("Skew After Dates")
+        follower.sync(peer)
+        status = follower.client.get("/api/v2/sync/status", headers=follower.headers(follower.admin_token)).json()
+        up = status["upstreams"][authority.identity.node_id]
+        assert up["state"] == "parked" and up["parked"]["first_seq"] == dated_seq, up
+        assert up["parked"]["first_reason"] == "unsupported_capability" and up["parked"]["first_kind"] == "obs", up
+        assert up["applied_head"] == dated_seq - 1 and up["verified_head"] == dated_seq + 1, up
+        kept = follower.game(cid)
+        assert kept == before, (kept, before)  # not stripped, not partial: the record stays as it was
+        assert follower.client.get(f"/api/v2/games/{later}", headers=follower.headers()).status_code == 404
+        checks.append(f"the 1.2 follower parks the dated observation at seq {dated_seq} (unsupported_capability, "
+                      "token dates-v1) instead of stripping the dates, keeps the record exactly as it was, holds "
+                      "back the later record and still verifies and retains the later entry")
+
+        follower.upgrade()
+        replay = follower.cli("sync", "replay")
+        assert replay.returncode == 0, (replay.stdout, replay.stderr)
+        got, want = follower.game(cid), authority.game(cid)
+        assert got["first_release"] == want["first_release"] == {"date": "2027", "precision": "year"}, (got, want)
+        assert got["release_year"] == 2027 and "release_date" not in got, got  # never a fake 1 January
+        assert got["releases"] == want["releases"] and len(got["releases"]) == 3, got["releases"]
+        assert follower.game(later)["title"] == "Skew After Dates"
+        status = follower.cli("sync", "status", "--json")
+        assert status.returncode == 0, (status.stdout, status.stderr)
+        checks.append("after upgrading the follower in place (migration 0031 on its database), replay applies the "
+                      "parked observation and the later record: first release, year and the three regional "
+                      "entries equal the authority's, `release_date` stays absent, and `atlas sync status` exits 0")
+    report["status"] = "passed"
+    report["finished_at"] = datetime.now(UTC).isoformat()
+    return report
+
+
 def main_cli() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--previous-ref", default=DEFAULT_PREVIOUS, help="git ref of the previous release")
     parser.add_argument("--previous-dir", type=Path,
                         help="an existing checkout of the previous release with its own .venv (skips git and uv)")
     parser.add_argument("--output", type=Path, help="write the JSON report here")
-    parser.add_argument("--scenario", choices=("1.0", "platinum"), default="1.0",
-                        help="1.0: the previous 1.0 release (default); platinum: a 1.1 release meets platinum")
+    parser.add_argument("--scenario", choices=("1.0", "platinum", "dates"), default="1.0",
+                        help="1.0: the previous 1.0 release (default); platinum: a 1.1 release meets platinum; "
+                             "dates: a 1.2 release meets partial and regional release dates")
     args = parser.parse_args()
     if args.scenario == "platinum":
         if args.previous_dir is None and args.previous_ref == DEFAULT_PREVIOUS:
             parser.error("--scenario platinum needs --previous-ref or --previous-dir of a 1.1 release")
         report = run_platinum(args.previous_ref, args.previous_dir)
+    elif args.scenario == "dates":
+        if args.previous_dir is None and args.previous_ref == DEFAULT_PREVIOUS:
+            parser.error("--scenario dates needs --previous-ref or --previous-dir of a 1.2 release")
+        report = run_dates(args.previous_ref, args.previous_dir)
     else:
         report = run(args.previous_ref, args.previous_dir)
     text = json.dumps(report, indent=2) + "\n"

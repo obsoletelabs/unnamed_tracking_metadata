@@ -18,6 +18,11 @@ Protocol 1.2 (C7.1) adds the achievement tier `platinum`. An entry that carries 
 `_requires` token `tier-platinum`, so a 1.1 follower parks the whole list (`unsupported_capability`)
 instead of dropping it, and this release applies it. A token-less platinum entry still parks a 1.1
 follower, as `unsupported_value`.
+
+Protocol 1.3 (C5.2) adds `observation.payload.ext.release` (partial and regional release dates), a
+`releases` lock and partial `release_date` lock values. An entry that carries any of them lists the
+`_requires` token `dates-v1`, so a 1.1 or 1.2 follower parks it (`unsupported_capability`) instead of
+stripping the dates or storing "2011" as a day-only `release_date`.
 """
 
 from __future__ import annotations
@@ -33,7 +38,7 @@ from . import vocab
 # ---- versions -------------------------------------------------------------------------------------------
 
 #: The federation wire protocol this release speaks and applies ("MAJOR.MINOR").
-PROTOCOL = "1.2"
+PROTOCOL = "1.3"
 #: Pre-A1 releases advertise no protocol; they speak this.
 LEGACY_PROTOCOL = "1.0"
 #: Version of the observation payload schema (`SourceObservationV1`).
@@ -44,7 +49,7 @@ DEFAULT_MIN_FOLLOWER_PROTOCOL = "1.0"
 PROTOCOL_HEADER = "Atlas-Protocol"
 
 #: Named optional features this node advertises and understands in `_requires`.
-CAPABILITIES: tuple[str, ...] = ("ext-v1",)
+CAPABILITIES: tuple[str, ...] = ("ext-v1", "dates-v1")
 #: Vocabulary tokens (C1.4 `_requires`) this release understands: one per value a later minor added, such
 #: as `tier-platinum` (1.2). They are not optional features, so `/sync/info.capabilities` does not list them.
 VOCAB_TOKENS: tuple[str, ...] = tuple(sorted(set(vocab.VALUE_TOKEN.values())))
@@ -115,16 +120,26 @@ _OBSERVATION = frozenset({"id", "source_kind", "source", "source_scope", "extern
                           "source_updated_at", "observed_at"})
 #: What an observation payload may carry (the same keys `sync._valid_observation` accepts), plus `ext`.
 OBS_PAYLOAD = frozenset({"title", "platform", "platforms", "edition", "release_date", "provider_ids", "facts",
-                         "source_updated_at", "available"})
-#: `ext` members this release applies (none in 1.1) and the `_requires` token each reserved one ships under.
-EXT_APPLY: frozenset[str] = frozenset()
+                         "source_updated_at", "available", "ext"})
+#: `ext` members this release applies (`release` since 1.3) and the `_requires` token each one ships under.
+EXT_APPLY: frozenset[str] = frozenset({"release"})
 EXT_TOKENS = {"release": "dates-v1"}
+_RELEASE = "observation.payload.ext.release"
+#: C5.1 shapes inside `ext.release`; an unknown member parks the entry (`unsupported_field`).
+RELEASE_NESTED = {_RELEASE: frozenset({"first", "entries"}),
+                  f"{_RELEASE}.first": frozenset({"date", "precision"}),
+                  f"{_RELEASE}.entries[]": frozenset({"date", "precision", "platform", "region", "edition",
+                                                      "category"})}
+RELEASE_VALUES = {f"{_RELEASE}.first.precision": "date_precision",
+                  f"{_RELEASE}.entries[].precision": "date_precision",
+                  f"{_RELEASE}.entries[].category": "release_category",
+                  f"{_RELEASE}.entries[].region": "release_region"}
 
 FEED_KINDS: dict[str, KindSpec] = {spec.name: spec for spec in (
     KindSpec("obs", "1.0", 1, 1, frozenset({"canonical_id", "media_type", "observation"}),
              "A redistributable source observation and the record it belongs to.",
-             nested={"observation": _OBSERVATION, "observation.payload": OBS_PAYLOAD | {"ext"}},
-             values={"observation.source_kind": "source_kind"}),
+             nested={"observation": _OBSERVATION, "observation.payload": OBS_PAYLOAD, **RELEASE_NESTED},
+             values={"observation.source_kind": "source_kind", **RELEASE_VALUES}),
     KindSpec("artwork", "1.0", 1, 1, frozenset({"canonical_id", "source", "items"}),
              "The complete artwork set one source contributes to a record.",
              nested={"items[]": frozenset({"kind", "url", "priority", "width", "height"})},
@@ -159,11 +174,11 @@ RESERVED_KINDS: dict[str, str] = {"relation": "1.4"}
 
 
 @cache
-def vocabularies() -> dict[str, frozenset[str]]:
+def vocabularies() -> dict[str, Any]:
     """Closed vocabularies whose unknown values park an entry (`unsupported_value`). Imported lazily:
     the modules that own them append to the feed themselves."""
-    from . import custom, facets
-    from .merge import SCALAR_FIELDS, UNION_FIELDS
+    from . import custom, dates, facets
+    from .merge import LOCK_FIELDS
 
     return {
         "source_kind": frozenset({"host", "plugin", "manual", "metadata"}),
@@ -171,8 +186,27 @@ def vocabularies() -> dict[str, frozenset[str]]:
         "achievement_kind": frozenset(vocab.ACHIEVEMENT_KINDS),
         "achievement_tier": frozenset(vocab.ACHIEVEMENT_TIERS),
         "field_kind": frozenset(custom.KINDS),
-        "lock_field": frozenset(SCALAR_FIELDS) | frozenset(UNION_FIELDS),
+        "lock_field": frozenset(LOCK_FIELDS),
+        "date_precision": frozenset(vocab.DATE_PRECISIONS),
+        "release_category": frozenset(vocab.RELEASE_CATEGORIES),
+        "release_region": OpenVocabulary(dates.REGION_RE),
     }
+
+
+class OpenVocabulary:
+    """A vocabulary defined by a pattern (C5.1 regions: the groups or any ISO 3166-1 alpha-2 code). A value
+    outside it parks the entry like an unknown closed value: a newer release may have added a region group."""
+
+    def __init__(self, pattern: re.Pattern[str]):
+        self.pattern = pattern
+
+    def __contains__(self, value: object) -> bool:
+        return isinstance(value, str) and self.pattern.fullmatch(value) is not None
+
+    def __iter__(self):
+        """One member, the pattern itself, so the startup-replay marker (`sync.replay_marker`) changes when a
+        release changes the pattern."""
+        return iter((f"/{self.pattern.pattern}/",))
 
 
 @cache
@@ -376,7 +410,10 @@ def check_emit(kind: str, body: dict[str, Any], current: str) -> dict[str, Any]:
     * a vocabulary value a later minor added (`tier: "platinum"`, 1.2): refused with the operator-facing
       message. At or above that protocol the value is signed and its token (`tier-platinum`) is added to
       `_requires` (C1.4), so older followers park the entry with an explicit reason;
-    * `observation.payload.ext.release` (1.3): removed from the signed copy (stored locally in full).
+    * `observation.payload.ext.release` (1.3): removed from the signed copy below 1.3 (stored locally in
+      full); at or above 1.3 signed with the `_requires` token `dates-v1`, so 1.1/1.2 followers park it;
+    * a `releases` lock or unlock, or a partial `release_date` lock value (1.3): refused below 1.3 (callers
+      check first and answer 409), signed with `dates-v1` at or above it.
 
     Bodies with none of these are returned unchanged, so version-1 bodies are signed exactly as before."""
     have = parse_protocol(current)
@@ -404,20 +441,36 @@ def check_emit(kind: str, body: dict[str, Any], current: str) -> dict[str, Any]:
             token = vocab.VALUE_TOKEN.get((name, value))
             if token and token not in needed_tokens:
                 needed_tokens.append(token)
-    present = body.get("_requires") if isinstance(body.get("_requires"), list) else []
-    missing = [t for t in needed_tokens if t not in present]
-    if missing:
-        body = {**body, "_requires": [*present, *missing]}  # a new top-level dict: the caller's copy is untouched
+    dates_needed = parse_protocol(RESERVED_TOKENS["dates-v1"])
     if kind == "obs":
         payload = (body.get("observation") or {}).get("payload")
-        if isinstance(payload, dict) and isinstance(payload.get("ext"), dict) and "release" in payload["ext"] \
-                and parse_protocol(RESERVED_TOKENS["dates-v1"]) > have:
-            body = copy.deepcopy(body)
-            ext = body["observation"]["payload"]["ext"]
-            ext.pop("release")
-            if not ext:
-                body["observation"]["payload"].pop("ext")
+        if isinstance(payload, dict) and isinstance(payload.get("ext"), dict) and "release" in payload["ext"]:
+            if dates_needed > have:
+                body = copy.deepcopy(body)
+                ext = body["observation"]["payload"]["ext"]
+                ext.pop("release")
+                if not ext:
+                    body["observation"]["payload"].pop("ext")
+            else:
+                needed_tokens.append("dates-v1")
+    if kind in ("lock", "unlock") and _dates_lock(body):
+        if dates_needed > have:
+            raise EmitGateError("a partial or regional release date lock", RESERVED_TOKENS["dates-v1"], current)
+        needed_tokens.append("dates-v1")
+    present = body.get("_requires") if isinstance(body.get("_requires"), list) else []
+    missing = [t for t in dict.fromkeys(needed_tokens) if t not in present]
+    if missing:
+        body = {**body, "_requires": [*present, *missing]}  # a new top-level dict: the caller's copy is untouched
     return body
+
+
+def _dates_lock(body: dict[str, Any]) -> bool:
+    """A lock (or unlock) only a 1.3 follower reads correctly: the `releases` field, or a `release_date`
+    value that is not a full day ("2011" would become a day-only `release_date` on a 1.2 follower)."""
+    field_name, value = body.get("field"), body.get("value")
+    if field_name == "releases":
+        return True
+    return field_name == "release_date" and isinstance(value, str) and len(value) != 10
 
 
 # ---- documentation --------------------------------------------------------------------------------------

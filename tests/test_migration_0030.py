@@ -96,7 +96,7 @@ def test_migration_0030_up_down_and_up_again(url):
 
 
 def test_migration_0030_on_an_empty_database(url):
-    db.upgrade(url)
+    db.upgrade(url, "0030")  # later migrations (0031+) have their own tests
     engine = create_engine(url)
     assert version(engine) == "0030"
     with engine.connect() as c:

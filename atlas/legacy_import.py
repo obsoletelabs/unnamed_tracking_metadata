@@ -1,6 +1,7 @@
 """One-way import from a demo-1 SQLite database. Reads it read-only; users and submissions are not imported.
 
-Known losses: demo-1 stored only a release *year*, which the v1 contract cannot represent, so dates are dropped.
+demo-1 stored only a release *year*. It is kept as a year-precision first release (`ext.release.first`,
+C5.2), never turned into a fake 1 January; a year outside 1950-2100 is dropped.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from . import dates
 from .contract import ObservationBatchV1
 from .service import Ctx, ingest
 
@@ -36,7 +38,10 @@ def import_legacy(session: Session, ctx: Ctx, path: str, chunk: int = 500) -> di
 
         items = []
         stats = {"games": 0, "created": 0, "updated": 0, "skipped": 0}
-        rows = list(db.execute("SELECT id, canonical_id, title, developer, description FROM games ORDER BY id"))
+        has_year = any(c["name"] == "release_year" for c in db.execute("PRAGMA table_info(games)"))
+        rows = list(db.execute("SELECT id, canonical_id, title, developer, description"
+                               + (", release_year" if has_year else ", NULL AS release_year")
+                               + " FROM games ORDER BY id"))
     finally:
         db.close()
 
@@ -67,6 +72,9 @@ def import_legacy(session: Session, ctx: Ctx, path: str, chunk: int = 500) -> di
             item["provider_ids"] = ids[g["id"]]
         if facts:
             item["facts"] = facts
+        year = g["release_year"]
+        if isinstance(year, int) and not isinstance(year, bool) and dates.try_parse(f"{year:04d}", "year"):
+            item["ext"] = {"release": {"first": {"date": f"{year:04d}", "precision": "year"}}}
         items.append(item)
         if len(items) >= chunk:
             flush()

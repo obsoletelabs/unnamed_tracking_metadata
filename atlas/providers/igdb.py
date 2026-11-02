@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import time
 
-from .base import ProviderResult, epoch_to_date, get_json
+from .. import dates
+from .base import ProviderResult, epoch_to_date, get_json, release_ext
 
 # external_games.category values documented by IGDB
 _EXTERNAL = {1: "steam", 5: "gog", 26: "epic", 11: "microsoft"}
@@ -12,8 +13,15 @@ _FIELDS = (
     "cover.image_id,screenshots.image_id,artworks.image_id,name,first_release_date,summary,genres.name,themes.name,platforms.name,"
     "game_modes.name,alternative_names.name,aggregated_rating,rating,"
     "involved_companies.developer,involved_companies.publisher,involved_companies.company.name,"
-    "external_games.category,external_games.uid"
+    "external_games.category,external_games.uid,"
+    "release_dates.date,release_dates.category,release_dates.y,release_dates.m,release_dates.region,"
+    "release_dates.platform.name"
 )
+# release_dates.category: how precise the date is (IGDB v4 "date format"). 3-6 are quarters (reserved, C5.1)
+# and 7 is "TBD": both stay unknown.
+_PRECISION = {0: "day", 1: "month", 2: "year"}
+# release_dates.region (IGDB v4) -> C5.1 region
+_REGION = {1: "eu", 2: "na", 3: "au", 4: "nz", 5: "jp", 6: "cn", 7: "asia", 8: "ww", 9: "kr", 10: "br"}
 
 
 class Igdb:
@@ -54,8 +62,14 @@ class Igdb:
             ns = _EXTERNAL.get(ext.get("category"))
             if ns and ext.get("uid"):
                 ids.setdefault(ns, str(ext["uid"]))
+        entries = _releases(g.get("release_dates") or [])
+        if entries:
+            first = dates.first_of_entries(entries)
+            day, release = release_ext((first.value, first.precision) if first else None, entries)
+        else:  # no per-release rows: the summary date, which IGDB only gives as a day
+            day, release = epoch_to_date(g.get("first_release_date")), None
         return ProviderResult(
-            external_id=str(g["id"]), title=g["name"], release_date=epoch_to_date(g.get("first_release_date")),
+            external_id=str(g["id"]), title=g["name"], release_date=day, release=release,
             provider_ids=ids,
             facts={
                 "description": g.get("summary"), "developer": pick("developer"), "publisher": pick("publisher"),
@@ -84,3 +98,35 @@ def _artwork(g):
     art += [{"kind": "screenshot", "url": _img(s["image_id"], "screenshot_big"), "priority": 30 + i}
             for i, s in enumerate((g.get("screenshots") or [])[:12]) if s.get("image_id")]
     return art
+
+
+def _releases(rows):
+    """IGDB release_dates as C5.1 entries: precision from the date format, never invented (a year-only row
+    is "2011", not the 1 January its timestamp points at). One entry per (platform, region), the earliest
+    kept; at most five, earliest first."""
+    best = {}
+    for r in rows:
+        precision = _PRECISION.get(r.get("category"))
+        year = r.get("y")
+        if precision is None or not isinstance(year, int):
+            continue
+        if precision == "day":
+            value = epoch_to_date(r.get("date"))
+        elif precision == "month" and isinstance(r.get("m"), int):
+            value = f"{year:04d}-{r['m']:02d}"
+        else:
+            value = f"{year:04d}" if precision == "year" else None
+        if value is None or dates.try_parse(value, precision) is None:
+            continue
+        entry = {"date": value, "precision": precision, "category": "full"}
+        platform = ((r.get("platform") or {}).get("name") or "").strip()[:dates.MAX_PLATFORM]
+        if platform:
+            entry["platform"] = platform
+        if r.get("region") in _REGION:
+            entry["region"] = _REGION[r["region"]]
+        key = dates.entry_key(entry)
+        when = dates.from_dict(entry).sort_key()
+        if key not in best or when < dates.from_dict(best[key]).sort_key():
+            best[key] = entry
+    ordered = sorted(best.values(), key=lambda e: (dates.from_dict(e).sort_key(), dates.entry_key(e)))
+    return ordered[:dates.MAX_RELEASES]

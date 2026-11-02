@@ -332,6 +332,20 @@ def cmd_import_legacy(args) -> int:
     return 0
 
 
+def cmd_dates(args) -> int:
+    """`atlas dates rebuild`: re-derive every record's view with the C5.2 release-date merge (hierarchical vote,
+    partial and regional dates), in batches under the writer lock. Resumable: the last finished record id is
+    kept in node_state, so an interrupted run continues where it stopped; `--restart` starts over."""
+    from . import dates_rebuild
+
+    settings, maker = _maker()
+    with maker() as session:
+        ctx = Ctx(settings, load_identity(session, settings))
+    done = dates_rebuild.run(maker, ctx, batch=args.batch, restart=args.restart, limit=args.limit)
+    print(json.dumps(done))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="atlas")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -395,6 +409,12 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("username")
     a.set_defaults(fn=cmd_make_admin)
     sub.add_parser("cache-media").set_defaults(fn=cmd_cache_media)
+    dt = sub.add_parser("dates", help="release dates: re-derive views with partial and regional dates (C5.2)")
+    dt.add_argument("action", choices=["rebuild"])
+    dt.add_argument("--batch", type=int, default=500, help="records per transaction (default 500)")
+    dt.add_argument("--limit", type=int, help="stop after this many records (the next run continues)")
+    dt.add_argument("--restart", action="store_true", help="start from the first record again")
+    dt.set_defaults(fn=cmd_dates)
     i = sub.add_parser("import-legacy")
     i.add_argument("path", help="path to the demo-1 SQLite database")
     i.set_defaults(fn=cmd_import_legacy)

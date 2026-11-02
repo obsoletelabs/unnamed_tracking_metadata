@@ -1,11 +1,12 @@
 import copy
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, Table, select
 
 from atlas import accounts, custom, custom_compat, db, feed, main, sync
-from atlas.models import Canonical, ChangeLog, CustomValue, FieldDef, MediaType, Proposal
+from atlas.models import Canonical, ChangeLog, CustomValue, FieldDef, MediaType, Proposal, now
 from atlas.service import AtlasError
 from atlas.signing import load_identity, verify
 
@@ -27,9 +28,11 @@ def test_populated_upgrade_preserves_fields_values_proposals_and_signed_history(
                                                   labels={}, origin="local"))
         user = accounts.register(session, settings, "alice", PW)
         identity = load_identity(session)
-        game = Canonical(id="atlas:" + "g" * 26, view={"title": "Legacy game"})
-        session.add(game)
-        session.flush()
+        old_canonical = Table("canonical", metadata, autoload_with=session.connection())
+        game = SimpleNamespace(id="atlas:" + "g" * 26)
+        row = {"id": game.id, "media_type": "game", "norm_title": "", "view": {"title": "Legacy game"},
+               "explain": {}, "version": 1, "created_at": now(), "updated_at": now()}
+        session.execute(old_canonical.insert().values({k: v for k, v in row.items() if k in old_canonical.c}))
         field_id = "f" * 26
         for fid, key, label, kind in [(field_id, "genres", "My categories", "list"),
                                        ("e" * 26, "custom_genres", "Already used", "text")]:

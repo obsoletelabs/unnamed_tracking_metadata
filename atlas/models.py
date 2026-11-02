@@ -5,13 +5,14 @@ Observations are the source of truth; canonical records are derived from them.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -44,6 +45,11 @@ class Canonical(Base):
     media_type: Mapped[str] = mapped_column(String(32), default="game", server_default="game", index=True)
     norm_title: Mapped[str] = mapped_column(String(500), default="", index=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The first release (C5.2) as a period, for sorting and filtering: "2011" is 2011-01-01..2011-12-31 with
+    # precision "year". NULL when unknown. Derived from `view["first_release"]` on every rebuild (migration 0031).
+    release_start: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    release_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    release_precision: Mapped[str | None] = mapped_column(String(5), nullable=True)
     view: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     explain: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     version: Mapped[int] = mapped_column(Integer, default=1)
