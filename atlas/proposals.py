@@ -50,7 +50,7 @@ def clean_edit(payload: dict[str, Any]) -> dict[str, Any]:
             out[key] = value.strip()
     if payload.get("release_date") not in (None, ""):
         try:  # C5.2: a year or a month is kept as such, never padded to a day
-            out["release_date"] = dates.parse(payload["release_date"]).value
+            out["release_date"] = dates.parse_first(payload["release_date"]).value
         except dates.DateError as exc:
             raise AtlasError(f"release_date: {exc}") from exc
     if payload.get("releases"):  # an empty list never clears (omission never deletes)
@@ -202,11 +202,13 @@ def _set_release(out: dict[str, Any], *, first: str | None = None, entries: list
     ext = dict(out.get("ext") or {})
     release = dict(ext.get("release") or {})
     if first is not None:
-        when = dates.parse(first)
+        when = dates.parse_first(first)
         if when.precision == "day":
             out["release_date"] = when.value
-            if "first" in release:
+            if "first" in release and dates.YEAR_MIN <= when.year <= dates.YEAR_MAX:
                 release["first"] = when.as_dict()
+            else:  # a legacy day outside the C5.1 range lives in release_date alone (ext.release cannot hold it)
+                release.pop("first", None)
         else:
             out.pop("release_date", None)
             release["first"] = when.as_dict()
@@ -214,7 +216,12 @@ def _set_release(out: dict[str, Any], *, first: str | None = None, entries: list
         release["entries"] = entries
     if release:
         ext["release"] = release
+    else:
+        ext.pop("release", None)
+    if ext:
         out["ext"] = ext
+    else:
+        out.pop("ext", None)
 
 
 def apply(session: Session, ctx: Ctx, p: Proposal) -> None:

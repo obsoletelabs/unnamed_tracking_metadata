@@ -302,9 +302,12 @@ def list_games(session: Sess, st: St, _: Annotated[auth.Principal, Depends(requi
                    "one on a single month of it."))] = None,
                sort: Annotated[Literal["relevance", "title", "release", "-release"], Query(description=(
                    "`release` orders by the start of the first release, year before month before day, unknown "
-                   "last; `-release` newest first."))] = "relevance",
+                   "last; `-release` newest first. `relevance` ranks exact and prefix title matches first "
+                   "*within each page* of the title order, so pages with `offset` follow the title order; use "
+                   "`title` or `release` for a stable order across pages."))] = "relevance",
                offset: Annotated[int, Query(ge=0, le=100_000)] = 0):
-    if not q.strip() and not released_from and not released_to:
+    # Only a missing q needs a filter: a blank q (`q=%20`) lists recent records, as it always did.
+    if q == "" and not released_from and not released_to:
         raise HTTPException(422, "give q (a title search) or a release filter")
     rows = service.search(session, q, limit, offset, media_type=type, released_from=released_from,
                           released_to=released_to, sort=sort)

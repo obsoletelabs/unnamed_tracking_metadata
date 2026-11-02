@@ -182,6 +182,15 @@ class SourceObservationV1(BaseModel):
                 first.precision != "day" or first.date != self.release_date.isoformat()):
             raise ValueError("release_date is the first release when that is known to the day; "
                              "send a partial first release without release_date")
+        # C5.1: the first release is the earliest full or early-access release, so it cannot start after one
+        # this observation lists itself (it may be earlier: only five entries fit).
+        earliest = dates.first_of_entries(e.model_dump(exclude_none=True) for e in release.entries)
+        if earliest is not None:
+            stated = dates.parse(first.date, first.precision) if first is not None else (
+                dates.PartialDate(self.release_date.isoformat(), "day") if self.release_date is not None else None)
+            if stated is not None and stated.start() > earliest.end():
+                raise ValueError(f"the first release ({stated.value}) is after this observation's own "
+                                 f"{earliest.value} full or early-access release")
         if self.edition:
             for e in release.entries:
                 if e.edition and e.edition != self.edition:

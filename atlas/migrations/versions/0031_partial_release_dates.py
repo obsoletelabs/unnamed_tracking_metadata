@@ -13,7 +13,8 @@ columns. Observations only ever stored day dates, so the precision is `day` and 
 as it was. The one exception is a curator *lock* on `release_date`, which earlier releases accepted as any
 text: a lock value of `"2011"` or `"2011-04"` becomes a year or month first release and leaves the day-only
 `release_date` key (the lock row itself is unchanged); a lock value that is not a date at all is left in
-the view untouched. `year` is set from the first release.
+the view untouched (and the merge keeps showing it there). `year` is set from the first release. A day
+keeps any year (a pre-1950 film is a day too); only partial values use the C5.1 range 1950-2100.
 
 Nothing else is rebuilt here: `atlas dates rebuild` re-derives every view with the new hierarchical vote
 (resumable). Observations and locks are never modified.
@@ -62,11 +63,14 @@ def _json(value):
 
 
 def _period(value):
-    """(precision, start, end) for a PartialDate in the C5.1 year range, else None. Self-contained: a
-    migration never imports application code that may change later."""
-    if not isinstance(value, str) or not _PARTIAL.fullmatch(value) or not 1950 <= int(value[:4]) <= 2100:
+    """(precision, start, end) for a PartialDate, else None. A year or a month must be in the C5.1 range
+    1950-2100; a day is the legacy `release_date` and keeps any year a date can hold (a 1937 film keeps its
+    date). Self-contained: a migration never imports application code that may change later."""
+    if not isinstance(value, str) or not _PARTIAL.fullmatch(value):
         return None
     y = int(value[:4])
+    if len(value) != 10 and not 1950 <= y <= 2100:
+        return None
     if len(value) == 4:
         return "year", date(y, 1, 1), date(y, 12, 31)
     m = int(value[5:7])

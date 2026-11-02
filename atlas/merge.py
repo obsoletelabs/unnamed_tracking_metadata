@@ -132,11 +132,35 @@ def merge(observations: list[Obs], locks: dict[str, Any]) -> tuple[dict[str, Any
 
 def _merge_releases(ranked: list[Obs], locks: dict[str, Any], view: dict[str, Any], explain: dict[str, Any]) -> None:
     """C5.2: the first release by hierarchical vote, the dated releases by a per-key vote, and the legacy
-    day-only `release_date`. Provenance for every value is in `explain`."""
+    day-only `release_date`. Provenance for every value is in `explain`.
+
+    Precedence of the first release: a `release_date` lock; else a `releases` lock that lists a full or
+    early-access release (its earliest such entry, C5.1); else the vote over the observations. The vote is
+    by trust, so a lower-trust source's earlier full entry may stay in `releases` while the first release
+    is later: `explain.first_release.earlier_entry` then names it (amendment A14.13)."""
+    locked: list[dict[str, Any]] | None = None
+    if "releases" in locks:
+        try:
+            locked = dates.clean_entries(locks["releases"])
+        except dates.DateError:
+            locked = []
+
     first: dates.PartialDate | None = None
     if "release_date" in locks:
-        first = dates.try_parse(locks["release_date"])
-        explain["first_release"] = {"strategy": "lock"} if first else {"strategy": "lock", "invalid": True}
+        value = locks["release_date"]
+        first = dates.try_parse_first(value)
+        if first is not None:
+            explain["first_release"] = {"strategy": "lock"}
+        else:
+            # Before C5 a lock took any text ("TBA"). Such a lock still shows as it always did in the legacy
+            # key; it is not a date, so there is no first release, year or sort column.
+            explain["first_release"] = {"strategy": "lock", "invalid": True}
+            if isinstance(value, str) and value:
+                view["release_date"] = value
+                explain["release_date"] = {"strategy": "lock", "invalid": True}
+    elif locked and (from_lock := dates.first_of_entries(locked)) is not None:
+        first = from_lock
+        explain["first_release"] = {"strategy": "lock", "field": "releases"}
     else:
         candidates = [(f, o.trust, o) for o in ranked if (f := dates.observation_first(o.payload)) is not None]
         result = dates.vote([(f, t) for f, t, _ in candidates])
@@ -147,6 +171,8 @@ def _merge_releases(ranked: list[Obs], locks: dict[str, Any], view: dict[str, An
                 "strategy": "vote", "observation_id": src.id, "source": src.source, "support": result.support,
                 "sources": sorted({o.source for f, _, o in candidates if f.agrees_with(first)}),
                 "disagree": sorted({o.source for f, _, o in candidates if not f.agrees_with(first)})}
+            if result.disputed:  # no year has half the weight: a low-confidence plurality year (A14.12)
+                explain["first_release"]["disputed"] = True
     if first is not None:
         view["first_release"] = first.as_dict()
         view["release_year"] = first.year
@@ -154,14 +180,11 @@ def _merge_releases(ranked: list[Obs], locks: dict[str, Any], view: dict[str, An
             view["release_date"] = first.value
             explain["release_date"] = dict(explain["first_release"])
 
-    if "releases" in locks:
-        try:
-            locked = dates.clean_entries(locks["releases"])
-        except dates.DateError:
-            locked = []
+    if locked is not None:
         if locked:
             view["releases"] = sorted(locked, key=lambda e: (dates.from_dict(e).sort_key(), dates.entry_key(e)))
         explain["releases"] = {"strategy": "lock"}
+        _note_earlier_entry(view, explain)
         return
     groups: dict[tuple[str, str, str, str], list[tuple[dict[str, Any], Obs]]] = {}
     for o in ranked:
@@ -179,7 +202,21 @@ def _merge_releases(ranked: list[Obs], locks: dict[str, Any], view: dict[str, An
         merged[key] = (max(o.trust for _, o in claims), entry)
         provenance[key] = {"observation_id": src.id, "source": src.source, "support": result.support,
                            "sources": sorted({o.source for _, o in claims})}
+        if result.disputed:
+            provenance[key]["disputed"] = True
     kept, dropped = dates.select_entries(merged)
     view["releases"] = [merged[k][1] for k in kept]
     explain["releases"] = {"strategy": "vote", "entries": [provenance[k] for k in kept],
                            "dropped": len(dropped)}
+    _note_earlier_entry(view, explain)
+
+
+def _note_earlier_entry(view: dict[str, Any], explain: dict[str, Any]) -> None:
+    """Flag a kept full or early-access entry that ends before the first release starts (they contradict)."""
+    first = view.get("first_release")
+    earliest = dates.first_of_entries(view.get("releases") or [])
+    if not isinstance(first, dict) or earliest is None or "first_release" not in explain:
+        return
+    when = dates.try_parse(first.get("date"), first.get("precision"), any_year=True)
+    if when is not None and earliest.end() < when.start():
+        explain["first_release"]["earlier_entry"] = earliest.as_dict()

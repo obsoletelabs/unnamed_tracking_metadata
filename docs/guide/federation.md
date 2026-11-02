@@ -186,6 +186,19 @@ that is a year or a month, a `releases` lock and removing a `releases` lock with
 `atlas dates rebuild` on followers that upgraded with existing data, or simply let new entries arrive:
 migration 0031 already derived the first release from every record's existing date.
 
+Raising the emit protocol does **not** re-publish what was signed before. An observation stored while
+the authority emitted below 1.3 was signed without its `ext.release`, and that signed entry stays as it
+is: followers keep only its day-only `release_date`, so their first release can differ from the
+authority's until the same source sends the record again (a new import or sync signs a new observation,
+now with `ext.release`) or a curator edits or locks the date. `atlas dates rebuild` re-derives views on
+one node only and signs nothing. Raise the emit protocol before importing partial dates you want followers
+to have.
+
+A `release_date` lock written by a release before 1.3 could hold any text ("TBA"). A follower of this
+release applies such a signed lock exactly as the authority stored it and shows it in `release_date` as
+before; only new locks must be a date. A day keeps any year (a 1937 film keeps its date); a year or a month
+must be between 1950 and 2100.
+
 ### Upgrading a network
 
 1. Upgrade followers (mirrors first, then local nodes). They keep following older authorities.
