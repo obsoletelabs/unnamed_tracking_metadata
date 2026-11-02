@@ -111,6 +111,15 @@ def test_precision_must_match_and_year_must_be_in_range():
         with pytest.raises(dates.DateError, match="between 1950 and 2100"):
             dates.parse(year)
     assert dates.PRECISIONS == ("year", "month", "day")
+    # The legacy day key keeps any year a date can hold; partial values never widen.
+    assert dates.parse("1937-12-21", "day", any_year=True).year == 1937
+    assert dates.parse_first("1937-12-21").value == "1937-12-21"
+    for partial in ("1948", "1948-05"):
+        with pytest.raises(dates.DateError, match="between 1950 and 2100"):
+            dates.parse_first(partial)
+    with pytest.raises(dates.DateError):
+        dates.parse("0000-01-01", any_year=True)
+    assert dates.display("0999-03-04", "day", {"date_format": "dmy"}) == "04.03.0999"
 
 
 def test_agreement_and_sort_key():
@@ -189,9 +198,19 @@ def test_contract_accepts_ext_release_and_keeps_release_date_day_only():
         (_obs(edition="Standard", ext=release(entries=[entry("2011", "pc", edition="Deluxe")])), "edition"),
         (_obs(ext={"release": {"first": {"date": "2011", "precision": "year"}, "label": "x"}}), "extra"),
         (_obs(ext={"price": {}}), "extra"),
+        # the first release cannot start after the observation's own full or early-access release (C5.1)
+        (_obs(ext=release("2015", [entry("2011-01-01", "pc")])), "after this observation's own"),
+        (_obs(release_date="2015-01-01", ext=release(entries=[entry("2011-01-01", "pc", category="early_access")])),
+         "after this observation's own"),
+        (_obs(ext={"release": {"first": {"date": "1937-12-21", "precision": "day"}}}), "between 1950 and 2100"),
     ]:
         with pytest.raises(ValidationError, match=message):
             SourceObservationV1.model_validate(payload)
+    # earlier is fine (only five entries fit), as is a beta before the first release, or a legacy pre-1950 day
+    SourceObservationV1.model_validate(_obs(ext=release("2010", [entry("2011-01-01", "pc")])))
+    SourceObservationV1.model_validate(_obs(ext=release("2015", [entry("2011", "pc", category="beta")])))
+    old = SourceObservationV1.model_validate(_obs(release_date="1937-12-21"))
+    assert old.reported()["release_date"] == "1937-12-21"
 
 
 # ---- C5.2 merge: the hierarchical vote and provenance -----------------------------------------------------
@@ -226,6 +245,31 @@ def test_hierarchical_vote(candidates, value, precision):
     result = dates.vote([(dates.parse(v), t) for v, t in candidates])
     assert (result.value.value, result.value.precision) == (value, precision)
     assert candidates[result.winner][0].startswith(value)
+    assert result.disputed is False
+
+
+def test_no_year_with_half_the_weight_is_a_disputed_year_only():
+    # C5.2: three sources, three years, no majority: never a month or a day, and flagged low confidence
+    result = dates.vote([(dates.parse(v), 50) for v in ("2010-03-01", "2011-04-02", "2012-05-03")])
+    assert (result.value.value, result.disputed, result.support) == ("2010", True, {"year": [50, 150]})
+    view, explain = merge([o("A", "igdb", 50, release_date="2010-03-01"), o("B", "steam", 50, release_date="2011-04-02"),
+                           o("C", "rawg", 50, release_date="2012-05-03")], {})
+    # equal trust and age: the merge ranks C first (ties go to the higher-ranked observation)
+    assert view["first_release"] == {"date": "2012", "precision": "year"} and "release_date" not in view
+    assert explain["first_release"]["disputed"] is True and explain["first_release"]["disagree"] == ["igdb", "steam"]
+    # an exact half is a majority (ties go to the higher-ranked source)
+    assert dates.vote([(dates.parse("2010"), 50), (dates.parse("2011"), 50)]).disputed is False
+
+
+def test_a_legacy_day_before_1950_survives_the_merge():
+    """Films and TV predate the C5.1 release range: `release_date` stays exactly as it was (C5.2)."""
+    view, explain = merge([o("A", "tmdb", 60, release_date="1937-12-21")], {})
+    assert view["release_date"] == "1937-12-21" and view["release_year"] == 1937
+    assert view["first_release"] == {"date": "1937-12-21", "precision": "day"}
+    assert explain["release_date"]["observation_id"] == "A"
+    assert dates.columns(view["first_release"])["year"] == 1937
+    view, _ = merge([o("A", "tmdb", 60, release_date="1937-12-21")], {"release_date": "1938-02-04"})
+    assert view["release_date"] == "1938-02-04"  # a curator can still pin a pre-1950 day
 
 
 def test_merge_derives_first_release_and_records_provenance():
@@ -277,6 +321,24 @@ def test_locks_win_and_an_invalid_old_lock_is_marked():
     assert view["releases"] == [entry("2010-12", "pc", "ww")]
     view, explain = merge(obs, {"release_date": "soon"})  # an earlier release accepted any text
     assert "first_release" not in view and explain["first_release"] == {"strategy": "lock", "invalid": True}
+    assert view["release_date"] == "soon"  # shown in the legacy key, as the previous release did
+    assert "release_year" not in view and dates.columns(view.get("first_release"))["year"] is None
+
+
+def test_a_releases_lock_sets_the_first_release_and_earlier_entries_are_flagged():
+    obs = [o("A", "igdb", 70, release_date="2015-06-01")]
+    view, explain = merge(obs, {"releases": [entry("2013-05", "pc", category="early_access"), entry("2014", "ps4")]})
+    # C5.1: the first release is the earliest full or early-access entry of the pinned list
+    assert view["first_release"] == {"date": "2013-05", "precision": "month"} and "release_date" not in view
+    assert explain["first_release"] == {"strategy": "lock", "field": "releases"}
+    view, _ = merge(obs, {"releases": [entry("2013", "pc", category="beta")]})  # no full entry: the vote stands
+    assert view["first_release"] == {"date": "2015-06-01", "precision": "day"}
+    # a lower-trust source's earlier full entry stays in releases; the trust vote picks the first release and
+    # the contradiction is visible in explain
+    view, explain = merge([o("A", "igdb", 90, release_date="2015-06-01"),
+                           o("B", "rawg", 10, entries=[entry("2012-03", "pc")])], {})
+    assert view["first_release"]["date"] == "2015-06-01"
+    assert explain["first_release"]["earlier_entry"] == {"date": "2012-03", "precision": "month"}
 
 
 # ---- service: canonical columns, sort and filter ----------------------------------------------------------
@@ -400,6 +462,8 @@ def test_api_list_filters_sort_and_old_clients(api):
     assert {g["title"] for g in r.json()["results"]} == {"A Month", "C Day"}
     assert api.get("/api/v2/games", params={"q": "Day"}).json()["results"][0]["title"] == "C Day"  # unchanged
     assert api.get("/api/v2/games").status_code == 422  # neither q nor a filter
+    blank = api.get("/api/v2/games", params={"q": " "})  # as before: a blank q lists recent records
+    assert blank.status_code == 200 and len(blank.json()["results"]) == 3
     assert api.get("/api/v2/games", params={"released_from": "2011-13"}).status_code == 400
     assert api.get("/api/v2/games", params={"q": "x", "sort": "year"}).status_code == 422
 
@@ -504,7 +568,7 @@ def view_of(node, cid):
         return dict(row.view), (row.release_start, row.release_end, row.release_precision, row.year)
 
 
-REGIONAL = release("2011", [entry("2011", "pc", "ww"), entry("2010-11", "pc", "ww", "early_access"),
+REGIONAL = release("2010", [entry("2011", "pc", "ww"), entry("2010-11", "pc", "ww", "early_access"),
                             entry("2011-03-01", "Switch", "jp", "port")])
 
 
@@ -517,9 +581,34 @@ def test_a_1_3_follower_applies_dates_and_matches_the_authority(dates_net):
     assert mirror.failures(authority) == []
     assert view_of(mirror, cid) == view_of(authority, cid)
     view, cols = view_of(mirror, cid)
-    # the early-access entry (November 2010) is earlier than the source's own "first": the source's word wins
-    assert view["first_release"] == {"date": "2011", "precision": "year"} and "release_date" not in view
-    assert len(view["releases"]) == 3 and cols == (date(2011, 1, 1), date(2011, 12, 31), "year", 2011)
+    # the source's own "first" (2010) agrees with its early-access entry (November 2010)
+    assert view["first_release"] == {"date": "2010", "precision": "year"} and "release_date" not in view
+    assert len(view["releases"]) == 3 and cols == (date(2010, 1, 1), date(2010, 12, 31), "year", 2010)
+
+
+def test_a_1_3_follower_applies_a_pre_c5_free_text_lock(dates_net):
+    """Before C5 a `release_date` lock took any text, and authorities signed it. A 1.3 follower that applies
+    or replays such an entry stores it as the authority did (no quarantine, no divergence)."""
+    authority, mirror, publish, _ = dates_net
+    cid, _ = publish("Undated", release_date="2019-05-01")
+    with authority.st.maker() as s:  # what a pre-C5 authority stored and signed
+        s.add(Lock(canonical_id=cid, field="release_date", value="TBA", set_by="curator"))
+        service.rebuild(s, authority.st.ctx, cid)
+        s.commit()
+    seq = authority.emit("lock", {"canonical_id": cid, "field": "release_date", "value": "TBA"})
+    pull(mirror, authority)
+    assert mirror.failures(authority) == []
+    assert mirror.heads(authority)["applied_head"] == seq
+    with mirror.st.maker() as s:
+        assert s.get(Lock, (cid, "release_date")).value == "TBA"
+    assert view_of(mirror, cid) == view_of(authority, cid)
+    view, cols = view_of(mirror, cid)
+    assert view["release_date"] == "TBA" and "first_release" not in view and cols == (None, None, None, None)
+    with mirror.st.maker() as s:  # a new local lock is still held to the date rules
+        with pytest.raises(AtlasError, match="release_date"):
+            service.set_lock(s, mirror.st.ctx, cid, "release_date", "soon", local_only=True)
+        assert service.set_lock(s, mirror.st.ctx, cid, "release_date", "1937-12-21",
+                                local_only=True).view["release_date"] == "1937-12-21"
 
 
 def play_release(monkeypatch, protocol):
@@ -569,7 +658,7 @@ def test_an_older_follower_parks_dates_keeps_its_record_and_converges_after_upgr
     assert result[authority.node_id]["state"] == "in_sync", result
     assert mirror.failures(authority) == []
     assert view_of(mirror, cid) == view_of(authority, cid)
-    assert view_of(mirror, cid)[0]["first_release"] == {"date": "2011", "precision": "year"}
+    assert view_of(mirror, cid)[0]["first_release"] == {"date": "2010", "precision": "year"}
     assert view_of(mirror, later)[0]["title"] == "Later Record"
 
 
@@ -675,7 +764,48 @@ def test_igdb_release_dates_become_entries_without_invented_precision():
     assert plain["release_date"] == "2011-04-19" and "ext" not in plain
 
 
+def test_igdb_reads_the_current_reference_fields_and_the_release_status():
+    """IGDB v4 deprecated `category`/`region` for the `date_format`/`release_region` references; `status`
+    tells early access and betas apart from the full release, so a beta never becomes the first release."""
+    rows = [
+        {"date_format": {"format": "YYYYMMMM"}, "y": 2019, "m": 6, "release_region": {"region": "worldwide"},
+         "status": {"name": "Alpha"}, "platform": {"name": "PC"}},
+        {"date_format": {"format": "YYYYMMMMDD"}, "date": 1575158400, "y": 2019, "m": 12,
+         "release_region": {"region": "worldwide"}, "status": {"name": "Early Access"}, "platform": {"name": "PC"}},
+        {"date_format": {"format": "YYYY"}, "y": 2021, "release_region": {"region": "north_america"},
+         "status": {"name": "Full Release"}, "platform": {"name": "PC"}},
+        {"date_format": {"format": "YYYYQ3"}, "y": 2025, "status": {"name": "Full Release"}},  # a quarter: unknown
+        {"date_format": {"format": "YYYY"}, "y": 2022, "status": {"name": "Cancelled"}, "platform": {"name": "Wii U"}},
+        # a row that still has only the deprecated enums
+        {"category": 1, "y": 2021, "m": 3, "region": 5, "platform": {"name": "Switch"}},
+    ]
+    item = Igdb._result({"id": 9, "name": "Status Test", "first_release_date": 1559347200,
+                         "release_dates": rows}).to_item()
+    release = item["ext"]["release"]
+    assert release["entries"] == [
+        {"date": "2019-06", "precision": "month", "category": "beta", "platform": "PC", "region": "ww"},
+        {"date": "2019-12-01", "precision": "day", "category": "early_access", "platform": "PC", "region": "ww"},
+        {"date": "2021", "precision": "year", "category": "full", "platform": "PC", "region": "na"},
+        {"date": "2021-03", "precision": "month", "category": "full", "platform": "Switch", "region": "jp"},
+    ]
+    # the first release is the early access, not the earlier alpha (C5.1); it is a day, so release_date has it
+    assert item["release_date"] == "2019-12-01" and release["first"] == {"date": "2019-12-01", "precision": "day"}
+    SourceObservationV1.model_validate(item)
+    # five betas never push the full release out
+    many = [{"date_format": {"format": "YYYY"}, "y": 2010 + i, "status": {"name": "Beta"},
+             "platform": {"name": f"P{i}"}} for i in range(6)]
+    many.append({"date_format": {"format": "YYYY"}, "y": 2020, "platform": {"name": "PC"}})
+    got = Igdb._result({"id": 10, "name": "Many", "release_dates": many}).to_item()
+    entries = got["ext"]["release"]["entries"]
+    assert len(entries) == 5 and entries[-1] == {"date": "2020", "precision": "year", "category": "full",
+                                                  "platform": "PC"}
+    assert got["ext"]["release"]["first"] == {"date": "2020", "precision": "year"}
+
+
 def test_release_ext_only_adds_what_the_day_key_cannot_say():
+    assert parse_release("21 Dec, 1937") == ("1937-12-21", "day")  # a legacy day keeps any year
+    assert parse_release("1937") is None  # a partial date uses the C5.1 range
+    assert release_ext(("1937-12-21", "day")) == ("1937-12-21", None)
     assert release_ext(("2011-04-19", "day")) == ("2011-04-19", None)
     assert release_ext(("2011", "year")) == (None, release("2011")["release"])
     assert release_ext(None) == (None, None)
@@ -804,7 +934,8 @@ def test_editor_on_a_gated_authority_says_dates_stay_local(gated_site):
     site = gated_site
     signup(site, "alice")
     page = site.get(f"/game/{site.gid}/edit").text
-    assert "does not publish them to its followers until its federation emit protocol is 1.3" in page
+    assert "does not publish them to its followers while its federation emit protocol is below 1.3" in page
+    assert "dates saved before it is raised are not published later" in page
 
 
 def test_lock_form_accepts_release_lines(local_site):

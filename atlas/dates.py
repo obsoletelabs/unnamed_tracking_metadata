@@ -27,6 +27,10 @@ from . import vocab
 
 #: C5.1: the range a release year may take (the host candidate allows wider years; releases use this one).
 YEAR_MIN, YEAR_MAX = 1950, 2100
+#: The legacy day-only `release_date` (`SourceObservationV1.release_date: date`) accepts any calendar day, and
+#: C5.2 says it stays as it is. A day from that key (or a day lock on it) keeps any year a `date` can hold:
+#: a 1937 film keeps its date. Partial dates and `ext.release` values use the C5.1 range above.
+LEGACY_YEAR_MIN, LEGACY_YEAR_MAX = 1, 9999
 #: C5.1: at most this many release entries per record (per canonical in Atlas).
 MAX_RELEASES = 5
 PRECISIONS: tuple[str, ...] = vocab.DATE_PRECISIONS  # ("year", "month", "day"); "quarter" is reserved, not v1
@@ -105,8 +109,11 @@ def precision_of(value: str) -> str:
     return {4: "year", 7: "month", 10: "day"}.get(len(value), "")
 
 
-def parse(value: Any, precision: Any = None) -> PartialDate:
-    """Validate a PartialDate (and, when given, its precision). Raises DateError; never guesses."""
+def parse(value: Any, precision: Any = None, *, any_year: bool = False) -> PartialDate:
+    """Validate a PartialDate (and, when given, its precision). Raises DateError; never guesses.
+
+    `any_year` lifts the C5.1 1950-2100 range (to 1-9999). Only values that already existed before C5 use
+    it: the legacy day-only `release_date` and the views, columns and filters derived from it."""
     if not isinstance(value, str) or not PARTIAL_RE.fullmatch(value):
         raise DateError("a release date is YYYY, YYYY-MM or YYYY-MM-DD")
     shape = precision_of(value)
@@ -115,7 +122,8 @@ def parse(value: Any, precision: Any = None) -> PartialDate:
             raise DateError(f"precision must be one of {', '.join(PRECISIONS)}")
         raise DateError(f"precision {precision!r} does not match the date {value!r} (that is {shape!r} precision)")
     year = int(value[:4])
-    if not YEAR_MIN <= year <= YEAR_MAX:
+    low, high = (LEGACY_YEAR_MIN, LEGACY_YEAR_MAX) if any_year else (YEAR_MIN, YEAR_MAX)
+    if not low <= year <= high:
         raise DateError(f"a release year is between {YEAR_MIN} and {YEAR_MAX}")
     if shape == "day":
         try:
@@ -125,9 +133,22 @@ def parse(value: Any, precision: Any = None) -> PartialDate:
     return PartialDate(value, shape)
 
 
-def try_parse(value: Any, precision: Any = None) -> PartialDate | None:
+def try_parse(value: Any, precision: Any = None, *, any_year: bool = False) -> PartialDate | None:
     try:
-        return parse(value, precision)
+        return parse(value, precision, any_year=any_year)
+    except DateError:
+        return None
+
+
+def parse_first(value: Any) -> PartialDate:
+    """A first release given as one string (a `release_date` lock or edit): a day keeps the legacy
+    `release_date` meaning and may have any year; a year or a month is new (C5) and uses the C5.1 range."""
+    return parse(value, any_year=isinstance(value, str) and precision_of(value) == "day")
+
+
+def try_parse_first(value: Any) -> PartialDate | None:
+    try:
+        return parse_first(value)
     except DateError:
         return None
 
@@ -235,7 +256,7 @@ def observation_first(payload: dict[str, Any]) -> PartialDate | None:
         got = try_parse(first.get("date"), first.get("precision"))
         if got is not None:
             return got
-    legacy = try_parse(payload.get("release_date"), "day")
+    legacy = try_parse(payload.get("release_date"), "day", any_year=True)  # C5.2: stays as it is
     if legacy is not None:
         return legacy
     entries = release.get("entries") if isinstance(release, dict) else None
@@ -262,6 +283,9 @@ class Vote:
     value: PartialDate
     winner: int  # index of the candidate that best represents the result (for provenance)
     support: dict[str, list[int]]  # level -> [winning weight, weight seen at that level]
+    #: True when no year has at least half of the weight (C5.2's 50% rule fails at the top level). The
+    #: value is then the plurality year (as the pre-C5 `vote` strategy chose), flagged as low confidence.
+    disputed: bool = False
 
 
 def vote(candidates: Sequence[tuple[PartialDate, int]]) -> Vote | None:
@@ -273,7 +297,11 @@ def vote(candidates: Sequence[tuple[PartialDate, int]]) -> Vote | None:
 
     Each level weighs `max(trust, 1)`. The vote stops at the deepest level whose winner has at least half of
     the weight seen at that level, so a less precise candidate never outvotes a more precise one it agrees
-    with ("2011" and "2011-04-19" agree: the day wins). Ties go to the higher-ranked candidate."""
+    with ("2011" and "2011-04-19" agree: the day wins). Ties go to the higher-ranked candidate.
+
+    When even the year has no such winner (three or more sources each name a different year), the result
+    is the plurality year only, never a month or a day, and `disputed` is set: the merge shows it as a
+    low-confidence value instead of dropping a date the record had before C5 (amendment A14.12)."""
     if not candidates:
         return None
     support: dict[str, list[int]] = {}
@@ -289,10 +317,11 @@ def vote(candidates: Sequence[tuple[PartialDate, int]]) -> Vote | None:
     pool = list(range(len(candidates)))
     result, _, _ = year = pick(pool, slice(0, 4))
     support["year"] = [year[1], year[2]]
+    disputed = year[1] * 2 < year[2]
     pool = [i for i in pool if candidates[i][0].value[:4] == result]
     for level, part, need in (("month", slice(0, 7), "month"), ("day", slice(0, 10), "day")):
         stating = [i for i in pool if candidates[i][0].rank >= RANK[need]]
-        if not stating:
+        if not stating or disputed:
             break
         value, best, seen = pick(stating, part)
         support[level] = [best, seen]
@@ -303,7 +332,7 @@ def vote(candidates: Sequence[tuple[PartialDate, int]]) -> Vote | None:
     chosen = PartialDate(result, precision_of(result))
     winner = next(i for i in range(len(candidates))
                   if candidates[i][0].value[:len(result)] == result and candidates[i][0].rank >= chosen.rank)
-    return Vote(chosen, winner, support)
+    return Vote(chosen, winner, support, disputed)
 
 
 Key = tuple[str, str, str, str]
@@ -334,7 +363,7 @@ def columns(first: dict[str, Any] | None) -> dict[str, Any]:
     `first_release` (all None when it is unknown)."""
     when = None
     if isinstance(first, dict):
-        when = try_parse(first.get("date"), first.get("precision"))
+        when = try_parse(first.get("date"), first.get("precision"), any_year=True)
     if when is None:
         return {"release_start": None, "release_end": None, "release_precision": None, "year": None}
     return {"release_start": when.start(), "release_end": when.end(), "release_precision": when.precision,
@@ -342,26 +371,30 @@ def columns(first: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def parse_bound(value: Any, name: str) -> PartialDate | None:
-    """A search filter bound: empty means none; otherwise any PartialDate ("2011" means the whole year)."""
+    """A search filter bound: empty means none; otherwise any PartialDate ("2011" means the whole year). Any
+    year is allowed, since a record's legacy day date may be older than 1950."""
     if value in (None, ""):
         return None
     try:
-        return parse(value)
+        return parse(value, any_year=True)
     except DateError as exc:
         raise DateError(f"{name}: {exc}") from exc
 
 
 # ---- display ------------------------------------------------------------------------------------------
 
-_DAY_FORMATS = {"iso": "%Y-%m-%d", "dmy": "%d.%m.%Y", "mdy": "%m/%d/%Y", "ymd": "%Y/%m/%d"}
-_MONTH_FORMATS = {"iso": "%Y-%m", "dmy": "%m.%Y", "mdy": "%m/%Y", "ymd": "%Y/%m"}
+# str.format, not strftime: strftime pads (or does not pad) years before 1000 differently per platform.
+_DAY_FORMATS = {"iso": "{y:04d}-{m:02d}-{d:02d}", "dmy": "{d:02d}.{m:02d}.{y:04d}", "mdy": "{m:02d}/{d:02d}/{y:04d}",
+                "ymd": "{y:04d}/{m:02d}/{d:02d}"}
+_MONTH_FORMATS = {"iso": "{y:04d}-{m:02d}", "dmy": "{m:02d}.{y:04d}", "mdy": "{m:02d}/{y:04d}",
+                  "ymd": "{y:04d}/{m:02d}"}
 
 
 def display(value: Any, precision: Any = None, prefs: dict[str, Any] | None = None) -> str:
     """A release date as text, showing only what is known (part 7.3). A year is always just the year; a
     month is "April 2011" unless the viewer chose a numeric date format; a day follows the viewer's date
     format (ISO by default, as before). Anything invalid is shown unchanged."""
-    when = try_parse(value, precision)
+    when = try_parse(value, precision, any_year=True)
     if when is None:
         return "" if value is None else str(value)
     style = (prefs or {}).get("date_format") or ""
@@ -370,8 +403,8 @@ def display(value: Any, precision: Any = None, prefs: dict[str, Any] | None = No
         return when.value
     if when.precision == "month":
         fmt = _MONTH_FORMATS.get(style)
-        return d.strftime(fmt) if fmt else f"{calendar.month_name[d.month]} {d.year}"
-    return d.strftime(_DAY_FORMATS.get(style, "%Y-%m-%d"))
+        return fmt.format(y=d.year, m=d.month) if fmt else f"{calendar.month_name[d.month]} {d.year}"
+    return _DAY_FORMATS.get(style, _DAY_FORMATS["iso"]).format(y=d.year, m=d.month, d=d.day)
 
 
 def region_name(code: str | None) -> str:

@@ -49,8 +49,14 @@ RECORDS = {
     "atlas:leap": ({"title": "Leap", "release_date": "2024-02-29", "sources": ["gog"]},
                    {"release_date": {"strategy": "vote", "observation_id": "O2", "source": "gog"}}, 2024),
     "atlas:none": ({"title": "Undated", "sources": ["gog"]}, {}, None),
+    # A legacy day before the C5.1 release range (films and TV predate 1950): it keeps its meaning.
+    "atlas:old": ({"title": "Snow White", "release_date": "1937-12-21", "sources": ["tmdb"]},
+                  {"release_date": {"strategy": "vote", "observation_id": "O3", "source": "tmdb"}}, 1937),
+    # A pre-C5 year lock outside the range is not a date this release can hold: left as it was.
+    "atlas:oldlock": ({"title": "Old Lock", "release_date": "1948", "sources": ["tmdb"]},
+                      {"release_date": {"strategy": "lock"}}, 1948),
 }
-LOCKS = {"atlas:yearlock": "2011", "atlas:monthlock": "2012-06", "atlas:garbage": "soon"}
+LOCKS = {"atlas:yearlock": "2011", "atlas:monthlock": "2012-06", "atlas:garbage": "soon", "atlas:oldlock": "1948"}
 
 
 def seed(engine):
@@ -112,7 +118,12 @@ def test_upgrade_backfills_downgrade_restores_and_reupgrade(url):
     assert (month["release_start"], month["release_end"]) == (date(2012, 6, 1), date(2012, 6, 30))
     leap = after["atlas:leap"]
     assert (leap["release_start"], leap["release_precision"]) == (date(2024, 2, 29), "day")
-    for untouched in ("atlas:garbage", "atlas:none"):  # not a date, or no date: left exactly as it was
+    old = after["atlas:old"]
+    assert old["view"]["release_date"] == "1937-12-21" and old["year"] == 1937
+    assert old["view"]["first_release"] == {"date": "1937-12-21", "precision": "day"}
+    assert (old["release_start"], old["release_end"], old["release_precision"]) == (
+        date(1937, 12, 21), date(1937, 12, 21), "day")
+    for untouched in ("atlas:garbage", "atlas:none", "atlas:oldlock"):  # not a date, or no date: left exactly as it was
         assert {k: after[untouched][k] for k in ("view", "explain", "year", "version")} == \
                {k: before[untouched][k] for k in ("view", "explain", "year", "version")}
         assert after[untouched]["release_start"] is None and after[untouched]["release_precision"] is None
@@ -153,9 +164,56 @@ def test_upgrade_backfills_downgrade_restores_and_reupgrade(url):
 
     db.upgrade(url)
     again = rows(engine)
-    for cid in ("atlas:day", "atlas:yearlock", "atlas:monthlock", "atlas:leap", "atlas:garbage", "atlas:none"):
+    for cid in RECORDS:
         assert {k: again[cid][k] for k in ("view", "explain", "year", "release_start", "release_end",
                                            "release_precision")} == \
                {k: after[cid][k] for k in ("view", "explain", "year", "release_start", "release_end",
                                            "release_precision")}, cid
+    engine.dispose()
+
+
+def test_existing_dates_survive_upgrade_and_the_rebuild(url):
+    """Upgrade, then `atlas dates rebuild` (the job the release notes recommend) on records whose observations
+    and locks were written by the previous release: a pre-1950 day keeps its date, year and sort column, and
+    a free-text lock keeps showing in the legacy key."""
+    from sqlalchemy import select
+
+    from atlas import dates_rebuild
+    from atlas.models import Canonical
+    from atlas.service import Ctx
+    from atlas.signing import load_identity
+
+    from .conftest import build_settings
+
+    db.upgrade(url, "0030")
+    engine = create_engine(url)
+    seed(engine)
+    with engine.begin() as c:
+        for oid, cid, payload in (("O3", "atlas:old", {"title": "Snow White", "release_date": "1937-12-21"}),
+                                  ("O4", "atlas:garbage", {"title": "Soon", "release_date": "2019-05-01"}),
+                                  ("O1", "atlas:day", {"title": "Day", "release_date": "2011-04-19"})):
+            c.execute(text("INSERT INTO observation (id, canonical_id, source_kind, source, source_scope, external_id, "
+                           "payload, observed_at, is_current, redistributable) VALUES (:i, :c, 'metadata', 'tmdb', "
+                           "'test', :i, :p, :t, true, true)"),
+                      {"i": oid, "c": cid, "p": json.dumps(payload), "t": NOW})
+    db.upgrade(url)
+    settings = build_settings(database_url=url)
+    maker = db.make_sessionmaker(db.make_engine(url), settings)
+    with maker() as s:
+        ctx = Ctx(settings=settings, identity=load_identity(s, settings))
+        s.commit()
+    assert dates_rebuild.run(maker, ctx)["finished"] is True
+    with maker() as s:
+        old = s.get(Canonical, "atlas:old")
+        assert old.view["release_date"] == "1937-12-21" and old.view["release_year"] == 1937
+        assert old.view["first_release"] == {"date": "1937-12-21", "precision": "day"}
+        assert (old.year, old.release_start, old.release_precision) == (1937, date(1937, 12, 21), "day")
+        garbage = s.get(Canonical, "atlas:garbage")  # the lock still wins and still shows as it always did
+        assert garbage.view["release_date"] == "soon" and "first_release" not in garbage.view
+        assert garbage.release_start is None and garbage.year is None
+        assert garbage.explain["first_release"] == {"strategy": "lock", "invalid": True}
+        assert s.get(Canonical, "atlas:oldlock").view["release_date"] == "1948"
+        day = s.get(Canonical, "atlas:day")
+        assert (day.view["release_date"], day.year, day.release_start) == ("2011-04-19", 2011, date(2011, 4, 19))
+        assert s.scalars(select(Canonical.id).where(Canonical.release_start < date(1950, 1, 1))).all() == ["atlas:old"]
     engine.dispose()
