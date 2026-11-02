@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import accounts, custom, facets, mail, social
+from . import accounts, custom, dates, facets, mail, social
 from .contract import ObservationBatchV1
 from .models import Achievement, Artwork, Canonical, Crosswalk, Observation, Proposal, ReputationEvent, User, now
 from .resolve import follow
@@ -24,7 +24,6 @@ REVERT_PENALTY = -10
 SCALAR = {"title": 500, "description": 20000, "developer": 200, "publisher": 200, "series": 200, "age_rating": 50,
           "website": 500}
 LISTS = ("genres", "themes", "tags", "features", "platforms", "languages", "aliases")
-_STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
 
 
 def adjust_reputation(session: Session, user: User, delta: int, reason: str, proposal_id: str | None = None) -> None:
@@ -37,7 +36,7 @@ def adjust_reputation(session: Session, user: User, delta: int, reason: str, pro
 
 def clean_edit(payload: dict[str, Any]) -> dict[str, Any]:
     """Only fields with a value; an empty value cannot clear data (omission never deletes)."""
-    unknown = set(payload) - set(SCALAR) - set(LISTS) - {"release_date"}
+    unknown = set(payload) - set(SCALAR) - set(LISTS) - {"release_date", "releases"}
     if unknown:
         raise AtlasError(f"cannot edit: {', '.join(sorted(unknown))}")
     out: dict[str, Any] = {}
@@ -50,14 +49,15 @@ def clean_edit(payload: dict[str, Any]) -> dict[str, Any]:
                 raise AtlasError("website must be an https:// address")
             out[key] = value.strip()
     if payload.get("release_date") not in (None, ""):
-        value = payload["release_date"]
+        try:  # C5.2: a year or a month is kept as such, never padded to a day
+            out["release_date"] = dates.parse(payload["release_date"]).value
+        except dates.DateError as exc:
+            raise AtlasError(f"release_date: {exc}") from exc
+    if payload.get("releases"):  # an empty list never clears (omission never deletes)
         try:
-            if not isinstance(value, str) or not _STAMP.match(value):
-                raise ValueError
-            date.fromisoformat(value)
-        except ValueError as exc:
-            raise AtlasError("release_date must be YYYY-MM-DD") from exc
-        out["release_date"] = value
+            out["releases"] = dates.clean_entries(payload["releases"])
+        except dates.DateError as exc:
+            raise AtlasError(f"releases: {exc}") from exc
     for key in LISTS:
         value = payload.get(key)
         if value:
@@ -160,7 +160,7 @@ def _community_obs(session: Session, cid: str) -> Observation | None:
 
 def _to_item(cid: str, reported: dict[str, Any]) -> dict[str, Any]:
     item = {k: v for k, v in reported.items() if k in ("title", "platform", "platforms", "edition", "release_date",
-                                                       "provider_ids", "facts", "source_updated_at")}
+                                                       "provider_ids", "facts", "source_updated_at", "ext")}
     item["external_id"] = cid
     return item
 
@@ -180,8 +180,12 @@ def _merge_edit(current: dict[str, Any], edit: dict[str, Any]) -> dict[str, Any]
     out = {k: v for k, v in current.items() if k != "source_updated_at"}
     facts = dict(out.get("facts") or {})
     for key, value in edit.items():
-        if key in ("title", "release_date"):
+        if key == "title":
             out[key] = value
+        elif key == "release_date":
+            _set_release(out, first=value)
+        elif key == "releases":
+            _set_release(out, entries=value)
         elif key == "platforms":
             out["platforms"] = value
         else:
@@ -189,6 +193,28 @@ def _merge_edit(current: dict[str, Any], edit: dict[str, Any]) -> dict[str, Any]
     if facts:
         out["facts"] = facts
     return out
+
+
+def _set_release(out: dict[str, Any], *, first: str | None = None, entries: list[dict[str, Any]] | None = None) -> None:
+    """Write a contributed first release or release list into the community observation (C5.2): a day goes
+    in `release_date` (and `ext.release.first`, when one is there, follows it); a year or a month goes in
+    `ext.release.first` only, and `release_date` is removed, so it never holds a partial date."""
+    ext = dict(out.get("ext") or {})
+    release = dict(ext.get("release") or {})
+    if first is not None:
+        when = dates.parse(first)
+        if when.precision == "day":
+            out["release_date"] = when.value
+            if "first" in release:
+                release["first"] = when.as_dict()
+        else:
+            out.pop("release_date", None)
+            release["first"] = when.as_dict()
+    if entries is not None:
+        release["entries"] = entries
+    if release:
+        ext["release"] = release
+        out["ext"] = ext
 
 
 def apply(session: Session, ctx: Ctx, p: Proposal) -> None:

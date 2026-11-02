@@ -18,8 +18,8 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
 | `GET` | `/artwork/{art_id}/image` | read | One image: its cached bytes, or a redirect to the original public address while it is not cached. |
-| `GET` | `/games` | read | Search records by title (`q`, optional `type`, `limit`). Includes `custom` values. |
-| `GET` | `/games/{cid}` | read | One record. Follows merge redirects (`redirected_from`). ETag = id-version. |
+| `GET` | `/games` | read | Search records by title (`q`, optional `type`, `limit`, `offset`) and/or by first release (`released_from`, `released_to`: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; a record matches when its whole release period is inside the range). `sort`: `relevance`, `title`, `release` or `-release` (year before month before day, unknown last). `q` is required unless a release filter is given. Includes `custom` values. |
+| `GET` | `/games/{cid}` | read | One record. Follows merge redirects (`redirected_from`). ETag = id-version. Release dates: `first_release` (`{date, precision}`), `release_year`, `releases` (up to five `{date, precision, platform?, region?, edition?, category}`) and the unchanged day-only `release_date`, present only when the first release is known to the day. |
 | `GET` | `/games/{cid}/achievements` | read | Merged achievement list: name, description, kind, tier, points, icons, global percent, and a stable `key` (`ak1:…`) with `keys` and `key_identity`. Hidden ones are redacted unless `reveal=all` or `reveal=<id or key>,…` is sent with a signed-in user's token or a curator token. No per-user progress. See [Achievements](achievements.md). |
 | `GET` | `/games/{cid}/artwork` | read | Artwork by trust and priority, plus the best image per kind; `media_url` once cached, and `image_url` always. |
 | `GET` | `/games/{cid}/explain` | read | Which source and rule produced each field (provenance). |
@@ -40,7 +40,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `PUT` | `/games/{cid}/artwork` | curate | Replace the curated artwork set for a record. |
 | `PUT` | `/games/{cid}/custom` | curate | Set or clear curated custom-field values. |
 | `DELETE` | `/games/{cid}/locks/{field}` | curate | Remove a pinned field value. |
-| `PUT` | `/games/{cid}/locks/{field}` | curate | Pin a field value; it beats every merged value. |
+| `PUT` | `/games/{cid}/locks/{field}` | curate | Pin a field value; it beats every merged value. `release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; `releases` takes a list of up to five release entries. A year/month `release_date` lock or a `releases` lock needs `emit_protocol` 1.3 on an authority (else 409 `emit_protocol`). |
 | `POST` | `/games/{cid}/merge` | curate | Merge a record into another (leaves a redirect). |
 | `GET` | `/games/{cid}/observations` | curate | Raw source records behind a record (current and superseded). |
 | `POST` | `/observations/{oid}/detach` | curate | Split one source record off onto its own record. |

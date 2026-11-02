@@ -10,6 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
+from . import dates
 from .normalize import norm_namespace
 
 MAX_UNION = 100
@@ -40,6 +41,13 @@ SCALAR_FIELDS = {
     "user_score": "priority",
 }
 UNION_FIELDS = ("platforms", "genres", "themes", "tags", "features", "languages", "aliases")
+#: C5.2: lock fields that are neither scalar nor a string list. A `releases` lock holds up to five entries.
+RELEASE_LOCKS = ("releases",)
+#: Every field a curator may lock (the `lock` feed kind's vocabulary). `release_date` locks the first release:
+#: its value may be partial ("2011"); `releases` (protocol 1.3) pins the dated releases.
+LOCK_FIELDS = (*SCALAR_FIELDS, *UNION_FIELDS, *RELEASE_LOCKS)
+#: View keys derived from the release dates (C5.2). `release_date` stays day-only for older clients.
+RELEASE_VIEW_KEYS = ("first_release", "release_year", "releases")
 
 
 def _value(obs: Obs, field: str) -> Any:
@@ -60,7 +68,10 @@ def merge(observations: list[Obs], locks: dict[str, Any]) -> tuple[dict[str, Any
     explain: dict[str, Any] = {}
     ranked = sorted(observations, key=_rank, reverse=True)
 
+    _merge_releases(ranked, locks, view, explain)
     for field, strategy in SCALAR_FIELDS.items():
+        if field == "release_date":
+            continue  # derived from the first release above
         if field in locks:
             view[field] = locks[field]
             explain[field] = {"strategy": "lock"}
@@ -117,3 +128,58 @@ def merge(observations: list[Obs], locks: dict[str, Any]) -> tuple[dict[str, Any
 
     view["sources"] = sorted({o.source for o in observations})
     return view, explain
+
+
+def _merge_releases(ranked: list[Obs], locks: dict[str, Any], view: dict[str, Any], explain: dict[str, Any]) -> None:
+    """C5.2: the first release by hierarchical vote, the dated releases by a per-key vote, and the legacy
+    day-only `release_date`. Provenance for every value is in `explain`."""
+    first: dates.PartialDate | None = None
+    if "release_date" in locks:
+        first = dates.try_parse(locks["release_date"])
+        explain["first_release"] = {"strategy": "lock"} if first else {"strategy": "lock", "invalid": True}
+    else:
+        candidates = [(f, o.trust, o) for o in ranked if (f := dates.observation_first(o.payload)) is not None]
+        result = dates.vote([(f, t) for f, t, _ in candidates])
+        if result is not None:
+            first = result.value
+            src = candidates[result.winner][2]
+            explain["first_release"] = {
+                "strategy": "vote", "observation_id": src.id, "source": src.source, "support": result.support,
+                "sources": sorted({o.source for f, _, o in candidates if f.agrees_with(first)}),
+                "disagree": sorted({o.source for f, _, o in candidates if not f.agrees_with(first)})}
+    if first is not None:
+        view["first_release"] = first.as_dict()
+        view["release_year"] = first.year
+        if first.precision == "day":  # the legacy key keeps its meaning: a full date or nothing
+            view["release_date"] = first.value
+            explain["release_date"] = dict(explain["first_release"])
+
+    if "releases" in locks:
+        try:
+            locked = dates.clean_entries(locks["releases"])
+        except dates.DateError:
+            locked = []
+        if locked:
+            view["releases"] = sorted(locked, key=lambda e: (dates.from_dict(e).sort_key(), dates.entry_key(e)))
+        explain["releases"] = {"strategy": "lock"}
+        return
+    groups: dict[tuple[str, str, str, str], list[tuple[dict[str, Any], Obs]]] = {}
+    for o in ranked:
+        for e in dates.observation_entries(o.payload):
+            groups.setdefault(dates.entry_key(e), []).append((e, o))
+    if not groups:
+        return
+    merged: dict[tuple[str, str, str, str], tuple[int, dict[str, Any]]] = {}
+    provenance: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for key, claims in groups.items():
+        result = dates.vote([(dates.from_dict(e), o.trust) for e, o in claims])
+        assert result is not None
+        top, src = claims[result.winner]
+        entry = {**{k: v for k, v in top.items() if k not in ("date", "precision")}, **result.value.as_dict()}
+        merged[key] = (max(o.trust for _, o in claims), entry)
+        provenance[key] = {"observation_id": src.id, "source": src.source, "support": result.support,
+                           "sources": sorted({o.source for _, o in claims})}
+    kept, dropped = dates.select_entries(merged)
+    view["releases"] = [merged[k][1] for k in kept]
+    explain["releases"] = {"strategy": "vote", "entries": [provenance[k] for k in kept],
+                           "dropped": len(dropped)}
