@@ -32,6 +32,13 @@ at emit protocol 1.3 publishes an observation with partial and regional release 
 1.2 follower must park it (`unsupported_capability`, token `dates-v1`) rather than strip the dates, keep the
 record exactly as it was, hold back later entries, and converge after an in-place upgrade (which runs
 migration 0031 on its database). `--previous-ref`/`--previous-dir` must name a 1.2 release.
+
+`--scenario relations` (skew-1.4, contract C6) runs any earlier release as the follower: an authority of this
+release at emit protocol 1.4 publishes a relation (`relation` entry) through the API. A 1.1, 1.2 or 1.3 follower
+must park it (`unsupported_kind`), hold back later entries, and converge after an in-place upgrade (migration
+0032) with a plain `atlas sync replay`. A 1.0 follower cannot park: it passes over it, and after the upgrade
+`atlas sync replay --rescan` records it (`dropped_by_previous_release`) and `atlas sync replay --historical`
+applies it. Without `--previous-ref`/`--previous-dir` it runs against the 1.0 release.
 """
 
 from __future__ import annotations
@@ -441,15 +448,108 @@ def run_dates(previous_ref: str, previous_dir: Path | None = None) -> dict[str, 
     return report
 
 
+def _relations(node: Node, cid: str) -> dict[str, Any]:
+    response = node.client.get(f"/api/v2/games/{cid}", headers=node.headers())
+    assert response.status_code == 200, f"game on {node.name}: {response.status_code}"
+    return response.json().get("relations", {})
+
+
+def run_relations(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) -> dict[str, Any]:
+    """skew-1.4: a real follower of an earlier release meets `relation` entries from a 1.4 authority (C6)."""
+    report: dict[str, Any] = {"drill": "skew-1.4-relations", "started_at": datetime.now(UTC).isoformat(),
+                              "checks": [], "transport": "isolated loopback HTTP, development mode, SQLite"}
+    checks = report["checks"]
+    with tempfile.TemporaryDirectory(prefix="atlas-skew14-", ignore_cleanup_errors=True) as folder, ExitStack() as stack:
+        root = Path(folder)
+        source, python, commit = _prepare(root, previous_ref, previous_dir)
+        report["previous"] = {"ref": previous_ref if previous_dir is None else str(previous_dir), "commit": commit}
+        report["current"] = {"commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
+                                                      text=True).stdout.strip()}
+        authority = Node(root, "authority-1.4", "authority", extra_env={"ATLAS_EMIT_PROTOCOL": "1.4"})
+        follower = PreviousNode(root, "local-previous", "local", source, python)
+        for node in (authority, follower):
+            stack.callback(node.close)
+            node.start()
+        old_info = follower.client.get("/api/v2/sync/info", headers=follower.headers()).json()
+        info = authority.client.get("/api/v2/sync/info", headers=authority.headers()).json()
+        old_protocol = old_info.get("protocol", "1.0")
+        report["previous"]["protocol"] = old_protocol
+        assert old_protocol in ("1.0", "1.1", "1.2", "1.3"), old_protocol
+        assert (info["protocol"], info["emit_protocol"]) == (feed_schema.PROTOCOL, "1.4"), info
+        checks.append(f"the follower runs a {old_protocol} release; the authority speaks {info['protocol']} and "
+                      "emits 1.4")
+
+        game, dlc = authority.publish("Skew Base Game"), authority.publish("Skew Base Game Expansion")
+        peer = follower.add_peer(authority)
+        assert follower.sync(peer) is None
+        assert follower.game(dlc)["title"] == "Skew Base Game Expansion"
+        response = authority.client.put(f"/api/v2/games/{dlc}/relations",
+                                        headers=authority.headers(authority.admin_token),
+                                        json={"relations": [{"to": game, "type": "dlc_of"}]})
+        assert response.status_code == 200 and response.json()["published"] is True, response.text
+        with authority.state.maker() as session:
+            relation_seq = feed.head_seq(session)
+            body = session.get(ChangeLog, relation_seq).body
+        assert body == {"op": "add", "from": dlc, "to": game, "type": "dlc_of", "source": "curator"}, body
+        later = authority.publish("Skew After Relation")
+        want = _relations(authority, dlc)
+        assert [(p["id"], p["type"]) for p in want["parents"]] == [(game, "dlc_of")], want
+
+        follower.sync(peer)
+        if old_protocol == "1.0":
+            assert follower.game(later)["title"] == "Skew After Relation"
+            assert "relations" not in follower.game(dlc)
+            checks.append(f"the 1.0 follower passes over the relation at seq {relation_seq} without recording it "
+                          "(the documented 1.0 limitation) and applies the later record")
+            follower.upgrade()
+            rescan = follower.cli("sync", "replay", "--rescan")
+            assert rescan.returncode == 3 and "recorded 1 parked" in rescan.stdout, (rescan.stdout, rescan.stderr)
+            with sqlite3.connect(follower.db_path) as db:
+                reason = db.execute("SELECT reason FROM sync_failure WHERE seq = ?", (relation_seq,)).fetchone()
+            assert reason == ("dropped_by_previous_release",), reason
+            replay = follower.cli("sync", "replay", "--historical")
+            assert replay.returncode == 0, (replay.stdout, replay.stderr)
+            checks.append("after upgrading it in place (migration 0032), `atlas sync replay --rescan` records the "
+                          "relation as dropped_by_previous_release (exit 3) and `atlas sync replay --historical` "
+                          "applies it")
+        else:
+            status = follower.client.get("/api/v2/sync/status", headers=follower.headers(follower.admin_token)).json()
+            up = status["upstreams"][authority.identity.node_id]
+            assert up["state"] == "parked" and up["parked"]["first_seq"] == relation_seq, up
+            assert up["parked"]["first_reason"] == "unsupported_kind" and up["parked"]["first_kind"] == "relation", up
+            assert up["applied_head"] == relation_seq - 1 and up["verified_head"] == relation_seq + 1, up
+            assert follower.client.get(f"/api/v2/games/{later}", headers=follower.headers()).status_code == 404
+            assert "relations" not in follower.game(dlc)
+            checks.append(f"the {old_protocol} follower parks the relation at seq {relation_seq} (unsupported_kind), "
+                          "holds back the later record and still verifies and retains the later entry")
+            follower.upgrade()
+            replay = follower.cli("sync", "replay")
+            assert replay.returncode == 0, (replay.stdout, replay.stderr)
+            checks.append("after upgrading it in place (migration 0032), a plain `atlas sync replay` applies the "
+                          "parked relation and the later record in feed order")
+        assert _relations(follower, dlc) == want, (_relations(follower, dlc), want)
+        assert _relations(follower, game) == _relations(authority, game)
+        assert follower.game(later)["title"] == "Skew After Relation"
+        assert follower.sync(peer) is None
+        status = follower.cli("sync", "status", "--json")
+        assert status.returncode == 0, (status.stdout, status.stderr)
+        checks.append("the upgraded follower's relations on both records equal the authority's and `atlas sync "
+                      "status` exits 0")
+    report["status"] = "passed"
+    report["finished_at"] = datetime.now(UTC).isoformat()
+    return report
+
+
 def main_cli() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--previous-ref", default=DEFAULT_PREVIOUS, help="git ref of the previous release")
     parser.add_argument("--previous-dir", type=Path,
                         help="an existing checkout of the previous release with its own .venv (skips git and uv)")
     parser.add_argument("--output", type=Path, help="write the JSON report here")
-    parser.add_argument("--scenario", choices=("1.0", "platinum", "dates"), default="1.0",
+    parser.add_argument("--scenario", choices=("1.0", "platinum", "dates", "relations"), default="1.0",
                         help="1.0: the previous 1.0 release (default); platinum: a 1.1 release meets platinum; "
-                             "dates: a 1.2 release meets partial and regional release dates")
+                             "dates: a 1.2 release meets partial and regional release dates; relations: any "
+                             "earlier release meets relations from a 1.4 authority")
     args = parser.parse_args()
     if args.scenario == "platinum":
         if args.previous_dir is None and args.previous_ref == DEFAULT_PREVIOUS:
@@ -459,6 +559,8 @@ def main_cli() -> None:
         if args.previous_dir is None and args.previous_ref == DEFAULT_PREVIOUS:
             parser.error("--scenario dates needs --previous-ref or --previous-dir of a 1.2 release")
         report = run_dates(args.previous_ref, args.previous_dir)
+    elif args.scenario == "relations":
+        report = run_relations(args.previous_ref, args.previous_dir)
     else:
         report = run(args.previous_ref, args.previous_dir)
     text = json.dumps(report, indent=2) + "\n"

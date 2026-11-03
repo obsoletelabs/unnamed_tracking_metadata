@@ -61,6 +61,7 @@ nav:
   - Integrations:
       - Tracking App: tracking-app.md
       - Achievements: achievements.md
+      - Relationships and editions: relations.md
       - Extending: extending.md
   - Contributing:
       - Testing: testing.md

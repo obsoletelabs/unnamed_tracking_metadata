@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Relations · {{ v.get('title') }} · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Relations of <a href="/game/{{ g.id }}">{{ v.get('title') or g.id }}</a></h1>
+<p class="muted">Say what this record is: a DLC, expansion, port, remake or mod of another record, or a member of a series or collection. A relation points from this record to its parent. Editions are not relations: they belong to the record itself.</p>
+{% if error %}<div class="card error" role="alert" data-relation-error>{{ error }}</div>{% endif %}
+{% if gated %}<div class="card" data-relation-gated><strong>Stays on this node for now.</strong> {{ gate_message }} Relations you add are stored here and shown on this site; they are not published to followers, and they are not sent later when the protocol is raised.</div>{% endif %}
+{% if local %}<p class="small muted">This node is not an authority: relations you add here are local to it. Relations from the upstream authority are marked and can only be changed there.</p>{% endif %}
+
+<section class="card" aria-labelledby="own-h">
+<h2 id="own-h">This record’s relations</h2>
+{% if own %}
+<table class="rel-table"><thead><tr><th>Relation</th><th>Record</th><th>Source</th><th></th></tr></thead><tbody>
+{% for r in own %}<tr data-relation="{{ r.type }}:{{ r.to_id }}"><td>{{ rel_labels[r.type][0] }}</td><td><a href="/game/{{ r.to_id }}">{{ titles[r.to_id] }}</a> <code class="small">{{ r.to_id }}</code></td>
+<td class="small muted">{{ r.source }}{% if r.origin_node %} <span class="badge">from upstream</span>{% elif r.feed_seq %} <span class="badge ok">published</span>{% elif not local %} <span class="badge">not published</span>{% endif %}</td>
+<td>{% if not r.origin_node %}<form class="inline" method="post" action="/game/{{ g.id }}/relations/remove">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ r.to_id }}"><input type="hidden" name="type" value="{{ r.type }}"><button class="secondary small" type="submit" data-confirm="Remove this relation?">Remove</button></form>{% endif %}</td></tr>
+{% endfor %}</tbody></table>
+{% else %}<p class="muted">None yet.</p>{% endif %}
+</section>
+
+<section class="card" aria-labelledby="add-h">
+<h2 id="add-h">Add a relation</h2>
+<form method="get" action="/game/{{ g.id }}/relations" class="relation-search">
+  <div class="row">
+    <div><label for="rtype">This record is</label><select id="rtype" name="type">{% for t in types %}<option value="{{ t }}" {{ 'selected' if t == kind }}>{{ rel_labels[t][0] }}{% if t in member_target %} ({{ member_target[t] }}){% endif %}</option>{% endfor %}</select></div>
+    <div class="grow"><label for="rq">Find the other record by title</label><input id="rq" type="search" name="q" value="{{ q }}" maxlength="200" required placeholder="Title"></div>
+    <div class="align-end"><button type="submit">Search</button></div>
+  </div>
+  <p class="small muted">A DLC, expansion or standalone expansion has one parent; a port, remake, remaster, version, mod, modpack or total conversion has one parent of its kind. A series or collection membership must point at a record of type series or collection. Cycles are refused.</p>
+</form>
+{% if results is not none %}
+<h3>Results for “{{ q }}”</h3>
+{% if results %}
+<ul class="data-list" data-relation-results>{% for r in results %}<li><form method="post" action="/game/{{ g.id }}/relations/add?{{ {'q': q}|urlencode }}">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ r.id }}"><input type="hidden" name="q" value="{{ q }}">
+<strong>{{ r.view.get('title') }}</strong> <span class="muted small">{% if r.media_type != 'game' %}{{ r.media_type|replace('_', ' ') }} · {% endif %}{% if r.view.get('release_year') %}{{ r.view.release_year }} · {% endif %}<code>{{ r.id }}</code></span>
+<label class="visually-hidden" for="t-{{ loop.index }}">Relation</label><select id="t-{{ loop.index }}" name="type">{% for t in types %}<option value="{{ t }}" {{ 'selected' if t == (kind or ('series_member' if r.media_type == 'series' else 'collection_member' if r.media_type == 'collection' else 'dlc_of')) }}>{{ rel_labels[t][0] }}</option>{% endfor %}</select>
+<button type="submit">Add</button></form></li>{% endfor %}</ul>
+{% else %}<p class="muted">No other record matches.</p>{% endif %}
+{% endif %}
+</section>
+
+{% set incoming = rel.children + rel.members %}
+{% if incoming %}
+<section class="card" aria-labelledby="in-h">
+<h2 id="in-h">Records that point here</h2>
+<p class="small muted">These are edited on their own pages.</p>
+<ul class="rel-list">{% for r in incoming %}<li>{{ rel_labels[r.type][1] }}: <a href="/game/{{ r.id }}/relations">{{ r.title or r.id }}</a></li>{% endfor %}</ul>
+{% if rel.truncated %}<p class="small muted">Only the first 200 of each kind are listed.</p>{% endif %}
+</section>
+{% endif %}
+
+{% if history %}
+<details class="card"><summary>Ended relations</summary>
+<ul>{% for r in history %}<li>{{ history_titles[r.from_id] }} → {{ rel_labels[r.type][0]|lower }} {{ history_titles[r.to_id] }} <span class="small muted">· {{ r.end_reason }} · {{ r.ended_at.strftime('%Y-%m-%d') }}</span></li>{% endfor %}</ul>
+</details>
+{% endif %}
+<p><a class="btn ghost" href="/game/{{ g.id }}">Back to the record</a></p>
+{% endblock %}

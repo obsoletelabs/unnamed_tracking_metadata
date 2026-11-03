@@ -55,6 +55,9 @@ BUILTIN_MEDIA_TYPES = {
             ("status", "Release status", "choice", ["Announced", "Returning", "Ended", "Cancelled", "In production"], ""),
         ),
     ),
+    # C6.2: the targets of `series_member` and `collection_member` relations (a bundle is a collection).
+    "series": ("Series", 4, {"developer": "Owner", "series": "Franchise"}, ()),
+    "collection": ("Collection", 5, {"series": "Franchise"}, ()),
 }
 RESERVED = {"title", "description", "id", "sources", "provider_ids", "media_type", "custom", "version", "artwork",
             "achievements", "updated_at", "redirected_from", *CORE_LABELS}

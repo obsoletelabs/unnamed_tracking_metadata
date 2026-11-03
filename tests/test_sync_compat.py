@@ -136,7 +136,7 @@ def net(tmp_path):
     return authority, mirror, local
 
 
-RELATION = {"canonical_id": "atlas:" + "0" * 26, "type": "dlc_of", "target": "atlas:" + "1" * 26}
+FUTURE = {"canonical_id": "atlas:" + "0" * 26, "type": "dlc_of", "target": "atlas:" + "1" * 26}
 
 
 def observation(title, **payload):
@@ -161,13 +161,14 @@ def test_registry_replaces_the_duplicated_kind_lists():
 
     assert promotion.KINDS == feed_schema.known_kinds()
     assert set(feed_schema.kinds_advertised()) == {"obs", "artwork", "achievements", "custom", "schema", "merge",
-                                                   "detach", "lock", "unlock", "key_rotation"}
+                                                   "detach", "lock", "unlock", "key_rotation", "relation"}
     assert feed_schema.OBS_PAYLOAD == set(sync._OBS_FIELDS)
-    assert "relation" not in feed_schema.FEED_KINDS and feed_schema.RESERVED_KINDS["relation"] == "1.4"
+    assert "x_future" not in feed_schema.FEED_KINDS and feed_schema.RESERVED_KINDS == {}
+    assert feed_schema.FEED_KINDS["relation"].since == "1.4"  # reserved in 1.1-1.3, shipped by A15 (C6.3)
 
 
 @pytest.mark.parametrize(("kind", "body", "action", "reason"), [
-    ("relation", RELATION, "parked", "unsupported_kind"),
+    ("x_future", FUTURE, "parked", "unsupported_kind"),
     ("obs", {**observation("x"), "_v": 2}, "parked", "unsupported_version"),
     ("obs", {**observation("x"), "_requires": ["x"]}, "parked", "unsupported_capability"),
     ("obs", {**observation("x"), "_requires": ["ext-v1"]}, "apply", ""),
@@ -235,8 +236,10 @@ def test_protocol_parsing_is_strict():
 def test_emission_gate_fails_closed_and_keeps_version_one_bodies_unchanged(net):
     authority, _, _ = net
     with authority.st.maker() as session:
-        with pytest.raises(feed_schema.EmitGateError, match="1.4"):
-            feed.append(session, authority.st.ctx.identity, "relation", RELATION, protocol="1.1")
+        with pytest.raises(feed_schema.EmitGateError, match="1.4"):  # a kind newer than the emit protocol
+            feed.append(session, authority.st.ctx.identity, "relation",
+                        {"op": "add", "from": "atlas:a", "to": "atlas:b", "type": "dlc_of", "source": "curator"},
+                        protocol="1.3")
         with pytest.raises(ValueError, match="unregistered"):
             feed.append(session, authority.st.ctx.identity, "mystery", {}, protocol="1.1")
         with pytest.raises(feed_schema.EmitGateError, match="Raise federation emit protocol to 1.2 first"):
@@ -290,16 +293,16 @@ def test_sync_info_advertises_versions_and_records_follower_protocol(net):
     authority.publish("Hello")
     info = authority.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {authority.token}"}).json()
     assert info["contract"] == 1  # kept for pre-1.1 readers
-    assert (info["protocol"], info["min_follower_protocol"], info["emit_protocol"]) == ("1.3", "1.0", "1.0")
+    assert (info["protocol"], info["min_follower_protocol"], info["emit_protocol"]) == ("1.4", "1.0", "1.0")
     assert info["observation_schema"] == 1 and info["capabilities"] == ["ext-v1", "dates-v1"]
     assert info["kinds"]["achievements"] == {"emit": 1, "apply": 1}
     with authority.st.maker() as session:
         assert session.get(FollowerSeen, authority.token_row.id) is None  # a plain reader is not a follower
 
     _, wire = pull(mirror, authority)
-    assert {protocol for _, protocol in wire.seen} == {"1.3"}
+    assert {protocol for _, protocol in wire.seen} == {"1.4"}
     with authority.st.maker() as session:
-        assert session.get(FollowerSeen, authority.token_row.id).protocol == "1.3"
+        assert session.get(FollowerSeen, authority.token_row.id).protocol == "1.4"
     # A pre-1.1 follower sends no header: recorded as 1.0 on /sync/changes.
     authority.client.get("/api/v2/sync/changes", headers={"Authorization": f"Bearer {authority.token}"})
     with authority.st.maker() as session:
@@ -307,24 +310,24 @@ def test_sync_info_advertises_versions_and_records_follower_protocol(net):
     # The relay advertises what it saw the relayed authority speak.
     relay = mirror.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {mirror.token}"}).json()
     [relayed] = relay["feeds"]
-    assert relayed["node_id"] == authority.node_id and relayed["protocol"] == "1.3"
+    assert relayed["node_id"] == authority.node_id and relayed["protocol"] == "1.4"
 
 
 # ---- C1.11 (a)-(f): parking and quarantine --------------------------------------------------------------
 
 def test_a_unknown_kind_parks_blocks_applied_and_later_entries_are_still_retained(net):
     authority, mirror, _ = net
-    seq = around(authority, "relation", RELATION)
+    seq = around(authority, "x_future", FUTURE)
     pull(mirror, authority)
     heads = mirror.heads(authority)
     assert heads["applied_head"] == seq - 1
     assert heads["verified_head"] == heads["downloaded_head"] == heads["observed_head"] == authority.head() == seq + 1
     assert heads["parked"]["first_seq"] == seq and heads["parked"]["first_reason"] == "unsupported_kind"
-    assert heads["parked"]["first_kind"] == "relation" and heads["parked"]["count"] == 2
+    assert heads["parked"]["first_kind"] == "x_future" and heads["parked"]["count"] == 2
     assert heads["state"] == "parked" and heads["in_sync"] is False
     assert mirror.retained(authority) == authority.own_feed()  # verified and retained byte-for-byte
     assert "After" not in mirror.titles()  # causally later: not applied
-    assert mirror.failures(authority) == [(seq, "relation", "parked", "unsupported_kind")]
+    assert mirror.failures(authority) == [(seq, "x_future", "parked", "unsupported_kind")]
     with mirror.st.maker() as session:
         assert session.get(SyncCursor, authority.node_id).last_seq == seq - 1
     # Pulling again changes nothing and never skips past it.
@@ -419,16 +422,16 @@ def test_ignorable_extension_member_applies_on_this_release(net):
 def test_g_refusal_when_this_node_is_older_than_the_upstream_minimum(net):
     authority, mirror, _ = net
     authority.publish("Hidden Behind A Refusal")
-    newer = {"protocol": "1.5", "min_follower_protocol": "1.4"}
-    with pytest.raises(sync.SyncRefused, match=r"needs protocol ≥ 1.4; this node speaks 1.3. Upgrade Atlas"):
+    newer = {"protocol": "1.6", "min_follower_protocol": "1.5"}
+    with pytest.raises(sync.SyncRefused, match=r"needs protocol ≥ 1.5; this node speaks 1.4. Upgrade Atlas"):
         _, wire = pull(mirror, authority, info=lambda body: {**body, **newer})
     with mirror.st.maker() as session:
         assert session.get(SyncCursor, authority.node_id) is None  # cursor untouched
         assert session.scalars(select(ReplicatedChange)).first() is None  # nothing downloaded
         refused = json.loads(session.get(NodeState, "sync_refused:" + authority.node_id).value)
-    assert refused["upstream_protocol"] == "1.5" and "Upgrade Atlas" in refused["reason"]
+    assert refused["upstream_protocol"] == "1.6" and "Upgrade Atlas" in refused["reason"]
     status = mirror.heads(authority)
-    assert status["state"] == "refused" and status["upstream_protocol"] == "1.5"
+    assert status["state"] == "refused" and status["upstream_protocol"] == "1.6"
     # Accepted again once the upstream allows this node: the refusal clears.
     pull(mirror, authority)
     assert mirror.heads(authority)["state"] == "in_sync"
@@ -483,17 +486,17 @@ def release_1_1(monkeypatch):
 
 
 @pytest.fixture
-def relation_support(monkeypatch):
-    """Play "this node was upgraded to a release that knows `relation`"."""
+def future_kind_support(monkeypatch):
+    """Play "this node was upgraded to a release that knows `x_future`"."""
     def install():
         kinds = dict(feed_schema.FEED_KINDS)
-        kinds["relation"] = feed_schema.KindSpec("relation", "1.4", 1, 1, frozenset(RELATION), "test")
+        kinds["x_future"] = feed_schema.KindSpec("x_future", "1.4", 1, 1, frozenset(FUTURE), "test")
         monkeypatch.setattr(feed_schema, "FEED_KINDS", kinds)
         real = sync._apply
 
         def apply(session, ctx, node_id, seq, kind, body):
-            if kind == "relation":
-                session.add(NodeState(key=f"relation:{seq}", value=json.dumps(body)))
+            if kind == "x_future":
+                session.add(NodeState(key=f"x_future:{seq}", value=json.dumps(body)))
                 session.flush()
                 return None
             return real(session, ctx, node_id, seq, kind, body)
@@ -502,15 +505,15 @@ def relation_support(monkeypatch):
     return install
 
 
-def test_i_replay_after_upgrade_converges_to_the_authority_view(net, relation_support):
+def test_i_replay_after_upgrade_converges_to_the_authority_view(net, future_kind_support):
     authority, mirror, _ = net
-    seq = around(authority, "relation", RELATION)
+    seq = around(authority, "x_future", FUTURE)
     pull(mirror, authority)
     assert mirror.heads(authority)["state"] == "parked"
     with mirror.st.maker() as session, authority.st.maker() as upstream:
         assert sync.view_digest(session, authority.node_id) != sync.view_digest(upstream, None)
 
-    relation_support()
+    future_kind_support()
     with mirror.st.maker() as session:
         result = sync.replay(session, mirror.st.ctx)
         session.commit()
@@ -518,18 +521,18 @@ def test_i_replay_after_upgrade_converges_to_the_authority_view(net, relation_su
     assert result[authority.node_id]["state"] == "in_sync"
     with mirror.st.maker() as session, authority.st.maker() as upstream:
         assert sync.view_digest(session, authority.node_id) == sync.view_digest(upstream, None)
-        assert json.loads(session.get(NodeState, f"relation:{seq}").value) == RELATION
+        assert json.loads(session.get(NodeState, f"x_future:{seq}").value) == FUTURE
         assert session.get(SyncFailure, (authority.node_id, seq)).resolved_at is not None
     assert "After" in mirror.titles() and mirror.failures() == []
     with mirror.st.maker() as session:  # idempotent
         assert sync.replay(session, mirror.st.ctx)[authority.node_id]["applied"] == 0
 
 
-def test_pull_after_upgrade_also_converges_without_running_replay(net, relation_support):
+def test_pull_after_upgrade_also_converges_without_running_replay(net, future_kind_support):
     authority, mirror, _ = net
-    around(authority, "relation", RELATION)
+    around(authority, "x_future", FUTURE)
     pull(mirror, authority)
-    relation_support()
+    future_kind_support()
     pull(mirror, authority)
     assert mirror.heads(authority)["in_sync"] and "After" in mirror.titles()
 
@@ -545,20 +548,20 @@ def _persisted(node, origin):
                                    for f in session.scalars(select(SyncFailure)))}
 
 
-def test_replay_dry_run_changes_nothing(net, relation_support, tmp_path, monkeypatch, capsys):
+def test_replay_dry_run_changes_nothing(net, future_kind_support, tmp_path, monkeypatch, capsys):
     authority, mirror, _ = net
-    around(authority, "relation", RELATION)
+    around(authority, "x_future", FUTURE)
     pull(mirror, authority)
-    relation_support()
+    future_kind_support()
     before = _persisted(mirror, authority)
     _cli_env(monkeypatch, mirror)
     assert cli.main(["sync", "replay", "--dry-run"]) == cli.EXIT_CONVERGED
     assert "would apply 2 entries" in capsys.readouterr().out
     assert mirror.heads(authority)["state"] == "parked"
-    # The relation's apply runs inside a savepoint that opens the SQLite transaction. pysqlite's legacy
-    # mode committed it on RELEASE, so the dry run persisted `relation:<seq>` (PHASE2 D1).
+    # The x_future apply runs inside a savepoint that opens the SQLite transaction. pysqlite's legacy
+    # mode committed it on RELEASE, so the dry run persisted `x_future:<seq>` (then `relation:<seq>`) (PHASE2 D1).
     after = _persisted(mirror, authority)
-    assert not any(k.startswith("relation:") for k in after["node_state"])
+    assert not any(k.startswith("x_future:") for k in after["node_state"])
     assert after == before
     assert "After" not in mirror.titles()
     assert cli.main(["sync", "replay"]) == cli.EXIT_CONVERGED  # the real replay still has everything to do
@@ -566,11 +569,11 @@ def test_replay_dry_run_changes_nothing(net, relation_support, tmp_path, monkeyp
     assert mirror.heads(authority)["in_sync"] and "After" in mirror.titles()
 
 
-def test_a_pull_that_rolls_back_after_applying_leaves_nothing_behind(net, relation_support, monkeypatch):
+def test_a_pull_that_rolls_back_after_applying_leaves_nothing_behind(net, future_kind_support, monkeypatch):
     authority, mirror, _ = net
-    seq = around(authority, "relation", RELATION)
+    seq = around(authority, "x_future", FUTURE)
     pull(mirror, authority)
-    relation_support()
+    future_kind_support()
     before = _persisted(mirror, authority)
 
     def fail(*_args, **_kw):
@@ -580,34 +583,34 @@ def test_a_pull_that_rolls_back_after_applying_leaves_nothing_behind(net, relati
     with pytest.raises(RuntimeError, match="simulated failure"):
         pull(mirror, authority)
     assert _persisted(mirror, authority) == before
-    assert f"relation:{seq}" not in before["node_state"]
+    assert f"x_future:{seq}" not in before["node_state"]
     monkeypatch.undo()
-    relation_support()
+    future_kind_support()
     pull(mirror, authority)
     assert mirror.heads(authority)["in_sync"] and "After" in mirror.titles()
 
 
 def test_j_skip_is_audited_and_lets_later_entries_apply(net):
     authority, mirror, _ = net
-    seq = around(authority, "relation", RELATION)
+    seq = around(authority, "x_future", FUTURE)
     pull(mirror, authority)
     with mirror.st.maker() as session:
         with pytest.raises(ValueError, match="give a reason"):
             sync.skip(session, mirror.st.ctx, authority.node_id, seq, "  ")
         with pytest.raises(ValueError, match="not parked"):
             sync.skip(session, mirror.st.ctx, authority.node_id, seq - 1, "wrong entry")
-        result = sync.skip(session, mirror.st.ctx, authority.node_id, seq, "accepted: relation not needed here")
+        result = sync.skip(session, mirror.st.ctx, authority.node_id, seq, "accepted: x_future not needed here")
         session.commit()
     assert result["applied_head"] == authority.head()
-    assert mirror.failures(authority) == [(seq, "relation", "quarantined", "skipped")]
+    assert mirror.failures(authority) == [(seq, "x_future", "quarantined", "skipped")]
     assert "After" in mirror.titles()
     with mirror.st.maker() as session:
         [audit] = session.scalars(select(AuditEntry).where(AuditEntry.action == "sync_skip")).all()
         assert audit.target == f"{authority.node_id}:{seq}"
-        assert audit.detail["reason"] == "accepted: relation not needed here"
+        assert audit.detail["reason"] == "accepted: x_future not needed here"
         assert audit.detail["parked_reason"] == "unsupported_kind"
     pull(mirror, authority)  # a skipped entry is never parked again
-    assert mirror.failures(authority) == [(seq, "relation", "quarantined", "skipped")]
+    assert mirror.failures(authority) == [(seq, "x_future", "quarantined", "skipped")]
     assert mirror.heads(authority)["applied_head"] == authority.head()
 
 
@@ -621,7 +624,7 @@ def test_k_head_invariant_holds_after_random_page_failures(tmp_path, seed):
     for index in range(14):
         roll = rng.random()
         if roll < 0.15:
-            authority.emit("relation", RELATION)
+            authority.emit("x_future", FUTURE)
         elif roll < 0.3:
             authority.emit("obs", observation("x" * 600))  # quarantined
         else:
@@ -654,7 +657,7 @@ def test_k_head_invariant_holds_after_random_page_failures(tmp_path, seed):
 def test_downloading_pauses_when_the_parked_backlog_is_full(tmp_path):
     authority = Node(tmp_path, "a", "authority")
     mirror = Node(tmp_path, "m", "mirror", sync_max_parked_backlog=3, sync_batch_size=2)
-    seq = authority.emit("relation", RELATION)
+    seq = authority.emit("x_future", FUTURE)
     for index in range(6):
         authority.publish(f"Behind {index}")
     pull(mirror, authority)
@@ -754,7 +757,7 @@ def test_relay_that_is_behind_is_not_an_error(net):
 def test_rescan_records_entries_an_older_release_silently_skipped(net):
     authority, mirror, _ = net
     authority.publish("Before")
-    unknown = authority.emit("relation", RELATION)
+    unknown = authority.emit("x_future", FUTURE)
     invalid = authority.emit("obs", observation("x" * 600))
     extended = observation("Extended", ext={"x_future": {"date": "2026"}})
     skipped = authority.emit("obs", extended)
@@ -774,7 +777,7 @@ def test_rescan_records_entries_an_older_release_silently_skipped(net):
         session.commit()
     # "After" was held back behind the parked entry, so the old release never applied it either.
     assert counts == {"scanned": 5, "parked": 3, "quarantined": 1}
-    assert mirror.failures(authority) == [(unknown, "relation", "parked", "unsupported_kind"),
+    assert mirror.failures(authority) == [(unknown, "x_future", "parked", "unsupported_kind"),
                                           (invalid, "obs", "quarantined", "invalid"),
                                           (skipped, "obs", "parked", "dropped_by_previous_release"),
                                           (authority.head(), "obs", "parked", "dropped_by_previous_release")]
@@ -825,13 +828,13 @@ def _old_release_retry_and_catch_up(node, origin):
         session.commit()
 
 
-def test_rollback_then_reupgrade_rescan_recovers_rows_the_old_release_resolved(net, monkeypatch, relation_support):
+def test_rollback_then_reupgrade_rescan_recovers_rows_the_old_release_resolved(net, monkeypatch, future_kind_support):
     """Upgrade, park, roll the code back (the old release resolves the parked row and moves past it),
     upgrade again: rescan must re-classify the resolved row instead of skipping it (C1.8, C1.10)."""
     authority, mirror, _ = net
-    seq = around(authority, "relation", RELATION)
+    seq = around(authority, "x_future", FUTURE)
     pull(mirror, authority)
-    assert mirror.failures(authority) == [(seq, "relation", "parked", "unsupported_kind")]
+    assert mirror.failures(authority) == [(seq, "x_future", "parked", "unsupported_kind")]
 
     undo = _old_release(monkeypatch)
     _old_release_retry_and_catch_up(mirror, authority)
@@ -847,18 +850,18 @@ def test_rollback_then_reupgrade_rescan_recovers_rows_the_old_release_resolved(n
         session.commit()
     assert counts == {"scanned": 3, "parked": 1, "quarantined": 0}
     heads = mirror.heads(authority)
-    assert mirror.failures(authority) == [(seq, "relation", "parked", "unsupported_kind")]
+    assert mirror.failures(authority) == [(seq, "x_future", "parked", "unsupported_kind")]
     assert heads["state"] == "parked" and not heads["in_sync"]  # no longer silently "in sync"
     with mirror.st.maker() as session:
         row = session.get(SyncFailure, (authority.node_id, seq))
         assert row.resolved_at is None and row.attempts >= 2
-        assert session.get(NodeState, f"relation:{seq}") is None  # nothing applied by rescan
+        assert session.get(NodeState, f"x_future:{seq}") is None  # nothing applied by rescan
 
-    relation_support()  # the upgraded release understands it: --historical applies it in place
+    future_kind_support()  # the upgraded release understands it: --historical applies it in place
     with mirror.st.maker() as session:
         result = sync.replay(session, mirror.st.ctx, historical=True)[authority.node_id]
         session.commit()
-        assert json.loads(session.get(NodeState, f"relation:{seq}").value) == RELATION
+        assert json.loads(session.get(NodeState, f"x_future:{seq}").value) == FUTURE
     assert result["recovered_parked"] == 1 and result["state"] == "in_sync"
     assert mirror.failures(authority) == []
 
@@ -940,7 +943,7 @@ def test_kinds_table_in_the_guide_matches_the_registry():
 
 def test_relay_at_this_release_relays_newer_entries_byte_for_byte(net):
     authority, mirror, local = net
-    around(authority, "relation", RELATION)
+    around(authority, "x_future", FUTURE)
     pull(mirror, authority)
     pull(local, mirror, authority)
     assert mirror.retained(authority) == local.retained(authority) == authority.own_feed()
@@ -966,21 +969,21 @@ def _fresh_settings():
     get_settings.cache_clear()
 
 
-def test_cli_status_replay_and_skip_exit_codes(net, monkeypatch, capsys, relation_support):
+def test_cli_status_replay_and_skip_exit_codes(net, monkeypatch, capsys, future_kind_support):
     authority, mirror, _ = net
-    seq = around(authority, "relation", RELATION)
+    seq = around(authority, "x_future", FUTURE)
     pull(mirror, authority)
     _cli_env(monkeypatch, mirror)
     assert cli.main(["sync", "status"]) == cli.EXIT_PARKED
     out = capsys.readouterr().out
-    assert f"parked: 2 entries from seq {seq} (unsupported_kind, kind 'relation')" in out
+    assert f"parked: 2 entries from seq {seq} (unsupported_kind, kind 'x_future')" in out
     assert cli.main(["sync", "status", "--json", "--node", authority.node_id]) == cli.EXIT_PARKED
     data = json.loads(capsys.readouterr().out)
     assert data["upstreams"][authority.node_id]["parked"]["first_seq"] == seq
     assert cli.main(["sync", "replay"]) == cli.EXIT_PARKED
     assert "still parked at seq" in capsys.readouterr().out
     assert cli.main(["sync", "skip", "--node", authority.node_id, "--seq", str(seq - 1), "--reason", "x"]) == 1
-    relation_support()
+    future_kind_support()
     assert cli.main(["sync", "replay", "--node", authority.node_id]) == cli.EXIT_CONVERGED
     assert cli.main(["sync", "status"]) == cli.EXIT_CONVERGED
 
@@ -1028,7 +1031,7 @@ def test_reconcile_compares_digests_with_the_upstream(net):
 
 def test_status_api_exposes_named_heads(net):
     authority, mirror, _ = net
-    seq = around(authority, "relation", RELATION)
+    seq = around(authority, "x_future", FUTURE)
     pull(mirror, authority)
     admin = {"Authorization": f"Bearer {_admin(mirror)}"}
     status = mirror.client.get("/api/v2/status", headers=admin).json()
@@ -1045,7 +1048,7 @@ def test_status_api_exposes_named_heads(net):
 def test_metrics_expose_heads_and_parked_counts(tmp_path):
     authority = Node(tmp_path, "a", "authority")
     mirror = Node(tmp_path, "m", "mirror", metrics_enabled=True)
-    around(authority, "relation", RELATION)
+    around(authority, "x_future", FUTURE)
     pull(mirror, authority)
     with mirror.st.maker() as session:
         _, scrape = auth.create_token(session, "scrape", ["metrics"])
@@ -1058,13 +1061,13 @@ def test_metrics_expose_heads_and_parked_counts(tmp_path):
     assert f"atlas_sync_in_sync{{node_id={label}}} 0" in text
 
 
-def test_startup_replay_runs_once_per_release(net, relation_support):
+def test_startup_replay_runs_once_per_release(net, future_kind_support):
     authority, mirror, _ = net
-    around(authority, "relation", RELATION)
+    around(authority, "x_future", FUTURE)
     pull(mirror, authority)
     assert sync.startup_replay(mirror.st.maker, mirror.st.ctx) is not None
     assert sync.startup_replay(mirror.st.maker, mirror.st.ctx) is None  # same release: skipped
-    relation_support()  # the registry changed: the marker differs, so it runs and converges
+    future_kind_support()  # the registry changed: the marker differs, so it runs and converges
     assert sync.startup_replay(mirror.st.maker, mirror.st.ctx)[authority.node_id]["state"] == "in_sync"
 
 
