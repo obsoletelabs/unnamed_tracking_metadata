@@ -726,6 +726,9 @@ def test_restore_after_a_downgrade_converges_with_a_follower_that_applied_the_me
     db.downgrade(url, "0031")
     with monkeypatch.context() as m:  # the previous release: merges sign a `merge`, relations stay where they are
         m.setattr(relations, "move", lambda session, src, dst: set())
+        from atlas import prices  # nor does it know prices (0033, A16): its merges do not touch that table
+
+        m.setattr(prices, "move", lambda session, src, dst: 0)
         with authority.st.maker() as s:
             service.merge_canonicals(s, authority.st.ctx, dup, game)
             s.commit()
