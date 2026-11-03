@@ -68,11 +68,16 @@ at the bottom.
   and `truncated`. The record's `editions` are in the record when known. Both keys are additive; old clients
   ignore them.
 * `GET /api/v2/games/{id}/relations?depth=2` returns the graph around a record (`nodes`, `edges`), up to 4
-  hops in both directions and 200 records, in a fixed order, with `truncated` when there is more. Use it to
+  hops in both directions and 200 records, in a fixed order, with `truncated` when there is more. `edges` are
+  all active relations among the returned records. The walk reads the database in pages and stops at the
+  first record past the limit, so a bundle with thousands of members costs no more than a small one. Use it to
   navigate from a DLC to its game and on to the game's other DLC, ports and series.
 * `PUT /api/v2/games/{id}/relations` (curate scope) replaces the record's own relations:
   `{"relations": [{"to": "atlas:…", "type": "dlc_of"}]}`. Missing ones are ended, new ones added, all or
-  nothing. On a mirror or local node the relations are local to that node.
+  nothing. On a mirror or local node the relations are local to that node (an *overlay*), allowed on any
+  record, including one the upstream manages. Overlays are never published, and the upstream's relations always
+  win over them: when a relation from the upstream conflicts with an overlay (a second parent, a cycle), the
+  overlay is ended with reason `superseded`; an overlay identical to an upstream relation is taken over by it.
 
 Ids follow merge redirects everywhere.
 
@@ -81,8 +86,13 @@ Ids follow merge redirects everywhere.
 Merging a record moves its relations to the record it was merged into. A relation that would then point at
 itself, duplicate one the survivor has, give the survivor a second parent of the same kind, form a cycle, or
 make a membership point at a record that is not a series or collection is **ended** instead; the survivor's
-own relations always win. An active relation therefore never names a merged record. Every node makes the same
-decision for the same merge, so followers stay identical without extra feed entries.
+own relations always win. An active relation therefore never names a merged record.
+
+Every node makes the same decision for the same merge, so followers stay identical without extra feed
+entries. That holds because the decision for a *replicated* relation (one the authority published, or one a
+follower applied from its feed) looks only at other replicated relations. Relations that exist on one node
+only (an authority's relations kept local below emit protocol 1.4, a mirror's overlays) are decided after
+them, and one that then conflicts is ended (`superseded`).
 
 Splitting a source record off (**Split off**) creates a new record without relations; the relations stay
 with the original record, which keeps its id.
@@ -100,8 +110,11 @@ Each change is one signed `relation` entry: `{"op": "add", "from", "to", "type",
   [Compatibility and upgrades](federation.md#compatibility-and-upgrades)).
 * A 1.0 follower cannot park and passes over relations. After upgrading it, `atlas sync replay --rescan`
   records them (`dropped_by_previous_release`) and `atlas sync replay --historical` applies them.
-* A replicated relation that breaks a rule here (a cycle, a second parent, a self relation) is quarantined
-  (`invalid`), not parked: it does not block later entries and is listed under Admin → Peers. One that names a
+* A replicated relation is checked against the relations this node holds from the feed, as the authority
+  checked it. One that breaks a rule there (a cycle, a second parent, a self relation) is quarantined
+  (`invalid`), not parked: it does not block later entries and is listed under Admin → Peers. This node's own
+  overlays never cause that: an overlay that conflicts is ended (`superseded`) instead. A feed `end` ends only
+  a relation that came from the feed. One that names a
   record this node does not have yet is quarantined and retried.
 
 ## Upgrading and rolling back
@@ -110,6 +123,9 @@ Migration 0032 creates the `relation` table; no existing data changes. To show e
 existed before this release, run `atlas dates rebuild --restart` once (it re-derives every record's view,
 batch by batch, and resumes if interrupted); records also pick them up the next time a source updates them.
 
-A database downgrade keeps the relations aside (`relation_0032_kept`) and an upgrade brings them back. A
-relation whose record was merged while the older release ran is ended (`downgraded`) on the way back, because
-that release does not move relations; re-add it if it still applies.
+A database downgrade keeps the relations aside (`relation_0032_kept`) and an upgrade brings them back. Records
+may have been merged while the older release ran (by this node, or by its upstream), and that release does not
+move relations. So after the schema step, `atlas migrate` (and every start, until it is done) replays those
+merges with the same rules a 1.4 follower applied when it received them, in the same order (this node's own
+feed, then its upstreams' retained feeds), and advances the versions of the records whose relations changed.
+The authority and its followers therefore hold the same relations afterwards, with no extra feed entries.

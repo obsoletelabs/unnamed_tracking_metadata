@@ -361,11 +361,14 @@ def put_relations(cid: str, body: RelationsBody, st: St, session: Sess,
     """Replace the record's own outgoing relations (C6.3). Cycles, a second parent of the same kind, a self
     relation and a membership that does not point at a series or collection are refused (409/400) and nothing
     changes. On an authority below federation emit protocol 1.4 the relations are stored but not published.
-    Relations from the upstream feed are kept as they are."""
+    Relations from the upstream feed are kept as they are.
+
+    On a mirror or local node the relations are local overlays, allowed on any record, including one its
+    upstream manages (as in the web editor): they are never published, and the upstream's own relations always
+    win over them (a conflicting overlay is ended, `superseded`), so an overlay cannot change or block what this
+    node applies from its upstream."""
     row, _r = service.get_canonical(session, cid)
     local = st.ctx.settings.role != "authority"
-    if not local:
-        _guard_upstream(session, st, row.id)
     result = relations.set_outgoing(session, st.ctx, row.id, [i.model_dump() for i in body.relations],
                                     actor=p.name, local_only=local)
     session.refresh(row)
