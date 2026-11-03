@@ -522,6 +522,13 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
             if _not_found(exc) and session.get(Lock, (body["canonical_id"], body["field"])) is None:
                 return NOOP  # no such lock: already in the state the entry describes
             raise
+    elif kind == "relation":
+        from . import relations
+
+        try:
+            return relations.apply_feed(session, ctx, node_id, seq, body)
+        except ValueError as exc:  # self, cycle, second parent, wrong target: quarantine:invalid (C6.3)
+            raise InvalidEntry(str(exc)) from exc
     elif kind == "key_rotation":
         return None  # Verified with the complete key history before any entry is applied.
     else:  # classify() parks unknown kinds; reaching here means the registry and this function disagree
@@ -1013,6 +1020,14 @@ def rescan(session: Session, node_id: str) -> dict[str, int]:
         elif outcome.action == QUARANTINE:
             _record(session, node_id, row.seq, row.kind, QUARANTINE, "invalid", outcome.message, outcome.detail)
             counts["quarantined"] += 1
+        elif row.kind == "relation":
+            from . import relations
+
+            if not relations.applied_from_feed(session, node_id, row.seq, outcome.body or {}):
+                _record(session, node_id, row.seq, row.kind, PARK, "dropped_by_previous_release",
+                        "an earlier release skipped this relation; `atlas sync replay --historical` applies it",
+                        {"kind": "relation"})
+                counts["parked"] += 1
         elif row.kind == "obs":
             body = outcome.body or {}
             o = body.get("observation")

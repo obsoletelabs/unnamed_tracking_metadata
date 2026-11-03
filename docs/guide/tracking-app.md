@@ -120,8 +120,9 @@ The route requires the `read` scope. It returns IDs and versions only; clients f
 The closed value lists Atlas, the plugin and the Tracking App must agree on live in
 `contracts/vocab-v1.json` in the Atlas repository, with its SHA-256 in `vocab-v1.json.sha256`
 (contract C7.4): achievement `tier` (`bronze`, `silver`, `gold`, `platinum`) and `kind`, `crossplay`
-(`yes`, `partial`, `no`), and values reserved for later protocols (`relation_type`, `date_precision`,
-`release_category`). Atlas generates it from `atlas/vocab.py`, and a test fails when they disagree.
+(`yes`, `partial`, `no`), `relation_type` (the C6.2 relation types, sent since protocol 1.4 and listed in
+each record's `relations`, see [Relationships and editions](relations.md)), `date_precision` and
+`release_category`. Atlas generates it from `atlas/vocab.py`, and a test fails when they disagree.
 
 * `tools/vocab_check.py` needs only the Python standard library for `verify` (a file and its digest)
   and `compare` (exit 1 when the lists two or more files share differ; value order does not matter),

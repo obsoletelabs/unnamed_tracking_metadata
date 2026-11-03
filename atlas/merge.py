@@ -126,8 +126,45 @@ def merge(observations: list[Obs], locks: dict[str, Any]) -> tuple[dict[str, Any
         view["provider_ids"] = {ns: v for ns, (v, _) in sorted(ids.items())}
         explain["provider_ids"] = {"strategy": "claim", "sources": sorted({o.source for _, o in ids.values()})}
 
+    editions = _editions(ranked)
+    if editions:
+        view["editions"] = editions
+        explain["editions"] = {"strategy": "group", "sources": sorted({s for e in editions for s in e["sources"]})}
+
     view["sources"] = sorted({o.source for o in observations})
     return view, explain
+
+
+#: At most this many editions per record in the view.
+MAX_EDITIONS = 50
+
+
+def _editions(ranked: list[Obs]) -> list[dict[str, Any]]:
+    """C6.1: the record's editions, from the `edition` its observations name. An edition is never a separate
+    record or a relation target; per-edition dates are `releases[].edition` (C5.1).
+
+    Names are grouped by casefold with whitespace collapsed; the spelling of the most trusted observation is
+    shown. `provider_ids` maps each source namespace to *that edition's* id there (the observation's own id;
+    the most trusted wins), never ids the observation only cross-references. Sorted by name."""
+    groups: dict[str, dict[str, Any]] = {}
+    for o in ranked:  # highest trust first
+        name = " ".join(str(o.payload.get("edition") or "").split())
+        if not name:
+            continue
+        key = name.casefold()
+        found = groups.get(key)
+        if found is None:
+            if len(groups) >= MAX_EDITIONS:
+                continue
+            found = groups[key] = {"name": name, "provider_ids": {}, "sources": []}
+        found["provider_ids"].setdefault(norm_namespace(o.source), o.external_id)
+        if o.source not in found["sources"]:
+            found["sources"].append(o.source)
+    out = []
+    for item in sorted(groups.values(), key=lambda g: (g["name"].casefold(), g["name"])):
+        out.append({"name": item["name"], "provider_ids": dict(sorted(item["provider_ids"].items())),
+                    "sources": sorted(item["sources"])})
+    return out
 
 
 def _merge_releases(ranked: list[Obs], locks: dict[str, Any], view: dict[str, Any], explain: dict[str, Any]) -> None:

@@ -94,7 +94,7 @@ def test_upgrade_backfills_downgrade_restores_and_reupgrade(url):
     seed(engine)
     before = rows(engine)
 
-    db.upgrade(url)
+    db.upgrade(url, "0031")  # pinned: 0032 (A15) is the head now
     assert version(engine) == "0031"
     names = {c["name"] for c in inspect(engine).get_columns("canonical")}
     assert COLUMNS <= names

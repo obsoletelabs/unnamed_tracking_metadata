@@ -306,16 +306,20 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
             item.canonical_id = dst
     from .custom import move_values
     from .facets import move_facets
+    from .relations import move as move_relations
     from .social import move_list_items
 
     move_facets(session, src, dst)
     move_values(session, src, dst)
     move_list_items(session, src, dst)
+    neighbours = move_relations(session, src, dst)  # C6.3: no active relation names a merged record
     s.merged_into = dst
     s.view, s.explain = {}, {}
     with client_changes.cause(session, "merge"):  # both ids reach clients: the redirect and the survivor
         bump_version(session, src, "merge")
         rebuild(session, ctx, dst, cause="merge")
+        for other in sorted(neighbours):  # their `relations` now name the survivor
+            bump_version(session, other, "merge")
     if log and ctx.settings.role == "authority":
         feed.emit(session, ctx, "merge", {"src": src, "dst": dst})
     return d

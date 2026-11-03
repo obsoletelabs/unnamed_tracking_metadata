@@ -1,0 +1,24 @@
+{# The relations of a record (C6.3) as navigation: what it belongs to, what belongs to it, and its editions. #}
+{% set lists = [('parents', 0), ('members_of', 0), ('children', 1), ('members', 1)] %}
+{% set any_rel = rel.counts.parents or rel.counts.children or rel.counts.members_of or rel.counts.members %}
+{% if any_rel or v.get('editions') %}
+<section class="relations" aria-labelledby="related-h" data-relations>
+<h2 id="related-h">Related</h2>
+{% for name, side in lists %}{% if rel[name] %}
+{% for kind, items in rel[name]|groupby('type') %}
+<div class="rel-group" data-rel-list="{{ name }}" data-rel-type="{{ kind }}">
+<h3>{{ rel_labels[kind][side] }} <span class="muted small">{{ items|length }}</span></h3>
+<ul class="rel-list">{% for r in items %}<li><a href="/game/{{ r.id }}">{{ r.title or r.id }}</a>{% if r.media_type and r.media_type != 'game' %} <span class="badge">{{ r.media_type|replace('_', ' ') }}</span>{% endif %}</li>{% endfor %}</ul>
+</div>
+{% endfor %}
+{% if rel.counts[name] > rel[name]|length %}<p class="small muted">Showing {{ rel[name]|length }} of {{ rel.counts[name] }}. The API lists up to 200 (<code>GET /api/v2/games/{{ g.id }}/relations</code>).</p>{% endif %}
+{% endif %}{% endfor %}
+{% if v.get('editions') %}
+<div class="rel-group" data-editions>
+<h3>Editions <span class="muted small">{{ v.editions|length }}</span></h3>
+<ul class="rel-list">{% for e in v.editions %}<li><strong>{{ e.name }}</strong>{% for ns, ident in e.provider_ids.items() %} <span class="small muted">· {{ store_name(ns) }} {% set link = store_link(ns, ident) %}{% if link %}<a href="{{ link }}" rel="noopener noreferrer nofollow">{{ ident }}</a>{% else %}{{ ident }}{% endif %}</span>{% endfor %}</li>{% endfor %}</ul>
+<p class="small muted">Editions are versions of this same record; their release dates are in the table above.</p>
+</div>
+{% endif %}
+</section>
+{% endif %}

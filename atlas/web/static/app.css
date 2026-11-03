@@ -280,3 +280,16 @@ table.releases { margin: 0 0 1em; }
 .release-filter { display: flex; flex-wrap: wrap; gap: 0 12px; align-items: end; margin: 0 0 16px; }
 .release-filter > div { flex: 0 1 170px; }
 .release-filter button { margin-bottom: 12px; }
+/* relations between works (C6) */
+.relations .rel-group { margin-bottom: .75rem; }
+.relations h3 { margin-bottom: .25rem; }
+.rel-list { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.rel-table td, .rel-table th { vertical-align: top; }
+.relation-search select { max-width: 100%; }
+@media (max-width: 640px) {
+  .relation-search .row { flex-wrap: wrap; }
+  .relation-search .row > div { flex: 1 1 100%; }
+  .relation-search .row .align-end { align-self: start; }
+}
+[data-relation-results] select { margin: 0 6px; width: auto; display: inline-block; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
