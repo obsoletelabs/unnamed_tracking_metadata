@@ -104,8 +104,8 @@ advertise one and count as **1.0**.
 | Protocol | Adds | A 1.0 follower | A 1.1, 1.2 or 1.3 follower |
 | --- | --- | --- | --- |
 | 1.1 | negotiation, parking, named heads, `items[].key` on achievements (reserved-optional) | applies what it knows; drops what it does not | — |
-| 1.2 | the achievement tier `platinum` (an entry with it also lists the `_requires` token `tier-platinum`) | **drops the whole achievement list** of that game | a 1.1 follower **parks** it (`unsupported_capability`) and applies it after upgrading |
-| **1.3** | partial and regional release dates: `ext.release` on observations, a `release_date` lock that is a year or a month, and the `releases` lock field (each signed with the `_requires` token `dates-v1`, also advertised in `capabilities`) | **drops the observation or lock** | **parks** it (`unsupported_capability`) and applies it after upgrading; the record keeps its previous dates meanwhile, never a stripped or day-only copy |
+| 1.2 | the achievement tier `platinum` (an entry with it also lists the `_requires` token `tier-platinum`) | **drops the whole achievement list** of that game; after upgrading, `atlas sync replay --rescan` records it as `dropped_by_previous_release` and `--historical` applies it | a 1.1 follower **parks** it (`unsupported_capability`) and applies it after upgrading |
+| **1.3** | partial and regional release dates: `ext.release` on observations, a `release_date` lock that is a year or a month, and the `releases` lock field (each signed with the `_requires` token `dates-v1`, also advertised in `capabilities`) | **drops the observation or lock**; after upgrading, `--rescan` records both and `--historical` applies them | **parks** it (`unsupported_capability`) and applies it after upgrading; the record keeps its previous dates meanwhile, never a stripped or day-only copy |
 | **1.4** | the feed kind `relation`: relationships between works (DLC, expansions, ports, remakes, mods, series and collection membership; see [Relationships](relations.md)) | **drops the entry** (an unknown kind); after upgrading, `atlas sync replay --rescan` records it as `dropped_by_previous_release` and `--historical` applies it | **parks** it (`unsupported_kind`) and applies it after upgrading; the records keep their other data meanwhile |
 | 1.5 (reserved) | the price channel: a separate signed channel `/sync/price-changes` (capability `price-channel-v1`); see [Prices](prices.md). **Designed, not enabled in this release**: no capability, the endpoint answers 404, nothing is signed | never sees it (separate endpoint, not the feed) | never sees it; a `price` entry in the main feed would be **parked** (`unsupported_kind`) |
 | 1.6 (reserved) | undoing merges across the federation: the feed kinds `unmerge` and `distinct` ("these are different works"), and lock body version 2 for an explicit clear (`field-clear-v1`) and the merge guard (`merge-guard-v1`); see [Matching and provenance](matching.md). **Not signed by this release**: unmerges, distinct marks and clears stay on the node that made them; a merge is published as before, so an authority cannot undo a published merge until it emits 1.6 | would **drop the entry** (an unknown kind) | **parks** it (`unsupported_kind` or `unsupported_version`) and applies it after upgrading |
@@ -219,8 +219,14 @@ After upgrading a follower from a release before 1.1, run `atlas sync replay --r
 records retained entries that the old release skipped without applying (unknown kinds, unknown
 fields, invalid observations) as parked or quarantined, without moving the cursor back and without
 applying anything. An observation this release accepts but the old one rejected is parked as
-`dropped_by_previous_release`. These rows sit below the applied head, so they no longer block, but
-the upstream stays `parked` (and promotion is refused) until they are dealt with.
+`dropped_by_previous_release`, and so are a `relation` entry, an achievement list (for example one with
+a `platinum` tier) and a lock or unlock (for example a `releases` lock) whose effect is missing here. For
+lists and locks only the newest entry per record and source (or per record and field) counts: an
+older one that a later entry replaced is not recovered, and one whose record was merged since is left
+alone. These rows sit below the applied head, so they no longer block, but the upstream stays
+`parked` (and promotion is refused) until they are dealt with. Rescanning again after the replay
+records nothing: the state then holds. `python -m tools.skew_drill --scenario rescan` runs this
+recovery against the real 1.0 release.
 
 Then run `atlas sync replay --historical` (try `--dry-run` first). It re-applies **every** retained
 entry from the oldest recovered one up to the applied head, in feed order, so a skipped entry lands in
