@@ -226,3 +226,28 @@ def test_lock_clear_over_http(local, authority):
 
         assert s.get(Lock, (cid2, "description")).local_only is True
         assert not [e for e in s.scalars(select(ChangeLog)) if e.kind == "lock"]
+
+
+def test_an_unmerge_check_is_never_merged_over_http_or_the_web(local):
+    """An `unmerge_check` (C11 §11.10.3) names the survivor and the record an unmerge split off it: merging them
+    would redo the merge that was just undone. The API refuses it and the web queue offers no Merge button."""
+    a = submit(local, "steam", "1", "Check Left", release_date="2001-01-01")["atlas"]["canonical_id"]
+    b = submit(local, "gog", "2", "Check Right", release_date="2011-01-01")["atlas"]["canonical_id"]
+    assert local.put(f"/api/v2/games/{b}/locks/series", json={"value": "B series", "local_only": True},
+                     headers=H(local.cur)).status_code == 200
+    assert local.post(f"/api/v2/games/{b}/merge", json={"into": a}, headers=H(local.cur)).status_code == 200
+    assert local.put(f"/api/v2/games/{a}/locks/series", json={"value": "Edited after", "local_only": True},
+                     headers=H(local.cur)).status_code == 200
+    mid = local.get(f"/api/v2/merges?canonical_id={a}", headers=H(local.cur)).json()["results"][0]["merge_id"]
+    done = local.post(f"/api/v2/merges/{mid}/unmerge", json={"remember_distinct": False}, headers=H(local.cur))
+    assert done.status_code == 200, done.text
+    rid = done.json()["review_id"]
+    queued = local.get("/api/v2/review?kind=unmerge_check", headers=H(local.cur)).json()["results"]
+    assert [(r["id"], r["canonical_id"], r["candidates"][0][0]) for r in queued] == [(rid, a, b)]
+    r = local.post(f"/api/v2/review/{rid}/merge", json={"into": b}, headers=H(local.cur))
+    assert r.status_code == 409 and r.json()["error"]["code"] == "conflict"
+    with db(local) as s:
+        assert s.get(Canonical, a).merged_into is None and s.get(Canonical, b).merged_into is None
+        assert s.get(ReviewItem, rid).status == "open"
+    r = local.post(f"/api/v2/review/{rid}/dismiss", headers=H(local.cur))
+    assert r.status_code == 200 and r.json()["status"] == "dismissed"

@@ -460,3 +460,84 @@ def test_provenance_answers_are_bounded_and_host_chains_are_counted_not_listed(s
     assert len(full["fields"]["title"]["candidates"]) <= provenance.MAX_GROUPS
     page = provenance.observations_page(session, row.id, limit=1000, cursor=None)
     assert len(page["results"]) == 35 and page["next"] is None  # limit is capped at MAX_PAGE (100)
+
+
+def test_decision_retention_is_not_stalled_by_old_rows_it_keeps(session, ctx):
+    """More than four thousand old chains whose only decision is their newest (kept), then one chain changed
+    three times: its two older decisions are found and deleted behind the keepers, in batches."""
+    from datetime import timedelta
+
+    from atlas.models import now
+
+    old = now() - timedelta(days=400)
+    rows = [MatchDecision(source="steam", source_scope="test", external_id=f"k{i}", canonical_id=f"atlas:k{i}",
+                          outcome="created", tier="none", reason="none", score=0.0, evidence=[], candidates=[],
+                          matcher=matching.MATCHER, created_at=old - timedelta(days=1, seconds=i)) for i in range(4100)]
+    session.add_all(rows)
+    session.commit()
+    for i in range(3):
+        ingest(session, ctx, "gog", [{"external_id": "g1", "title": f"Changed {i}"}])
+    chain = decisions(session, "g1")
+    assert len(chain) == 3
+    for d in chain:
+        d.created_at = old
+    session.commit()
+    pruned = matching.prune_decisions(session, build_settings(match_decision_retain_days=180), batch=1000)
+    session.commit()
+    assert pruned == 2 and [d.id for d in decisions(session, "g1")] == [chain[-1].id]
+    assert session.scalar(select(func.count()).select_from(MatchDecision)) == 4101  # every keeper is still there
+    many = [MatchDecision(source="epic", source_scope="test", external_id="busy", canonical_id="atlas:busy",
+                          outcome="assigned", tier="id", reason="crosswalk", score=1.0, evidence=[], candidates=[],
+                          matcher=matching.MATCHER, created_at=old + timedelta(seconds=i)) for i in range(2500)]
+    session.add_all(many)
+    session.commit()
+    assert matching.prune_decisions(session, build_settings(match_decision_retain_days=180), batch=1000) == 2499
+    session.commit()
+    left = decisions(session, "busy")
+    assert [d.id for d in left] == [many[-1].id]  # several batches in one call; the newest stays
+
+
+def test_a_contradicting_key_on_the_own_record_is_listed_as_a_provider_ids_conflict(session, ctx):
+    """§11.2.1 step 4 with only one record involved: the observation's own key names the record, a provider id it
+    sends contradicts the record. There is no other record for an id_conflict item, so the contradiction is in
+    the decision's evidence and the record is in the `field_conflict` index for `provider_ids`."""
+    [a] = ingest(session, ctx, "steam", [{"external_id": "1", "title": "Own Record"}])
+    [b] = ingest(session, ctx, "gog", [{"external_id": "2", "title": "Own Record", "provider_ids": {"steam": "1"}}])
+    assert b.canonical_id == a.canonical_id
+    [c] = ingest(session, ctx, "gog", [{"external_id": "2", "title": "Own Record", "provider_ids": {"steam": "999"}}])
+    assert c.canonical_id == a.canonical_id and c.reason == "conflict"
+    d = decisions(session, "2")[-1]
+    assert any(e["signal"] == "namespace_conflict" and "steam:999" in json.dumps(e["value"]) for e in d.evidence)
+    assert session.get(Crosswalk, ("steam", "999")) is None  # never registered
+    assert session.scalars(select(ReviewItem)).all() == []
+    row = session.get(Canonical, a.canonical_id)
+    assert row.explain["provider_ids"]["conflict"] is True
+    assert {v["value"] for v in row.explain["provider_ids"]["conflicts"]["steam"]} == {"1", "999"}
+    assert session.get(FieldConflict, (a.canonical_id, "provider_ids")) is not None
+
+
+def test_an_upstream_configured_as_a_peer_is_an_authority_origin(session, ctx):
+    """§11.7.1 / H48: every pinned upstream whose merges and locks this node applies is a configured authority:
+    ATLAS_TRUSTED_KEYS and Admin → Peers alike. Other origins stay capped at `provider`."""
+    from atlas.models import Peer
+
+    session.add(Peer(name="up", url="https://up.test", node_id="node-peer", public_key="k" * 43))
+    session.commit()
+    s = build_settings(trusted_keys={"node-env": "a" * 43})
+    authorities = provenance.authority_origins(session, s)
+    assert authorities == {"node-env", "node-peer"}
+    assert provenance.origin_ceiling(s, "node-peer", authorities) == "curator"
+    assert provenance.origin_ceiling(s, "node-env", authorities) == "curator"
+    assert provenance.origin_ceiling(s, "relayed", authorities) == "provider"
+    capped = build_settings(sync_origin_class_cap={"node-peer": "community"})
+    assert provenance.origin_ceiling(capped, "node-peer", provenance.authority_origins(session, capped)) == "community"
+    # a replicated curator observation from the Peer upstream keeps its class in the stored view
+    [mine] = ingest(session, ctx, "steam", [{"external_id": "1", "title": "Peer Title", "facts": {"developer": "Mine"}}])
+    session.add(Observation(id="01JPEER0000000000000000000", canonical_id=mine.canonical_id, source_kind="metadata",
+                            source="curator", source_scope="up", external_id="c1", origin_node="node-peer",
+                            payload={"title": "Peer Title", "facts": {"developer": "Upstream Curator"}},
+                            redistributable=True))
+    session.commit()
+    row = service.rebuild(session, ctx, mine.canonical_id)
+    session.commit()
+    assert row.view["developer"] == "Upstream Curator" and row.explain["developer"]["class"] == "curator"

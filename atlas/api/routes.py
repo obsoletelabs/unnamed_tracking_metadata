@@ -882,6 +882,10 @@ def review_detach(rid: str, body: ReviewDetachBody, st: St, session: Sess,
 def review_merge(rid: str, body: MergeBody, st: St, session: Sess,
                  p: Annotated[auth.Principal, Depends(require("curate"))]):
     item = _open_item(session, rid)
+    if item.kind in matching.UNMERGEABLE_KINDS:
+        # It names a survivor and the record an unmerge split off it: merging would redo the undone merge.
+        raise AtlasError("an unmerge check is resolved by detaching rows or dismissing it, not by merging",
+                         "conflict")
     if body.into not in {c for c, _ in item.candidates}:
         raise AtlasError("'into' must be one of the candidates")
     _guard_upstream(session, st, item.canonical_id)

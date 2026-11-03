@@ -255,3 +255,158 @@ def test_merge_preview_changes_nothing(session, lctx):
     assert {"field": "developer", "before": None, "after": "Dev", "winner_source": "gog"} in out["changes"]
     assert state(session, a, b) == before
     assert session.scalar(select(func.count()).select_from(MergeRecord)) == 0
+
+
+# ---- review items across a merge and its unmerge (P4, §11.5 rule 7, §11.9.2) ------------------------------
+
+def bare(session, cid, title):
+    session.add(Canonical(id=cid, view={"title": title}, explain={}, norm_title=title.lower()))
+
+
+def reviews(session):
+    """Every review item's identity, from the stored rows, with its candidate index rows."""
+    from atlas.models import ReviewCandidate
+
+    index = {}
+    for row in session.scalars(select(ReviewCandidate)):
+        index.setdefault(row.review_id, set()).add(row.canonical_id)
+    return {r.id: (r.status, r.canonical_id, [list(c) for c in r.candidates], r.pair_key, r.resolved_at is None,
+                   index.get(r.id, set()))
+            for r in session.scalars(select(ReviewItem))}
+
+
+def open_item(session, cid, *cands, score=0.7):
+    item = ReviewItem(kind="possible_duplicate", canonical_id=cid, candidates=[[c, score] for c in cands],
+                      confidence=score, pair_key=matching.pair_key("possible_duplicate", [cid, *cands]))
+    session.add(item)
+    session.flush()
+    return item
+
+
+def test_unmerge_gives_back_reviews_the_reevaluation_superseded_or_repointed(session, lctx):
+    """X~A and X~B collapse to one pair when A goes into B (X~A superseded); Y~A is re-pointed at B. The unmerge
+    restores both, with their pair keys and candidate index rows."""
+    for cid, title in (("atlas:x", "X"), ("atlas:a", "A"), ("atlas:b", "B"), ("atlas:y", "Y")):
+        bare(session, cid, title)
+    session.flush()
+    xa = open_item(session, "atlas:x", "atlas:a")
+    xb = open_item(session, "atlas:x", "atlas:b")
+    ya = open_item(session, "atlas:y", "atlas:a")
+    session.commit()
+    before = reviews(session)
+    service.merge_canonicals(session, lctx, "atlas:a", "atlas:b", actor="cur")
+    session.commit()
+    merged = reviews(session)
+    assert merged[xa.id][0] == "superseded" and merged[xb.id] == before[xb.id]
+    assert merged[ya.id][:3] == ("open", "atlas:y", [["atlas:b", 0.7]]) and merged[ya.id][5] == {"atlas:b"}
+    rec = session.scalars(select(MergeRecord)).one()
+    assert {i.ref for i in merges.items_of(session, rec) if i.kind == "review"} == {xa.id, ya.id}
+    merges.unmerge(session, lctx, rec.id, actor="cur", remember_distinct=False)
+    session.commit()
+    assert reviews(session) == before
+
+
+def test_a_review_a_curator_resolved_after_the_merge_is_not_reopened(session, lctx):
+    for cid, title in (("atlas:x", "X"), ("atlas:a", "A"), ("atlas:b", "B")):
+        bare(session, cid, title)
+    session.flush()
+    xa = open_item(session, "atlas:x", "atlas:a")
+    session.commit()
+    service.merge_canonicals(session, lctx, "atlas:a", "atlas:b", actor="cur")
+    session.commit()
+    item = session.get(ReviewItem, xa.id)
+    assert item.status == "open" and item.candidates == [["atlas:b", 0.7]]
+    matching.close_review(session, item, "dismissed", "cur2")  # decided on the merged pair
+    session.commit()
+    rec = session.scalars(select(MergeRecord)).one()
+    merges.unmerge(session, lctx, rec.id, actor="cur", remember_distinct=False)
+    session.commit()
+    session.refresh(item)
+    assert (item.status, item.decided_by, item.canonical_id) == ("dismissed", "cur2", "atlas:x")
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_p4_review_queue_round_trips(session, lctx, seed):
+    """P4 over random review queues: items between the merged pair, items naming only `src` or only `dst` as the
+    record or as a candidate, items that collapse to one pair, and unrelated ones. After merge -> unmerge every
+    item's status, record, candidates, pair key and candidate index rows are as before."""
+    rng = random.Random(1000 + seed)
+    ids = [f"atlas:r{seed}n{n}" for n in range(6)]
+    for n, cid in enumerate(ids):
+        bare(session, cid, f"Queue {seed} {n}")
+    session.flush()
+    src, dst = ids[0], ids[1]
+    pairs = set()
+    wanted = [(ids[2], [src]), (ids[2], [dst]), (src, [ids[3]])]  # always: a collapse and a re-point
+    for _ in range(rng.randint(2, 8)):
+        cid = rng.choice(ids)
+        wanted.append((cid, rng.sample([i for i in ids if i != cid], rng.choice([1, 1, 2]))))
+    for cid, cands in wanted:
+        key = matching.pair_key("possible_duplicate", [cid, *cands])
+        if key not in pairs:
+            pairs.add(key)
+            open_item(session, cid, *cands, score=round(rng.uniform(0.6, 0.9), 2))
+    session.commit()
+    before = reviews(session)
+    service.merge_canonicals(session, lctx, src, dst, actor="cur")
+    session.commit()
+    after_merge = reviews(session)
+    assert all(s[0] != "open" or src not in {s[1], *(c for c, _ in s[2])} for s in after_merge.values())
+    assert after_merge != before
+    rec = session.scalars(select(MergeRecord)).one()
+    merges.unmerge(session, lctx, rec.id, actor="cur", remember_distinct=False)
+    session.commit()
+    assert reviews(session) == before, f"seed {seed}"
+
+
+def test_a_merge_reads_only_the_review_items_it_touches(session, lctx):
+    """§11.9.2: the review work of a merge and its unmerge is bounded by the items naming the pair, not by the
+    size of the queue."""
+    from sqlalchemy import event
+
+    for cid, title in (("atlas:qa", "Qa"), ("atlas:qb", "Qb"), ("atlas:qx", "Qx")):
+        bare(session, cid, title)
+    session.flush()
+    for i in range(300):
+        c1, c2 = f"atlas:u{i:04d}a", f"atlas:u{i:04d}b"
+        bare(session, c1, f"Unrelated {i} a")
+        bare(session, c2, f"Unrelated {i} b")
+        session.flush()
+        open_item(session, c1, c2)
+    near = open_item(session, "atlas:qx", "atlas:qa")
+    session.commit()
+    session.expunge_all()  # nothing cached: every item a merge reads is loaded from the database
+    loaded: list[str] = []
+
+    @event.listens_for(session, "loaded_as_persistent")
+    def _loaded(_s, inst):
+        if isinstance(inst, ReviewItem):
+            loaded.append(inst.id)
+
+    service.merge_canonicals(session, lctx, "atlas:qa", "atlas:qb", actor="cur")
+    session.commit()
+    assert set(loaded) == {near.id}
+    rec = session.scalars(select(MergeRecord)).one()
+    session.expunge_all()
+    loaded.clear()
+    merges.unmerge(session, lctx, rec.id, actor="cur", remember_distinct=False)
+    session.commit()
+    assert set(loaded) == {near.id}
+    assert session.get(ReviewItem, near.id).candidates == [["atlas:qa", 0.7]]
+
+
+def test_a_published_merge_stays_refused_after_the_node_changes_role(session, ctx):
+    """The refusal follows the merge (`feed_seq`), not the node's current ATLAS_ROLE: every mirror has it."""
+    a = put(session, ctx, "steam", "1", "Published Role", release_date="2001-01-01")
+    b = put(session, ctx, "gog", "2", "Published Role Two", release_date="2011-01-01")
+    service.merge_canonicals(session, ctx, b, a, actor="cur")
+    session.commit()
+    rec = session.scalars(select(MergeRecord)).one()
+    assert rec.feed_seq is not None
+    relabelled = Ctx(settings=build_settings(role="local"), identity=ctx.identity)
+    with pytest.raises(merges.MergeError) as err:
+        merges.unmerge(session, relabelled, rec.id, actor="cur")
+    assert err.value.code == "emit_protocol" and "1.6" in str(err.value)
+    session.rollback()
+    assert session.get(Canonical, b).merged_into == a
+    assert session.get(MergeRecord, rec.id).reverted_at is None

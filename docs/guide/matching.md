@@ -17,7 +17,10 @@ The matcher looks at the evidence in this order:
    the crosswalk. One record named this way is an `id` match. Two different records named by one observation are a
    **conflict**: nothing is merged, both records stay and an `id_conflict` review item is opened. This release never
    joins two records automatically because one observation names both (no automatic "bridge"; a later release may
-   add it behind a setting).
+   add it behind a setting). When the observation's own key names the record but another id it sends contradicts
+   that record, the contradicting id is never registered; with no second record to pair, no review item is opened:
+   the decision's evidence names the id (`namespace_conflict`) and the record is listed under
+   `GET /api/v2/conflicts?field=provider_ids`.
 2. **Title evidence.** The normalized title, aliases and a capped fuzzy score, adjusted by the release year
    (same, adjacent, far apart), the platform, the developer (company suffixes such as "Inc" or "Corporation" are
    ignored) and the publisher.
@@ -44,7 +47,7 @@ the runner-up and every piece of evidence with its effect. Curators read them wi
 `GET /api/v2/games/{id}/decisions` and `GET /api/v2/observations/{id}/decision`. Decisions are kept for
 `ATLAS_MATCH_DECISION_RETAIN_DAYS` (180 by default); the newest decision of each source record, and every decision a
 review item or a live merge refers to, are always kept. `atlas match prune` applies the retention now (the server does
-it daily).
+it daily, up to 200,000 rows per run in batches of 1,000).
 
 ### Re-sending the same data
 
@@ -58,9 +61,10 @@ once, at its end.
 Each field is chosen by rank, compared in this order:
 
 1. **Trust class**: `curator` (curator and manual entries) > `publisher` (reserved) > `community` > `provider`.
-   A replicated observation can never rank above its origin: the upstream authority you trust (`ATLAS_TRUSTED_KEYS`)
-   may carry curator data, every other origin counts as `provider` unless `ATLAS_SYNC_ORIGIN_CLASS_CAP` says
-   otherwise.
+   A replicated observation can never rank above its origin. The upstream authorities you configured (every node
+   in `ATLAS_TRUSTED_KEYS` and every node under **Admin → Peers**: each is a feed whose merges and pinned fields this
+   node applies) may carry curator data; any other origin counts as `provider`. `ATLAS_SYNC_ORIGIN_CLASS_CAP` sets a
+   different ceiling per node.
 2. **Field preference** (`ATLAS_FIELD_SOURCE_PREFERENCE`, for example `{"description": ["igdb", "steam"]}`). It only
    reorders sources of the `provider` class: a preference never lifts a provider over community or curator data.
 3. **Source trust** (`ATLAS_SOURCE_TRUST`).
@@ -102,7 +106,14 @@ one open item per pair of records. A curator resolves an item by
 * **splitting** one wrongly attached source record off (`POST /api/v2/review/{id}/detach`), or
 * **dismissing** it: the same pair is not reopened for `ATLAS_REVIEW_DISMISS_DAYS` (30 by default).
 
-A merge closes the items it makes pointless.
+A merge closes the items it makes pointless and re-points the others at the surviving record; an unmerge gives each
+of them back as it was, unless a curator decided it in between.
+
+An **`unmerge_check`** item is different: it names the surviving record and the record an unmerge split off it, and
+lists the rows that stayed because they were edited after the merge. It is never merged (that would redo the merge
+just undone; the API answers `409 conflict` and the web queue has no merge button). Check the rows, detach what
+belongs to the other record (`POST /api/v2/review/{id}/detach`, or on the game page), then dismiss it. Moving a
+whole source record or a single row between the two records from the item itself is not in this release.
 
 ## Undoing a merge
 
