@@ -16,9 +16,8 @@ Rules (C7.3, CONTRACTS-v1 section 1):
 
 `date_precision` and `release_category` ship with protocol 1.3 (partial and regional release dates, C5):
 Atlas accepts them in `ext.release` and in `releases` locks (`atlas/dates.py`), and a follower parks an
-entry with a value it does not know. `relation_type` is still reserved (1.4): it is part of the shared file
-so all three repositories agree on the words before anyone sends them; Atlas does not accept it on any
-write path yet.
+entry with a value it does not know. `relation_type` ships with protocol 1.4 (relationships between works,
+C6): Atlas stores relations of these types (`atlas/relations.py`) and signs them as the `relation` feed kind.
 """
 
 from __future__ import annotations
@@ -39,10 +38,13 @@ ACHIEVEMENT_KINDS: tuple[str, ...] = ("progression", "missable", "win_condition"
 CROSSPLAY: tuple[str, ...] = ("yes", "partial", "no")
 #: C7.2. Derived when `players_max == 1` and nothing is stored; shown as "single-player", never counted as "no".
 NOT_APPLICABLE = "not_applicable"
-#: C6.2, reserved for the `relation` feed kind (protocol 1.4).
+#: C6.2, the `relation` feed kind (protocol 1.4). Directed `from -> to`; `to` is the parent, the base work, or
+#: the series or collection. The host's `same_game` is a merge, and Atlas never sends `custom` or `related_to`.
 RELATION_TYPES: tuple[str, ...] = (
     "version_of", "remake_of", "remaster_of", "port_of", "dlc_of", "expansion_of", "standalone_expansion_of",
     "mod_of", "modpack_of", "total_conversion_of", "series_member", "collection_member")
+#: C6.3 operations of a `relation` feed entry (Atlas-only; not part of the shared file).
+RELATION_OPS: tuple[str, ...] = ("add", "end")
 #: C5, partial and regional release dates (protocol 1.3; validated in `atlas/dates.py`).
 DATE_PRECISIONS: tuple[str, ...] = ("year", "month", "day")
 RELEASE_CATEGORIES: tuple[str, ...] = ("full", "early_access", "beta", "rerelease", "port", "demo")

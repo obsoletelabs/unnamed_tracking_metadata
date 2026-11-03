@@ -22,8 +22,10 @@ from .. import (
     key_rotation,
     media,
     readiness,
+    relations,
     service,
     sync,
+    vocab,
 )
 from .. import client_changes as client_change_log
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
@@ -317,9 +319,58 @@ def list_games(session: Sess, st: St, _: Annotated[auth.Principal, Depends(requi
 @router.get("/games/{cid}", tags=["read"])
 def get_game(cid: str, response: Response, session: Sess, st: St,
              _: Annotated[auth.Principal, Depends(require("read"))]):
+    """One record. `relations` (C6.3) lists its active relations: `parents` (this record is a DLC, port,
+    remake... of them), `children` (theirs to this one), `members_of` (the series and collections it is in) and
+    `members` (when this record is a series or collection). Each list is ordered by type, then id, and holds
+    at most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions."""
     row, redirected = service.get_canonical(session, cid)
     response.headers["ETag"] = f'"{row.id}-{row.version}"'
-    return game_out(row, redirected, session, st.ctx)
+    return {**game_out(row, redirected, session, st.ctx), "relations": relations.of(session, row.id)}
+
+
+class RelationItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    to: str = Field(max_length=40, description="The parent, base work, series or collection (an Atlas id; merge "
+                                                "redirects are followed).")
+    type: Literal[vocab.RELATION_TYPES] = Field(description="C6.2 relation type.")  # type: ignore[valid-type]
+
+
+class RelationsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    relations: list[RelationItem] = Field(max_length=relations.MAX_OUTGOING, description=(
+        "The record's own outgoing relations after the call: missing ones are ended, new ones added."))
+
+
+@router.get("/games/{cid}/relations", tags=["read"])
+def get_relations(cid: str, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))],
+                  depth: Annotated[int, Query(ge=1, le=relations.MAX_EXPAND_DEPTH, description=(
+                      "Hops to follow in both directions."))] = 1,
+                  limit: Annotated[int, Query(ge=1, le=relations.MAX_EXPAND_NODES, description=(
+                      "Most records returned."))] = relations.MAX_EXPAND_NODES):
+    """The relation graph around a record (C6.3), breadth first up to `depth` hops and `limit` records, for
+    navigation between a game, its DLC, ports, remakes, series and collections. `truncated` says that more
+    exists. Deterministic order."""
+    row, redirected = service.get_canonical(session, cid)
+    return {**relations.expand(session, row.id, depth, max_nodes=limit), "redirected_from": redirected,
+            "editions": row.view.get("editions", [])}
+
+
+@router.put("/games/{cid}/relations", tags=["curate"])
+def put_relations(cid: str, body: RelationsBody, st: St, session: Sess,
+                  p: Annotated[auth.Principal, Depends(require("curate"))]):
+    """Replace the record's own outgoing relations (C6.3). Cycles, a second parent of the same kind, a self
+    relation and a membership that does not point at a series or collection are refused (409/400) and nothing
+    changes. On an authority below federation emit protocol 1.4 the relations are stored but not published.
+    Relations from the upstream feed are kept as they are."""
+    row, _r = service.get_canonical(session, cid)
+    local = st.ctx.settings.role != "authority"
+    if not local:
+        _guard_upstream(session, st, row.id)
+    result = relations.set_outgoing(session, st.ctx, row.id, [i.model_dump() for i in body.relations],
+                                    actor=p.name, local_only=local)
+    session.refresh(row)
+    return {**game_out(row, None, session, st.ctx), "relations": relations.of(session, row.id), "changed": result,
+            "published": not local and not relations.gated(st.ctx)}
 
 
 @router.get("/games/{cid}/explain", tags=["read"])
@@ -446,6 +497,8 @@ def _client_changed_ids(kind: str, body: dict[str, Any]) -> list[str]:
     elif kind == "detach":
         # `canonical_id` was added for clients; older signed events still have the new id.
         values = (body.get("canonical_id"), body.get("new_canonical_id"))
+    elif kind == "relation":  # both ends show the relation in their record (C6.3)
+        values = (body.get("from"), body.get("to"))
     else:
         values = (body.get("canonical_id"),)
     return [value for value in values if isinstance(value, str) and value]
