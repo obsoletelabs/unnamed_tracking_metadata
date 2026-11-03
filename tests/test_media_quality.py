@@ -10,7 +10,7 @@ import io
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, ImageSequence
 from sqlalchemy import select
 
 from atlas import facets, main, media, service
@@ -122,6 +122,51 @@ def test_exact_duplicates_point_at_the_best_row_and_are_left_out_on_request(sess
     assert arts(session, cid)["https://img.test/a.png"].duplicate_of is None
 
 
+def test_unmerge_and_detach_recompute_exact_duplicates(session, ctx, resolver, tmp_path, maker):  # noqa: F811
+    """§12.5.4: duplicates are recomputed when rows part again. After an unmerge or a detach no row may keep a
+    `duplicate_of` that points at a row of the other record, or the gallery and `primary` lose its image."""
+    from atlas import merges
+    from atlas.service import Ctx
+
+    lctx = Ctx(settings=ctx.settings.model_copy(update={"role": "local", "media_dir": str(tmp_path)}),
+               identity=ctx.identity)
+    same = image(300, 450)
+    a, b = seed(session, lctx, "1", "Lantern Bay"), seed(session, lctx, "2", "Harbour Lights")
+    facets.set_artwork(session, lctx, a, "curator", [{"kind": "key_art", "url": "https://img.test/a.png"}])
+    facets.set_artwork(session, lctx, b, "steam", [{"kind": "key_art", "url": "https://img.test/b.png"}])
+    session.commit()
+    media.cache_pending(maker, lctx.settings, serve({"https://img.test/a.png": same, "https://img.test/b.png": same}))
+    service.merge_canonicals(session, lctx, a, b, actor="cur")
+    session.commit()
+    on_b = arts(session, b)
+    assert on_b["https://img.test/b.png"].duplicate_of == on_b["https://img.test/a.png"].id  # the curator's wins
+    from atlas.models import MergeRecord
+
+    rec = session.scalars(select(MergeRecord).where(MergeRecord.src == a)).one()
+    merges.unmerge(session, lctx, rec.id, actor="cur", remember_distinct=False)
+    session.commit()
+    steam_row, curated_row = arts(session, b)["https://img.test/b.png"], arts(session, a)["https://img.test/a.png"]
+    assert steam_row.duplicate_of is None and curated_row.duplicate_of is None
+    assert [x.url for x in facets.merged_artwork(session, lctx, b, include_duplicates=False)] == [steam_row.url]
+
+    # detach: a gog chain on b with the same bytes; splitting it off clears the pointer on whichever row had it
+    service.ingest(session, lctx, batch("gog", [{"external_id": "g2", "title": "Harbour Lights",
+                                                  "provider_ids": {"steam": "2"}}]), curator=True)
+    facets.set_artwork(session, lctx, b, "gog", [{"kind": "key_art", "url": "https://img.test/g.png"}])
+    session.commit()
+    media.cache_pending(maker, lctx.settings, serve({"https://img.test/g.png": same}))
+    pair = arts(session, b)
+    assert sum(1 for x in pair.values() if x.duplicate_of is not None) == 1
+    from atlas.models import Observation
+
+    gog_obs = session.scalars(select(Observation).where(Observation.source == "gog",
+                                                        Observation.canonical_id == b)).one()
+    split = service.detach_observation(session, lctx, gog_obs.id, actor="cur")
+    session.commit()
+    assert arts(session, b)["https://img.test/b.png"].duplicate_of is None
+    assert arts(session, split.id)["https://img.test/g.png"].duplicate_of is None
+
+
 def test_near_duplicates_are_reported_and_never_hidden(session, ctx):
     cid = seed(session, ctx)
     for n, h in enumerate(("ffff0000ffff0000", "ffff0000ffff0001", "0123456789abcdef")):
@@ -195,6 +240,28 @@ def test_an_upload_is_owner_upload_and_a_non_federable_licence_must_be_local_onl
 
 # ---- media policy (§12.5.5, H39, H50) ----------------------------------------------------------------------
 
+def test_api_lists_exact_duplicates_only_on_request(tmp_path, resolver):  # noqa: F811
+    """§12.5.4: exact duplicates are omitted from the API list unless ?include_duplicates=1."""
+    s = build_settings(database_url=f"sqlite:///{tmp_path}/a.db", bootstrap_admin_token="m" * 40, role="local",
+                       media_dir=str(tmp_path / "media"), media_cache_enabled=False)
+    with TestClient(main.create_app(s)) as api:
+        api.headers["Authorization"] = "Bearer " + "m" * 40
+        st = api.app.state.atlas
+        with st.maker() as session:
+            cid = seed(session, st.ctx)
+            facets.set_artwork(session, st.ctx, cid, "steam", [{"kind": "key_art", "url": "https://img.test/a.png"}])
+            facets.set_artwork(session, st.ctx, cid, "curator", [{"kind": "key_art", "url": "https://img.test/b.png"}])
+            session.commit()
+        same = image(300, 450)
+        media.cache_pending(st.maker, s, serve({"https://img.test/a.png": same, "https://img.test/b.png": same}))
+        plain = api.get(f"/api/v2/games/{cid}/artwork").json()
+        assert [r["url"] for r in plain["results"]] == ["https://img.test/b.png"]
+        assert plain["primary"]["key_art"]["url"] == "https://img.test/b.png"
+        full = api.get(f"/api/v2/games/{cid}/artwork?include_duplicates=1").json()
+        assert [r["url"] for r in full["results"]] == ["https://img.test/b.png", "https://img.test/a.png"]
+        assert full["results"][1]["duplicate_of"] == full["results"][0]["id"]
+
+
 def test_policy_none_or_redirect_stops_downloads_and_serving(tmp_path, resolver):  # noqa: F811
     s = build_settings(database_url=f"sqlite:///{tmp_path}/a.db", bootstrap_admin_token="m" * 40, role="local",
                        media_dir=str(tmp_path / "media"), media_cache_enabled=False)
@@ -249,6 +316,54 @@ def test_uploads_are_re_encoded_without_metadata(settings):
         assert ext == "gif" and img.n_frames == 3 and b"gif comment" not in data
     with pytest.raises(media.MediaError):
         media.reencode_upload(b"<svg xmlns='http://www.w3.org/2000/svg'/>", settings)
+
+
+def test_re_encoding_keeps_what_is_drawn(settings):
+    """Stripping metadata must not change the picture: palette transparency, the EXIF orientation (applied before
+    the EXIF goes), WebP and GIF frame timing and loop, and every APNG frame survive."""
+    def encode(img, fmt, **save):
+        out = io.BytesIO()
+        img.save(out, fmt, **save)
+        return out.getvalue()
+
+    pal = Image.new("P", (10, 10), 0)
+    pal.putpalette([0, 0, 0, 255, 0, 0] + [0] * 762)
+    pal.putpixel((5, 5), 1)
+    data, ext, *_ = media.reencode_upload(encode(pal, "PNG", transparency=0), settings)
+    with Image.open(io.BytesIO(data)) as img:
+        assert ext == "png" and img.mode == "P" and img.info.get("transparency") == 0  # a logo stays see-through
+
+    exif = Image.Exif()
+    exif[0x0112] = 6  # Orientation: rotate 90 degrees clockwise to display
+    data, ext, _ctype, w, h = media.reencode_upload(image(40, 30, "JPEG", exif=exif.tobytes()), settings)
+    with Image.open(io.BytesIO(data)) as img:
+        assert (ext, w, h) == ("jpg", 30, 40) and not img.getexif()  # shown upright, and no EXIF left
+
+    frames = [Image.new("RGBA", (8, 8), (80 * n, 40, 200 - 60 * n, 255)) for n in range(2)]
+    webp = encode(frames[0], "WEBP", save_all=True, append_images=frames[1:], duration=[70, 130], loop=3,
+                  lossless=True)
+    data, ext, *_ = media.reencode_upload(webp, settings)
+    with Image.open(io.BytesIO(data)) as img:
+        timing = []
+        for frame in ImageSequence.Iterator(img):
+            frame.load()
+            timing.append(frame.info.get("duration"))
+        assert ext == "webp" and img.n_frames == 2 and timing == [70, 130] and img.info.get("loop") == 3
+
+    gif = encode(frames[0].convert("RGB"), "GIF", save_all=True, append_images=[frames[1].convert("RGB")],
+                 duration=[40, 90], loop=2)
+    data, *_ = media.reencode_upload(gif, settings)
+    with Image.open(io.BytesIO(data)) as img:
+        timing = []
+        for frame in ImageSequence.Iterator(img):
+            frame.load()
+            timing.append(frame.info.get("duration"))
+        assert timing == [40, 90] and img.info.get("loop") == 2
+
+    apng = encode(frames[0], "PNG", save_all=True, append_images=frames[1:], duration=[50, 60])
+    data, ext, *_ = media.reencode_upload(apng, settings)
+    with Image.open(io.BytesIO(data)) as img:
+        assert ext == "png" and getattr(img, "n_frames", 1) == 2 and getattr(img, "is_animated", False)
 
 
 # ---- safe fetch (§12.6) --------------------------------------------------------------------------------------

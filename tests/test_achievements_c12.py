@@ -218,6 +218,33 @@ def test_hidden_entries_leak_nothing_and_sort_by_key_only(session, ctx):
     assert shown["revealed"] and shown["name"].startswith("Geheim") and revealed["revealed_any"] is True
 
 
+def test_concealed_entries_carry_no_curated_position_in_any_listing(session, ctx):
+    """§12.1.3, §12.1.8: a curated position on a hidden entry would leak the order of the real names, so a
+    concealed entry carries none, for every order=, set= and include_retired combination."""
+    cid = seed(session, ctx)
+    facets.set_achievements(session, ctx, cid, "curator", [
+        {"name": "Zeta Secret", "hidden": True}, {"name": "Open"}, {"name": "Alpha Secret", "hidden": True},
+        {"name": "Gone Secret", "hidden": True}], ordered=True)
+    facets.set_achievements(session, ctx, cid, "curator", [  # retires "Gone Secret"
+        {"name": "Zeta Secret", "hidden": True}, {"name": "Open"}, {"name": "Alpha Secret", "hidden": True}],
+        ordered=True)
+    session.commit()
+    assert {r.name: r.position for r in rows(session, cid, "curator") if r.retired_at is None} == {
+        "Zeta Secret": 0, "Open": 1, "Alpha Secret": 2}  # the positions are stored...
+    for order in (None, *facets.ORDERS):
+        for set_filter in (None, "base", "curator/base"):
+            for include_retired in (False, True):
+                listing = facets.achievement_listing(session, ctx, cid, order=order, set_filter=set_filter,
+                                                     include_retired=include_retired)
+                hidden = [e for e in listing["results"] if e["hidden"]]
+                assert len(hidden) == (3 if include_retired else 2)
+                assert all(e["position"] is None for e in hidden), (order, set_filter, include_retired)
+                assert [e["key"] for e in hidden] == sorted(e["key"] for e in hidden)
+                assert next(e for e in listing["results"] if not e["hidden"])["position"] == 1
+    revealed = facets.achievement_listing(session, ctx, cid, reveal=True)
+    assert [e["position"] for e in revealed["results"]] == [0, 1, 2]  # ...and shown once revealed
+
+
 def test_api_reveal_is_never_cached_publicly_and_new_query_options_validate(tmp_path):
     s = build_settings(database_url=f"sqlite:///{tmp_path}/a.db", bootstrap_admin_token="m" * 40,
                        media_dir=str(tmp_path / "media"), media_cache_enabled=False, role="local")
@@ -320,6 +347,65 @@ def test_an_unchanged_percent_keeps_its_date_and_stored_stats_join_rows_by_exter
     [e] = facets.merged_achievements(session, ctx, cid)
     assert (e["rarity"]["source"], e["rarity"]["percent"], e["rarity"]["band"]) == ("steam", 4.5, "very_rare")
     assert len(rows(session, cid)) == 1  # a stat never creates an entry
+
+
+def test_authority_and_a_late_mirror_date_an_undated_percent_alike(tmp_path):
+    """§12.1.6: a percent without a date takes the date of the signed entry's origin timestamp, so a mirror that
+    bootstraps weeks later stores (and calls stale) the same date as the authority, never its own clock."""
+    from atlas.models import ReplicatedChange
+
+    from .test_sync_compat import Node, pull
+
+    authority = Node(tmp_path, "authority", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    gid = authority.publish("Dated Bay")
+    old = date.today() - timedelta(days=45)
+    with authority.st.maker() as s:
+        facets.set_achievements(s, authority.st.ctx, gid, "curator",
+                                [{"name": "Lamp", "external_id": "L", "global_percent": 12.0}], redistributable=True)
+        s.commit()
+        [row] = s.scalars(select(Achievement)).all()
+        assert row.percent_as_of == date.today()  # the authority dates it by the write
+        entry = s.scalars(select(ChangeLog).where(ChangeLog.kind == "achievements")).one()
+        assert "percent_as_of" not in entry.body["items"][0]  # a v1 body carries no date
+        # as if the write (and so its entry) happened 45 days ago
+        row.percent_as_of = old
+        entry.created_at = entry.created_at - timedelta(days=45)
+        s.commit()
+        authority_stamp = entry.created_at
+    pull(mirror, authority)
+    assert mirror.failures(authority) == []
+    with mirror.st.maker() as s:
+        [mrow] = s.scalars(select(Achievement)).all()
+        assert mrow.percent_as_of == old  # not the mirror's today
+        kept = s.scalars(select(ReplicatedChange).where(ReplicatedChange.kind == "achievements")).one()
+        assert sync_aware(kept.created_at) == sync_aware(authority_stamp)  # the relay serves the origin time
+        [m_entry] = facets.merged_achievements(s, mirror.st.ctx, gid)
+    with authority.st.maker() as s:
+        [a_entry] = facets.merged_achievements(s, authority.st.ctx, gid)
+    assert m_entry["rarity"] == a_entry["rarity"] and a_entry["rarity"]["stale"] is True
+    assert a_entry["rarity"]["as_of"] == old.isoformat()
+
+
+def sync_aware(at):
+    from atlas import sync
+
+    return sync._aware(at)
+
+
+@pytest.mark.parametrize(("value", "replaced"), [("2999-01-01T00:00:00+00:00", True), ("garbage", True),
+                                               (None, True), ("2026-01-02T03:04:05+00:00", False),
+                                               ("2026-01-02T03:04:05", False)])
+def test_origin_time_is_kept_unless_it_is_unusable(value, replaced):
+    from datetime import UTC, datetime
+
+    from atlas import sync
+
+    at = sync.origin_time(value)
+    if replaced:  # replaced by this node's clock
+        assert abs((at - datetime.now(UTC)).total_seconds()) < 60
+    else:
+        assert at == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 
 def test_the_keyless_steam_import_stores_percentages_only(monkeypatch, tmp_path):
@@ -426,6 +512,37 @@ def test_the_editor_sets_rarity_and_status_and_keeps_fields_it_does_not_show(sit
             "C1", "C2"}
         assert s.scalars(select(AchievementSet).where(AchievementSet.source == "community")).one().set_key == "t"
         assert s.scalars(select(Proposal)).first().previous["sets"] == [{"key": "t", "kind": "dlc", "name": "Tides"}]
+
+
+# ---- validation of the new fields ----------------------------------------------------------------------------
+
+def test_self_dlc_future_rarity_dates_and_control_characters_in_translations_are_refused(session, ctx):
+    cid = seed(session, ctx)
+    other = seed(session, ctx, ext="901", title="Lantern Bay: Tides")
+    with pytest.raises(AtlasError, match="its own dlc"):
+        facets.set_achievements(session, ctx, cid, "curator", [{"name": "A", "set": "t"}],
+                                sets=[{"key": "t", "kind": "dlc", "dlc": cid}])
+    future = (TODAY + timedelta(days=3)).isoformat()
+    with pytest.raises(AtlasError, match="future"):
+        facets.set_achievements(session, ctx, cid, "curator", [{"name": "A", "global_percent": 3.0,
+                                                                "percent_as_of": future}])
+    with pytest.raises(AtlasError, match="future"):
+        facets.set_achievements(session, ctx, cid, "curator", [{"name": "A", "rarity": {"percent": 3.0,
+                                                                                         "as_of": "2999-01-01"}}])
+    for bad in ({"de": {"name": "Weck\x00ruf"}}, {"de": {"name": "Weckruf", "description": "a\x1bb"}},
+                {"de": {"name": 12}}):
+        with pytest.raises(AtlasError):
+            facets.set_achievements(session, ctx, cid, "curator", [{"name": "A", "i18n": bad}])
+    session.rollback()
+    assert rows(session, cid) == []  # nothing was written
+    # still accepted: another record as the dlc, today's date, and prose with line breaks
+    facets.set_achievements(session, ctx, cid, "curator", [
+        {"name": "A", "set": "t", "global_percent": 3.0, "percent_as_of": TODAY.isoformat(),
+         "i18n": {"de": {"name": "Weckruf", "description": "Zeile eins\nZeile zwei"}}}],
+        sets=[{"key": "t", "kind": "dlc", "dlc": other}])
+    session.commit()
+    assert session.scalars(select(AchievementSet)).one().dlc_canonical_id == other
+    assert session.scalars(select(AchievementText)).one().description == "Zeile eins\nZeile zwei"
 
 
 from .test_web import site  # noqa: E402, F401  (fixture)

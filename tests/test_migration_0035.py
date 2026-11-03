@@ -81,8 +81,11 @@ def maker(url, role="local"):
 
 CURATED = [
     {"name": "Harbour Master", "external_id": "", "description": "Dock every ship.", "set": "base",
-     "i18n": {"de": {"name": "Hafenmeister", "description": "Lege jedes Schiff an."}}, "locale": "en"},
-    {"name": "Collector", "external_id": "COL_BASE", "description": "Collect the base shells."},
+     "i18n": {"de": {"name": "Hafenmeister", "description": "Lege jedes Schiff an."}}, "locale": "en",
+     "icon_url": "https://img.test/harbour.png", "locked_icon_url": "https://img.test/harbour-locked.png",
+     "icon_licence": "cc-by", "icon_attribution": "A. Artist"},
+    {"name": "Collector", "external_id": "COL_BASE", "description": "Collect the base shells.",
+     "icon_url": "https://img.test/collector.png", "icon_licence": "cc0"},
     {"name": "Collector", "external_id": "COL_TIDES", "description": "Collect the tide shells.", "set": "tides"},
     {"name": "Old Route", "external_id": "OLD", "description": "Sail the old route."},
 ]
@@ -105,6 +108,9 @@ def apply_c12(url):
             {"kind": "logo", "url": "https://img.test/fan.png", "local_only": True, "licence": "cc-by",
              "attribution": "A. Fan"},
             {"kind": "banner", "url": "https://img.test/free.png", "licence": "cc0", "locale": "en"}])
+        # the media worker measured the provider image: 320x180 measured, 600x900 declared (§12.5.2)
+        k = s.scalars(select(Artwork).where(Artwork.url == "https://img.test/k.png")).one()
+        k.width, k.height, k.declared_width, k.declared_height = 320, 180, 600, 900
         user = User(username="voter", password_hash="x")
         s.add(user)
         s.flush()
@@ -113,13 +119,15 @@ def apply_c12(url):
         s.commit()
         snapshot = {
             "ach": {(a.source, a.external_id, a.name): (a.id, a.key, a.set_key, a.retired_at is not None,
-                                                        a.source_order, a.text_locale)
+                                                        a.source_order, a.text_locale, a.icon_url, a.locked_icon_url,
+                                                        a.icon_licence)
                     for a in s.scalars(select(Achievement))},
             "texts": {(t.achievement_id, t.locale, t.name) for t in s.scalars(select(AchievementText))},
             "sets": {(x.canonical_id, x.source, x.set_key, x.kind, x.dlc_canonical_id) for x in s.scalars(
                 select(AchievementSet))},
             "stats": {(x.source, x.external_id, x.percent) for x in s.scalars(select(AchievementStat))},
-            "art": {a.url: (a.id, a.licence, a.attribution, a.region, a.locale, a.local_only)
+            "art": {a.url: (a.id, a.licence, a.attribution, a.region, a.locale, a.local_only, a.width, a.height,
+                            a.declared_width, a.declared_height)
                     for a in s.scalars(select(Artwork))},
             "votes": {(v.artwork_id, v.value) for v in s.scalars(select(ArtworkVote))},
         }
@@ -145,7 +153,7 @@ def test_upgrade_backfills_downgrade_keeps_aside_and_reupgrade_restores(url):
     assert tuple(art[:4]) == (600, 900, 600, 900) and art[4] is None and art[5] in (False, 0)
 
     before = apply_c12(url)
-    assert any(retired for (_s, _e, name), (*_, retired, _o, _l) in before["ach"].items() if name == "Old Route")
+    assert any(v[3] for (_s, _e, name), v in before["ach"].items() if name == "Old Route")  # retired
     assert {k for k in before["ach"] if k[2] == "Collector"} == {("curator", "COL_BASE", "Collector"),
                                                                  ("curator", "COL_TIDES", "Collector")}
 
@@ -160,6 +168,9 @@ def test_upgrade_backfills_downgrade_keeps_aside_and_reupgrade_restores(url):
         idents = c.execute(text("SELECT source, norm_name, count(*) FROM achievement GROUP BY source, norm_name "
                                 "HAVING count(*) > 1")).all()
         art_urls = {r[0] for r in c.execute(text("SELECT url FROM artwork"))}
+        icons = {r[0]: (r[1], r[2]) for r in c.execute(text(
+            "SELECT name, icon_url, locked_icon_url FROM achievement WHERE source = 'curator'"))}
+        measured = c.execute(text("SELECT width, height FROM artwork WHERE url = 'https://img.test/k.png'")).one()
         votes = c.execute(text("SELECT count(*) FROM artwork_vote")).scalar()
         kept_ach = c.execute(text("SELECT count(*) FROM achievement_rows_0035_kept")).scalar()
         kept_art = c.execute(text("SELECT count(*) FROM artwork_rows_0035_kept")).scalar()
@@ -174,6 +185,10 @@ def test_upgrade_backfills_downgrade_keeps_aside_and_reupgrade_restores(url):
     # withheld licence and local-only images are not served by a release that would sign them into the feed
     assert art_urls == {"https://img.test/k.png", "https://img.test/free.png"}
     assert kept_art == 2 and votes == 0
+    # nor a curated icon whose licence keeps it out of the CC0 feed; a cc0 icon stays
+    assert icons["Harbour Master"] == (None, None)
+    assert icons["Collector"] == ("https://img.test/collector.png", None)
+    assert tuple(measured) == (320, 180)
 
     db.upgrade(url)
     assert version(engine) == HEAD
@@ -183,13 +198,15 @@ def test_upgrade_backfills_downgrade_keeps_aside_and_reupgrade_restores(url):
     with mk() as s:
         after = {
             "ach": {(a.source, a.external_id, a.name): (a.id, a.key, a.set_key, a.retired_at is not None,
-                                                        a.source_order, a.text_locale)
+                                                        a.source_order, a.text_locale, a.icon_url, a.locked_icon_url,
+                                                        a.icon_licence)
                     for a in s.scalars(select(Achievement))},
             "texts": {(t.achievement_id, t.locale, t.name) for t in s.scalars(select(AchievementText))},
             "sets": {(x.canonical_id, x.source, x.set_key, x.kind, x.dlc_canonical_id) for x in s.scalars(
                 select(AchievementSet))},
             "stats": {(x.source, x.external_id, x.percent) for x in s.scalars(select(AchievementStat))},
-            "art": {a.url: (a.id, a.licence, a.attribution, a.region, a.locale, a.local_only)
+            "art": {a.url: (a.id, a.licence, a.attribution, a.region, a.locale, a.local_only, a.width, a.height,
+                            a.declared_width, a.declared_height)
                     for a in s.scalars(select(Artwork))},
             "votes": {(v.artwork_id, v.value) for v in s.scalars(select(ArtworkVote))},
         }
@@ -211,6 +228,27 @@ def test_downgrade_of_an_empty_database_and_reupgrade(url):
     assert KEPT_TABLES | {"match_decision_0034_kept"} <= set(inspect(engine).get_table_names())
     db.upgrade(url)
     assert version(engine) == HEAD
+    engine.dispose()
+
+
+def test_icons_and_declarations_the_previous_release_rewrote_are_not_overwritten(url):
+    db.upgrade(url, "0034")
+    engine = create_engine(url)
+    seed(engine)
+    db.upgrade(url)
+    apply_c12(url)
+    db.downgrade(url, "0034")
+    with engine.begin() as c:  # the previous release gives the row a new icon and the image a new declaration
+        c.execute(text("UPDATE achievement SET icon_url = 'https://img.test/new.png' WHERE name = 'Harbour Master'"))
+        c.execute(text("UPDATE artwork SET width = 700, height = 1000 WHERE url = 'https://img.test/k.png'"))
+    db.upgrade(url)
+    mk, _settings = maker(url)
+    with mk() as s:
+        harbour = s.scalars(select(Achievement).where(Achievement.name == "Harbour Master")).one()
+        k = s.scalars(select(Artwork).where(Artwork.url == "https://img.test/k.png")).one()
+        assert (harbour.icon_url, harbour.locked_icon_url, harbour.icon_licence) == (
+            "https://img.test/new.png", None, "cc-by")
+        assert (k.width, k.height, k.declared_width, k.declared_height) == (700, 1000, 700, 1000)
     engine.dispose()
 
 

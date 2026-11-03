@@ -9,6 +9,7 @@ from PIL import Image
 from sqlalchemy import create_engine, select, text
 
 from atlas import db, facets, main, media, service, sync
+from atlas.merge import source_class
 from atlas.models import Achievement, Artwork, Canonical
 from atlas.service import AtlasError
 
@@ -409,12 +410,29 @@ def test_api_image_serves_cached_bytes_and_redirects_only_to_allow_listed_hosts(
         s.commit()
         ids = {a.kind: a.id for a in s.scalars(select(Artwork).where(Artwork.source == "steam"))}
     resolver["cdn.akamai.steamstatic.com"] = PUBLIC
+    # a `proxy` provider source (the default) not cached yet still 307s to its allow-listed CDN (§12.7.2): the
+    # image_url stays resolvable on a node whose cache is off; any other host is 404
+    pending = api.get(f"/api/v2/artwork/{ids['hero']}/image", follow_redirects=False)
+    assert pending.status_code == 307 and pending.headers["cache-control"] == "private, max-age=300"
+    pending_off = api.get(f"/api/v2/artwork/{ids['banner']}/image", follow_redirects=False)
+    assert pending_off.status_code == 404 and "location" not in pending_off.headers
     api.state.ctx.settings = api.settings.model_copy(update={"media_policy": {"steam": {"fetch": "redirect"}}})
     ok = api.get(f"/api/v2/artwork/{ids['hero']}/image", follow_redirects=False)
     assert ok.status_code == 307 and ok.headers["location"].startswith("https://cdn.akamai.steamstatic.com/")
-    assert ok.headers["cache-control"] == "public, max-age=300"
+    assert ok.headers["cache-control"] == "private, max-age=300"  # §12.7.2: unchanged for the redirect
     off_list = api.get(f"/api/v2/artwork/{ids['banner']}/image", follow_redirects=False)
     assert off_list.status_code == 404 and "location" not in off_list.headers
+    # the admin's explicit media_allowed_hosts also allow a redirect for a provider row, never for a curated one
+    api.state.ctx.settings = api.settings.model_copy(update={"media_policy": {"steam": {"fetch": "redirect"}},
+                                                             "media_allowed_hosts": {"img.test"}})
+    assert api.get(f"/api/v2/artwork/{ids['banner']}/image", follow_redirects=False).status_code == 307
+    with api.state.maker() as s:
+        curated_row = s.get(Artwork, item["id"])
+        assert source_class(curated_row.source) != "provider"
+        curated_row.blob_hash, curated_row.url = None, "https://img.test/c.png"
+        s.commit()
+    curated = api.get(item["image_url"], follow_redirects=False)
+    assert curated.status_code == 404 and "location" not in curated.headers
     api.state.ctx.settings = api.settings.model_copy(update={"media_policy": {"steam": {"fetch": "none"}}})
     assert api.get(f"/api/v2/artwork/{ids['hero']}/image", follow_redirects=False).status_code == 404
     listed = {a["id"]: a for a in api.get(f"/api/v2/games/{cid}/artwork").json()["results"]}
