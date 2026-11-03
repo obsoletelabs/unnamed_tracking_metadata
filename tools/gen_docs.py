@@ -94,6 +94,18 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "default_trust": ("Matching", "Trust for sources not listed in `source_trust` (apps and plugins submitting data)."),
     "redistributable_sources": ("Matching", "Sources whose curated observations are published on the change feed. Provider "
                                 "data (Steam, IGDB…) is never federated."),
+    "field_source_preference": ("Matching", "JSON object of field → list of sources, best first, for example "
+                                "`{\"description\": [\"igdb\", \"steam\"]}`. It reorders sources of the `provider` "
+                                "trust class only: it never lifts a provider above community or curator data "
+                                "(see Matching and provenance)."),
+    "sync_origin_class_cap": ("Matching", "JSON object of node id → highest trust class (`curator`, `publisher`, "
+                              "`community`, `provider`) its replicated observations may have. Unlisted nodes: the "
+                              "upstream authority in `trusted_keys` is `curator`, every other origin `provider`."),
+    "review_dismiss_days": ("Matching", "Days a dismissed review pair stays closed: the same pair is not reopened "
+                            "within this window unless its evidence gets stronger."),
+    "match_decision_retain_days": ("Matching", "Days match decisions are kept. The newest decision of each source "
+                                   "record and every decision an open review or a live merge refers to are always "
+                                   "kept."),
     "max_batch": ("Limits", "Largest observation batch accepted by the API."),
     "max_resolve": ("Limits", "Largest `/resolve` batch."),
     "rate_limit_per_minute": ("Limits", "API requests per token per minute (unauthenticated callers get 60 per address)."),
@@ -184,12 +196,25 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("put", "/games/{cid}/artwork"): "Replace the curated artwork set for a record.",
     ("put", "/games/{cid}/custom"): "Set or clear curated custom-field values.",
     ("delete", "/games/{cid}/locks/{field}"): "Remove a pinned field value.",
-    ("put", "/games/{cid}/locks/{field}"): "Pin a field value; it beats every merged value. `release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; `releases` takes a list of up to five release entries. A year/month `release_date` lock or a `releases` lock needs `emit_protocol` 1.3 on an authority (else 409 `emit_protocol`).",
-    ("post", "/games/{cid}/merge"): "Merge a record into another (leaves a redirect).",
+    ("put", "/games/{cid}/locks/{field}"): "Pin a field value; it beats every merged value. `release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; `releases` takes a list of up to five release entries. A year/month `release_date` lock or a `releases` lock needs `emit_protocol` 1.3 on an authority (else 409 `emit_protocol`). `{\"clear\": true}` marks the field deliberately empty on this node.",
+    ("post", "/games/{cid}/merge"): "Merge a record into another (leaves a redirect and a merge record that can be undone). `dry_run=1` previews the survivor's view and every field change; `override_distinct` merges records marked as different works.",
+    ("get", "/games/{cid}/provenance"): "Why each field has its value: winning source, trust class, reason, runners-up, conflicts, plus recent decisions, merges and distinct marks. `detail=values` (curate) adds candidate values.",
+    ("get", "/games/{cid}/provenance/observations"): "Every observation of a record, newest first, paged.",
+    ("get", "/games/{cid}/decisions"): "Match decisions for a record and the records merged into it, newest first.",
+    ("get", "/observations/{oid}/decision"): "The newest match decision recorded for one observation.",
+    ("get", "/conflicts"): "Records whose `field` has disagreeing sources in the winning trust class.",
+    ("get", "/merges"): "Merge records of a record (`canonical_id`).",
+    ("get", "/merges/{merge_id}"): "One merge record with its item counts.",
+    ("post", "/merges/{merge_id}/unmerge"): "Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published needs `emit_protocol` 1.6 (409 `emit_protocol`).",
+    ("get", "/distinct"): "Active \"different works\" decisions of a record.",
+    ("post", "/distinct"): "Mark two records as different works: never merged or paired for review again (local to this node).",
+    ("delete", "/distinct/{rejection_id}"): "End a \"different works\" decision.",
+    ("post", "/review/{rid}/distinct"): "Resolve a review item as different works.",
+    ("post", "/review/{rid}/detach"): "Resolve a review item by splitting one observation off its record.",
     ("get", "/games/{cid}/observations"): "Raw source records behind a record (current and superseded).",
     ("get", "/changes"): "Bounded client change page: canonical ids, current versions and merge redirects. `feed=local` pages this node's local change log (every change, provider imports included); the default is the signed feed.",
     ("post", "/observations/{oid}/detach"): "Split one source record off onto its own record.",
-    ("get", "/review"): "Open possible-duplicate and id-conflict items.",
+    ("get", "/review"): "Open possible-duplicate and id-conflict items with reason, evidence and priority (`order=priority`, `kind`).",
     ("post", "/review/{rid}/dismiss"): "Mark a review item as not a duplicate.",
     ("post", "/review/{rid}/merge"): "Resolve a review item by merging into one of its candidates.",
     ("get", "/providers"): "Providers configured on this node and their request budgets.",

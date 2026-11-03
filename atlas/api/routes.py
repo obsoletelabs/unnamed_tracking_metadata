@@ -20,9 +20,12 @@ from .. import (
     feed_schema,
     importer,
     key_rotation,
+    matching,
     media,
+    merges,
     money,
     prices,
+    provenance,
     readiness,
     relations,
     service,
@@ -36,6 +39,8 @@ from ..models import (
     Canonical,
     FollowerSeen,
     Lock,
+    MatchDecision,
+    MatchRejection,
     NodeState,
     Observation,
     ReplicatedChange,
@@ -327,7 +332,8 @@ def get_game(cid: str, response: Response, session: Sess, st: St,
     at most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions."""
     row, redirected = service.get_canonical(session, cid)
     response.headers["ETag"] = f'"{row.id}-{row.version}"'
-    return {**game_out(row, redirected, session, st.ctx), "relations": relations.of(session, row.id)}
+    return {**game_out(row, redirected, session, st.ctx), "relations": relations.of(session, row.id),
+            "unmerged": merges.unmerged_recently(session, row.id)}
 
 
 class RelationItem(BaseModel):
@@ -388,21 +394,83 @@ def explain(cid: str, session: Sess, _: Annotated[auth.Principal, Depends(requir
 
 @router.post("/observations", tags=["write"])
 def submit(body: ObservationBatchV1, st: St, session: Sess,
-           p: Annotated[auth.Principal, Depends(require("contribute"))]):
+           p: Annotated[auth.Principal, Depends(require("contribute"))],
+           report_unchanged: Annotated[bool, Query(description=(
+               "Report an observation whose payload is identical to the stored one as `unchanged` (C11 §11.9.1). "
+               "Without it such results say `updated`, as before."))] = False):
     if len(body.observations) > st.ctx.settings.max_batch:
         raise HTTPException(413, f"at most {st.ctx.settings.max_batch} observations per request")
     results = service.ingest(session, st.ctx, body, curator=p.allows("curate"), media_type=body.media_type)
     return {"contract_version": 1, "results": [
-        {"external_id": r.external_id, "status": r.status,
+        {"external_id": r.external_id,
+         "status": r.status if report_unchanged or r.status != "unchanged" else "updated",
          "atlas": {"canonical_id": r.canonical_id, "match": r.method, "confidence": r.confidence,
-                   "review": r.review, "candidates": [{"id": c, "score": s} for c, s in r.candidates]}}
+                   "review": r.review, "candidates": [{"id": c, "score": s} for c, s in r.candidates],
+                   "reason": r.reason, "decision_id": r.decision_id}}
         for r in results]}
+
+
+# ---- provenance (C11 §11.11) ----------------------------------------------------------------------------
+
+@router.get("/games/{cid}/provenance", tags=["read"])
+def get_provenance(cid: str, st: St, session: Sess, p: Annotated[auth.Principal, Depends(require("read"))],
+                   detail: Annotated[Literal["values"] | None, Query(description=(
+                       "`values` (curate scope) adds the candidate values per field."))] = None):
+    """Why each field has its value: the winning source, its trust class, the reason it won, the runners-up
+    and any conflict (C11 §11.11.1). Host and plugin observations are counted, never shown, without curate
+    scope."""
+    row, redirected = service.get_canonical(session, cid)
+    curate = p.allows("curate")
+    if detail == "values" and not curate:
+        raise AtlasError("detail=values needs the curate scope", "forbidden")
+    out = provenance.provenance(session, st.ctx.settings, row, curate=curate, values=detail == "values")
+    return {**out, "redirected_from": redirected}
+
+
+@router.get("/games/{cid}/provenance/observations", tags=["curate"])
+def provenance_observations(cid: str, session: Sess, _: Annotated[auth.Principal, Depends(require("curate"))],
+                            limit: Annotated[int, Query(ge=1, le=provenance.MAX_PAGE)] = 50,
+                            cursor: Annotated[str | None, Query(max_length=40)] = None):
+    row, _r = service.get_canonical(session, cid)
+    return provenance.observations_page(session, row.id, limit=limit, cursor=cursor)
+
+
+@router.get("/games/{cid}/decisions", tags=["curate"])
+def game_decisions(cid: str, session: Sess, _: Annotated[auth.Principal, Depends(require("curate"))],
+                   limit: Annotated[int, Query(ge=1, le=provenance.MAX_PAGE)] = 50,
+                   cursor: Annotated[str | None, Query(max_length=40)] = None):
+    """Match decisions (C11 §11.4) for the record and every record merged into it, newest first."""
+    row, _r = service.get_canonical(session, cid)
+    rows = provenance.decisions_of(session, row.id, limit=limit + 1, cursor=cursor)
+    return {"results": [matching.decision_out(d) for d in rows[:limit]],
+            "next": rows[limit - 1].id if len(rows) > limit else None}
+
+
+@router.get("/observations/{oid}/decision", tags=["curate"])
+def observation_decision(oid: str, session: Sess, _: Annotated[auth.Principal, Depends(require("curate"))]):
+    """The newest match decision recorded for this observation."""
+    row = session.scalars(select(MatchDecision).where(MatchDecision.observation_id == oid[:40])
+                          .order_by(MatchDecision.created_at.desc(), MatchDecision.id.desc()).limit(1)).first()
+    if row is None:
+        raise AtlasError("no decision recorded for this observation", "not_found")
+    return matching.decision_out(row)
+
+
+@router.get("/conflicts", tags=["curate"])
+def field_conflicts(session: Sess, _: Annotated[auth.Principal, Depends(require("curate"))],
+                    field: Annotated[str, Query(min_length=1, max_length=48)],
+                    limit: Annotated[int, Query(ge=1, le=provenance.MAX_PAGE)] = 50,
+                    cursor: Annotated[str | None, Query(max_length=40)] = None):
+    """Records whose `field` has disagreeing sources in the winning trust class (C11 §11.7.2)."""
+    return provenance.conflicts_page(session, field, limit=limit, cursor=cursor)
 
 
 # ---- curation -----------------------------------------------------------------------------------------
 
 class MergeBody(BaseModel):
     into: str
+    override_distinct: bool = Field(False, description=(
+        "Merge even though the records are marked as different works, ending that decision (C11 §11.6)."))
 
 
 class LockBody(BaseModel):
@@ -411,8 +479,10 @@ class LockBody(BaseModel):
         | Annotated[list[Annotated[str, Field(max_length=128)]], Field(max_length=100)]
         # `releases` (C5.2, protocol 1.3): at most five entries; more are refused, not truncated
         | Annotated[list[dict[str, Any]], Field(max_length=5)]
-    ) = Field(description="A string, a list of strings, or for `releases` a list of release entries. "
-                          "`release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.")
+    ) | None = Field(None, description="A string, a list of strings, or for `releases` a list of release entries. "
+                                     "`release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Required unless "
+                                     "`clear` is true.")
+    clear: bool = Field(False, description="Mark the field deliberately empty (C11 §11.8); give no `value`.")
 
 
 @router.get("/games/{cid}/observations", tags=["curate"])
@@ -426,10 +496,96 @@ def observations(cid: str, session: Sess, _: Annotated[auth.Principal, Depends(r
 
 @router.post("/games/{cid}/merge", tags=["curate"])
 def merge(cid: str, body: MergeBody, st: St, session: Sess,
-          p: Annotated[auth.Principal, Depends(require("curate"))]):
+          p: Annotated[auth.Principal, Depends(require("curate"))],
+          dry_run: Annotated[bool, Query(description="Preview the merge and change nothing.")] = False):
+    """Merge this record into `into`. With `dry_run=1` nothing changes: the answer shows the survivor's view and
+    explain as they would be, and each field change (C11 §11.10.4). The merge is recorded, so a curator can undo
+    it with `POST /merges/{id}/unmerge`."""
     _guard_upstream(session, st, cid)
     _guard_upstream(session, st, body.into)
-    return game_out(service.merge_canonicals(session, st.ctx, cid, body.into, actor=p.name))
+    if dry_run:
+        return service.merge_preview(session, st.ctx, cid, body.into)
+    return game_out(service.merge_canonicals(session, st.ctx, cid, body.into, actor=p.name,
+                                             override_distinct=body.override_distinct))
+
+
+# ---- merge records and unmerge (C11 §11.10) -------------------------------------------------------------
+
+@router.get("/merges", tags=["curate"])
+def merge_list(session: Sess, _: Annotated[auth.Principal, Depends(require("curate"))],
+               canonical_id: Annotated[str, Query(min_length=1, max_length=40)],
+               limit: Annotated[int, Query(ge=1, le=provenance.MAX_PAGE)] = 50):
+    """Merges into the record (or into a record merged into it), and the merge of the record itself."""
+    return {"results": [provenance.merge_out(m) for m in provenance.merges_of(session, canonical_id, limit=limit)]}
+
+
+@router.get("/merges/{merge_id}", tags=["curate"])
+def merge_get(merge_id: str, session: Sess, _: Annotated[auth.Principal, Depends(require("curate"))]):
+    return merges.detail(session, merges.get(session, merge_id[:40]))
+
+
+class UnmergeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dry_run: bool = Field(False, description="Report what would move back and change nothing.")
+    remember_distinct: bool = Field(True, description=(
+        "Remember the two records as different works, so matching never merges them again."))
+
+
+@router.post("/merges/{merge_id}/unmerge", tags=["curate"])
+def merge_undo(merge_id: str, st: St, session: Sess, p: Annotated[auth.Principal, Depends(require("curate"))],
+               body: UnmergeBody | None = None,
+               if_match: Annotated[str | None, Header(alias="If-Match", max_length=80)] = None):
+    """Undo a recorded merge (C11 §11.10.3): the merged record comes back with its observations, keys, locks,
+    artwork, achievements and the rest, and rows edited after the merge are reported, not overwritten. Merges are
+    undone last in, first out. `If-Match` takes the survivor's ETag."""
+    body = body or UnmergeBody()
+    return merges.unmerge(session, st.ctx, merge_id[:40], actor=p.name, dry_run=body.dry_run,
+                          remember_distinct=body.remember_distinct, if_match=if_match)
+
+
+# ---- "different works" decisions (C11 §11.6) -----------------------------------------------------------
+
+class DistinctBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    a: str = Field(max_length=40)
+    b: str = Field(max_length=40)
+    note: str = Field("", max_length=500)
+
+
+@router.get("/distinct", tags=["curate"])
+def distinct_list(session: Sess, _: Annotated[auth.Principal, Depends(require("curate"))],
+                  canonical_id: Annotated[str, Query(min_length=1, max_length=40)],
+                  limit: Annotated[int, Query(ge=1, le=provenance.MAX_PAGE)] = 50):
+    return {"results": provenance.distinct_of(session, canonical_id, limit=limit)}
+
+
+def _mark_distinct(session: Session, a: str, b: str, *, actor: str, note: str = "") -> dict[str, Any]:
+    ra, _x = service.get_canonical(session, a)
+    rb, _y = service.get_canonical(session, b)
+    if ra.id == rb.id:
+        raise AtlasError("these ids name the same record", "conflict")
+    service.write_lock(session)
+    row, created = matching.add_rejection(session, "record", ra.id, rb.id, reason="curator", actor=actor, note=note,
+                                          local_only=True)
+    matching.reevaluate_reviews(session, {ra.id, rb.id}, actor=actor)
+    return {**matching.rejection_out(row), "created": created}
+
+
+@router.post("/distinct", tags=["curate"])
+def distinct_add(body: DistinctBody, session: Sess, p: Annotated[auth.Principal, Depends(require("curate"))]):
+    """Mark two records as different works: matching never merges them and no review pairs them again. Local to
+    this node in this release (federated distinct needs emit protocol 1.6)."""
+    return _mark_distinct(session, body.a, body.b, actor=p.name, note=body.note)
+
+
+@router.delete("/distinct/{rejection_id}", tags=["curate"])
+def distinct_end(rejection_id: str, session: Sess, p: Annotated[auth.Principal, Depends(require("curate"))]):
+    row = session.get(MatchRejection, rejection_id[:40])
+    if row is None:
+        raise AtlasError("unknown decision", "not_found")
+    service.write_lock(session)
+    matching.end_rejection(session, row, reason="curator", actor=p.name)
+    return matching.rejection_out(row)
 
 
 class ClientChangedCanonical(BaseModel):
@@ -626,20 +782,22 @@ def client_changes(
 
 
 @router.post("/observations/{oid}/detach", tags=["curate"])
-def detach(oid: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("curate"))]):
+def detach(oid: str, st: St, session: Sess, p: Annotated[auth.Principal, Depends(require("curate"))]):
     obs = session.get(Observation, oid)
     if obs is not None and obs.canonical_id:
         _guard_upstream(session, st, obs.canonical_id)
-    return game_out(service.detach_observation(session, st.ctx, oid))
+    return game_out(service.detach_observation(session, st.ctx, oid, actor=p.name))
 
 
 @router.put("/games/{cid}/locks/{field}", tags=["curate"])
 def lock(cid: str, field: str, body: LockBody, st: St, session: Sess,
          p: Annotated[auth.Principal, Depends(require("curate"))]):
-    local = st.ctx.settings.role != "authority"
+    """Pin a field to a value, or with `{"clear": true}` mark it deliberately empty (C11 §11.8). A clear is kept on
+    this node only in this release."""
+    local = st.ctx.settings.role != "authority" or body.clear
     if not local:
         _guard_upstream(session, st, cid)
-    service.set_lock(session, st.ctx, cid, field, body.value, actor=p.name, local_only=local)
+    service.set_lock(session, st.ctx, cid, field, body.value, actor=p.name, local_only=local, clear=body.clear)
     row, _r = service.get_canonical(session, cid)
     return game_out(row)
 
@@ -654,11 +812,27 @@ def unlock(cid: str, field: str, st: St, session: Sess, _: Annotated[auth.Princi
 
 @router.get("/review", tags=["curate"])
 def review_list(session: Sess, _: Annotated[auth.Principal, Depends(require("curate"))],
-                status: str = "open", limit: Annotated[int, Query(ge=1, le=200)] = 50):
-    rows = session.scalars(select(ReviewItem).where(ReviewItem.status == status)
-                           .order_by(ReviewItem.created_at).limit(limit)).all()
-    return {"results": [{"id": r.id, "kind": r.kind, "canonical_id": r.canonical_id, "candidates": r.candidates,
-                         "confidence": r.confidence, "status": r.status} for r in rows]}
+                status: str = "open", limit: Annotated[int, Query(ge=1, le=200)] = 50,
+                kind: Annotated[str | None, Query(max_length=32)] = None,
+                order: Annotated[Literal["created", "priority"], Query(description=(
+                    "`priority` puts the most urgent first (C11 §11.5): identity conflicts, then likely matches."
+                ))] = "created"):
+    """Review items with the matcher's reason, evidence and decision (C11 §11.5)."""
+    stmt = select(ReviewItem).where(ReviewItem.status == status)
+    if kind:
+        stmt = stmt.where(ReviewItem.kind == kind)
+    if order == "priority":
+        stmt = stmt.order_by(ReviewItem.priority.desc(), ReviewItem.created_at, ReviewItem.id)
+    else:
+        stmt = stmt.order_by(ReviewItem.created_at, ReviewItem.id)
+    return {"results": [matching.review_out(r) for r in session.scalars(stmt.limit(limit)).all()]}
+
+
+def _open_item(session: Session, rid: str) -> ReviewItem:
+    item = session.get(ReviewItem, rid)
+    if item is None or item.status != "open":
+        raise AtlasError("unknown or closed review item", "not_found")
+    return item
 
 
 @router.post("/review/{rid}/dismiss", tags=["curate"])
@@ -666,21 +840,55 @@ def review_dismiss(rid: str, session: Sess, p: Annotated[auth.Principal, Depends
     item = session.get(ReviewItem, rid)
     if item is None:
         raise AtlasError("unknown review item", "not_found")
-    item.status, item.decided_by = "dismissed", p.name
+    matching.close_review(session, item, "dismissed", p.name)
     return {"id": rid, "status": item.status}
+
+
+@router.post("/review/{rid}/distinct", tags=["curate"])
+def review_distinct(rid: str, session: Sess, p: Annotated[auth.Principal, Depends(require("curate"))]):
+    """Resolve the item as "different works": every candidate is remembered as distinct from the record."""
+    item = _open_item(session, rid)
+    others = sorted({c for c, _ in item.candidates} - {item.canonical_id})
+    if not others:
+        raise AtlasError("this review item names no other record")
+    out = [_mark_distinct(session, item.canonical_id, o, actor=p.name) for o in others]
+    if item.status == "open":
+        matching.close_review(session, item, "distinct", p.name)
+    return {"id": rid, "status": item.status, "distinct": out}
+
+
+class ReviewDetachBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    observation_id: str = Field(max_length=40)
+
+
+@router.post("/review/{rid}/detach", tags=["curate"])
+def review_detach(rid: str, body: ReviewDetachBody, st: St, session: Sess,
+                  p: Annotated[auth.Principal, Depends(require("curate"))]):
+    """Resolve the item by splitting one wrongly attached observation off its record."""
+    item = _open_item(session, rid)
+    obs = session.get(Observation, body.observation_id)
+    involved = {item.canonical_id, *(c for c, _ in item.candidates)}
+    if obs is None or obs.canonical_id not in involved:
+        raise AtlasError("the observation is not on a record of this review item", "not_found")
+    _guard_upstream(session, st, obs.canonical_id)
+    row = service.detach_observation(session, st.ctx, obs.id, actor=p.name)
+    if item.status == "open":
+        matching.close_review(session, item, "resolved", p.name)
+    return {"id": rid, "status": item.status, "game": game_out(row)}
 
 
 @router.post("/review/{rid}/merge", tags=["curate"])
 def review_merge(rid: str, body: MergeBody, st: St, session: Sess,
                  p: Annotated[auth.Principal, Depends(require("curate"))]):
-    item = session.get(ReviewItem, rid)
-    if item is None or item.status != "open":
-        raise AtlasError("unknown or closed review item", "not_found")
+    item = _open_item(session, rid)
     if body.into not in {c for c, _ in item.candidates}:
         raise AtlasError("'into' must be one of the candidates")
     _guard_upstream(session, st, item.canonical_id)
     _guard_upstream(session, st, body.into)
-    row = service.merge_canonicals(session, st.ctx, item.canonical_id, body.into, actor=p.name)
+    row = service.merge_canonicals(session, st.ctx, item.canonical_id, body.into, actor=p.name, cause="review",
+                                   review_id=item.id, decision_id=item.decision_id,
+                                   override_distinct=body.override_distinct)
     return game_out(row)
 
 
