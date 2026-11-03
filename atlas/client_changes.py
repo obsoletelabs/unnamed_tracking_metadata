@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session, aliased
 
 from .models import Canonical, ClientChange, NodeState
 
-CAUSES = ("feed", "replicated", "local", "provider", "merge", "detach")
+CAUSES = ("feed", "replicated", "local", "provider", "merge", "detach", "unmerge")
 _SCOPE = "atlas_client_change_scope"
 _PENDING = "atlas_client_change_pending"
 PRUNED_AT = "client_change_pruned_at"

@@ -34,8 +34,11 @@ def test_uncurated_claims_cannot_register_foreign_ids_or_override_trusted_fields
                                          "release_date": "2013-07-09"}], system=True)
     [evil] = put(session, ctx, "mallory", [{"external_id": "x", "title": "Hacked", "provider_ids": {
         "steam": "570", "igdb": "999"}}])
-    assert evil.canonical_id == real.canonical_id  # a matching claim is still just a claim
-    assert session.get(Crosswalk, ("igdb", "999")) is None  # but it cannot squat someone else's namespace
+    # C11 §11.2.1 step 4: the claim contradicts the record (igdb 999 vs 5), so it is a conflict, not a match: the
+    # observation goes to its own record and an id_conflict review is opened
+    assert evil.canonical_id != real.canonical_id and evil.reason == "conflict" and evil.review
+    assert session.get(Crosswalk, ("igdb", "999")) is None  # it cannot squat someone else's namespace
+    assert session.get(Crosswalk, ("steam", "570")).canonical_id == real.canonical_id
     assert session.get(Canonical, real.canonical_id).view["title"] == "Dota 2"  # trust 40 < 70
 
 
@@ -94,7 +97,7 @@ def test_future_timestamps_do_not_freeze_a_record(session, ctx):
 def test_source_case_cannot_duplicate_an_observation(session, ctx):
     put(session, ctx, "PluginX", [{"external_id": "1", "title": "Game"}])
     [r] = put(session, ctx, "pluginx", [{"external_id": "1", "title": "Game"}])
-    assert r.status == "updated"
+    assert r.status == "unchanged"  # same chain, same payload (C11 §11.9.1); the API reports it as `updated`
     current = session.scalars(select(Observation).where(Observation.is_current)).all()
     assert len(current) == 1
 

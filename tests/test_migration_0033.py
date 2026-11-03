@@ -23,6 +23,7 @@ NOW = datetime.now(UTC).replace(microsecond=0)
 STAMP = "2026-11-02 10:00:00"
 INDEXES = {"uq_price_dedup", "ix_price_latest", "ix_price_offer", "ix_price_purge"}
 KEPT = "price_observation_0033_kept"
+HEAD = "0034"  # A17 (matching and provenance) is the head now
 RECORDS = {"atlas:game": "Priced Game", "atlas:dlc": "Priced Game DLC", "atlas:dup": "Priced Game (dup)",
            "atlas:dup2": "Priced Game (dup 2)", "atlas:old": "Old Merged"}
 
@@ -93,7 +94,7 @@ def test_upgrade_writes_downgrade_keeps_and_reupgrade_repoints(url):
     before = snapshot(engine)
 
     db.upgrade(url)
-    assert version(engine) == "0033"
+    assert version(engine) == HEAD
     assert "price_observation" in inspect(engine).get_table_names()
     assert INDEXES <= {i["name"] for i in inspect(engine).get_indexes("price_observation")}
     assert snapshot(engine) == before  # no record, relation or feed entry changes
@@ -144,7 +145,7 @@ def test_upgrade_writes_downgrade_keeps_and_reupgrade_repoints(url):
         c.execute(text("UPDATE canonical SET merged_into = 'atlas:game' WHERE id = 'atlas:dup'"))
 
     db.upgrade(url)
-    assert version(engine) == "0033"
+    assert version(engine) == HEAD
     tables = set(inspect(engine).get_table_names())
     assert "price_observation" in tables and KEPT not in tables
     assert INDEXES <= {i["name"] for i in inspect(engine).get_indexes("price_observation")}
@@ -172,10 +173,10 @@ def test_downgrade_of_an_empty_table_and_reupgrade(url):
     db.downgrade(url, "0032")
     assert KEPT in set(inspect(engine).get_table_names())
     db.upgrade(url)
-    assert version(engine) == "0033" and price_rows(engine) == []
+    assert version(engine) == HEAD and price_rows(engine) == []
     db.downgrade(url, "0031")  # through 0033 and 0032: both keep their tables aside
     assert {KEPT, "relation_0032_kept"} <= set(inspect(engine).get_table_names())
     db.upgrade(url)
-    assert version(engine) == "0033"
+    assert version(engine) == HEAD
     assert {"price_observation", "relation"} <= set(inspect(engine).get_table_names())
     engine.dispose()
