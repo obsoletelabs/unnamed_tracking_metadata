@@ -346,6 +346,22 @@ def cmd_dates(args) -> int:
     return 0
 
 
+def cmd_prices(args) -> int:
+    """`atlas prices purge`: delete price observations past their retention now (the server also does it
+    hourly). `atlas prices status`: counts, what the next purge removes, and the price channel's state."""
+    from . import prices
+
+    _settings, maker = _maker()
+    with maker() as session:
+        if args.action == "purge":
+            result = {"purged": prices.purge(session)}
+            session.commit()
+        else:
+            result = prices.status(session)
+    print(json.dumps(result))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="atlas")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -415,6 +431,9 @@ def main(argv: list[str] | None = None) -> int:
     dt.add_argument("--limit", type=int, help="stop after this many records (the next run continues)")
     dt.add_argument("--restart", action="store_true", help="start from the first record again")
     dt.set_defaults(fn=cmd_dates)
+    pr = sub.add_parser("prices", help="price observations (C8): purge expired rows now, or show status")
+    pr.add_argument("action", choices=["purge", "status"])
+    pr.set_defaults(fn=cmd_prices)
     i = sub.add_parser("import-legacy")
     i.add_argument("path", help="path to the demo-1 SQLite database")
     i.set_defaults(fn=cmd_import_legacy)

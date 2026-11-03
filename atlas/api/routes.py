@@ -21,6 +21,8 @@ from .. import (
     importer,
     key_rotation,
     media,
+    money,
+    prices,
     readiness,
     relations,
     service,
@@ -826,6 +828,83 @@ def put_achievements(cid: str, body: AchievementsBody, st: St, session: Sess,
     return {"count": n}
 
 
+# ---- prices (C8) ------------------------------------------------------------------------------------------
+
+def _price_filters(region: str | None, currency: str | None) -> None:
+    if region is not None and not money.valid_region(region):
+        raise HTTPException(422, "region must be an ISO 3166-1 alpha-2 code in lower case (prices have no `ww`)")
+    if currency is not None and not money.valid_currency(currency):
+        raise HTTPException(422, "currency must be an active ISO 4217 alphabetic code in upper case")
+
+
+PriceRegion = Annotated[str | None, Query(min_length=2, max_length=2, description=(
+    "ISO 3166-1 alpha-2 storefront region, lower case (`us`, `jp`).") )]
+PriceCurrency = Annotated[str | None, Query(min_length=3, max_length=3, description="ISO 4217 code (`USD`).")]
+PriceProvider = Annotated[str | None, Query(max_length=32, description="Only this provider (`steam`).")]
+
+
+@router.get("/games/{cid}/prices", tags=["read"])
+def get_prices(cid: str, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
+               region: PriceRegion = None, currency: PriceCurrency = None, provider: PriceProvider = None):
+    """The newest observed price of every offer of a record (C8.2): one row per provider, product, package,
+    edition, platform, region and currency, ordered by provider, region, currency. Money is integer minor units
+    (`amount_minor`, `base_amount_minor`) with the ISO 4217 `exponent`; `amount` / `base_amount` are the same
+    values as exact decimal strings. `sale` is true below the list price, `stale` once `valid_until` passed.
+    Prices whose licence does not allow redistribution are returned only to curator and admin tokens. Prices are
+    not part of the record's view or version, and are never published in the federation feed."""
+    _price_filters(region, currency)
+    row, redirected = service.get_canonical(session, cid)
+    result = prices.latest(session, row.id, region=region, currency=currency, provider=provider,
+                           restricted=principal.allows("curate"))
+    return {"id": row.id, "redirected_from": redirected, **result}
+
+
+@router.get("/games/{cid}/prices/history", tags=["read"])
+def get_price_history(cid: str, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
+                      region: Annotated[str, Query(min_length=2, max_length=2, description=(
+                          "The storefront region (required: price history is regional)."))],
+                      currency: PriceCurrency = None, provider: PriceProvider = None,
+                      product_id: Annotated[str | None, Query(max_length=128)] = None,
+                      edition: Annotated[str | None, Query(max_length=128)] = None,
+                      platform: Annotated[str | None, Query(max_length=32)] = None,
+                      since: Annotated[datetime | None, Query(description="Observed at or after (ISO 8601).")] = None,
+                      until: Annotated[datetime | None, Query(description="Observed before (ISO 8601).")] = None,
+                      limit: Annotated[int, Query(ge=1, le=prices.MAX_HISTORY)] = 100,
+                      cursor: Annotated[str | None, Query(max_length=200, description=(
+                          "`next_cursor` of the previous page."))] = None):
+    """Every retained observation of a record in one region, newest first (`observed_at`, then id; stable across
+    pages). Follow `next_cursor` until it is null. Observations older than their retention (30 days by default,
+    at most 365) are gone."""
+    _price_filters(region, currency)
+    row, redirected = service.get_canonical(session, cid)
+    result = prices.history(session, row.id, region=region, currency=currency, provider=provider,
+                            product_id=product_id, edition=edition, platform=platform, since=since, until=until,
+                            limit=limit, cursor=cursor, restricted=principal.allows("curate"))
+    return {"id": row.id, "redirected_from": redirected, **result}
+
+
+@router.post("/prices", tags=["curate"])
+def post_prices(body: prices.PriceBatch, session: Sess,
+                principal: Annotated[auth.Principal, Depends(require("curate"))]):
+    """Store up to 500 price observations (C8.1). Amounts are integers in the currency's minor units; a float,
+    a string amount, an unknown currency or region, or amounts that disagree with `discount_pct` reject the whole
+    request (422). Each item then reports `stored`, `duplicate` (already stored, nothing changes), `conflict`
+    (the same offer and `observed_at` is stored with other amounts; the stored one is kept), `unknown_record`,
+    `expired` (already past `retention_days`) or `invalid`. Nothing is published to followers."""
+    results = prices.ingest(session, body.prices, actor=principal.name)
+    counts: dict[str, int] = {}
+    for item in results:
+        counts[item["status"]] = counts.get(item["status"], 0) + 1
+    return {"results": results, "counts": counts}
+
+
+@router.get("/prices/status", tags=["admin"])
+def price_status(session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]):
+    """How many price observations are stored, how many the next purge removes, and the price channel's state
+    (protocol 1.5, disabled in this release)."""
+    return prices.status(session)
+
+
 @router.get("/artwork/{art_id}/image", tags=["read"])
 def get_artwork_image(art_id: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
     """Cached bytes when available; otherwise pass the client through to the image's original public address."""
@@ -920,8 +999,16 @@ def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(requ
             "contract": 1, "name": s.app_name,
             "protocol": feed_schema.PROTOCOL, "min_follower_protocol": s.min_follower_protocol,
             "emit_protocol": feed_schema.emit_protocol(s), "observation_schema": feed_schema.OBSERVATION_SCHEMA,
-            "kinds": feed_schema.kinds_advertised(), "capabilities": list(feed_schema.CAPABILITIES),
+            "kinds": feed_schema.kinds_advertised(), "capabilities": feed_schema.capabilities(),
             "feeds": feeds}
+
+
+@router.get("/sync/price-changes", tags=["federation"])
+def sync_price_changes(_: Annotated[auth.Principal, Depends(require("sync"))],
+                       since: Annotated[int, Query(ge=0)] = 0):
+    """The price channel (C8.3, protocol 1.5): designed, not enabled in this release. It answers 404, and
+    `/sync/info` does not list the `price-channel-v1` capability, so no follower ever reads prices from it."""
+    raise HTTPException(404, "the price channel (protocol 1.5) is not enabled on this node")
 
 
 @router.get("/sync/digest", tags=["federation"])

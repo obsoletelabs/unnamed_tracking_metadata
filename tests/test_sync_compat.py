@@ -163,7 +163,7 @@ def test_registry_replaces_the_duplicated_kind_lists():
     assert set(feed_schema.kinds_advertised()) == {"obs", "artwork", "achievements", "custom", "schema", "merge",
                                                    "detach", "lock", "unlock", "key_rotation", "relation"}
     assert feed_schema.OBS_PAYLOAD == set(sync._OBS_FIELDS)
-    assert "x_future" not in feed_schema.FEED_KINDS and feed_schema.RESERVED_KINDS == {}
+    assert "x_future" not in feed_schema.FEED_KINDS and feed_schema.RESERVED_KINDS == {"price": "1.5"}
     assert feed_schema.FEED_KINDS["relation"].since == "1.4"  # reserved in 1.1-1.3, shipped by A15 (C6.3)
 
 

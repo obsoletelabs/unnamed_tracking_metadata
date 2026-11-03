@@ -62,6 +62,7 @@ nav:
       - Tracking App: tracking-app.md
       - Achievements: achievements.md
       - Relationships and editions: relations.md
+      - Prices: prices.md
       - Extending: extending.md
   - Contributing:
       - Testing: testing.md
