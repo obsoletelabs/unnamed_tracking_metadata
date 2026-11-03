@@ -21,6 +21,7 @@ from .. import (
     groups,
     integrations,
     mail,
+    matching,
     profile,
     proposals,
     relations,
@@ -394,7 +395,8 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
                                                 .order_by(UserList.created_at)))
         social_ctx["in_lists"] = {i.list_id for i in s.scalars(select(ListItem).where(ListItem.canonical_id == g.id))}
         social_ctx["can_comment"] = mail.is_verified(ctx.settings, p.user)
-    return render(p, "game.html", g=g, v=g.view, explain=g.explain, key_art=key_art, gallery=gallery, **social_ctx,
+    return render(p, "game.html", g=g, v=g.view, explain=_shown_explain(g.explain), key_art=key_art, gallery=gallery,
+                  **social_ctx,
                   lbl=labels_for(p, g.media_type), details=details,
                   mtype_label=(s.get(MediaType, g.media_type).label if s.get(MediaType, g.media_type) else g.media_type),
                   pending_art=pending, caching=ctx.settings.media_cache_enabled, stores=integrations.STORES,
@@ -1024,6 +1026,11 @@ def review_revert(pid: str, p: Annotated[Page, Depends(review_form)], note: Anno
     return go(f"/game/{pr.canonical_id}" if pr.canonical_id else "/review", "reverted")
 
 
+def _shown_explain(explain: dict[str, Any] | None) -> dict[str, Any]:
+    """The per-field explain the game page lists: the explain v2 `_meta` block (C11 §11.7.1) is not a field."""
+    return {k: e for k, e in (explain or {}).items() if not k.startswith("_")}
+
+
 def _brief(p: Page, cid: str) -> dict[str, Any]:
     row = p.session.get(Canonical, cid)
     v = row.view if row else {}
@@ -1048,7 +1055,8 @@ def duplicates_merge(rid: str, p: Annotated[Page, Depends(review_form)], into: A
     try:
         _guard_upstream(p.session, p.st, item.canonical_id)
         _guard_upstream(p.session, p.st, into)
-        service.merge_canonicals(p.session, p.st.ctx, item.canonical_id, into, actor=p.me.username)
+        service.merge_canonicals(p.session, p.st.ctx, item.canonical_id, into, actor=p.me.username, cause="review",
+                                 review_id=item.id, decision_id=item.decision_id)
     except AtlasError as exc:
         raise HTTPException(409, str(exc)) from exc
     return go("/review/duplicates", "merged")
@@ -1059,7 +1067,7 @@ def duplicates_dismiss(rid: str, p: Annotated[Page, Depends(review_form)]):
     item = p.session.get(ReviewItem, rid)
     if item is None:
         raise HTTPException(404, "No such item.")
-    item.status, item.decided_by = "dismissed", p.me.username
+    matching.close_review(p.session, item, "dismissed", p.me.username)
     return go("/review/duplicates", "dismissed")
 
 
@@ -1120,7 +1128,7 @@ def observation_detach(oid: str, p: Annotated[Page, Depends(review_form)]):
         raise HTTPException(404, "No such record.")
     try:
         _guard_upstream(p.session, p.st, obs.canonical_id)
-        new = service.detach_observation(p.session, p.st.ctx, oid)
+        new = service.detach_observation(p.session, p.st.ctx, oid, actor=p.me.username)
     except AtlasError as exc:
         raise HTTPException(409, str(exc)) from exc
     return go(f"/game/{new.id}", "detached")

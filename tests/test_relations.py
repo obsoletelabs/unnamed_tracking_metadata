@@ -27,6 +27,9 @@ from .conftest import batch, build_settings
 from .test_sync_compat import Node, observation, pull
 from .test_web import _wait_for_startup_replay, signup, token
 
+# C11 (A17) reserved the merge-undo kinds for protocol 1.6.
+RESERVED_C11 = {"price": "1.5", "unmerge": "1.6", "distinct": "1.6"}
+
 # ---- helpers --------------------------------------------------------------------------------------------
 
 
@@ -77,7 +80,7 @@ def test_relation_kind_is_registered_with_closed_vocabularies():
     spec = feed_schema.FEED_KINDS["relation"]
     assert (spec.since, spec.emit, spec.apply) == ("1.4", 1, 1)
     assert spec.fields == {"op", "from", "to", "type", "source"}
-    assert feed_schema.PROTOCOL == "1.4" and feed_schema.RESERVED_KINDS == {"price": "1.5"}
+    assert feed_schema.PROTOCOL == "1.4" and feed_schema.RESERVED_KINDS == RESERVED_C11
     assert feed_schema.vocabularies()["relation_type"] == set(vocab.RELATION_TYPES)
     assert feed_schema.vocabularies()["relation_op"] == {"add", "end"}
     assert relations.TYPES == vocab.RELATION_TYPES
@@ -724,14 +727,23 @@ def test_restore_after_a_downgrade_converges_with_a_follower_that_applied_the_me
     pull(mirror, authority)
     url = authority.st.ctx.settings.database_url
     db.downgrade(url, "0031")
-    with monkeypatch.context() as m:  # the previous release: merges sign a `merge`, relations stay where they are
-        m.setattr(relations, "move", lambda session, src, dst: set())
-        from atlas import prices  # nor does it know prices (0033, A16): its merges do not touch that table
+    # The previous release's merge, written as that release wrote it: this release's models (0034: matching
+    # columns, merge records) cannot run on a 0031 schema, so the merge is replayed in SQL. It moves observations,
+    # keys and locks, leaves a redirect, bumps both versions and signs a `merge`; relations stay where they are.
+    from sqlalchemy import text
 
-        m.setattr(prices, "move", lambda session, src, dst: 0)
-        with authority.st.maker() as s:
-            service.merge_canonicals(s, authority.st.ctx, dup, game)
-            s.commit()
+    with authority.st.maker() as s:
+        p = {"src": dup, "dst": game}
+        s.execute(text("UPDATE observation SET canonical_id = :dst WHERE canonical_id = :src"), p)
+        s.execute(text("UPDATE crosswalk SET canonical_id = :dst WHERE canonical_id = :src"), p)
+        s.execute(text("DELETE FROM field_lock WHERE canonical_id = :src AND field IN "
+                       "(SELECT field FROM field_lock WHERE canonical_id = :dst)"), p)
+        s.execute(text("UPDATE field_lock SET canonical_id = :dst WHERE canonical_id = :src"), p)
+        s.execute(text("UPDATE canonical SET merged_into = :dst, view = '{}', explain = '{}', "
+                       "version = version + 1 WHERE id = :src"), p)
+        s.execute(text("UPDATE canonical SET version = version + 1 WHERE id = :dst"), p)
+        feed.emit(s, authority.st.ctx, "merge", {"src": dup, "dst": game})
+        s.commit()
     pull(mirror, authority)
     assert mirror.failures(authority) == []
     with authority.st.maker() as s:

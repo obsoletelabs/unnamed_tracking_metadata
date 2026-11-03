@@ -39,6 +39,7 @@ nav:
   - Using Atlas:
       - Using the site: using-the-site.md
       - Reviewing: reviewing.md
+      - Matching and provenance: matching.md
   - Hosting:
       - Choose your setup: hosting/index.md
       - Ways to install: hosting/install.md

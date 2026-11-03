@@ -24,7 +24,7 @@ Provider data stays on the node that fetched it and is not redistributed to foll
 
 ## Possible duplicates
 
-**Review → Possible duplicates** lists records Atlas was not sure about (`possible_duplicate`) or whose identifiers disagree (`id_conflict`), with a confidence. *Merge into this* folds the record into the other (a redirect remains); *Not duplicates* dismisses it.
+**Review → Possible duplicates** lists records Atlas was not sure about (`possible_duplicate`) or whose identifiers disagree (`id_conflict`), with a confidence. *Merge into this* folds the record into the other (a redirect remains); *Not duplicates* dismisses it. Every merge is recorded and can be undone through the API, and a dismissed pair is not offered again for 30 days; see [Matching and provenance](matching.md) for why Atlas matched what it did and how to undo a merge.
 
 ## On a game page
 

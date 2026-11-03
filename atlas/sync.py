@@ -27,7 +27,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import client_changes, feed_schema, key_rotation, service
+from . import client_changes, feed_schema, key_rotation, matching, service
 from .contract import SourceObservationV1
 from .feed_schema import APPLY, PARK, PROTOCOL, QUARANTINE
 from .models import (
@@ -468,8 +468,14 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
             elif row.canonical_id != cid:
                 other = service.follow(session, row.canonical_id)
                 if other != cid and not _is_upstream_origin(session, other):
-                    # a purely local record now has an authoritative twin: fold it in
-                    service.merge_canonicals(session, ctx, other, cid, actor="sync", log=False)
+                    if matching.active_rejection(session, other, cid) is not None:
+                        # C11 §11.6: a curator here said these are different works. Both stay; the key stays on
+                        # the local record, and no review pairs them again (§11.5 rule 2).
+                        log.info("not folding %s into %s: marked as different works", other, cid)
+                    else:
+                        # a purely local record now has an authoritative twin: fold it in
+                        service.merge_canonicals(session, ctx, other, cid, actor="sync", log=False, cause="sync",
+                                                 origin=(node_id, seq))
                 # else: both are authoritative; the authority left the key where it was (and opened a
                 # review), so the mirror does too.
         session.flush()
@@ -512,7 +518,7 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
             return NOOP  # already merged
         if s.merged_into or d.merged_into:
             raise AtlasError("merge of a record that was merged elsewhere", "conflict")
-        service.merge_canonicals(session, ctx, src, dst, actor="sync", log=False)
+        service.merge_canonicals(session, ctx, src, dst, actor="sync", log=False, cause="sync", origin=(node_id, seq))
     elif kind == "detach":
         obs = session.get(Observation, body["observation_id"])
         if obs is not None and obs.canonical_id == body["new_canonical_id"]:
@@ -521,7 +527,8 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
             # The detach created this record, so it already ran; the observation may have moved on since
             # (a later merge or detach). Re-running it would undo that history.
             return NOOP
-        service.detach_observation(session, ctx, body["observation_id"], new_id=body["new_canonical_id"], log=False)
+        service.detach_observation(session, ctx, body["observation_id"], new_id=body["new_canonical_id"], log=False,
+                                   actor="sync")
     elif kind == "lock":
         existing = session.get(Lock, (body["canonical_id"], body["field"]))
         if existing is not None and existing.local_only:
