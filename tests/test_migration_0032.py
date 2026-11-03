@@ -24,6 +24,7 @@ from .test_postgres import pg_url  # noqa: F401  (module-scoped PostgreSQL fixtu
 NOW = "2026-11-02 10:00:00"
 INDEXES = {"uq_relation_active", "ix_relation_from", "ix_relation_to", "ix_relation_origin"}
 KEPT = "relation_0032_kept"
+HEAD = "0033"  # A16 (price observations) is the head now; it only adds its own table
 
 
 @pytest.fixture(params=["sqlite", "postgresql"])
@@ -89,7 +90,7 @@ def test_upgrade_writes_downgrade_keeps_and_reupgrade_replays_the_merge(url):
     before = snapshot(engine)
 
     db.upgrade(url)
-    assert version(engine) == "0032"
+    assert version(engine) == HEAD
     tables = set(inspect(engine).get_table_names())
     assert "relation" in tables and KEPT not in tables
     assert INDEXES <= {i["name"] for i in inspect(engine).get_indexes("relation")}
@@ -141,7 +142,7 @@ def test_upgrade_writes_downgrade_keeps_and_reupgrade_replays_the_merge(url):
     # Only the schema step (alembic alone): the table is back and the node is marked for the replay.
     from alembic import command
     command.upgrade(db.alembic_config(url), "head")
-    assert version(engine) == "0032"
+    assert version(engine) == HEAD
     tables = set(inspect(engine).get_table_names())
     assert "relation" in tables and KEPT not in tables
     assert INDEXES <= {i["name"] for i in inspect(engine).get_indexes("relation")}
@@ -188,5 +189,5 @@ def test_downgrade_of_an_empty_table_and_reupgrade(url):
     db.downgrade(url, "0031")
     assert KEPT in set(inspect(engine).get_table_names())
     db.upgrade(url)
-    assert version(engine) == "0032" and relation_rows(engine) == []
+    assert version(engine) == HEAD and relation_rows(engine) == []
     engine.dispose()

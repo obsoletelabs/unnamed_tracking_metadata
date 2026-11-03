@@ -306,12 +306,14 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
             item.canonical_id = dst
     from .custom import move_values
     from .facets import move_facets
+    from .prices import move as move_prices
     from .relations import move as move_relations
     from .social import move_list_items
 
     move_facets(session, src, dst)
     move_values(session, src, dst)
     move_list_items(session, src, dst)
+    move_prices(session, src, dst)  # C8: prices follow the record; they are not part of its view
     neighbours = move_relations(session, src, dst)  # C6.3: no active relation names a merged record
     s.merged_into = dst
     s.view, s.explain = {}, {}
