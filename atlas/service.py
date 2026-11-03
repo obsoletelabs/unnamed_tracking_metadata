@@ -93,8 +93,10 @@ def payload_hash(payload: dict[str, Any]) -> str:
 def derive(session: Session, ctx: Ctx, cid: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """A record's view and explain from its current observations, locks and this node's trust configuration."""
     session.flush()  # the merge reads observations and locks with SQL
-    obs, locks = provenance.merge_inputs(session, ctx.settings, cid)
-    return merge(obs, locks, prefs=ctx.settings.field_source_preference, meta=provenance.meta(ctx.settings))
+    authorities = provenance.authority_origins(session, ctx.settings)
+    obs, locks = provenance.merge_inputs(session, ctx.settings, cid, authorities)
+    return merge(obs, locks, prefs=ctx.settings.field_source_preference,
+                 meta=provenance.meta(ctx.settings, authorities))
 
 
 def rebuild(session: Session, ctx: Ctx, cid: str, *, cause: str = "local", only_if_changed: bool = False) -> Canonical:
@@ -401,7 +403,7 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
             session.delete(lk)
         else:
             lk.canonical_id = dst
-    for item in session.scalars(select(ReviewItem).where(ReviewItem.status == "open")).all():
+    for item in matching.reviews_touching(session, {src, dst}):  # indexed: never the whole queue (§11.9.2)
         involved = {item.canonical_id, *(c for c, _ in item.candidates)}
         if involved <= {src, dst} and src in involved:
             item.status, item.decided_by, item.resolved_at = "merged", actor or None, now()
@@ -421,8 +423,10 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
     s.merged_into = dst
     s.view, s.explain = {}, {}
     session.flush()
-    merges.finish(session, record, pre, ended)
     matching.reevaluate_reviews(session, {src, dst}, actor=actor)
+    # The snapshot is written after the re-evaluation, so it holds every review item this merge closed, superseded
+    # or re-pointed, and an unmerge can give each one back.
+    merges.finish(session, record, pre, ended)
     with client_changes.cause(session, "merge"):  # both ids reach clients: the redirect and the survivor
         bump_version(session, src, "merge")
         rebuild(session, ctx, dst, cause="merge")
@@ -444,10 +448,11 @@ def merge_preview(session: Session, ctx: Ctx, src: str, dst: str) -> dict[str, A
         raise AtlasError("unknown canonical", "not_found")
     if src == dst or s.merged_into or d.merged_into:
         raise AtlasError("one of the records is already merged; use the live record", "conflict")
-    obs_s, locks_s = provenance.merge_inputs(session, ctx.settings, src)
-    obs_d, locks_d = provenance.merge_inputs(session, ctx.settings, dst)
+    authorities = provenance.authority_origins(session, ctx.settings)
+    obs_s, locks_s = provenance.merge_inputs(session, ctx.settings, src, authorities)
+    obs_d, locks_d = provenance.merge_inputs(session, ctx.settings, dst, authorities)
     view, explain = merge(obs_s + obs_d, {**locks_s, **locks_d}, prefs=ctx.settings.field_source_preference,
-                          meta=provenance.meta(ctx.settings))
+                          meta=provenance.meta(ctx.settings, authorities))
     before = d.view or {}
     changes = []
     for key in sorted(set(before) | set(view)):

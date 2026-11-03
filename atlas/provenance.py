@@ -62,50 +62,65 @@ def _iso(dt: datetime | None) -> str | None:
 
 # ---- trust classes and the digest ------------------------------------------------------------------------
 
-def origin_ceiling(settings: Settings, origin_node: str | None) -> str:
+def authority_origins(session: Session, settings: Settings) -> frozenset[str]:
+    """§11.7.1 "the configured authority": every upstream whose signed feed this node applies (merge and lock
+    entries included), with its key pinned by the operator. That is each node in ATLAS_TRUSTED_KEYS (the
+    environment upstream) and each node configured under Admin → Peers, enabled or not (data it already
+    replicated keeps its class). Any other origin is not an authority."""
+    from .models import Peer
+
+    return frozenset(settings.trusted_keys) | frozenset(session.scalars(select(Peer.node_id)))
+
+
+def origin_ceiling(settings: Settings, origin_node: str | None, authorities: frozenset[str] | None = None) -> str:
     """§11.7.1: local ingest is not capped (its reserved sources already needed the curate scope). A replicated
-    observation is capped by `sync_origin_class_cap[node]`, else `curator` for the configured upstream authority
-    (a node in ATLAS_TRUSTED_KEYS) and `provider` for every other origin (H48)."""
+    observation is capped by `sync_origin_class_cap[node]`, else `curator` for a configured upstream authority
+    (`authority_origins`: ATLAS_TRUSTED_KEYS and Admin → Peers) and `provider` for every other origin (H48)."""
     if origin_node is None:
         return "curator"
     cap = settings.sync_origin_class_cap.get(origin_node)
     if cap:
         return cap
-    return "curator" if origin_node in settings.trusted_keys else "provider"
+    known = frozenset(settings.trusted_keys) if authorities is None else authorities
+    return "curator" if origin_node in known else "provider"
 
 
-def obs_of(settings: Settings, o: Observation) -> Obs:
-    eff = effective_class(o.source, origin_ceiling(settings, o.origin_node))
+def obs_of(settings: Settings, o: Observation, authorities: frozenset[str] | None = None) -> Obs:
+    eff = effective_class(o.source, origin_ceiling(settings, o.origin_node, authorities))
     stamp = o.source_updated_at or _epoch(o.observed_at)
     return Obs(id=o.id, source=o.source, source_kind=o.source_kind, external_id=o.external_id, payload=o.payload,
                trust=settings.trust(norm_namespace(o.source)), stamp=stamp, cls=CLASS_RANK[eff],
                source_cls=CLASS_RANK[source_class(o.source)], origin=o.origin_node)
 
 
-def trust_config(settings: Settings) -> dict[str, Any]:
+def trust_config(settings: Settings, authorities: frozenset[str] | None = None) -> dict[str, Any]:
     return {"classes": {"curator": sorted(CURATOR_SOURCES), "community": sorted(COMMUNITY_SOURCES),
                         "provider": "*"},
             "source_trust": dict(sorted(settings.source_trust.items())), "default_trust": settings.default_trust,
             "field_source_preference": {k: list(v) for k, v in sorted(settings.field_source_preference.items())},
             "sync_origin_class_cap": dict(sorted(settings.sync_origin_class_cap.items())),
-            "authority_origins": sorted(settings.trusted_keys)}
+            "authority_origins": sorted(settings.trusted_keys if authorities is None else authorities)}
 
 
-def trust_digest(settings: Settings) -> str:
+def trust_digest(settings: Settings, authorities: frozenset[str] | None = None) -> str:
     """`_meta.trust_digest` (§11.7.2): two nodes with different trust configuration can see why views differ."""
-    return "sha256:" + hashlib.sha256(canonical_json(trust_config(settings))).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical_json(trust_config(settings, authorities))).hexdigest()
 
 
-def meta(settings: Settings) -> dict[str, Any]:
-    return {"explain": EXPLAIN_VERSION, "matcher": matching.MATCHER, "trust_digest": trust_digest(settings)}
+def meta(settings: Settings, authorities: frozenset[str] | None = None) -> dict[str, Any]:
+    return {"explain": EXPLAIN_VERSION, "matcher": matching.MATCHER,
+            "trust_digest": trust_digest(settings, authorities)}
 
 
-def merge_inputs(session: Session, settings: Settings, cid: str) -> tuple[list[Obs], dict[str, Any]]:
+def merge_inputs(session: Session, settings: Settings, cid: str,
+                 authorities: frozenset[str] | None = None) -> tuple[list[Obs], dict[str, Any]]:
     rows = session.scalars(
         select(Observation).where(Observation.canonical_id == cid, Observation.is_current.is_(True))).all()
     locks = {lk.field: (CLEARED if lk.cleared else lk.value)
              for lk in session.scalars(select(Lock).where(Lock.canonical_id == cid))}
-    return [obs_of(settings, o) for o in rows], locks
+    if authorities is None:
+        authorities = authority_origins(session, settings)
+    return [obs_of(settings, o, authorities) for o in rows], locks
 
 
 def index_conflicts(session: Session, cid: str, explain: dict[str, Any]) -> None:
@@ -147,6 +162,7 @@ def provenance(session: Session, settings: Settings, row: Canonical, *, curate: 
                                .order_by(Observation.id.desc())).all()
     by_id = {o.id: o for o in obs_rows}
     locks = {lk.field: lk for lk in session.scalars(select(Lock).where(Lock.canonical_id == row.id))}
+    authorities = authority_origins(session, settings) if values else None
     fields: dict[str, Any] = {}
     for name, info in explain.items():
         if name.startswith("_") or not isinstance(info, dict):
@@ -172,7 +188,7 @@ def provenance(session: Session, settings: Settings, row: Canonical, *, curate: 
         if name == "provider_ids" and curate and info.get("conflicts"):
             entry["conflicts"] = info["conflicts"]
         if values and curate and info.get("strategy") == "priority":
-            entry.update(_candidate_groups(settings, obs_rows, name, view.get(name)))
+            entry.update(_candidate_groups(settings, obs_rows, name, view.get(name), authorities))
         fields[name] = entry
 
     obs_out, counts = [], {}
@@ -204,9 +220,11 @@ def provenance(session: Session, settings: Settings, row: Canonical, *, curate: 
     return out
 
 
-def _candidate_groups(settings: Settings, rows: list[Observation], field: str, winner: Any) -> dict[str, Any]:
+def _candidate_groups(settings: Settings, rows: list[Observation], field: str, winner: Any,
+                      authorities: frozenset[str] | None = None) -> dict[str, Any]:
     groups: dict[str, dict[str, Any]] = {}
-    ranked = sorted((obs_of(settings, o) for o in rows), key=lambda o: (o.cls, o.trust, o.stamp, o.id), reverse=True)
+    ranked = sorted((obs_of(settings, o, authorities) for o in rows), key=lambda o: (o.cls, o.trust, o.stamp, o.id),
+                    reverse=True)
     raw = {o.id: o for o in rows}
     for ob in ranked:
         o = raw[ob.id]
@@ -336,10 +354,12 @@ def backfill(maker: Any, ctx: Any, *, batch: int = 500, restart: bool = False, l
                     session.delete(state)
                 session.commit()
                 return {"records": done, "changed": changed, "finished": True}
+            authorities = authority_origins(session, ctx.settings)
             for cid in ids:
                 rec = session.get(Canonical, cid)
-                obs, locks = merge_inputs(session, ctx.settings, cid)
-                view, explain = merge(obs, locks, prefs=ctx.settings.field_source_preference, meta=meta(ctx.settings))
+                obs, locks = merge_inputs(session, ctx.settings, cid, authorities)
+                view, explain = merge(obs, locks, prefs=ctx.settings.field_source_preference,
+                                      meta=meta(ctx.settings, authorities))
                 if canonical_json(view) == canonical_json(rec.view or {}):
                     if rec.explain != explain:
                         rec.explain = explain

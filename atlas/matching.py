@@ -32,6 +32,7 @@ from .models import (
     MatchDecision,
     MatchRejection,
     RecordLive,
+    ReviewCandidate,
     ReviewItem,
     now,
 )
@@ -64,6 +65,9 @@ RESOLVE_REASON = {"contradicted": "ambiguous", "unresolved_atlas": "ambiguous", 
 REVIEW_PRIORITY = {"id_conflict": 30, "bridge_deferred": 25, "title_contradicted": 20, "unmerge_check": 15,
                    "possible_duplicate": 10}
 REVIEW_KINDS = tuple(REVIEW_PRIORITY)
+#: Kinds a "merge" resolution does not apply to: an `unmerge_check` names the survivor and the record an unmerge just
+#: split off it. Its resolutions in this release are `detach` and `dismiss` (move_chain / move_row are deferred).
+UNMERGEABLE_KINDS = frozenset({"unmerge_check"})
 REVIEW_STATUSES = ("open", "merged", "dismissed", "distinct", "superseded", "resolved")
 
 _COMPANY_SUFFIX = frozenset({"inc", "ltd", "llc", "gmbh", "co", "corp", "corporation", "sa", "srl", "kk", "bv", "ab"})
@@ -641,19 +645,39 @@ def close_review(session: Session, item: ReviewItem, status: str, actor: str) ->
     session.flush()
 
 
+#: §11.9.2: review items one merge, unmerge or "different works" decision may touch (the work stays bounded by the
+#: records involved, never by the size of the queue; a merge snapshot is bounded by MERGE_MAX_ITEMS as well).
+MAX_TOUCHED_REVIEWS = 10_000
+
+
+def touched_ids(session: Session, ids: set[str]) -> set[str]:
+    """`ids` and every merged-in id that redirects to one of them (`record_live`, indexed)."""
+    out = {i for i in ids if i}
+    if out:
+        out |= set(session.scalars(select(RecordLive.id).where(RecordLive.live_id.in_(sorted(out)))))
+    return out
+
+
+def reviews_touching(session: Session, ids: set[str]) -> list[ReviewItem]:
+    """Open review items whose record or one of whose candidates is in `ids` (or redirects to one of them), oldest
+    first, through the `review_item.canonical_id` and `review_candidate` indexes."""
+    wanted = sorted(touched_ids(session, ids))
+    if not wanted:
+        return []
+    session.flush()
+    by_candidate = select(ReviewCandidate.review_id).where(ReviewCandidate.canonical_id.in_(wanted))
+    return list(session.scalars(select(ReviewItem).where(
+        ReviewItem.status == "open", or_(ReviewItem.canonical_id.in_(wanted), ReviewItem.id.in_(by_candidate)))
+        .order_by(ReviewItem.created_at, ReviewItem.id).limit(MAX_TOUCHED_REVIEWS)))
+
+
 def reevaluate_reviews(session: Session, ids: set[str], *, actor: str = "") -> None:
     """After a merge or unmerge of `ids`: refresh open items naming them; an item whose records collapse to one
     live record is `superseded` (§11.5 rule 7), and of two items that now describe the same pair the newer one
-    is too."""
+    is too. Only the items naming `ids` are read (`reviews_touching`)."""
     if not ids:
         return
-    session.flush()
-    rows = session.scalars(select(ReviewItem).where(ReviewItem.status == "open").order_by(ReviewItem.created_at,
-                                                                                          ReviewItem.id)).all()
-    for item in rows:
-        involved = {item.canonical_id, *(c for c, _s in item.candidates or [])}
-        if not involved & ids and not any(alias in ids for alias in involved):
-            continue
+    for item in reviews_touching(session, ids):
         cid = follow(session, item.canonical_id)
         cands: list[list[Any]] = []
         for c, s in item.candidates or []:
@@ -664,6 +688,8 @@ def reevaluate_reviews(session: Session, ids: set[str], *, actor: str = "") -> N
             item.status, item.resolved_at = "superseded", now()
             continue
         key = pair_key(item.kind, [cid, *(c for c, _s in cands)])
+        if key == item.pair_key and cid == item.canonical_id and cands == item.candidates:
+            continue
         clash = session.scalars(select(ReviewItem.id).where(ReviewItem.pair_key == key, ReviewItem.status == "open",
                                                             ReviewItem.id != item.id)).first()
         if clash is not None:
@@ -710,31 +736,37 @@ def decision_out(row: MatchDecision, *, full: bool = True) -> dict[str, Any]:
     return out
 
 
-def prune_decisions(session: Session, settings: Settings, *, batch: int = 1000) -> int:
-    """Retention (§11.4): keep the newest decision per chain, every decision an open review references, and
-    everything younger than `match_decision_retain_days`. Deletes at most `batch` rows per call."""
+def prune_decisions(session: Session, settings: Settings, *, batch: int = 1000, max_rows: int = 200_000) -> int:
+    """Retention (§11.4): keep the newest decision per chain, every decision an open review or a live merge record
+    references, and everything younger than `match_decision_retain_days`. The database finds the deletable rows
+    (an indexed anti-join on the chain index: an older decision with a newer one in its chain), so old rows that
+    must stay never hide the deletable ones behind them. Deletes in batches of `batch`, at most `max_rows` rows per
+    call (the daily housekeeping run catches up on the rest)."""
+    from sqlalchemy import and_, exists
+    from sqlalchemy.orm import aliased
+
     from .models import MergeRecord
 
     cutoff = now() - timedelta(days=settings.match_decision_retain_days)
-    old = session.scalars(select(MatchDecision).where(MatchDecision.created_at < cutoff)
-                          .order_by(MatchDecision.created_at, MatchDecision.id).limit(batch * 4)).all()
-    referenced = set(session.scalars(select(ReviewItem.decision_id).where(ReviewItem.status == "open",
-                                                                          ReviewItem.decision_id.is_not(None))))
-    referenced |= set(session.scalars(select(MergeRecord.decision_id).where(MergeRecord.reverted_at.is_(None),
-                                                                            MergeRecord.decision_id.is_not(None))))
-    doomed: list[str] = []
-    for row in old:
-        if row.id in referenced:
-            continue
-        newer = session.scalars(select(MatchDecision.id).where(
-            MatchDecision.source == row.source, MatchDecision.source_scope == row.source_scope,
-            MatchDecision.external_id == row.external_id,
-            (MatchDecision.created_at > row.created_at)
-            | ((MatchDecision.created_at == row.created_at) & (MatchDecision.id > row.id))).limit(1)).first()
-        if newer is not None:
-            doomed.append(row.id)
-        if len(doomed) >= batch:
+    newer = aliased(MatchDecision)
+    has_newer = exists().where(
+        newer.source == MatchDecision.source, newer.source_scope == MatchDecision.source_scope,
+        newer.external_id == MatchDecision.external_id,
+        or_(newer.created_at > MatchDecision.created_at,
+            and_(newer.created_at == MatchDecision.created_at, newer.id > MatchDecision.id)))
+    by_review = select(ReviewItem.decision_id).where(ReviewItem.status == "open", ReviewItem.decision_id.is_not(None))
+    by_merge = select(MergeRecord.decision_id).where(MergeRecord.reverted_at.is_(None),
+                                                     MergeRecord.decision_id.is_not(None))
+    total = 0
+    while total < max_rows:
+        doomed = list(session.scalars(select(MatchDecision.id).where(
+            MatchDecision.created_at < cutoff, has_newer, MatchDecision.id.not_in(by_review),
+            MatchDecision.id.not_in(by_merge)).order_by(MatchDecision.created_at, MatchDecision.id)
+            .limit(min(batch, max_rows - total))))
+        if not doomed:
             break
-    if doomed:
         session.execute(delete(MatchDecision).where(MatchDecision.id.in_(doomed)))
-    return len(doomed)
+        total += len(doomed)
+        if len(doomed) < batch:
+            break
+    return total

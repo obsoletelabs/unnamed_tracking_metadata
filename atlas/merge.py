@@ -252,7 +252,10 @@ def merge(observations: list[Obs], locks: dict[str, Any], *, prefs: dict[str, li
                 conflicts[ns] = [{"value": v, "sources": sorted(srcs), "won": v == rows[0][0]}
                                  for v, srcs in values.items()][:MAX_RUNNERS_UP + 1]
         if conflicts:
-            info["conflicts"] = conflicts
+            # Two claims for one namespace: indexed in `field_conflict`, so `/conflicts?field=provider_ids` lists a
+            # record whose observation named an id it does not hold (§11.2.1 step 4 with only one record involved,
+            # where there is no other record for an `id_conflict` item to name).
+            info["conflicts"], info["conflict"] = conflicts, True
         explain["provider_ids"] = info
 
     editions = _editions(ranked)

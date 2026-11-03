@@ -12,6 +12,8 @@ New tables (all local to this node, never federated):
   (`chain`) decisions, with a partial unique index on the active ones.
 * `record_live` (§11.6): merged record id -> live record, indexed on the live id.
 * `field_conflict` (§11.7.2): which fields of which records have conflicting provider values.
+* `review_candidate` (§11.9.2): the candidates of each review item as rows, so a merge finds the items it touches
+  with an index instead of reading the whole queue (derived from `review_item.candidates`).
 * `merge_record`, `merge_record_item` (§11.10): every merge from now on, with the snapshot that undoes it.
 
 New columns: `review_item.reason, evidence, decision_id, pair_key, priority, resolved_at` (§11.5, with the
@@ -27,13 +29,17 @@ have no record (`legacy_merge`): only per-observation detach undoes them. `expla
 rebuild of each record, or for every record by `atlas match explain-backfill`.
 
 Downgrade keeps what the previous release cannot read aside instead of dropping it (the A15/A16 pattern, amendment
-A17 #2): the new tables are renamed to `*_0034_kept` (the derived `field_conflict` is dropped), explicit-clear
+A17 #2): the new tables are renamed to `*_0034_kept` (the derived `field_conflict` and `review_candidate` are
+dropped), the new review columns go to `review_item_0034_kept` (open items of kinds the previous release does not
+know, `title_contradicted` and `unmerge_check`, are set aside there and hidden from its queue as `superseded`),
+`observation.last_seen_at` goes to `observation_0034_kept`, explicit-clear
 locks move to `field_lock_0034_cleared_kept` (the previous release would read their NULL value as a pin), and
 variant crosswalk keys are listed in `crosswalk_variant_0034_kept`. The `_meta` key is removed from `explain` (the
 previous release's game page lists every explain key). Upgrading again brings everything back: tables renamed back,
 `record_live` recomputed (the previous release may have merged records meanwhile; those merges stay legacy), cleared
 locks restored on their live record unless that field was locked meanwhile, variants restored on keys that still
-exist.
+exist, review columns and statuses restored on items that still exist (a pair the previous release reopened keeps
+one open item), `last_seen_at` restored. Only `observation.payload_hash` is not kept: it is recomputed lazily.
 """
 from __future__ import annotations
 
@@ -51,6 +57,10 @@ depends_on = None
 KEPT_TABLES = ("match_decision", "match_rejection", "merge_record", "merge_record_item")
 CLEARED_KEPT = "field_lock_0034_cleared_kept"
 VARIANT_KEPT = "crosswalk_variant_0034_kept"
+REVIEW_KEPT = "review_item_0034_kept"
+SEEN_KEPT = "observation_0034_kept"
+#: Review item kinds the previous release (0033) knows; open items of other kinds are hidden from it.
+OLD_KINDS = ("possible_duplicate", "id_conflict")
 MAX_HOPS = 20
 BATCH = 1000
 #: §11.5 rule 5 (the score part of `possible_duplicate` is added per item).
@@ -64,7 +74,12 @@ review = sa.table("review_item", sa.column("id", sa.String), sa.column("kind", s
                   sa.column("canonical_id", sa.String), sa.column("candidates", sa.JSON),
                   sa.column("confidence", sa.Float), sa.column("status", sa.String),
                   sa.column("created_at", sa.DateTime), sa.column("pair_key", sa.String),
-                  sa.column("priority", sa.Integer))
+                  sa.column("priority", sa.Integer), sa.column("reason", sa.String), sa.column("evidence", sa.JSON),
+                  sa.column("decision_id", sa.String), sa.column("resolved_at", sa.DateTime(timezone=True)))
+review_candidate = sa.table("review_candidate", sa.column("review_id", sa.String),
+                            sa.column("canonical_id", sa.String))
+observation = sa.table("observation", sa.column("id", sa.String),
+                       sa.column("last_seen_at", sa.DateTime(timezone=True)))
 lock = sa.table("field_lock", sa.column("canonical_id", sa.String), sa.column("field", sa.String),
                 sa.column("value", sa.JSON), sa.column("set_by", sa.String), sa.column("local_only", sa.Boolean),
                 sa.column("created_at", sa.DateTime), sa.column("cleared", sa.Boolean))
@@ -102,6 +117,12 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index("ix_field_conflict_field", "field_conflict", ["field", "canonical_id"])
+    op.create_table(
+        "review_candidate",
+        sa.Column("review_id", sa.String(26), primary_key=True),
+        sa.Column("canonical_id", sa.String(40), primary_key=True),
+    )
+    op.create_index("ix_review_candidate_cid", "review_candidate", ["canonical_id", "review_id"])
 
     with op.batch_alter_table("review_item") as batch:
         batch.add_column(sa.Column("reason", sa.String(32), nullable=True))
@@ -119,7 +140,12 @@ def upgrade() -> None:
         batch.add_column(sa.Column("cleared", sa.Boolean(), nullable=False, server_default=sa.false()))
 
     _backfill_record_live(bind)
+    if REVIEW_KEPT in tables:
+        _restore_reviews(bind)
+    if SEEN_KEPT in tables:
+        _restore_seen(bind)
     _backfill_reviews(bind)
+    _backfill_review_candidates(bind)
     op.create_index("ix_review_queue", "review_item", ["status", "priority", "created_at"])
     op.create_index("uq_review_open_pair", "review_item", ["pair_key"], unique=True,
                     sqlite_where=sa.text("status = 'open' AND pair_key IS NOT NULL"),
@@ -244,13 +270,14 @@ def _backfill_reviews(bind) -> None:
     live = _live_map(bind)
     seen: set[str] = set()
     rows = bind.execute(sa.select(review.c.id, review.c.kind, review.c.canonical_id, review.c.candidates,
-                                  review.c.confidence).where(review.c.status == "open")
+                                  review.c.confidence, review.c.pair_key).where(review.c.status == "open")
                         .order_by(review.c.created_at, review.c.id)).all()
     for row in rows:
         cands = _json(row.candidates) if not isinstance(row.candidates, list) else row.candidates
         ids = [live.get(row.canonical_id, row.canonical_id)]
         ids += [live.get(c[0], c[0]) for c in cands or [] if isinstance(c, list) and c]
-        key = pair_key(row.kind, ids)
+        # An item restored from REVIEW_KEPT keeps its own pair (an `unmerge_check` pair names its merge as well).
+        key = row.pair_key or pair_key(row.kind, ids)
         priority = PRIORITY.get(row.kind, 10)
         if row.kind == "possible_duplicate":
             priority += round(float(row.confidence or 0) * 10)
@@ -259,6 +286,69 @@ def _backfill_reviews(bind) -> None:
             continue
         seen.add(key)
         bind.execute(review.update().where(review.c.id == row.id).values(pair_key=key, priority=priority))
+
+
+def _backfill_review_candidates(bind) -> None:
+    """`review_candidate` from every item's `candidates` (in id order, batched)."""
+    last = ""
+    while True:
+        rows = bind.execute(sa.select(review.c.id, review.c.candidates).where(review.c.id > last)
+                            .order_by(review.c.id).limit(BATCH)).all()
+        if not rows:
+            break
+        out = []
+        for row in rows:
+            cands = row.candidates if isinstance(row.candidates, list) else _json(row.candidates)
+            ids = {c[0][:40] for c in (cands if isinstance(cands, list) else [])[:100]
+                   if isinstance(c, list) and c and isinstance(c[0], str) and c[0]}
+            out += [{"review_id": row.id, "canonical_id": cid} for cid in sorted(ids)]
+        if out:
+            bind.execute(review_candidate.insert(), out)
+        last = rows[-1].id
+
+
+def _review_kept():
+    return sa.table(REVIEW_KEPT, sa.column("id", sa.String), sa.column("status", sa.String),
+                    sa.column("reason", sa.String), sa.column("evidence", sa.JSON),
+                    sa.column("decision_id", sa.String), sa.column("pair_key", sa.String),
+                    sa.column("priority", sa.Integer), sa.column("resolved_at", sa.DateTime(timezone=True)))
+
+
+def _restore_reviews(bind) -> None:
+    """Put back what the downgrade kept aside, on items that still exist. An item the downgrade hid (its `status`
+    kept) is reopened unless an item restored before it holds its pair; an item the previous release resolved
+    stays resolved. Open items the previous release added get their pair from `_backfill_reviews`, which keeps
+    the older of two open items for one pair (§11.5 rule 1)."""
+    kept = _review_kept()
+    open_pairs = set()
+    for row in bind.execute(sa.select(kept).order_by(kept.c.id)).all():
+        current = bind.execute(sa.select(review.c.status).where(review.c.id == row.id)).first()
+        if current is None:
+            continue
+        values = {"reason": row.reason, "evidence": _json(row.evidence) if row.evidence is not None else None,
+                  "decision_id": row.decision_id, "pair_key": row.pair_key, "priority": row.priority or 0,
+                  "resolved_at": row.resolved_at}
+        if row.status is not None and current.status == "superseded":  # hidden by the downgrade
+            if not (row.pair_key and row.pair_key in open_pairs):
+                values["status"] = row.status
+        # A resolved item keeps its pair (a dismissal is found by it, §11.5 rule 3); only open ones are unique.
+        if values.get("status", current.status) == "open" and values["pair_key"]:
+            open_pairs.add(values["pair_key"])
+        bind.execute(review.update().where(review.c.id == row.id).values(**values))
+    op.drop_table(REVIEW_KEPT)
+
+
+def _restore_seen(bind) -> None:
+    kept = sa.table(SEEN_KEPT, sa.column("id", sa.String), sa.column("last_seen_at", sa.DateTime(timezone=True)))
+    last = ""
+    while True:
+        rows = bind.execute(sa.select(kept).where(kept.c.id > last).order_by(kept.c.id).limit(BATCH)).all()
+        if not rows:
+            break
+        for row in rows:
+            bind.execute(observation.update().where(observation.c.id == row.id).values(last_seen_at=row.last_seen_at))
+        last = rows[-1].id
+    op.drop_table(SEEN_KEPT)
 
 
 def _restore_cleared(bind) -> None:
@@ -324,6 +414,35 @@ def downgrade() -> None:
     bind.execute(sa.text(f"INSERT INTO {VARIANT_KEPT} (namespace, external_id, variant) "
                          "SELECT namespace, external_id, variant FROM crosswalk WHERE variant <> ''"))
 
+    # Review columns (and the status of open items of kinds the previous release does not know) go aside, so a
+    # re-upgrade keeps dismissal windows (`resolved_at`), evidence and decision links.
+    op.create_table(
+        REVIEW_KEPT,
+        sa.Column("id", sa.String(26), primary_key=True),
+        sa.Column("status", sa.String(16), nullable=True),
+        sa.Column("reason", sa.String(32), nullable=True),
+        sa.Column("evidence", sa.JSON(), nullable=True),
+        sa.Column("decision_id", sa.String(26), nullable=True),
+        sa.Column("pair_key", sa.String(32), nullable=True),
+        sa.Column("priority", sa.Integer(), nullable=True),
+        sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
+    )
+    kinds = ", ".join(f"'{k}'" for k in OLD_KINDS)
+    hidden = f"(status = 'open' AND kind NOT IN ({kinds}))"
+    bind.execute(sa.text(
+        f"INSERT INTO {REVIEW_KEPT} (id, status, reason, evidence, decision_id, pair_key, priority, resolved_at) "
+        f"SELECT id, CASE WHEN {hidden} THEN status ELSE NULL END, reason, evidence, decision_id, pair_key, "
+        "priority, resolved_at FROM review_item WHERE reason IS NOT NULL OR evidence IS NOT NULL "
+        f"OR decision_id IS NOT NULL OR pair_key IS NOT NULL OR resolved_at IS NOT NULL OR priority <> 0 OR {hidden}"))
+    bind.execute(sa.text(f"UPDATE review_item SET status = 'superseded' WHERE {hidden}"))
+    op.create_table(
+        SEEN_KEPT,
+        sa.Column("id", sa.String(26), primary_key=True),
+        sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    bind.execute(sa.text(f"INSERT INTO {SEEN_KEPT} (id, last_seen_at) SELECT id, last_seen_at FROM observation "
+                         "WHERE last_seen_at IS NOT NULL"))
+
     op.drop_index("uq_review_open_pair", table_name="review_item")
     op.drop_index("ix_review_queue", table_name="review_item")
     with op.batch_alter_table("review_item") as batch:
@@ -337,6 +456,8 @@ def downgrade() -> None:
     with op.batch_alter_table("field_lock") as batch:
         batch.drop_column("cleared")
 
+    op.drop_index("ix_review_candidate_cid", table_name="review_candidate")
+    op.drop_table("review_candidate")
     op.drop_index("ix_field_conflict_field", table_name="field_conflict")
     op.drop_table("field_conflict")
     op.drop_index("ix_record_live_live_id", table_name="record_live")

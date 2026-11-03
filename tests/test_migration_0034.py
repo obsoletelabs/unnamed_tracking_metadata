@@ -22,7 +22,8 @@ from .test_postgres import pg_url  # noqa: F401  (module-scoped PostgreSQL fixtu
 
 HEAD = "0034"
 STAMP = "2026-11-02 10:00:00"
-NEW_TABLES = {"match_decision", "match_rejection", "merge_record", "merge_record_item", "record_live", "field_conflict"}
+NEW_TABLES = {"match_decision", "match_rejection", "merge_record", "merge_record_item", "record_live", "field_conflict",
+              "review_candidate"}
 KEPT = {"match_decision_0034_kept", "match_rejection_0034_kept", "merge_record_0034_kept",
         "merge_record_item_0034_kept"}
 NEW_COLUMNS = {"observation": {"payload_hash", "last_seen_at"}, "crosswalk": {"variant"}, "field_lock": {"cleared"},
@@ -143,9 +144,9 @@ def test_upgrade_backfills_downgrade_keeps_and_reupgrade_restores(url):
     assert not ({"field_lock_0034_cleared_kept", "crosswalk_variant_0034_kept"} & tables)
     with engine.connect() as c:
         again = {t: c.execute(text(f"SELECT count(*) FROM {t}")).scalar() for t in sorted(NEW_TABLES)
-                 if t != "field_conflict"}
+                 if t not in ("field_conflict", "review_candidate")}
         variants = {r[0] for r in c.execute(text("SELECT variant FROM crosswalk WHERE namespace = 'psn'"))}
-    assert again == {t: n for t, n in counts.items() if t != "field_conflict"}
+    assert again == {t: n for t, n in counts.items() if t not in ("field_conflict", "review_candidate")}
     assert variants == {"platform:ps5"}
     mk, settings = maker(url)
     with mk() as s:
@@ -173,4 +174,66 @@ def test_downgrade_of_an_empty_database_and_reupgrade(url):
     assert KEPT | {"price_observation_0033_kept"} <= set(inspect(engine).get_table_names())
     db.upgrade(url)
     assert version(engine) == HEAD
+    engine.dispose()
+
+
+def test_review_columns_and_last_seen_survive_a_downgrade_and_reupgrade(url):
+    """Amendment A17 #2: the review columns (dismissal windows need `resolved_at`), evidence and decision links,
+    open items of kinds the previous release does not know, and `last_seen_at` come back after a downgrade and a
+    re-upgrade; the candidate index is rebuilt. The previous release never sees the new kinds in its queue."""
+    from atlas import matching
+    from atlas.models import Observation, ReviewCandidate, ReviewItem, now
+
+    db.upgrade(url, "0033")
+    engine = create_engine(url)
+    seed(engine)
+    db.upgrade(url)
+    mk, settings = maker(url)
+    seen = now().replace(microsecond=0)
+    with mk() as s:
+        dismissed = s.scalars(select(ReviewItem).where(ReviewItem.status == "open")).one()
+        dismissed.evidence = [{"signal": "title_equal", "value": "live d", "effect": 0.7}]
+        dismissed.reason, dismissed.decision_id = "ambiguous", "01JD" + "0" * 22
+        matching.close_review(s, dismissed, "dismissed", "cur")
+        hidden = ReviewItem(kind="title_contradicted", canonical_id="atlas:d", candidates=[["atlas:c", 0.9]],
+                            confidence=0.9, reason="contradicted", priority=20,
+                            pair_key=matching.pair_key("title_contradicted", ["atlas:d", "atlas:c"]))
+        still = ReviewItem(kind="id_conflict", canonical_id="atlas:c", candidates=[["atlas:d", 1.0]], confidence=1.0,
+                           reason="conflict", priority=30, pair_key=matching.pair_key("id_conflict", ["atlas:c", "atlas:d"]))
+        s.add_all([hidden, still])
+        for o in s.scalars(select(Observation)):
+            o.last_seen_at = seen
+        s.commit()
+        ids = {"dismissed": dismissed.id, "hidden": hidden.id, "still": still.id}
+        before = {r.id: (r.status, r.reason, r.evidence, r.decision_id, r.pair_key, r.priority,
+                         r.resolved_at.replace(tzinfo=None, microsecond=0) if r.resolved_at else None)
+                  for r in s.scalars(select(ReviewItem).where(ReviewItem.id.in_(list(ids.values()))))}
+        index = {(r.review_id, r.canonical_id) for r in s.scalars(select(ReviewCandidate))}
+    assert {(ids["hidden"], "atlas:c"), (ids["still"], "atlas:d")} <= index
+
+    db.downgrade(url, "0033")
+    tables = set(inspect(engine).get_table_names())
+    assert {"review_item_0034_kept", "observation_0034_kept"} <= tables and "review_candidate" not in tables
+    with engine.begin() as c:
+        old_queue = {r[0] for r in c.execute(text("SELECT id FROM review_item WHERE status = 'open'"))}
+        assert ids["hidden"] not in old_queue and ids["still"] in old_queue  # 0033 lists only kinds it knows
+        # the previous release resolves the id_conflict meanwhile
+        c.execute(text("UPDATE review_item SET status = 'merged', decided_by = 'old' WHERE id = :i"),
+                  {"i": ids["still"]})
+
+    db.upgrade(url)
+    assert not ({"review_item_0034_kept", "observation_0034_kept"} & set(inspect(engine).get_table_names()))
+    with mk() as s:
+        after = {r.id: (r.status, r.reason, r.evidence, r.decision_id, r.pair_key, r.priority,
+                        r.resolved_at.replace(tzinfo=None, microsecond=0) if r.resolved_at else None)
+                 for r in s.scalars(select(ReviewItem).where(ReviewItem.id.in_(list(ids.values()))))}
+        assert after[ids["dismissed"]] == before[ids["dismissed"]]  # the dismissal window still holds
+        assert after[ids["hidden"]] == before[ids["hidden"]]  # back in the queue, same pair
+        resolved = after[ids["still"]]
+        assert resolved[0] == "merged" and resolved[1:4] == before[ids["still"]][1:4]  # the old decision stands
+        assert {o.last_seen_at.replace(tzinfo=None) for o in s.scalars(select(Observation))} == {seen.replace(tzinfo=None)}
+        index = {(r.review_id, r.canonical_id) for r in s.scalars(select(ReviewCandidate))}
+        assert {(ids["hidden"], "atlas:c"), (ids["still"], "atlas:d"), (ids["dismissed"], "atlas:c")} <= index
+        # the dismissal still suppresses the same pair at the same strength (§11.5 rule 3)
+        assert matching.open_review(s, settings, "possible_duplicate", "atlas:d", [("atlas:c", 0.7)], 0.7) is None
     engine.dispose()

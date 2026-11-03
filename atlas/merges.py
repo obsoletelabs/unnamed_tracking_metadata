@@ -51,6 +51,8 @@ UNMERGED_DAYS = 90
 #: Items that are always recorded, even when a `sync` merge is over MERGE_MAX_ITEMS (`truncated`).
 IDENTITY_KINDS = ("chain", "xwalk", "alias", "rejection_ended")
 UNMERGE_PROTOCOL = feed_schema.KIND_SINCE["unmerge"]
+#: False while `unmerge` is a reserved feed kind (this release cannot sign one, whatever its emit protocol).
+UNMERGE_PROTOCOL_EMITTABLE = "unmerge" not in feed_schema.RESERVED_KINDS
 
 
 class MergeError(Exception):
@@ -114,6 +116,14 @@ def _list_data(item: ListItem) -> dict[str, Any]:
     return {"list_id": item.list_id, "note": item.note}
 
 
+def _review_state(r: ReviewItem) -> dict[str, Any]:
+    return {"status": r.status, "canonical_id": r.canonical_id, "pair_key": r.pair_key,
+            "candidates": [list(c) for c in r.candidates or []], "resolved_at": _plain(r.resolved_at)}
+
+
+_REVIEW_IDENTITY = ("status", "canonical_id", "pair_key", "candidates")
+
+
 def _relation_state(r: Relation) -> dict[str, Any]:
     return {"from_id": r.from_id, "to_id": r.to_id, "ended_at": _plain(r.ended_at), "end_reason": r.end_reason}
 
@@ -147,10 +157,8 @@ class Pre:
         self.prices = list(q(select(PriceObservation.id).where(PriceObservation.canonical_id == src)))
         self.relations = {r.id: _relation_state(r) for r in q(select(Relation).where(
             (Relation.from_id == src) | (Relation.to_id == src), Relation.ended_at.is_(None)))}
-        self.reviews = {r.id: {"status": r.status, "canonical_id": r.canonical_id, "pair_key": r.pair_key,
-                               "candidates": r.candidates, "resolved_at": _plain(r.resolved_at)}
-                        for r in q(select(ReviewItem).where(ReviewItem.status == "open"))
-                        if {r.canonical_id, *(c for c, _s in r.candidates or [])} & {src, dst}}
+        # Open items naming either record, found through the review indexes (§11.9.2), never the whole queue.
+        self.reviews = {r.id: _review_state(r) for r in matching.reviews_touching(session, {src, dst})}
 
     def size(self) -> int:
         return (len(self.chains) + len(self.xwalk) + len(self.aliases) + len(self.locks) + len(self.art)
@@ -230,11 +238,17 @@ def finish(session: Session, rec: MergeRecord, pre: Pre, ended: list[str]) -> No
             r = session.get(Relation, rid)
             if r is not None and _relation_state(r) != before:
                 items.append(("relation", rid, {"before": before, "after": _relation_state(r)}, None))
+        # Written after `reevaluate_reviews`: every open item this merge closed (`merged`), superseded or re-pointed
+        # at `dst`, with its state before and after, re-pointed ones first (an unmerge frees their new pair first).
+        changed = []
         for rid, before in sorted(pre.reviews.items()):
             r = session.get(ReviewItem, rid)
-            if r is not None and (r.status, r.canonical_id, r.pair_key) != (before["status"], before["canonical_id"],
-                                                                           before["pair_key"]):
-                items.append(("review", rid, before, None))
+            if r is None:
+                continue
+            after = _review_state(r)
+            if any(after[k] != before[k] for k in _REVIEW_IDENTITY):
+                changed.append((after["status"] != "open", rid, {"before": before, "after": after}))
+        items += [("review", rid, data, None) for _closed, rid, data in sorted(changed, key=lambda c: (c[0], c[1]))]
     for n, (kind, ref, data, hashed) in enumerate(items):
         session.add(MergeRecordItem(merge_id=rec.id, n=n, kind=kind, ref=ref[:900], data=data, data_hash=hashed))
     rec.item_count = len(items)
@@ -304,8 +318,11 @@ def check(session: Session, ctx: Any, rec: MergeRecord, *, if_match: str | None 
     if if_match is not None and if_match.strip() not in (f'"{dst.id}-{dst.version}"', f"{dst.id}-{dst.version}"):
         raise MergeError("the surviving record changed since you looked at it", "stale_version",
                          version=dst.version)
-    if rec.feed_seq is not None and ctx.settings.role == "authority":
-        # The merge is in this node's signed feed: undoing it locally would leave every mirror merged.
+    if rec.feed_seq is not None and (UNMERGE_PROTOCOL_EMITTABLE is False or feed_schema.parse_protocol(
+            feed_schema.emit_protocol(ctx.settings)) < feed_schema.parse_protocol(UNMERGE_PROTOCOL)):
+        # The merge is in this node's signed feed: undoing it locally would leave every mirror merged. This holds
+        # whatever role the node has now (a node that published merges and was reconfigured keeps its mirrors).
+        # `unmerge` is a reserved kind in this release, so no emit protocol allows undoing a published merge yet.
         raise MergeError(str(feed_schema.EmitGateError("undoing a published merge (feed kind 'unmerge')",
                                                        UNMERGE_PROTOCOL, feed_schema.emit_protocol(ctx.settings))),
                          "emit_protocol")
@@ -658,13 +675,32 @@ def _restore_item(session: Session, i: MergeRecordItem, src: str, dst: str, move
             r.ended_at = datetime.fromisoformat(before["ended_at"]) if before["ended_at"] else None
             moves["relations"] += 1
     elif kind == "review":
-        r = session.get(ReviewItem, ref)
-        if r is None or r.status not in ("merged", "superseded"):
-            return
-        before = i.data
-        if before.get("pair_key") and session.scalars(select(ReviewItem.id).where(
-                ReviewItem.pair_key == before["pair_key"], ReviewItem.status == "open")).first() is not None:
-            return
-        r.status, r.canonical_id, r.pair_key = before["status"], before["canonical_id"], before.get("pair_key")
-        r.candidates, r.resolved_at, r.decided_by = before.get("candidates") or r.candidates, None, None
+        _restore_review(session, i)
     session.flush()
+
+
+def _restore_review(session: Session, i: MergeRecordItem) -> bool:
+    """Give a review item back the identity it had before the merge (status, record, candidates, pair), when it is
+    still as the merge left it: a curator's later decision on it stands. Not restored while another open item holds
+    its old pair (one open item per pair, §11.5 rule 1)."""
+    r = session.get(ReviewItem, i.ref)
+    data = i.data or {}
+    before, after = (data["before"], data.get("after")) if "before" in data else (data, None)
+    if r is None:
+        return False
+    if after is not None:
+        if any(_review_state(r)[k] != after[k] for k in _REVIEW_IDENTITY):
+            return False
+    elif r.status not in ("merged", "superseded"):
+        return False
+    if before.get("status") == "open" and before.get("pair_key") and session.scalars(select(ReviewItem.id).where(
+            ReviewItem.pair_key == before["pair_key"], ReviewItem.status == "open", ReviewItem.id != r.id)).first():
+        return False
+    reopened = r.status != "open" and before.get("status") == "open"
+    r.status, r.canonical_id, r.pair_key = before["status"], before["canonical_id"], before.get("pair_key")
+    r.candidates = [list(c) for c in before.get("candidates") or []] or r.candidates
+    if reopened:
+        r.resolved_at, r.decided_by = None, None
+    session.flush()
+    return True
+
