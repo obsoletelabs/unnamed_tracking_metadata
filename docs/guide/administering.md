@@ -108,7 +108,9 @@ Reviewers handle proposals, duplicates and reported comments ([Reviewing](review
   of the website.
   Perceptual near-duplicates are only reported to curators (`near_duplicate_of`), never hidden.
 * **Ranking.** Curator images first, then the community's chosen default, then non-duplicates, role fit, source class
-  and trust, region and language (`?region=jp&lang=ja`), priority and measured size.
+  and trust, region and language (`?region=jp&lang=ja`), priority and measured size. The website and the API's
+  `best` (one image per kind) use it. The API list keeps its long-standing order by default, so an older client that
+  shows the first image is not surprised; `?order=quality` sorts the list by this ranking.
 * **Licence and attribution.** Each image may state `licence` (`provider_terms`, `publisher_press`, `owner_upload`,
   `cc0`, `cc-by`, `cc-by-sa`, `unknown`), `attribution` and `source_page_url`; provider images default to the
   provider's terms and name. Images under `cc-by`, `cc-by-sa`, `publisher_press` or `provider_terms`, and images

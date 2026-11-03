@@ -1004,28 +1004,47 @@ ArtRegion = Annotated[str | None, Query(max_length=8, description=(
 ArtLang = Annotated[str | None, Query(max_length=35, description="Prefer artwork (or text) in this language tag.")]
 
 
+ArtOrder = Annotated[Literal["legacy", "quality"], Query(description=(
+    "`legacy` (default): the order this list has always had, so a client that takes the first image keeps getting "
+    "the same one. `quality`: the C12 §12.5.7 ranking (curator, community choice, role fit, class, trust, region "
+    "and language, priority, measured size); `results` and `primary` both follow it."))]
+
+
 @router.get("/games/{cid}/artwork", tags=["read"])
 def get_artwork(cid: str, st: St, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
-                region: ArtRegion = None, lang: ArtLang = None, include_duplicates: bool = False):
-    """Every image of a record, best first (C12 §12.5.7): curator, then the community's choice, then not a
-    duplicate, role fit, class, trust, region and language match, priority and measured size. `primary` is the
-    best of each kind that is not an exact duplicate. Exact duplicates are left out unless `include_duplicates=1`.
-    Curator tokens also see `near_duplicate_of` (a perceptual match, reported and never hidden)."""
+                region: ArtRegion = None, lang: ArtLang = None, include_duplicates: bool = False,
+                order: ArtOrder = "legacy"):
+    """Every image of a record. By default `results` keeps its pre-C12 order (community choice, trust, priority,
+    age) and `primary` is the first of each kind in it, as before. `best` is always the C12 §12.5.7 pick of each
+    kind (curator, community choice, role fit, class, trust, region and language match, priority, measured size);
+    `order=quality` sorts `results` (and so `primary`) by that ranking too. `region` and `lang` only steer the
+    C12 ranking. Exact duplicates are left out unless `include_duplicates=1`. Curator tokens also see
+    `near_duplicate_of` (a perceptual match, reported and never hidden)."""
     from ..dates import REGION_RE
 
     if region is not None and not REGION_RE.fullmatch(region):
         raise HTTPException(422, "region must be ww, eu, na, asia, oce, latam or an ISO 3166-1 alpha-2 code")
     want_lang = facets.clean_locale(lang, "lang") if lang else None
     row, redirected = service.get_canonical(session, cid)
-    rows = facets.merged_artwork(session, st.ctx, row.id, region=region, lang=want_lang,
-                                 include_duplicates=include_duplicates)
-    near = facets.near_duplicates(rows) if principal.allows("curate") else None
-    items = [_art_out(st.ctx.settings, a, near) for a in rows]
+    ranked = facets.merged_artwork(session, st.ctx, row.id, region=region, lang=want_lang,
+                                   include_duplicates=include_duplicates)
+    near = facets.near_duplicates(ranked) if principal.allows("curate") else None
+    by_id = {a.id: _art_out(st.ctx.settings, a, near) for a in ranked}
+    best: dict[str, Any] = {}
+    for a in ranked:
+        if a.duplicate_of is None:
+            best.setdefault(a.kind, by_id[a.id])
+    if order == "quality":
+        rows = ranked
+    else:
+        rows = sorted(ranked, key=lambda a: facets.legacy_art_rank(st.ctx.settings, a))
+    items = [by_id[a.id] for a in rows]
     primary: dict[str, Any] = {}
     for it in items:
         if it["duplicate_of"] is None:
             primary.setdefault(it["kind"], it)
-    return {"id": row.id, "redirected_from": redirected, "primary": primary, "results": items}
+    return {"id": row.id, "redirected_from": redirected, "order": order, "primary": primary, "best": best,
+            "results": items}
 
 
 @router.put("/games/{cid}/artwork", tags=["curate"])
