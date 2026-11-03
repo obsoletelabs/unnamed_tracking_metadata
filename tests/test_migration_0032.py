@@ -1,7 +1,8 @@
 """Migration 0032 (relationships between works, CONTRACTS-v1 C6.3): upgrade on a 0031 database with records
 (one already merged), the application writing relations, the database enforcing one active row per triple and
 no self relation, downgrade keeping the rows aside, a merge made by the previous release while downgraded, and
-upgrade again ending the relation that names the merged record.
+upgrade again replaying that merge with the same `move` a 1.4 follower runs (the follower side is
+`tests/test_relations.py::test_restore_after_a_downgrade_converges_with_a_follower_that_applied_the_merge`).
 
 Runs on SQLite always and on PostgreSQL when ATLAS_TEST_PG_URL is set (or `pgserver` is installed)."""
 
@@ -44,7 +45,8 @@ def version(engine) -> str:
 
 # What a 0031 node holds: live records, one merged into another (its redirect), all with views and versions.
 RECORDS = {"atlas:base": "Base Game", "atlas:dlc": "Base Game Expansion", "atlas:port": "Base Game Handheld",
-           "atlas:mod": "Base Game Overhaul", "atlas:old": "Base Game (dup)"}
+           "atlas:mod": "Base Game Overhaul", "atlas:old": "Base Game (dup)",
+           "atlas:hand2": "Base Game Handheld II"}
 
 
 def seed(engine):
@@ -80,7 +82,7 @@ def app(url):
     return maker, ctx
 
 
-def test_upgrade_writes_downgrade_keeps_and_reupgrade_ends_merged(url):
+def test_upgrade_writes_downgrade_keeps_and_reupgrade_replays_the_merge(url):
     db.upgrade(url, "0031")
     engine = create_engine(url)
     seed(engine)
@@ -98,11 +100,13 @@ def test_upgrade_writes_downgrade_keeps_and_reupgrade_ends_merged(url):
     with maker() as s:  # the application writes through the redirect of the merged record
         relations.add(s, ctx, "atlas:dlc", "atlas:old", "expansion_of", actor="cur")
         relations.add(s, ctx, "atlas:port", "atlas:base", "port_of", actor="cur")
+        relations.add(s, ctx, "atlas:hand2", "atlas:port", "port_of", actor="cur")
         relations.add(s, ctx, "atlas:mod", "atlas:base", "mod_of", actor="cur")
         relations.end(s, ctx, "atlas:mod", "atlas:base", "mod_of", actor="cur")
         relations.add(s, ctx, "atlas:mod", "atlas:base", "mod_of", actor="cur")
         s.commit()
     assert relation_rows(engine) == [("atlas:dlc", "atlas:base", "expansion_of", False, ""),
+                                     ("atlas:hand2", "atlas:port", "port_of", False, ""),
                                      ("atlas:mod", "atlas:base", "mod_of", False, ""),
                                      ("atlas:mod", "atlas:base", "mod_of", True, "removed"),
                                      ("atlas:port", "atlas:base", "port_of", False, "")]
@@ -119,7 +123,7 @@ def test_upgrade_writes_downgrade_keeps_and_reupgrade_ends_merged(url):
                        "'atlas:base', 'port_of', 'curator', false, :n, :n, 'removed', '')"), {"n": NOW})
     with engine.connect() as c:
         kept_count = c.execute(text("SELECT count(*) FROM relation")).scalar()
-    assert kept_count == 5
+    assert kept_count == 6
 
     db.downgrade(url, "0031")
     assert version(engine) == "0031"
@@ -132,16 +136,34 @@ def test_upgrade_writes_downgrade_keeps_and_reupgrade_ends_merged(url):
     with engine.begin() as c:
         c.execute(text("UPDATE canonical SET merged_into = 'atlas:base' WHERE id = 'atlas:port'"))
 
-    db.upgrade(url)
+    versions = {cid: v for cid, (_view, v, _m) in snapshot(engine).items()}
+
+    # Only the schema step (alembic alone): the table is back and the node is marked for the replay.
+    from alembic import command
+    command.upgrade(db.alembic_config(url), "head")
     assert version(engine) == "0032"
     tables = set(inspect(engine).get_table_names())
     assert "relation" in tables and KEPT not in tables
     assert INDEXES <= {i["name"] for i in inspect(engine).get_indexes("relation")}
+    with engine.connect() as c:
+        assert c.execute(text("SELECT value FROM node_state WHERE key = :k"),
+                         {"k": relations.RESTORE_KEY}).scalar() == "pending"
+
+    # `atlas migrate` (db.upgrade) then runs the application step: the merge is replayed with `move`.
+    db.upgrade(url)
     assert relation_rows(engine) == [("atlas:dlc", "atlas:base", "expansion_of", False, ""),
+                                     ("atlas:hand2", "atlas:base", "port_of", False, ""),  # moved to the survivor
                                      ("atlas:mod", "atlas:base", "mod_of", False, ""),
                                      ("atlas:mod", "atlas:base", "mod_of", True, "removed"),
-                                     ("atlas:port", "atlas:base", "port_of", True, "downgraded"),  # names a merged record
+                                     ("atlas:port", "atlas:base", "port_of", True, "merge_self"),  # base -> base
                                      ("atlas:port", "atlas:base", "port_of", True, "removed")]
+    after = {cid: v for cid, (_view, v, _m) in snapshot(engine).items()}
+    assert {cid for cid in after if after[cid] != versions[cid]} == {"atlas:base", "atlas:port", "atlas:hand2"}
+    with engine.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM node_state WHERE key = :k"),
+                         {"k": relations.RESTORE_KEY}).scalar() == 0
+    db.upgrade(url)  # idempotent: nothing pending, nothing changes
+    assert {cid: v for cid, (_view, v, _m) in snapshot(engine).items()} == after
     with engine.connect() as c:
         assert c.execute(text("SELECT count(*) FROM relation")).scalar() == kept_count
         merged = {r[0] for r in c.execute(text("SELECT id FROM canonical WHERE merged_into IS NOT NULL"))}
@@ -152,6 +174,7 @@ def test_upgrade_writes_downgrade_keeps_and_reupgrade_ends_merged(url):
     with maker() as s:  # the application reads and writes the restored table
         block = relations.of(s, "atlas:base")
         assert sorted((c["id"], c["type"]) for c in block["children"]) == [("atlas:dlc", "expansion_of"),
+                                                                          ("atlas:hand2", "port_of"),
                                                                           ("atlas:mod", "mod_of")]
         with pytest.raises(relations.AtlasError, match="cycle"):
             relations.add(s, ctx, "atlas:base", "atlas:mod", "remake_of")
