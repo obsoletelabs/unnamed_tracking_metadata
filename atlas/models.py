@@ -541,8 +541,25 @@ class Artwork(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     # the community's chosen default for its kind on this game (set through a reviewed proposal); local to this node
     preferred: Mapped[bool] = mapped_column(Boolean, default=False)
+    # C12 §12.5 (migration 0035). `width`/`height` are the measured size once cached (a differing declaration is
+    # kept in `declared_*`); `aspect` and `dhash` come from the decoded image; `duplicate_of` names the visible row
+    # of a group of rows of one record and kind holding the same bytes (§12.5.4).
+    declared_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    declared_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    aspect: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    dhash: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    duplicate_of: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    region: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    locale: Mapped[str | None] = mapped_column(String(35), nullable=True)
+    licence: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    attribution: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    source_page_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # an upload whose licence cannot enter the CC0 feed stays on this node (§12.5.5, H47)
+    local_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
-    __table_args__ = (UniqueConstraint("canonical_id", "kind", "url", name="uq_artwork"),)
+    __table_args__ = (UniqueConstraint("canonical_id", "kind", "url", name="uq_artwork"),
+                      Index("ix_artwork_dup", "canonical_id", "kind", "blob_hash"))
 
 
 class ArtworkVote(Base):
@@ -584,9 +601,74 @@ class Achievement(Base):
     position: Mapped[int | None] = mapped_column(Integer, nullable=True)  # order chosen by people (curator/community)
     # stable wire key (CONTRACTS-v1 C2): "ak1:" + 26 base32 characters of sha256(identity); stored, never re-derived
     key: Mapped[str] = mapped_column(String(30), default=achievement_key.default_key)
+    # C12 §12.1 (migration 0035). The set (group) the row belongs to inside its source's list; not part of the key.
+    set_key: Mapped[str] = mapped_column(String(64), default="base", server_default="base")
+    # the item's index in its source's list, always stored (§12.1.3); `position` stays the people-chosen order
+    source_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # active | unobtainable (absent: unknown)
+    # set when the source stopped listing the row: retired rows keep id and key and revive when the item returns
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    text_locale: Mapped[str | None] = mapped_column(String(35), nullable=True)  # language of name/description
+    percent_as_of: Mapped[date | None] = mapped_column(Date, nullable=True)  # when global_percent was measured
+    icon_licence: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    icon_attribution: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    icon_last_error: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    locked_icon_last_error: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
-    __table_args__ = (UniqueConstraint("canonical_id", "source", "norm_name", name="uq_achievement"),
+    # F1 (C12 §12.1.4, amended A18): a row is identified inside its source by external id *and* name, so two
+    # achievements that share a name but not an external id are both kept.
+    __table_args__ = (Index("uq_achievement_ident", "canonical_id", "source", "external_id", "norm_name", unique=True),
                       Index("uq_achievement_key", "canonical_id", "key", unique=True))
+
+
+class AchievementSet(Base):
+    """A named group of one source's achievements on one record: base game, DLC, edition, platform... (§12.1.1)."""
+
+    __tablename__ = "achievement_set"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"))
+    source: Mapped[str] = mapped_column(String(128))
+    set_key: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))
+    name: Mapped[str] = mapped_column(String(200), default="", server_default="")
+    # no foreign key: the DLC's record may be one this node does not hold (§12.4); resolved at read time
+    dlc_canonical_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    edition: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    platforms: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+    __table_args__ = (Index("uq_achievement_set", "canonical_id", "source", "set_key", unique=True),
+                      Index("ix_achievement_set_dlc", "dlc_canonical_id"))
+
+
+class AchievementText(Base):
+    """A translation of one achievement row's name and description (§12.1.7). Never part of its identity."""
+
+    __tablename__ = "achievement_text"
+
+    achievement_id: Mapped[str] = mapped_column(ForeignKey("achievement.id", ondelete="CASCADE"), primary_key=True)
+    locale: Mapped[str] = mapped_column(String(35), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+
+
+class AchievementStat(Base):
+    """A provider's global unlock percentage fetched apart from its definitions (§12.1.6). Local only, never
+    federated; matched to rows by (source, external_id) at read time and never creates a row."""
+
+    __tablename__ = "achievement_stat"
+
+    canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), primary_key=True)
+    source: Mapped[str] = mapped_column(String(128), primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    percent: Mapped[float] = mapped_column(Float)
+    as_of: Mapped[date] = mapped_column(Date)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    __table_args__ = (CheckConstraint("percent >= 0 AND percent <= 100", name="ck_achievement_stat_percent"),)
 
 
 class User(Base):

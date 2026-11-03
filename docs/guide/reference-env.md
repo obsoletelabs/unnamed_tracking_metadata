@@ -81,6 +81,8 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_MAX_BODY_BYTES` | `2000000` | Largest request body accepted. |
 | `ATLAS_JSON_LOGS` | `false` | Opt-in structured request/application logs; no query, body or credential logging. |
 | `ATLAS_METRICS_ENABLED` | `false` | Enable `/metrics`; a `metrics`-scoped bearer token is required. |
+| `ATLAS_ACHIEVEMENT_PERCENT_MAX_AGE_DAYS` | `30` | Days after which an achievement's rarity is shown as stale and a fresher value from another source wins (C12 §12.1.6). |
+| `ATLAS_ACHIEVEMENT_RETIRED_RETENTION_DAYS` | `180` | Days a retired achievement row (one its source no longer lists) is kept, with its id and key, before it is deleted (C12 §12.1.3, H37). |
 
 ## Providers
 
@@ -104,6 +106,12 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_MEDIA_MAX_PIXELS` | `40000000` | Largest image by pixel count (decompression-bomb guard). |
 | `ATLAS_MEDIA_CACHE_BATCH` | `10` | Images processed per background pass. |
 | `ATLAS_MEDIA_ALLOWED_HOSTS` | — | If non-empty, only these hostnames may be downloaded from. Always public addresses only. |
+| `ATLAS_MEDIA_HTTPS_ONLY` | `true` | New downloads need `https` (C12 §12.6, H40). A redirect from https to http is refused either way. |
+| `ATLAS_MEDIA_FETCH_DEADLINE_S` | `20` | Seconds one download may take in all, redirects and body included (5-60). |
+| `ATLAS_MEDIA_HOST_CONCURRENCY` | `2` | Simultaneous downloads from one host, per process. |
+| `ATLAS_MEDIA_HOST_RPM` | `60` | Downloads from one host per minute, per process. Over the limit an image waits a minute; it is not counted as a failure. |
+| `ATLAS_MEDIA_MAX_FRAMES` | `300` | Most frames an animated image may have; the frames together may have at most 4 x `ATLAS_MEDIA_MAX_PIXELS` pixels. |
+| `ATLAS_MEDIA_POLICY` | — | JSON overrides of the per-source media policy (C12 §12.5.5), for example `{"steam": {"fetch": "redirect"}}`. Fields: `fetch` (`proxy`, `redirect`, `none`), `federate`, `licence`, `attribution`, `redirect_hosts`. An unknown field or value stops the node at start-up. |
 
 ## Branding
 

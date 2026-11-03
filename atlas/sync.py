@@ -490,8 +490,12 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
             facets.set_artwork(session, ctx, body["canonical_id"], body["source"], body["items"],
                                redistributable=True, log=False)
         else:  # the authority's stored keys win, so mirror and authority publish the same keys (C2.2)
+            from .merge import source_class
+
+            # a curated list was arranged by hand: its order is its position here too (C12 §12.1.3, QV4)
+            curated = source_class(body["source"]) in ("curator", "community")
             facets.set_achievements(session, ctx, body["canonical_id"], body["source"], body["items"],
-                                    redistributable=True, log=False, adopt_keys=True)
+                                    redistributable=True, log=False, adopt_keys=True, ordered=curated)
     elif kind == "schema":
         from . import custom
 

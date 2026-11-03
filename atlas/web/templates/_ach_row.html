@@ -6,7 +6,7 @@
 <input type="hidden" name="row" value="{{ r.key }}">
 <input type="hidden" name="external_id.{{ r.key }}" value="{{ r.external_id }}">
 <input type="hidden" name="akey.{{ r.key }}" value="{{ r.akey }}">
-<input type="hidden" name="global_percent.{{ r.key }}" value="{{ r.global_percent }}">
+<input type="hidden" name="extra.{{ r.key }}" value="{{ r.extra }}">
 {% for e in r.errors %}<p class="field-error" role="alert">{{ e }}</p>{% endfor %}
 {% for n in r.notes %}<p class="small muted">{{ n }}</p>{% endfor %}
 <div class="ach-grid">
@@ -15,6 +15,8 @@
 <div><label for="kind-{{ r.key }}">Kind</label><select id="kind-{{ r.key }}" name="kind.{{ r.key }}">{% for v, label in kinds %}<option value="{{ v }}" {{ 'selected' if v == r.kind }}>{{ label }}{% if not v and r.inherited.get('kind') %} (from {{ r.inherited.kind[1] }}: {{ r.inherited.kind[0]|replace('_', ' ') }}){% endif %}</option>{% endfor %}</select></div>
 <div><label for="tier-{{ r.key }}">Tier</label><select id="tier-{{ r.key }}" name="tier.{{ r.key }}">{% for v, label in tiers %}<option value="{{ v }}" {{ 'selected' if v == r.tier }}{{ ' disabled' if v == 'platinum' and platinum_gated and v != r.tier }}>{{ label }}{% if v == 'platinum' and platinum_gated %} (needs federation protocol 1.2){% endif %}{% if not v and r.inherited.get('tier') %} (from {{ r.inherited.tier[1] }}: {{ r.inherited.tier[0] }}){% endif %}</option>{% endfor %}</select></div>
 <div><label for="pts-{{ r.key }}">Points</label><input id="pts-{{ r.key }}" type="text" name="points.{{ r.key }}" value="{{ r.points }}" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="{{ ('from ' ~ r.inherited.points[1] ~ ': ' ~ r.inherited.points[0]) if r.inherited.get('points') else 'none' }}"></div>
+<div><label for="pct-{{ r.key }}">Rarity (%)</label><input id="pct-{{ r.key }}" type="text" name="global_percent.{{ r.key }}" value="{{ r.global_percent }}" inputmode="decimal" maxlength="8" placeholder="{{ ('from ' ~ r.inherited.rarity[1] ~ ': ' ~ r.inherited.rarity[0]) if r.inherited.get('rarity') else 'unknown' }}" aria-describedby="pct-help-{{ r.key }}"><span id="pct-help-{{ r.key }}" class="visually-hidden">Share of players who have it, 0 to 100</span></div>
+<div><label for="status-{{ r.key }}">Status</label><select id="status-{{ r.key }}" name="status.{{ r.key }}"><option value="" {{ 'selected' if not r.status }}>Obtainable</option><option value="unobtainable" {{ 'selected' if r.status == 'unobtainable' }}>Unobtainable</option></select></div>
 <div class="ach-check"><label><input type="checkbox" name="hidden.{{ r.key }}" value="1" {{ 'checked' if r.hidden }}> Hidden (secret) achievement</label></div>
 <div class="ach-icon-field"><label for="icon-{{ r.key }}">Icon (unlocked)</label>
 <div class="ach-icon-row">{% if r.icon_blob %}<img src="/media/{{ r.icon_blob }}" alt="Current icon" width="48" height="48">{% else %}<span class="ach-ph" aria-hidden="true">{{ '…' if r.icon_url else '–' }}</span>{% endif %}

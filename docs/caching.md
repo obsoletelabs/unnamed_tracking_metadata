@@ -23,6 +23,10 @@ Canonical mutations should invalidate affected search/metadata keys rather than 
 
 Original images and generated derivatives are content-addressed. Responses use `Cache-Control: public, max-age=31536000, immutable` and an ETag derived from the original SHA-256. Replacing an asset therefore creates a new URL rather than mutating a cached URL.
 
+`/api/v2/media/<sha256>` names the bytes and is immutable. `/api/v2/artwork/<id>/image` names a row whose image can
+change: it answers `Cache-Control: public, max-age=300` with the digest as `ETag` (C12 §12.5.5). A source whose media
+policy is `redirect` or `none` stops being served from `/media` at once, even when bytes are still on disk.
+
 ## Consistency
 
 - Canonical writes: strongly consistent in PostgreSQL.

@@ -124,6 +124,22 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "media_max_bytes": ("Artwork", "Largest image accepted (bytes)."),
     "media_max_pixels": ("Artwork", "Largest image by pixel count (decompression-bomb guard)."),
     "media_cache_batch": ("Artwork", "Images processed per background pass."),
+    "media_https_only": ("Artwork", "New downloads need `https` (C12 §12.6, H40). A redirect from https to http is "
+                         "refused either way."),
+    "media_fetch_deadline_s": ("Artwork", "Seconds one download may take in all, redirects and body included (5-60)."),
+    "media_host_concurrency": ("Artwork", "Simultaneous downloads from one host, per process."),
+    "media_host_rpm": ("Artwork", "Downloads from one host per minute, per process. Over the limit an image waits a "
+                       "minute; it is not counted as a failure."),
+    "media_max_frames": ("Artwork", "Most frames an animated image may have; the frames together may have at most 4 x "
+                         "`ATLAS_MEDIA_MAX_PIXELS` pixels."),
+    "media_policy": ("Artwork", "JSON overrides of the per-source media policy (C12 §12.5.5), for example "
+                     "`{\"steam\": {\"fetch\": \"redirect\"}}`. Fields: `fetch` (`proxy`, `redirect`, `none`), "
+                     "`federate`, `licence`, `attribution`, `redirect_hosts`. An unknown field or value stops the "
+                     "node at start-up."),
+    "achievement_percent_max_age_days": ("Limits", "Days after which an achievement's rarity is shown as stale and a "
+                                         "fresher value from another source wins (C12 §12.1.6)."),
+    "achievement_retired_retention_days": ("Limits", "Days a retired achievement row (one its source no longer lists) "
+                                           "is kept, with its id and key, before it is deleted (C12 §12.1.3, H37)."),
     "media_allowed_hosts": ("Artwork", "If non-empty, only these hostnames may be downloaded from. Always public addresses only."),
     "backup_dir": ("Backups", "Folder for scheduled backups (use a persistent volume). Unset = no scheduled backups."),
     "backup_interval_hours": ("Backups", "Hours between scheduled backups (default 24)."),

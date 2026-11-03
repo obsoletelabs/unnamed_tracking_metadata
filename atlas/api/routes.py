@@ -34,6 +34,7 @@ from .. import (
 )
 from .. import client_changes as client_change_log
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
+from ..merge import source_class
 from ..models import (
     Artwork,
     Canonical,
@@ -51,7 +52,7 @@ from ..models import (
     Token,
 )
 from ..normalize import norm_namespace
-from ..providers import ProviderError
+from ..providers import ProviderError, media_policy
 from ..resolve import Resolution, classify, conflict_review
 from ..service import AtlasError
 from ..signing import load_identity, signing_key_at_rest
@@ -973,23 +974,57 @@ ACHIEVEMENT_PAGE_MAX = 200
 
 class AchievementsBody(BaseModel):
     items: list[dict[str, Any]] = Field(max_length=2000)
+    #: C12 §12.1.1: the list's sets (absent: every item is in `base`)
+    sets: list[dict[str, Any]] | None = Field(default=None, max_length=50)
 
 
-def _art_out(a: Artwork) -> dict[str, Any]:
-    return {"id": a.id, "kind": a.kind, "url": a.url, "width": a.width, "height": a.height, "source": a.source,
-            "preferred": a.preferred, "cached": a.blob_hash is not None,
-            "media_url": f"/api/v2/media/{a.blob_hash}" if a.blob_hash else None,
-            # always usable: the cached bytes when we have them, else a redirect to the original source
-            "image_url": f"/api/v2/artwork/{a.id}/image"}
+def _art_out(settings: Any, a: Artwork, near: dict[str, str] | None = None) -> dict[str, Any]:
+    fetch = media.fetch_policy(settings, a.source, a.url)
+    pol = media_policy.policy(settings, a.source)
+    out = {"id": a.id, "kind": a.kind, "url": a.url, "width": a.width, "height": a.height, "source": a.source,
+           "preferred": a.preferred, "cached": a.blob_hash is not None,
+           "media_url": f"/api/v2/media/{a.blob_hash}" if a.blob_hash else None,
+           # the cached bytes when we have them; a redirect only to the source's allow-listed hosts (H50)
+           "image_url": f"/api/v2/artwork/{a.id}/image",
+           # C12 §12.5 (additive): measured vs declared size, role fit, duplicates, variants, licence, state
+           "declared_width": a.declared_width, "declared_height": a.declared_height, "aspect": a.aspect,
+           "role_fit": facets.role_fit(a), "class": source_class(a.source), "duplicate_of": a.duplicate_of,
+           "region": a.region, "locale": a.locale,
+           "licence": a.licence or pol.licence or ("owner_upload" if media.is_upload(settings, a.url) else "unknown"),
+           "attribution": a.attribution or pol.attribution, "source_page_url": a.source_page_url,
+           "local_only": a.local_only, "serve": fetch, "state": media.describe_state(settings, a),
+           "last_error": a.last_error}
+    if near is not None:
+        out["near_duplicate_of"] = near.get(a.id)
+    return out
+
+
+ArtRegion = Annotated[str | None, Query(max_length=8, description=(
+    "Prefer artwork of this region (`ww`, `eu`, `na`, `asia`, `oce`, `latam` or ISO 3166-1 alpha-2)."))]
+ArtLang = Annotated[str | None, Query(max_length=35, description="Prefer artwork (or text) in this language tag.")]
 
 
 @router.get("/games/{cid}/artwork", tags=["read"])
-def get_artwork(cid: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+def get_artwork(cid: str, st: St, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
+                region: ArtRegion = None, lang: ArtLang = None, include_duplicates: bool = True):
+    """Every image of a record, best first (C12 §12.5.7): curator, then the community's choice, then not a
+    duplicate, role fit, class, trust, region and language match, priority and measured size. `primary` is the
+    best of each kind that is not an exact duplicate. `include_duplicates=false` leaves the duplicates out.
+    Curator tokens also see `near_duplicate_of` (a perceptual match, reported and never hidden)."""
+    from ..dates import REGION_RE
+
+    if region is not None and not REGION_RE.fullmatch(region):
+        raise HTTPException(422, "region must be ww, eu, na, asia, oce, latam or an ISO 3166-1 alpha-2 code")
+    want_lang = facets.clean_locale(lang, "lang") if lang else None
     row, redirected = service.get_canonical(session, cid)
-    items = [_art_out(a) for a in facets.merged_artwork(session, st.ctx, row.id)]
+    rows = facets.merged_artwork(session, st.ctx, row.id, region=region, lang=want_lang,
+                                 include_duplicates=include_duplicates)
+    near = facets.near_duplicates(rows) if principal.allows("curate") else None
+    items = [_art_out(st.ctx.settings, a, near) for a in rows]
     primary: dict[str, Any] = {}
     for it in items:
-        primary.setdefault(it["kind"], it)
+        if it["duplicate_of"] is None:
+            primary.setdefault(it["kind"], it)
     return {"id": row.id, "redirected_from": redirected, "primary": primary, "results": items}
 
 
@@ -1002,16 +1037,54 @@ def put_artwork(cid: str, body: ArtworkBody, st: St, session: Sess,
     return {"count": n}
 
 
+@router.get("/artwork/misfits", tags=["curate"])
+def get_artwork_misfits(session: Sess, _: Annotated[auth.Principal, Depends(require("curate"))],
+                        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+                        cursor: Annotated[str | None, Query(max_length=26)] = None):
+    """Measured images whose aspect does not suit their role (C12 §12.5.3), by id, for curators. Scans at most
+    2000 measured rows per call; follow `next_cursor` until it is null."""
+    q = select(Artwork).where(Artwork.aspect.is_not(None)).order_by(Artwork.id)
+    if cursor:
+        q = q.where(Artwork.id > cursor)
+    out, last = [], None
+    for a in session.scalars(q.limit(2000)):
+        last = a.id
+        if facets.role_fit(a) is False:
+            out.append({"id": a.id, "canonical_id": a.canonical_id, "kind": a.kind, "aspect": a.aspect,
+                        "width": a.width, "height": a.height, "source": a.source})
+            if len(out) >= limit:
+                break
+    more = last is not None and session.scalar(select(Artwork.id).where(
+        Artwork.aspect.is_not(None), Artwork.id > last).limit(1)) is not None
+    return {"results": out, "next_cursor": last if more else None}
+
+
+SetQuery = Annotated[str | None, Query(alias="set", max_length=200, description=(
+    "Only this set (`<source>/<key>` or `<key>`)."))]
+PlatformQuery = Annotated[str | None, Query(max_length=50, description="Only sets that apply to this platform.")]
+OrderQuery = Annotated[str | None, Query(max_length=10, description=(
+    "`rarity` (default), `source` (the provider's list order) or `name`."))]
+
+
 @router.get("/games/{cid}/achievements", tags=["read"])
 def get_achievements(cid: str, st: St, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
+                     response: Response,
                      reveal: Annotated[str | None, Query(max_length=2000)] = None,
                      limit: Annotated[int | None, Query(ge=1, le=ACHIEVEMENT_PAGE_MAX)] = None,
-                     offset: Annotated[int, Query(ge=0)] = 0):
+                     offset: Annotated[int, Query(ge=0)] = 0, set_: SetQuery = None,
+                     platform: PlatformQuery = None, lang: ArtLang = None, order: OrderQuery = None,
+                     include_retired: bool = False):
     """Hidden achievements come back redacted. `reveal=all` or `reveal=<id or key>,...` unlocks their real text, but
     only for a signed-in user's own token or a curator/admin token; any other caller still gets the redacted rows.
+    A response that reveals anything is `Cache-Control: private, no-store` (C12 §12.1.8).
 
     Each entry carries a stable `key` (`ak1:…`, the smallest of `keys`, the stored keys of the rows merged into it)
     and `key_identity` (null while redacted). `id` stays for older clients and is deprecated as an identity.
+
+    C12 (additive): `sets` lists the record's achievement sets (base game, DLC, editions, platforms) and every
+    entry names its `set`, `status`, `rarity` (percent, source, as_of, stale, band) and `lang`. `set`, `platform`,
+    `lang`, `order` and `include_retired` (curators only) select and arrange; `sets_elsewhere` names DLC sets
+    listed on another record that point at this one.
 
     Large catalogues can be read in pages: pass `limit` (at most 200) and `offset`, and follow `next_offset` until it
     is null. The order is stable, so pages never overlap or skip. Without `limit` the whole list is returned."""
@@ -1020,22 +1093,28 @@ def get_achievements(cid: str, st: St, session: Sess, principal: Annotated[auth.
     wanted: bool | set[str] = False
     if reveal and allowed:
         wanted = True if reveal.strip().lower() == "all" else {i.strip() for i in reveal.split(",") if i.strip()}
-    results = facets.merged_achievements(session, st.ctx, row.id, reveal=wanted)
+    listing = facets.achievement_listing(session, st.ctx, row.id, reveal=wanted, lang=lang, order=order,
+                                         set_filter=set_, platform=platform,
+                                         include_retired=include_retired and principal.allows("curate"))
+    results = listing["results"]
     total = len(results)
     hidden_count = sum(1 for r in results if r["hidden"])
     next_offset = None
     if limit is not None:
         next_offset = offset + limit if offset + limit < total else None
         results = results[offset:offset + limit]
+    if listing["revealed_any"]:
+        response.headers["Cache-Control"] = "private, no-store"
     return {"id": row.id, "redirected_from": redirected, "hidden_count": hidden_count, "total": total,
-            "next_offset": next_offset, "results": results}
+            "next_offset": next_offset, "sets": listing["sets"], "lang": listing["lang"],
+            "sets_elsewhere": facets.sets_elsewhere(session, st.ctx, row.id), "results": results}
 
 
 @router.put("/games/{cid}/achievements", tags=["curate"])
 def put_achievements(cid: str, body: AchievementsBody, st: St, session: Sess,
                      _: Annotated[auth.Principal, Depends(require("curate"))]):
     _guard_upstream(session, st, cid)
-    n = facets.set_achievements(session, st.ctx, cid, "curator", body.items, ordered=True,
+    n = facets.set_achievements(session, st.ctx, cid, "curator", body.items, sets=body.sets, ordered=True,
                                 redistributable=st.ctx.settings.role == "authority")
     return {"count": n}
 
@@ -1119,35 +1198,48 @@ def price_status(session: Sess, _: Annotated[auth.Principal, Depends(require("ad
 
 @router.get("/artwork/{art_id}/image", tags=["read"])
 def get_artwork_image(art_id: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
-    """Cached bytes when available; otherwise pass the client through to the image's original public address."""
+    """The image of one artwork row (C12 §12.5.5, H50): the cached bytes of a `proxy` source; a 307 to the
+    original only for a `redirect` source and only to one of that source's allow-listed hosts; 404 otherwise (an
+    image not cached yet, a source that is `none`, an address outside the allow-list)."""
     from fastapi.responses import RedirectResponse
 
     art = session.get(Artwork, art_id)
     if art is None:
         raise HTTPException(404, "no such image")
-    if art.blob_hash and media.find_blob(st.ctx.settings, art.blob_hash):
-        return media_response(st, art.blob_hash)
+    fetch = media.fetch_policy(st.ctx.settings, art.source, art.url)
+    if fetch == "proxy" and art.blob_hash and media.find_blob(st.ctx.settings, art.blob_hash):
+        return media_response(st, art.blob_hash, etag=True)
+    if fetch != "redirect":
+        raise HTTPException(404, "image is not available yet" if fetch == "proxy" else "image is not served here")
     try:
-        media.check_url(art.url, st.ctx.settings)  # only ever send clients to plain public addresses
+        _scheme, host, _port, _ip = media.check_url(art.url, st.ctx.settings)  # public https addresses only
     except media.MediaError:
         raise HTTPException(404, "image is not available") from None
-    return RedirectResponse(art.url, status_code=307, headers={"Cache-Control": "private, max-age=300"})
+    if host.lower() not in media_policy.policy(st.ctx.settings, art.source).redirect_hosts:
+        raise HTTPException(404, "image is not available")
+    return RedirectResponse(art.url, status_code=307, headers={"Cache-Control": "public, max-age=300"})
 
 
-def media_response(st: AppState, digest: str):
+def media_response(st: AppState, digest: str, *, etag: bool = False):
+    """`etag` is for addresses whose bytes can change (the per-row image route): a short public cache and the
+    digest as ETag. `/media/<sha256>` names the bytes themselves and is immutable."""
     from fastapi.responses import FileResponse
 
     found = media.find_blob(st.ctx.settings, digest)
     if found is None:
         raise HTTPException(404, "no such image")
     path, ctype = found
-    return FileResponse(path, media_type=ctype, headers={
-        "Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff",
-        "Content-Security-Policy": "default-src 'none'; sandbox"})
+    headers = {"Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff",
+               "Content-Security-Policy": "default-src 'none'; sandbox"}
+    if etag:
+        headers.update({"Cache-Control": "public, max-age=300", "ETag": f'"{digest}"'})
+    return FileResponse(path, media_type=ctype, headers=headers)
 
 
 @router.get("/media/{digest}", tags=["read"])
-def get_media(digest: str, st: St, _: Annotated[auth.Principal, Depends(require("read"))]):
+def get_media(digest: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+    if not media.servable(session, st.ctx.settings, digest):  # a provider switched to redirect/none (§12.5.5)
+        raise HTTPException(404, "no such image")
     return media_response(st, digest)
 
 
