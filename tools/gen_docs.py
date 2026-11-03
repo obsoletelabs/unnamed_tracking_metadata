@@ -219,6 +219,7 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/games/{cid}/provenance/observations"): "Every observation of a record, newest first, paged.",
     ("get", "/games/{cid}/decisions"): "Match decisions for a record and the records merged into it, newest first.",
     ("get", "/observations/{oid}/decision"): "The newest match decision recorded for one observation.",
+    ("get", "/artwork/misfits"): "Measured images whose aspect does not suit their role (C12 §12.5.3), for curators.",
     ("get", "/conflicts"): "Records whose `field` has disagreeing sources in the winning trust class.",
     ("get", "/merges"): "Merge records of a record (`canonical_id`).",
     ("get", "/merges/{merge_id}"): "One merge record with its item counts.",
