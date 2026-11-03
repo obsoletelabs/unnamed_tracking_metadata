@@ -474,11 +474,14 @@ _ART_FIELDS = ("region", "locale", "licence", "attribution", "source_page_url")
 
 
 def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[dict[str, Any]], *,
-                redistributable: bool = False, log: bool = True) -> int:
+                redistributable: bool = False, log: bool = True, skipped: list[dict[str, Any]] | None = None) -> int:
     """Replace the artwork a source contributes to a record. Cached bytes survive for unchanged URLs.
 
     An upload (this node's own /media/ address) is `owner_upload` unless it says otherwise, and one whose licence
-    cannot enter the CC0 feed must be marked `local_only` (§12.5.5, H47: `licence_not_federable`)."""
+    cannot enter the CC0 feed must be marked `local_only` (§12.5.5, H47: `licence_not_federable`). An image another
+    source of the record already lists (same kind and address) stays that source's; it is not stored for this one,
+    and `skipped`, when given, receives `{kind, url, held_by, reason}` for each (Phase 4 note O3). Returns the
+    number of items given, as before."""
     write_lock(session)
     _live(session, cid)
     source = norm_namespace(source)
@@ -509,6 +512,9 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
             clash = session.scalars(select(Artwork).where(
                 Artwork.canonical_id == cid, Artwork.kind == i["kind"], Artwork.url == i["url"])).first()
             if clash:  # another source already lists this exact image; it keeps it
+                if skipped is not None:
+                    skipped.append({"kind": i["kind"], "url": i["url"], "held_by": clash.source,
+                                    "reason": "held_by_another_source"})
                 continue
             art = Artwork(canonical_id=cid, source=source, kind=i["kind"], url=i["url"],
                           priority=i["priority"], width=i.get("width"), height=i.get("height"),

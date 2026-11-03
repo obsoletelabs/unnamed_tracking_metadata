@@ -362,6 +362,8 @@ def add(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, sour
         bump_version(session, dst.id, "feed")
         return existing, True
     if existing is not None:
+        if _pending_publication(existing) and _signed(ctx, log, local_only) and not gated(ctx):
+            publish_pending(session, ctx, existing)
         return existing, False
     check(session, src, dst, kind, replicated_only=origin is not None)
     signed = _signed(ctx, log, local_only)
@@ -378,6 +380,31 @@ def add(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, sour
     for cid in sorted(touched | {src.id, dst.id}):
         bump_version(session, cid, cause)
     return row, True
+
+
+def _pending_publication(row: Relation) -> bool:
+    """A curator relation an authority stored while it was gated (emit below 1.4): meant for the feed
+    (`redistributable`), never signed (no `feed_seq`), not from an upstream."""
+    return row.redistributable and row.feed_seq is None and row.origin_node is None and row.ended_at is None
+
+
+def publish_pending(session: Session, ctx: Ctx, row: Relation) -> None:
+    """Sign a relation stored while this authority was gated, now that it may (Phase 4 note O1: re-PUTting it used
+    to answer `published: true` and sign nothing). It is judged against the published rows first, as every
+    follower will judge the signed entry; a conflict raises (409) and nothing is signed."""
+    src, dst = _live(session, row.from_id, "from"), _live(session, row.to_id, "to")
+    check(session, src, dst, row.type, replicated_only=True)
+    row.feed_seq = feed.emit(session, ctx, "relation", {"op": "add", "from": src.id, "to": dst.id, "type": row.type,
+                                                        "source": row.source})
+    bump_version(session, src.id, "feed")
+    bump_version(session, dst.id, "feed")
+
+
+def pending_count(session: Session, cid: str) -> int:
+    """This record's own outgoing relations stored but not signed (an authority below emit 1.4)."""
+    return session.scalar(select(func.count()).select_from(Relation).where(
+        Relation.from_id == cid, _active(), Relation.redistributable.is_(True), Relation.feed_seq.is_(None),
+        Relation.origin_node.is_(None))) or 0
 
 
 def end(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, actor: str = "", log: bool = True,
@@ -398,8 +425,9 @@ def end(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, acto
         return None  # a feed `end` only ends a row that came from the feed, never a local one
     if log and row.origin_node is not None and not managed_ok:
         raise AtlasError("this relation is managed by the upstream authority", "conflict")
-    signed = log and ctx.settings.role == "authority" and row.redistributable and row.origin_node is None
-    if signed and gated(ctx) and row.feed_seq is not None:
+    # only a relation the feed holds is ended in it: one stored while gated and never signed ends here only
+    signed = log and ctx.settings.role == "authority" and row.feed_seq is not None and row.origin_node is None
+    if signed and gated(ctx):
         raise AtlasError(gate_message(ctx, "removing a published relation"), "emit_protocol")
     row.ended_at, row.end_reason = now(), (reason if log else "feed")
     session.flush()
@@ -418,7 +446,8 @@ def set_outgoing(session: Session, ctx: Ctx, cid: str, items: list[dict[str, Any
 
     Relations that came from the upstream feed are left alone (and stay in the record). Ends run before adds, so
     replacing a parent with another of the same family works in one call. All or nothing: a refused add raises
-    and the caller's transaction rolls back."""
+    and the caller's transaction rolls back. On an authority that may sign, a listed relation stored while it was
+    gated is signed now (`published` counts them)."""
     write_lock(session)
     src = _live(session, cid, "id")
     if len(items) > MAX_OUTGOING:
@@ -434,15 +463,18 @@ def set_outgoing(session: Session, ctx: Ctx, cid: str, items: list[dict[str, Any
     current = session.scalars(select(Relation).where(Relation.from_id == src.id, _active(),
                                                      Relation.origin_node.is_(None))
                               .order_by(Relation.created_at, Relation.id)).all()
-    ended = added = 0
+    ended = added = published = 0
     for row in current:
         if (row.to_id, row.type) not in wanted:
             end(session, ctx, row.from_id, row.to_id, row.type, actor=actor, reason="replaced")
             ended += 1
     for target, kind in wanted:
-        _row, created = add(session, ctx, src.id, target, kind, source=source, actor=actor, local_only=local_only)
+        before = active_between(session, src.id, target, kind)
+        was_pending = before is not None and _pending_publication(before)
+        row, created = add(session, ctx, src.id, target, kind, source=source, actor=actor, local_only=local_only)
         added += int(created)
-    return {"added": added, "ended": ended}
+        published += int(was_pending and row.feed_seq is not None)
+    return {"added": added, "ended": ended, "published": published}
 
 
 def move(session: Session, src: str, dst: str) -> set[str]:

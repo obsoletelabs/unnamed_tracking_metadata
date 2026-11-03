@@ -22,7 +22,11 @@ Nothing else is rebuilt here: `atlas dates rebuild` re-derives every view with t
 Downgrade restores what the previous release derives: the new view and explain keys are removed, a record
 whose `release_date` was moved to a partial `first_release` gets it back from its lock, `year` is recomputed
 from `release_date`, and the columns are dropped. Observations that carry `ext.release` and `releases`
-locks stay; the previous release ignores both (its merge reads named fields only).
+locks stay; the previous release ignores both (its merge reads named fields only). Records whose first release
+came from `ext.release` votes or a `releases` lock therefore lose `first_release`/`releases` while downgraded; the
+downgrade leaves `node_state["view_rebuild_pending"]`, and after upgrading again the application re-derives every
+view (`atlas.dates_rebuild.finish_pending`, run by `atlas migrate` and at start until done), so upgrading again
+brings them back without `atlas dates rebuild`.
 """
 from __future__ import annotations
 
@@ -50,6 +54,18 @@ canonical = sa.table(
 )
 lock = sa.table("field_lock", sa.column("canonical_id", sa.String), sa.column("field", sa.String),
                 sa.column("value", sa.JSON))
+
+
+#: Phase 4 defect D3: a re-upgrade re-derives what this downgrade removed (`atlas.dates_rebuild.finish_pending`
+#: reads this key; spelled out here because a migration never imports application code that may change later).
+REBUILD_KEY = "view_rebuild_pending"
+
+
+def _ask_for_rebuild(bind) -> None:
+    """Leave the node a note: once the schema is current again, the application re-derives every view."""
+    state = sa.table("node_state", sa.column("key", sa.String), sa.column("value", sa.Text))
+    bind.execute(state.delete().where(state.c.key == REBUILD_KEY))
+    bind.execute(state.insert().values(key=REBUILD_KEY, value="pending"))
 
 
 def _json(value):
@@ -144,6 +160,7 @@ def downgrade() -> None:
             year = int(rd[:4]) if isinstance(rd, str) and len(rd) >= 4 and rd[:4].isdigit() else None
             bind.execute(canonical.update().where(canonical.c.id == row.id).values(
                 view=view, explain=explain, year=year))
+    _ask_for_rebuild(bind)
     op.drop_index("ix_canonical_release_start", table_name="canonical")
     with op.batch_alter_table("canonical") as batch:
         batch.drop_column("release_precision")

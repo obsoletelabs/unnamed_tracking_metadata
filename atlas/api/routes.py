@@ -369,8 +369,10 @@ def put_relations(cid: str, body: RelationsBody, st: St, session: Sess,
                   p: Annotated[auth.Principal, Depends(require("curate"))]):
     """Replace the record's own outgoing relations (C6.3). Cycles, a second parent of the same kind, a self
     relation and a membership that does not point at a series or collection are refused (409/400) and nothing
-    changes. On an authority below federation emit protocol 1.4 the relations are stored but not published.
-    Relations from the upstream feed are kept as they are.
+    changes. On an authority below federation emit protocol 1.4 the relations are stored but not published
+    (`published: false`, `reason: emit_protocol`, `pending`: how many wait); once the protocol is raised, putting
+    them again signs the ones still waiting (`changed.published`). Relations from the upstream feed are kept as
+    they are.
 
     On a mirror or local node the relations are local overlays, allowed on any record, including one its
     upstream manages (as in the web editor): they are never published, and the upstream's own relations always
@@ -381,8 +383,14 @@ def put_relations(cid: str, body: RelationsBody, st: St, session: Sess,
     result = relations.set_outgoing(session, st.ctx, row.id, [i.model_dump() for i in body.relations],
                                     actor=p.name, local_only=local)
     session.refresh(row)
-    return {**game_out(row, None, session, st.ctx), "relations": relations.of(session, row.id), "changed": result,
-            "published": not local and not relations.gated(st.ctx)}
+    out = {**game_out(row, None, session, st.ctx), "relations": relations.of(session, row.id), "changed": result}
+    # Honest (Phase 4 O1): published only when every relation this record holds on its own is in the signed feed.
+    if local:
+        return {**out, "published": False, "reason": "local_node"}
+    waiting = relations.pending_count(session, row.id)
+    if waiting or relations.gated(st.ctx):
+        return {**out, "published": False, "reason": "emit_protocol", "pending": waiting}
+    return {**out, "published": True}
 
 
 @router.get("/games/{cid}/explain", tags=["read"])
@@ -1050,10 +1058,14 @@ def get_artwork(cid: str, st: St, session: Sess, principal: Annotated[auth.Princ
 @router.put("/games/{cid}/artwork", tags=["curate"])
 def put_artwork(cid: str, body: ArtworkBody, st: St, session: Sess,
                 _: Annotated[auth.Principal, Depends(require("curate"))]):
+    """Replace the curator artwork of a record. `count` is the number of items given (unchanged meaning); `stored`
+    how many are now the curator's; `skipped` lists each image another source of the record already lists (same
+    kind and address), which stays that source's: `{kind, url, held_by, reason: held_by_another_source}`."""
     _guard_upstream(session, st, cid)
+    skipped: list[dict[str, Any]] = []
     n = facets.set_artwork(session, st.ctx, cid, "curator", body.items,
-                           redistributable=st.ctx.settings.role == "authority")
-    return {"count": n}
+                           redistributable=st.ctx.settings.role == "authority", skipped=skipped)
+    return {"count": n, "stored": n - len(skipped), "skipped": skipped}
 
 
 @router.get("/artwork/misfits", tags=["curate"])

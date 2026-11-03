@@ -68,7 +68,14 @@ disposable folder, SQLite and synthetic data on loopback. It checks that:
   --historical` re-applies the retained range in feed order so the observation is applied, and the
   unknown kind stays parked with its reason.
 
-The Federation lab workflow runs it after the scenarios and uploads `skew-1.0.json`. See
+`--scenario rescan` runs the same 1.0 release as the follower of an authority emitting 1.4 that signs a
+`platinum` achievement list and a `releases` lock through its API. The 1.0 release drops both without recording
+anything; after the in-place upgrade `atlas sync replay --rescan` must record both as
+`dropped_by_previous_release`, `--historical` must apply them (names, tiers, keys and regional releases equal the
+authority's), and a second rescan must record nothing.
+
+The Federation lab workflow runs both after the scenarios and uploads `skew-1.0.json` and
+`skew-1.0-rescan.json`. See
 [Compatibility and upgrades](federation.md#compatibility-and-upgrades).
 
 ## Topology and ordinary users

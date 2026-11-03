@@ -1117,7 +1117,100 @@ def rescan(session: Session, node_id: str) -> dict[str, int]:
                 _record(session, node_id, row.seq, row.kind, QUARANTINE, "invalid",
                         "InvalidEntry: observation fails the observation contract (found by rescan)", {"kind": "obs"})
                 counts["quarantined"] += 1
+    counts["parked"] += _rescan_replaced_state(session, node_id, applied)
     return counts
+
+
+#: Kinds whose entries replace a whole piece of state (a source's achievement list, one field's lock), so only the
+#: newest entry per piece says what this node should hold. A 1.0 release dropped such an entry when its value was
+#: new to it (a `platinum` tier, a `releases` lock) without recording anything (Phase 4 D1).
+_REPLACING = ("achievements", "lock", "unlock")
+
+
+def _state_key(kind: str, body: dict[str, Any]) -> tuple[str, str, str] | None:
+    cid = body.get("canonical_id")
+    if not isinstance(cid, str) or not cid.startswith("atlas:") or len(cid) > 40:
+        return None
+    if kind == "achievements":
+        from .normalize import norm_namespace
+
+        source = body.get("source")
+        return ("achievements", cid, norm_namespace(source)) if isinstance(source, str) and source else None
+    field = body.get("field")
+    return ("lock", cid, field) if isinstance(field, str) and field else None
+
+
+def _replaced_state_holds(session: Session, kind: str, body: dict[str, Any]) -> bool:
+    """Whether this node holds what the newest `achievements`/`lock`/`unlock` entry for its piece of state says.
+    True when it cannot be judged here (the record was merged since: applying it again would not land where it
+    did), so a rescan never invents work."""
+    from .facets import clean_achievements
+    from .models import Achievement
+
+    cid = body["canonical_id"]
+    record = session.get(Canonical, cid)
+    if record is not None and record.merged_into is not None:
+        return True
+    if record is None:
+        return False  # the entry's record never arrived (its observation was dropped as well)
+    if kind == "achievements":
+        from .normalize import norm_namespace
+
+        try:
+            wanted = clean_achievements(json.loads(json.dumps(body.get("items") or [])))
+        except (AtlasError, TypeError, ValueError):
+            return False  # replay records why this release refuses it (quarantined), instead of nothing
+        want = sorted((i["external_id"], i["name"], i.get("tier"), i["hidden"], i.get("set", "base"))
+                      for i in wanted)
+        have = sorted(tuple(r) for r in session.execute(
+            select(Achievement.external_id, Achievement.name, Achievement.tier, Achievement.hidden,
+                   Achievement.set_key).where(Achievement.canonical_id == cid,
+                                              Achievement.source == norm_namespace(body["source"]),
+                                              Achievement.retired_at.is_(None))))
+        return have == [(e, n, t, bool(h), s or "base") for e, n, t, h, s in want]
+    lock = session.get(Lock, (cid, body["field"]))
+    if lock is not None and (lock.local_only or lock.cleared):
+        return True  # this node's own pin or clear wins over the feed (as when the entry is applied)
+    if kind == "unlock":
+        return lock is None
+    if lock is None:
+        return False
+    try:
+        return lock.value == service.clean_lock(body["field"], body.get("value"), replicated=True)
+    except AtlasError:
+        return False
+
+
+def _rescan_replaced_state(session: Session, node_id: str, applied: int) -> int:
+    """Rescan step for entries that replace state (`_REPLACING`): park the newest entry per piece of state when
+    this node does not hold what it says (`dropped_by_previous_release`). Older entries for the same piece are
+    left alone: `replay --historical` re-applies the whole range from the oldest parked entry, in feed order, so
+    the newest one wins as it did on the authority. Idempotent: once applied, the state holds and nothing is
+    recorded again."""
+    newest: dict[tuple[str, str, str], int] = {}
+    rows = session.execute(select(ReplicatedChange.seq, ReplicatedChange.kind, ReplicatedChange.body).where(
+        ReplicatedChange.node_id == node_id, ReplicatedChange.seq <= applied,
+        ReplicatedChange.kind.in_(_REPLACING)).order_by(ReplicatedChange.seq).execution_options(yield_per=500))
+    for seq, kind, body in rows:
+        key = _state_key(kind, body if isinstance(body, dict) else {})
+        if key is not None:
+            newest[key] = seq
+    parked = 0
+    for seq in sorted(newest.values()):
+        existing = session.get(SyncFailure, (node_id, seq))
+        if existing is not None and existing.resolved_at is None:
+            continue  # already tracked (parked, quarantined or skipped by the administrator)
+        entry = session.get(ReplicatedChange, (node_id, seq))
+        outcome = feed_schema.classify(entry.kind, entry.body)
+        if outcome.action != APPLY:
+            continue  # the main rescan loop recorded it
+        if _replaced_state_holds(session, entry.kind, outcome.body or {}):
+            continue
+        _record(session, node_id, seq, entry.kind, PARK, "dropped_by_previous_release",
+                f"an earlier release skipped this {entry.kind} entry; `atlas sync replay --historical` applies it",
+                {"kind": entry.kind})
+        parked += 1
+    return parked
 
 
 def skip(session: Session, ctx: Ctx, node_id: str, seq: int, reason: str, *, actor_id: str | None = None,

@@ -241,14 +241,19 @@ def upgrade(url: str, revision: str = "head", settings: Any = None) -> None:
 
 def finish_data_steps(url: str, settings: Any = None) -> None:
     """Data steps a migration leaves to application code, run once the schema is current (and again at start
-    until done): after migration 0032 restored kept relations, replay the merges made while downgraded."""
-    from . import relations
+    until done): after migration 0032 restored kept relations, replay the merges made while downgraded; then,
+    after a downgrade of 0031 or 0034, re-derive the views, explains and conflict index those downgrades removed
+    (`dates_rebuild.finish_pending`; it needs the settings, so without them the next start runs it)."""
+    from . import dates_rebuild, relations
 
     engine = make_engine(url)
     try:
-        with make_sessionmaker(engine, settings)() as session:
+        maker = make_sessionmaker(engine, settings)
+        with maker() as session:
             if relations.finish_restore(session) is not None:
                 session.commit()
+        if settings is not None:
+            dates_rebuild.finish_pending(maker, settings)
     finally:
         engine.dispose()
 

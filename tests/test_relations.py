@@ -364,7 +364,8 @@ def test_set_outgoing_replaces_atomically(session, ctx):
     game, a, b = (record(session, ctx, t) for t in ("Put Game", "Put A", "Put B"))
     relations.add(session, ctx, game, a, "dlc_of")
     session.commit()
-    assert relations.set_outgoing(session, ctx, game, [{"to": b, "type": "dlc_of"}]) == {"added": 1, "ended": 1}
+    assert relations.set_outgoing(session, ctx, game, [{"to": b, "type": "dlc_of"}]) == {"added": 1, "ended": 1,
+                                                                                         "published": 0}
     session.commit()
     assert rows(session) == [(game, b, "dlc_of")] and ended(session) == {(game, a, "dlc_of"): "replaced"}
     relations.add(session, ctx, a, b, "port_of")
@@ -467,7 +468,7 @@ def test_api_put_and_get_relations(api):
     assert api.put(f"/api/v2/games/{ids['Api DLC']}/relations", json=body, headers=api.read).status_code == 403
     r = api.put(f"/api/v2/games/{ids['Api DLC']}/relations", json=body, headers=api.cur)
     assert r.status_code == 200, r.text
-    assert r.json()["changed"] == {"added": 2, "ended": 0} and r.json()["published"] is True
+    assert r.json()["changed"] == {"added": 2, "ended": 0, "published": 0} and r.json()["published"] is True
     game = api.get(f"/api/v2/games/{ids['Api Game']}", headers=api.read).json()
     assert game["relations"]["children"] == [{"id": ids["Api DLC"], "type": "dlc_of", "title": "Api DLC",
                                               "media_type": "game"}]
