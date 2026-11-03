@@ -99,8 +99,9 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                                 "trust class only: it never lifts a provider above community or curator data "
                                 "(see Matching and provenance)."),
     "sync_origin_class_cap": ("Matching", "JSON object of node id → highest trust class (`curator`, `publisher`, "
-                              "`community`, `provider`) its replicated observations may have. Unlisted nodes: the "
-                              "upstream authority in `trusted_keys` is `curator`, every other origin `provider`."),
+                              "`community`, `provider`) its replicated observations may have. Unlisted nodes: a "
+                              "configured upstream authority (a node in `ATLAS_TRUSTED_KEYS` or under Admin → Peers) "
+                              "is `curator`, every other origin `provider`."),
     "review_dismiss_days": ("Matching", "Days a dismissed review pair stays closed: the same pair is not reopened "
                             "within this window unless its evidence gets stronger."),
     "match_decision_retain_days": ("Matching", "Days match decisions are kept. The newest decision of each source "

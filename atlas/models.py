@@ -22,11 +22,13 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     false,
+    select,
     text,
     true,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, attributes, mapped_column
 
 from . import achievement_key
 from .ids import ulid
@@ -228,6 +230,28 @@ class ReviewItem(Base):
               sqlite_where=text("status = 'open' AND pair_key IS NOT NULL"),
               postgresql_where=text("status = 'open' AND pair_key IS NOT NULL")),
     )
+
+
+class ReviewCandidate(Base):
+    """C11 §11.9.2: which records a review item names as candidates (`review_item.candidates`, as rows), so a merge,
+    unmerge or "different works" decision finds the items it touches with an indexed lookup instead of reading the
+    whole open queue. Derived: kept in step by `_sync_review_candidates` whenever an item's candidates change."""
+
+    __tablename__ = "review_candidate"
+
+    review_id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    canonical_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+
+    __table_args__ = (Index("ix_review_candidate_cid", "canonical_id", "review_id"),)
+
+
+def candidate_ids(candidates: Any) -> set[str]:
+    """The record ids of a `review_item.candidates` value ([[id, score], ...]), bounded."""
+    out: set[str] = set()
+    for c in (candidates or [])[:100] if isinstance(candidates, list) else []:
+        if isinstance(c, (list, tuple)) and c and isinstance(c[0], str) and c[0]:
+            out.add(c[0][:40])
+    return out
 
 
 class MatchDecision(Base):
@@ -1342,3 +1366,27 @@ class GroupIdpConsent(Base):
     group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     rp_node: Mapped[str] = mapped_column(String(16), primary_key=True)
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+@event.listens_for(Session, "before_flush")
+def _sync_review_candidates(session: Session, _ctx: Any, _instances: Any) -> None:
+    """Keep `review_candidate` in step with `review_item.candidates` for every item added or changed in this flush."""
+    changed = [obj for obj in session.new if isinstance(obj, ReviewItem)]
+    changed += [obj for obj in session.dirty if isinstance(obj, ReviewItem)
+                and attributes.get_history(obj, "candidates").has_changes()]
+    if not changed:
+        return
+    with session.no_autoflush:
+        for item in changed:
+            if item.id is None:
+                item.id = ulid()
+            want = candidate_ids(item.candidates)
+            have: dict[str, ReviewCandidate] = {}
+            if item not in session.new:
+                have = {r.canonical_id: r for r in session.scalars(
+                    select(ReviewCandidate).where(ReviewCandidate.review_id == item.id))}
+            for cid, row in have.items():
+                if cid not in want:
+                    session.delete(row)
+            for cid in sorted(want - set(have)):
+                session.add(ReviewCandidate(review_id=item.id, canonical_id=cid))

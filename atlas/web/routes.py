@@ -1038,11 +1038,22 @@ def _brief(p: Page, cid: str) -> dict[str, Any]:
             "developer": v.get("developer", ""), "sources": ", ".join(v.get("sources", []))}
 
 
+def _concerns(item: ReviewItem) -> int:
+    """How many rows an `unmerge_check` item asks a curator to look at (its evidence lists them, bounded)."""
+    if item.kind != "unmerge_check":
+        return 0
+    return sum(len(e.get("value") or []) for e in item.evidence or [] if isinstance(e, dict)
+               and isinstance(e.get("value"), list))
+
+
 @router.get("/review/duplicates", response_class=HTMLResponse)
 def duplicates(p: Annotated[Page, Depends(review_page)]):
     rows = p.session.scalars(select(ReviewItem).where(ReviewItem.status == "open")
                              .order_by(ReviewItem.created_at).limit(50)).all()
+    # An `unmerge_check` item (C11 §11.10.3) names the survivor and the record split off it: merging them would
+    # redo the merge that was just undone, so it is checked and dismissed, never merged from here.
     items = [{"id": r.id, "kind": r.kind, "confidence": r.confidence, "canonical": _brief(p, r.canonical_id),
+              "mergeable": r.kind not in matching.UNMERGEABLE_KINDS, "concerns": _concerns(r),
               "candidates": [_brief(p, c) for c, _s in r.candidates[:3]]} for r in rows]
     return render(p, "duplicates.html", items=items)
 
@@ -1050,7 +1061,8 @@ def duplicates(p: Annotated[Page, Depends(review_page)]):
 @router.post("/review/duplicates/{rid}/merge")
 def duplicates_merge(rid: str, p: Annotated[Page, Depends(review_form)], into: Annotated[str, Form()]):
     item = p.session.get(ReviewItem, rid)
-    if item is None or item.status != "open" or into not in {c for c, _ in item.candidates}:
+    unmergeable = item is None or item.status != "open" or item.kind in matching.UNMERGEABLE_KINDS
+    if unmergeable or into not in {c for c, _ in item.candidates}:
         raise HTTPException(400, "That merge is not available.")
     try:
         _guard_upstream(p.session, p.st, item.canonical_id)
