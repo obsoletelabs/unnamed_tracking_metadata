@@ -247,8 +247,22 @@ def test_a_bundle_with_many_members_is_bounded_and_ordered(session, ctx):
     assert block["members"][0] == {"id": members[0], "type": "collection_member", "title": titles[members[0]],
                                    "media_type": "game"}
     assert relations.of(session, bundle) == block  # deterministic
-    graph = relations.expand(session, bundle, depth=4)
+    fetched = []  # rows the database hands back while expanding: bounded by pages, not by the bundle's size
+
+    def count_rows(conn, cursor, statement, parameters, context, executemany):
+        if "FROM relation" in statement:
+            fetched.append(statement)
+
+    from sqlalchemy import event
+    engine = session.get_bind()
+    event.listen(engine, "after_cursor_execute", count_rows)
+    try:
+        graph = relations.expand(session, bundle, depth=4)
+    finally:
+        event.remove(engine, "after_cursor_execute", count_rows)
     assert len(graph["nodes"]) == relations.MAX_EXPAND_NODES and graph["truncated"] is True
+    assert all("LIMIT" in q for q in fetched if "ORDER BY" in q)  # the walk reads pages
+    assert sum("ORDER BY" in q for q in fetched) <= relations.MAX_EXPAND_NODES // relations._PAGE + 2
     assert graph["nodes"][0]["id"] == bundle and len(graph["edges"]) == relations.MAX_EXPAND_NODES - 1
     member = relations.of(session, members[0])
     assert member["members_of"] == [{"id": bundle, "type": "collection_member", "title": "Mega Bundle",
@@ -611,6 +625,125 @@ def test_a_1_4_mirror_applies_relations_merges_and_ends_like_the_authority(fed):
         assert no_active_relation_names_a_merged_record(s)
     pull(mirror, authority)  # idempotent
     assert relation_state(mirror) == (mirror_active, mirror_ended)
+
+
+def at_protocol(node, protocol):
+    """The node's context with another `emit_protocol` (the curator lowering or raising it)."""
+    return Ctx(settings=node.st.ctx.settings.model_copy(update={"emit_protocol": protocol}),
+               identity=node.st.ctx.identity)
+
+
+def replicated_state(node):
+    with node.st.maker() as s:
+        return sorted((r.from_id, r.to_id, r.type) for r in s.scalars(
+            select(Relation).where(Relation.ended_at.is_(None))) if relations.is_replicated(r))
+
+
+def test_a_gated_local_relation_does_not_change_how_a_merge_collapses(fed):
+    """Review finding: a relation kept local below emit 1.4 must not decide a replicated merge."""
+    authority, mirror = fed
+    g1, g2, d, s_ = (authority.publish(t) for t in ("Gm G1", "Gm G2", "Gm D", "Gm S"))
+    with authority.st.maker() as s:  # emit 1.3: stored locally, nothing signed (the documented upgrade path)
+        local, _ = relations.add(s, at_protocol(authority, "1.3"), s_, g2, "dlc_of")
+        s.commit()
+        assert local.feed_seq is None and not relations.is_replicated(local)
+    relate(authority, d, g1, "dlc_of")  # emit 1.4: published
+    pull(mirror, authority)
+    with authority.st.maker() as s:
+        before = version(s, s_), version(s, g2)
+        service.merge_canonicals(s, authority.st.ctx, d, s_)
+        s.commit()
+    pull(mirror, authority)
+    assert mirror.failures(authority) == []
+    # the published D -> G1 moved on both nodes; the authority's local S -> G2 gave way to it
+    assert replicated_state(authority) == replicated_state(mirror) == [(s_, g1, "dlc_of")]
+    assert relation_state(authority)[0] == relation_state(mirror)[0] == [(s_, g1, "dlc_of")]
+    assert relation_state(authority)[1] == {(s_, g2, "dlc_of"): "superseded"}
+    with authority.st.maker() as s:
+        assert version(s, g2) > before[1] and version(s, s_) > before[0]
+        assert no_active_relation_names_a_merged_record(s)
+    relate(authority, s_, g1, "dlc_of", op="end")  # a later end reaches the mirror's row
+    pull(mirror, authority)
+    assert relation_state(mirror)[0] == relation_state(authority)[0] == []
+
+
+def test_a_mirror_overlay_never_blocks_an_upstream_relation(fed):
+    """Review finding: an upstream entry that conflicts only with a local overlay is applied, not quarantined;
+    the overlay is ended (`superseded`) and an identical overlay is taken over by the upstream's row."""
+    authority, mirror = fed
+    x, p1, p2, a, b, c, d = (authority.publish(t) for t in ("Ov X", "Ov P1", "Ov P2", "Ov A", "Ov B", "Ov C",
+                                                             "Ov D"))
+    pull(mirror, authority)
+    with mirror.st.maker() as s:  # mirror curators' overlays (local; never signed)
+        relations.add(s, mirror.st.ctx, x, p1, "dlc_of", local_only=True)  # second parent once X dlc_of P2 lands
+        relations.add(s, mirror.st.ctx, a, b, "remake_of", local_only=True)  # cycle once B port_of A lands
+        relations.add(s, mirror.st.ctx, c, d, "mod_of", local_only=True)  # identical to the upstream's
+        s.commit()
+    relate(authority, x, p2, "dlc_of")
+    relate(authority, b, a, "port_of")
+    add_seq = relate(authority, c, d, "mod_of")
+    pull(mirror, authority)
+    assert mirror.failures(authority) == []
+    assert replicated_state(mirror) == replicated_state(authority) == sorted(
+        [(x, p2, "dlc_of"), (b, a, "port_of"), (c, d, "mod_of")])
+    assert relation_state(mirror)[1] == {(x, p1, "dlc_of"): "superseded", (a, b, "remake_of"): "superseded"}
+    with mirror.st.maker() as s:
+        taken = relations.active_between(s, c, d, "mod_of")
+        assert (taken.origin_node, taken.origin_seq) == (authority.node_id, add_seq)
+        assert sync.rescan(s, authority.node_id)["parked"] == 0
+    relate(authority, c, d, "mod_of", op="end")
+    pull(mirror, authority)
+    assert relation_state(mirror)[0] == relation_state(authority)[0]
+
+
+def test_a_feed_end_never_ends_a_local_overlay(fed):
+    authority, mirror = fed
+    a, b = authority.publish("Fe A"), authority.publish("Fe B")
+    pull(mirror, authority)
+    with mirror.st.maker() as s:
+        relations.add(s, mirror.st.ctx, a, b, "port_of", local_only=True)
+        s.commit()
+    authority.emit("relation", {"op": "end", "from": a, "to": b, "type": "port_of"})
+    pull(mirror, authority)
+    assert mirror.failures(authority) == [] and relation_state(mirror)[0] == [(a, b, "port_of")]
+
+
+def test_restore_after_a_downgrade_converges_with_a_follower_that_applied_the_merge(fed, monkeypatch):
+    """Review finding: an authority rolled back to 0031 merges records (that release does not move relations);
+    its 1.4 follower applies the merge with `move`. Re-upgrading replays the same `move`, so both agree, and the
+    versions of the records whose relations changed advance."""
+    from atlas import db
+
+    authority, mirror = fed
+    game, dup, dlc, port, other, original = (authority.publish(t) for t in ("Rs Game", "Rs Dup", "Rs DLC",
+                                                                            "Rs Port", "Rs Other", "Rs Original"))
+    relate(authority, dlc, dup, "dlc_of")
+    relate(authority, port, dup, "port_of")
+    relate(authority, dup, other, "remaster_of")  # a second remaster_of parent for the survivor: ended
+    relate(authority, game, original, "remaster_of")
+    pull(mirror, authority)
+    url = authority.st.ctx.settings.database_url
+    db.downgrade(url, "0031")
+    with monkeypatch.context() as m:  # the previous release: merges sign a `merge`, relations stay where they are
+        m.setattr(relations, "move", lambda session, src, dst: set())
+        with authority.st.maker() as s:
+            service.merge_canonicals(s, authority.st.ctx, dup, game)
+            s.commit()
+    pull(mirror, authority)
+    assert mirror.failures(authority) == []
+    with authority.st.maker() as s:
+        before = {cid: version(s, cid) for cid in (game, dup, dlc, port, other)}  # not `original`: unchanged
+    db.upgrade(url)
+    expected = sorted([(dlc, game, "dlc_of"), (port, game, "port_of"), (game, original, "remaster_of")])
+    assert relation_state(authority)[0] == relation_state(mirror)[0] == expected
+    assert relation_state(authority)[1] == relation_state(mirror)[1] == {(dup, other, "remaster_of"): "merge_conflict"}
+    with authority.st.maker() as s:
+        assert all(version(s, cid) > v for cid, v in before.items())
+        assert no_active_relation_names_a_merged_record(s)
+        assert s.get(relations.NodeState, relations.RESTORE_KEY) is None
+    relate(authority, dlc, game, "dlc_of", op="end")  # and they keep converging
+    pull(mirror, authority)
+    assert relation_state(mirror)[0] == relation_state(authority)[0]
 
 
 def test_mirror_curators_cannot_end_an_upstream_relation(fed):

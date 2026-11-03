@@ -1139,14 +1139,20 @@ def _relations_page(p: Page, g: Canonical, *, q: str = "", kind: str = "", error
     if q:
         taken = {g.id}
         results = [r for r in service.search(s, q, 21) if r.id not in taken][:20]
+    # bounded: MAX_OUTGOING local rows plus at most MAX_OUTGOING from the upstream feed
     own = list(s.scalars(select(relations.Relation).where(relations.Relation.from_id == g.id,
-                                                          relations.Relation.ended_at.is_(None))))
-    own.sort(key=lambda r: (relations.type_order(r.type), title_of(p, r.to_id).casefold(), r.to_id))
-    return render(p, "relations_edit.html", status=status, g=g, v=g.view, own=own, titles={r.to_id: title_of(p, r.to_id)
-                  for r in own}, rel=relations.of(s, g.id), rel_labels=relations.LABELS, types=relations.TYPES,
+                                                          relations.Relation.ended_at.is_(None))
+                         .order_by(relations.Relation.id).limit(2 * relations.MAX_OUTGOING)))
+    history = relations.history(s, g.id)
+    brief = relations._brief(s, [r.to_id for r in own] + [c for r in history for c in (r.from_id, r.to_id)])
+    titles = {cid: (b.get("title") or "(new record)") for cid, b in brief.items()}
+    own.sort(key=lambda r: (relations.type_order(r.type), titles.get(r.to_id, "").casefold(), r.to_id))
+    return render(p, "relations_edit.html", status=status, g=g, v=g.view, own=own,
+                  titles={r.to_id: titles.get(r.to_id, "(new record)") for r in own}, rel=relations.of(s, g.id),
+                  rel_labels=relations.LABELS, types=relations.TYPES,
                   member_target=relations.MEMBER_TARGET, q=q, kind=kind if kind in relations.TYPES else "",
-                  results=results, error=error, history=relations.history(s, g.id),
-                  history_titles={c: title_of(p, c) for r in relations.history(s, g.id) for c in (r.from_id, r.to_id)},
+                  results=results, error=error, history=history,
+                  history_titles={c: titles.get(c, "(new record)") for r in history for c in (r.from_id, r.to_id)},
                   gated=relations.gated(p.st.ctx), gate_message=relations.gate_message(p.st.ctx),
                   local=p.st.ctx.settings.role != "authority")
 

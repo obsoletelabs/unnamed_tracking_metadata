@@ -14,11 +14,14 @@ Existing data: no relation existed before this revision, so nothing is backfille
 application at start (`custom.seed`), like the other built-in types, not here.
 
 Downgrade keeps the data: the table is renamed to `relation_0032_kept`, which the previous release does not
-read (its merges and backups ignore it). Upgrading again renames it back. A relation whose record was merged
-while the previous release ran (that release does not move relations) is ended with `end_reason = "downgraded"`
-instead of being redirected, so no active relation names a merged record and no cycle or second parent can
-appear; a curator sees it under "Ended relations" and can add it again. The `series` and `collection` media
-types stay (the previous release lists them as ordinary types).
+read (its merges and backups ignore it). Upgrading again renames it back and marks the node
+(`node_state["relation_0032_restore"]`): records may have been merged meanwhile, by this node or by its upstream,
+and the previous release does not move relations. The application then (`atlas.relations.finish_restore`, run
+by `atlas migrate` / `db.upgrade` right after this revision and at every start until done) replays those merges
+with the same deterministic `move` a 1.4 follower ran when it applied them, in the same order, and bumps the
+versions of the records whose relations changed. The migration itself does not move rows: the move rules are
+application code and must be exactly the ones followers ran. The `series` and `collection` media types stay
+(the previous release lists them as ordinary types).
 """
 from __future__ import annotations
 
@@ -34,6 +37,7 @@ ACTIVE = sa.text("ended_at IS NULL")
 
 
 KEPT = "relation_0032_kept"
+RESTORE_KEY = "relation_0032_restore"  # atlas.relations.RESTORE_KEY
 
 
 def upgrade() -> None:
@@ -66,18 +70,12 @@ def upgrade() -> None:
 
 
 def _restore(bind) -> None:
-    """Re-upgrade after a downgrade: bring the kept table back (its indexes and constraint moved with it) and end
-    the active relations that name a record merged in the meantime."""
+    """Re-upgrade after a downgrade: bring the kept table back (its indexes and constraint moved with it) and mark
+    the node so the application replays the merges made meanwhile (`atlas.relations.finish_restore`)."""
     op.rename_table(KEPT, "relation")
-    canonical = sa.table("canonical", sa.column("id", sa.String), sa.column("merged_into", sa.String))
-    relation = sa.table("relation", sa.column("id", sa.String), sa.column("from_id", sa.String),
-                        sa.column("to_id", sa.String), sa.column("ended_at", sa.DateTime(timezone=True)),
-                        sa.column("end_reason", sa.String))
-    merged = sa.select(canonical.c.id).where(canonical.c.merged_into.is_not(None))
-    bind.execute(relation.update()
-                 .where(relation.c.ended_at.is_(None),
-                        relation.c.from_id.in_(merged) | relation.c.to_id.in_(merged))
-                 .values(ended_at=sa.func.current_timestamp(), end_reason="downgraded"))
+    state = sa.table("node_state", sa.column("key", sa.String), sa.column("value", sa.Text))
+    if bind.execute(sa.select(state.c.key).where(state.c.key == RESTORE_KEY)).first() is None:
+        bind.execute(state.insert().values(key=RESTORE_KEY, value="pending"))
 
 
 def downgrade() -> None:
