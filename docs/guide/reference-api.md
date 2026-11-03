@@ -40,7 +40,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
-| `GET` | `/artwork/misfits` | curate | (undocumented) |
+| `GET` | `/artwork/misfits` | curate | Measured images whose aspect does not suit their role (C12 §12.5.3), for curators. |
 | `GET` | `/conflicts` | curate | Records whose `field` has disagreeing sources in the winning trust class. |
 | `GET` | `/distinct` | curate | Active "different works" decisions of a record. |
 | `POST` | `/distinct` | curate | Mark two records as different works: never merged or paired for review again (local to this node). |
