@@ -103,6 +103,56 @@ Atlas plugin, should page and de-duplicate by achievement `key` (or `id` on an A
 
 Relative image paths are resolved against the Atlas base URL. Origin image addresses are never returned, so clients cannot be made to hotlink a third-party site. Images need a publicly reachable Atlas for the Tracking App to download them (as for artwork).
 
+## Sets, order, translations and rarity (C12)
+
+These fields are additive: every older field keeps its meaning, and keys do not change.
+
+**Sets.** An achievement list may define `sets` beside its `items`: the base game (`base`, always present), a DLC or
+expansion (`kind: "dlc"` / `"expansion"`, optionally `dlc: "atlas:<record id>"`), an edition, a platform group
+(`platforms: ["ps5", "ps4"]`), an update, an event or `other`. Each item names its `set` (default `base`). The
+response lists the record's `sets` (base first, then by position and kind) and every entry carries `set`, the
+merged set id `<source>/<key>`. Two sources' sets are the same merged set when they point at the same DLC record,
+edition or platforms, or (otherwise) have the same kind and normalised name; the merged id is the smallest member
+id, so it is the same on every node. A DLC record that was merged is followed to the survivor; a DLC record this
+node does not know comes back as `null`. `sets_elsewhere` names DLC sets on *other* records that point at this one,
+so a client looking at a DLC finds the achievements its base game lists. Filters: `?set=<id or key>` and
+`?platform=<slug>` (sets without platforms always match).
+
+**Same name, different achievement.** Inside one source an achievement is identified by its external id *and* name,
+so two entries called "Collector" with different external ids stay two entries (and two keys). An exact repeat in one
+list is dropped and counted (`ach_dup_identity` in the log). Different sources' rows merge into one entry only when
+the name is unique within each source's rows of that set.
+
+**Retirement.** An entry its source no longer lists is *retired*, not deleted: it disappears from the list but keeps
+its id and key, and comes back with them when the source lists it again. Curators can see retired entries with
+`?include_retired=true` (`status: "retired"`). Retired rows are deleted after
+`ATLAS_ACHIEVEMENT_RETIRED_RETENTION_DAYS` (180 by default). `status` is otherwise `null`, `active` or
+`unobtainable`; the editor has a **Status** field for it.
+
+**Order.** Inside a set, entries follow the positions of the highest-class source that arranged its list by hand
+(curator, then community), then `?order=` decides: `rarity` (default, most common first), `source` (the provider's
+own list order) or `name`. Hidden entries that are not revealed come last in their set, ordered by key only, so their
+place never hints at their name or rarity.
+
+**Translations.** An item may state the language of its text (`locale`) and translations
+(`i18n: {"de": {"name": "...", "description": "..."}}`, at most 40). `?lang=de-AT` serves the `de-at` text, else
+`de`, else the default; the entry's `lang` says which one was served. Translations never change keys.
+
+**Rarity.** Every entry has `rarity: {percent, source, as_of, stale, band}` (and `global_percent`, the same
+percent, for older clients). A fresh provider measurement wins; then a fresh curated or community value; when nothing
+is younger than `ATLAS_ACHIEVEMENT_PERCENT_MAX_AGE_DAYS` (30) the newest value is shown with `stale: true`. A value
+without a date (stored before this release) counts as stale. `band` is `common` (50 % or more), `uncommon` (20 %),
+`rare` (5 %), `very_rare` (1 %) or `ultra_rare`. Without a Steam Web API key Atlas still stores Steam's public
+percentages and shows them on the entries that name the same external id. The editor has a **Rarity (%)** field.
+
+**Spoilers.** A response that reveals any hidden entry is sent `Cache-Control: private, no-store`. A redacted entry
+has no name, description, icon, external ids, `lang` or translation.
+
+**Federation.** None of this enters the signed feed yet: an authority signs the version 1 list (without the fields
+above, without a later entry whose name repeats an earlier one, and without icons whose licence needs attribution),
+and logs what it left out (`ach_downgrade`). The version 2 body (`ach-v2`, protocol 1.7) is reserved; a follower of
+this release parks it.
+
 ## Hidden achievements
 
 Hidden achievements are viewable, but only by signed-in people and only on request, so spoilers are opt-in.

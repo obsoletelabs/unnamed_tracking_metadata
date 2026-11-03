@@ -381,20 +381,45 @@ def test_uploaded_image_is_cached_on_adoption_and_survives_clearing(session, ctx
     assert media.retry_pending(session) == 1 and other.fail_count == 0 and other.next_try_at is None
 
 
-def test_api_image_passes_uncached_clients_through_to_the_source(api):
+def test_api_image_serves_cached_bytes_and_redirects_only_to_allow_listed_hosts(api, resolver):
+    """C12 §12.5.5, H50: a proxy source's image is 404 until cached and then served from here; a redirect goes only
+    to a `redirect` source's allow-listed hosts; nothing ever passes a client on to an arbitrary address."""
     body = {"connection": {"source_kind": "manual", "source": "manual", "source_scope": "ops"},
             "observations": [{"external_id": "1", "title": "Hades", "release_date": "2020-09-17"}]}
     cid = api.post("/api/v2/observations", json=body).json()["results"][0]["atlas"]["canonical_id"]
     api.put(f"/api/v2/games/{cid}/artwork", json={"items": [{"kind": "key_art", "url": "https://img.test/c.png"}]})
     item = api.get(f"/api/v2/games/{cid}/artwork").json()["results"][0]
     assert item["cached"] is False and item["image_url"] == f"/api/v2/artwork/{item['id']}/image"
+    assert (item["serve"], item["state"]) == ("proxy", "not_fetched")  # media_cache_enabled is off here
     r = api.get(item["image_url"], follow_redirects=False)
-    assert r.status_code == 307 and r.headers["location"] == "https://img.test/c.png"
+    assert r.status_code == 404 and "location" not in r.headers  # never a pass-through to the origin
     media.cache_pending(api.state.maker, api.settings, client_for(lambda _r: httpx.Response(200, content=png())))
     cached = api.get(item["image_url"], follow_redirects=False)
     assert cached.status_code == 200 and cached.headers["content-type"] == "image/png"
+    assert cached.headers["cache-control"] == "public, max-age=300" and cached.headers["etag"].strip('"') in str(
+        api.get(f"/api/v2/games/{cid}/artwork").json()["results"][0]["media_url"])
     assert api.get("/api/v2/artwork/nope/image").status_code == 404
     assert api.get(item["image_url"], headers={"Authorization": "Bearer nope"}).status_code in (401, 403)
+
+    # a `redirect` source: 307 to an allow-listed host, 404 for any other address (H50)
+    with api.state.maker() as s:
+        facets.set_artwork(s, api.state.ctx, cid, "steam", [
+            {"kind": "banner", "url": "https://img.test/steam.png"},
+            {"kind": "hero", "url": "https://cdn.akamai.steamstatic.com/steam/apps/1/hero.jpg"}])
+        s.commit()
+        ids = {a.kind: a.id for a in s.scalars(select(Artwork).where(Artwork.source == "steam"))}
+    resolver["cdn.akamai.steamstatic.com"] = PUBLIC
+    api.state.ctx.settings = api.settings.model_copy(update={"media_policy": {"steam": {"fetch": "redirect"}}})
+    ok = api.get(f"/api/v2/artwork/{ids['hero']}/image", follow_redirects=False)
+    assert ok.status_code == 307 and ok.headers["location"].startswith("https://cdn.akamai.steamstatic.com/")
+    assert ok.headers["cache-control"] == "public, max-age=300"
+    off_list = api.get(f"/api/v2/artwork/{ids['banner']}/image", follow_redirects=False)
+    assert off_list.status_code == 404 and "location" not in off_list.headers
+    api.state.ctx.settings = api.settings.model_copy(update={"media_policy": {"steam": {"fetch": "none"}}})
+    assert api.get(f"/api/v2/artwork/{ids['hero']}/image", follow_redirects=False).status_code == 404
+    listed = {a["id"]: a for a in api.get(f"/api/v2/games/{cid}/artwork").json()["results"]}
+    assert (listed[ids["hero"]]["serve"], listed[ids["hero"]]["state"]) == ("none", "blocked")
+    assert listed[ids["hero"]]["licence"] == "provider_terms" and listed[ids["hero"]]["attribution"] == "Steam"
 
 
 def test_unwritable_media_dir_is_reported_and_does_not_penalise_artwork(

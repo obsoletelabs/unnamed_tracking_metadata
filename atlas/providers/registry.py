@@ -142,23 +142,36 @@ class Fetcher:
 
     def achievements(self, session: Session, provider: str, external_id: str) -> list[dict[str, Any]]:
         """Achievement list for providers that offer one (cached like any other lookup)."""
+        def call(_p: Any, fn: Any) -> Any:
+            if provider == "steam":
+                return fn(self.client, str(external_id), self.settings.steam_api_key)
+            return fn(self.client, str(external_id))
+
+        return self._cached_call(session, provider, external_id, "achievements", f"ach:{external_id}", [], call)
+
+    def achievement_stats(self, session: Session, provider: str, external_id: str) -> dict[str, float]:
+        """Global unlock percentages by external id, for providers that publish them without their definitions
+        (keyless Steam, C12 §12.1.6). Cached like any other lookup; `{}` when there are none."""
+        return self._cached_call(session, provider, external_id, "achievement_stats", f"achstat:{external_id}", {},
+                                 lambda _p, fn: fn(self.client, str(external_id)))
+
+    def _cached_call(self, session: Session, provider: str, external_id: str, method: str, key: str, empty: Any,
+                     call: Any) -> Any:
         p = self.providers.get(provider)
-        fn = getattr(p, "achievements", None)
+        fn = getattr(p, method, None)
         if p is None or fn is None or not _SAFE_ID.match(str(external_id)):
-            return []
-        key = f"ach:{external_id}"
+            return empty
         row = self._cached(session, p.name, key)
         if row is not None and row.expires_at.replace(tzinfo=now().tzinfo) > now():
-            return [] if row.negative else row.payload
+            return empty if row.negative else row.payload
         b = self._budget(p, "fetch")
         if self._clock() < b.open_until or not b.take():
-            return [] if row is None or row.negative else row.payload
+            return empty if row is None or row.negative else row.payload
         try:
-            data = fn(self.client, str(external_id), self.settings.steam_api_key) if provider == "steam" \
-                else fn(self.client, str(external_id))
+            data = call(p, fn)
         except ProviderError:
             b.failures += 1
-            return [] if row is None or row.negative else row.payload
+            return empty if row is None or row.negative else row.payload
         b.failures = 0
         ttl = self.settings.provider_ttl_seconds if data else self.settings.provider_negative_ttl_seconds
         if row is None:

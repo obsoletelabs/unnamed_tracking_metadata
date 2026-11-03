@@ -20,6 +20,7 @@ from . import (
     backup,
     client_changes,
     custom,
+    facets,
     mail,
     matching,
     media,
@@ -141,6 +142,10 @@ def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event)
                 with maker() as s:
                     if pruned := matching.prune_decisions(s, ctx.settings):
                         log.info("pruned %d old match decisions", pruned)
+                    s.commit()
+                with maker() as s:  # daily: achievements retired longer than the retention (C12 §12.1.3)
+                    if purged := facets.purge_retired(s, ctx.settings):
+                        log.info("purged %d retired achievement rows", purged)
                     s.commit()
         except Exception as exc:
             log.warning("housekeeping failed: %s", exc)

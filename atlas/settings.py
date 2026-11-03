@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -84,6 +84,17 @@ class Settings(BaseSettings):
     media_max_pixels: int = Field(default=40_000_000, ge=1)
     media_cache_batch: int = Field(default=10, ge=1, le=200)
     media_allowed_hosts: set[str] = Field(default_factory=set)  # empty = any public host
+    # Safe fetching (C12 §12.6, H40). Environment settings in this release (amendment A18 #9).
+    media_https_only: bool = True  # new downloads need https; an https -> http redirect is always refused
+    media_fetch_deadline_s: int = Field(default=20, ge=5, le=60)  # one download, redirects and body included
+    media_host_concurrency: int = Field(default=2, ge=1, le=16)  # simultaneous downloads per host and process
+    media_host_rpm: int = Field(default=60, ge=1, le=6000)  # downloads per host and minute, per process
+    media_max_frames: int = Field(default=300, ge=1, le=10000)  # frames of an animated image
+    # Per-source media policy overrides (§12.5.5): {"steam": {"fetch": "redirect"}}; see atlas/providers/media_policy.py
+    media_policy: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Achievements (C12 §12.1)
+    achievement_percent_max_age_days: int = Field(default=30, ge=1, le=3650)  # older rarity is shown as stale
+    achievement_retired_retention_days: int = Field(default=180, ge=1, le=3650)  # H37
     steam_api_key: str | None = None
 
     app_name: str = "Atlas"
@@ -192,6 +203,9 @@ class Settings(BaseSettings):
             raise ValueError(f"field_source_preference: unknown field {unknown[0][:40]!r}")
         if any(len(v) > 32 for v in self.field_source_preference.values()):
             raise ValueError("field_source_preference: at most 32 sources per field")
+        from .providers.media_policy import check_overrides
+
+        check_overrides(self.media_policy)
         if self.upstream_url and not self.trusted_keys:
             raise ValueError("ATLAS_TRUSTED_KEYS must list the upstream's key when ATLAS_UPSTREAM_URL is set")
         if self.environment == "production":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import Session
@@ -54,9 +55,17 @@ def _import(st: AppState, session: Session, provider: str, external_id: str) -> 
             items = st.providers.achievements(session, provider, external_id)
         except ProviderError:
             items = []
-        if items:
-            facets.set_achievements(session, st.ctx, row.id, provider, items)
+        today = datetime.now(UTC).date()
+        if items:  # a provider's percentages were measured when fetched (C12 §12.1.6)
+            facets.set_achievements(session, st.ctx, row.id, provider, items, measured_at=today)
             ach = len(items)
+        else:  # no definitions (keyless Steam): keep the public percentages for the rows other sources list
+            try:
+                stats = st.providers.achievement_stats(session, provider, external_id)
+            except ProviderError:
+                stats = {}
+            if stats:
+                facets.store_stats(session, row.id, provider, stats, as_of=today)
     return Imported(row, res.method, res.confidence, res.review, art, ach)
 
 

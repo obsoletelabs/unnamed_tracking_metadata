@@ -336,6 +336,8 @@ def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length
 
 @router.get("/media/{digest}")
 def media(digest: str, p: Annotated[Page, Depends(page)]):
+    if not images.servable(p.session, p.st.ctx.settings, digest):  # C12 §12.5.5: redirect/none sources
+        raise HTTPException(404, "No such image.")
     return media_response(p.st, digest)
 
 
@@ -354,11 +356,12 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     if redirected:
         return RedirectResponse(f"/game/{g.id}?from={redirected}", status_code=301)
     s, ctx = p.session, p.st.ctx
-    art = facets.merged_artwork(s, ctx, g.id)
-    cached = [a for a in art if a.blob_hash]
+    listing = facets.achievement_listing(s, ctx, g.id)
+    art = facets.merged_artwork(s, ctx, g.id, include_duplicates=False)  # exact duplicates once (§12.5.4)
+    cached = [a for a in art if a.blob_hash and images.fetch_policy(ctx.settings, a.source, a.url) == "proxy"]
     cover_kinds = ("key_art", "poster", "cover") if g.media_type == "game" else ("poster", "key_art", "cover")
     key_art = next((a.blob_hash for kind in cover_kinds for a in cached if a.kind == kind), None)
-    gallery = build_gallery(p, art)
+    gallery = build_gallery(p, cached)
     pending = pending_artwork([a for a in art if not a.blob_hash], ctx.settings.media_cache_enabled)
     activity = []
     for pr in s.scalars(select(Proposal).where(Proposal.canonical_id == g.id, Proposal.status == "approved")
@@ -402,7 +405,7 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
                   pending_art=pending, caching=ctx.settings.media_cache_enabled, stores=integrations.STORES,
                   art_total=len(art), art_cached=len(cached),
                   art_kinds=facets.KINDS, activity=activity,
-                  achievements=facets.merged_achievements(s, ctx, g.id),
+                  achievements=listing["results"], ach_sets=listing["sets"],
                   rel=relations.of(s, g.id, limit=RELATION_PREVIEW), rel_labels=relations.LABELS,
                   redirected_from=p.request.query_params.get("from"), **extra)
 
@@ -748,8 +751,13 @@ def _artwork_of(p: Page, cid: str, aid: str) -> tuple[Any, Any]:
 
 def _panel_ctx(p: Page, g: Any, art: Any) -> dict[str, Any]:
     votes, mine = artwork_votes(p, [art.id])
-    kind_items = [a for a in facets.merged_artwork(p.session, p.st.ctx, g.id) if a.kind == art.kind and a.blob_hash]
+    settings = p.st.ctx.settings
+    kind_items = [a for a in facets.merged_artwork(p.session, p.st.ctx, g.id) if a.kind == art.kind and a.blob_hash
+                  and (a.id == art.id or a.duplicate_of is None)  # as in the gallery: exact duplicates once
+                  and images.fetch_policy(settings, a.source, a.url) == "proxy"]
     ids = [a.id for a in kind_items]
+    if art.id not in ids:
+        raise HTTPException(404, "No such image.")
     pos = ids.index(art.id)
     return {"g": g, "a": artwork_view(p, art, votes, mine), "title": g.view.get("title"),
             "prev_id": ids[pos - 1] if pos > 0 else None, "next_id": ids[pos + 1] if pos + 1 < len(ids) else None,
@@ -809,7 +817,8 @@ async def upload_artwork(cid: str, p: Annotated[Page, Depends(user_form)], file:
     if len(data) > s.media_max_bytes:
         raise HTTPException(400, f"Images may be at most {s.media_max_bytes // 1024 // 1024} MB.")
     try:
-        ext, _ctype, w, h = images.validate_image(data, s)
+        # decoded and written again without EXIF/XMP/ICC metadata (C12 §12.6.2, H41)
+        data, ext, _ctype, w, h = images.reencode_upload(data, s)
         digest = hashlib.sha256(data).hexdigest()
         already_stored = images.find_blob(s, digest) is not None
         images.store(s, data, ext)

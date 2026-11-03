@@ -17,12 +17,15 @@ import hashlib
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import DateTime, func, select, update
+from sqlalchemy import Date, DateTime, func, select, update
 from sqlalchemy.orm import Session
 
 from . import client_changes, feed_schema, matching
 from .models import (
     Achievement,
+    AchievementSet,
+    AchievementStat,
+    AchievementText,
     Artwork,
     ArtworkVote,
     AuditEntry,
@@ -84,6 +87,8 @@ def row_from(model: Any, data: dict[str, Any]) -> Any:
         column = attr.columns[0]
         if value is not None and isinstance(column.type, DateTime) and isinstance(value, str):
             value = datetime.fromisoformat(value)
+        elif value is not None and isinstance(column.type, Date) and isinstance(value, str):
+            value = date.fromisoformat(value)
         values[attr.key] = value
     return model(**values)
 
@@ -145,6 +150,16 @@ class Pre:
         self.votes = [row_dict(v) for v in q(select(ArtworkVote).where(ArtworkVote.artwork_id.in_(sorted(self.art))))] \
             if self.art else []
         self.ach = {a.id: row_dict(a) for a in q(select(Achievement).where(Achievement.canonical_id == src))}
+        # C12: translations travel with their row; a dropped row keeps them in its snapshot
+        self.ach_texts: dict[str, list[dict[str, Any]]] = {}
+        if self.ach:
+            for t in q(select(AchievementText).where(AchievementText.achievement_id.in_(sorted(self.ach)))):
+                self.ach_texts.setdefault(t.achievement_id, []).append(row_dict(t))
+        self.sets = {s.id: row_dict(s) for s in q(select(AchievementSet).where(AchievementSet.canonical_id == src))}
+        self.stats = {(s.source, s.external_id): row_dict(s)
+                      for s in q(select(AchievementStat).where(AchievementStat.canonical_id == src))}
+        self.dst_stats = set(session.execute(select(AchievementStat.source, AchievementStat.external_id).where(
+            AchievementStat.canonical_id == dst)).tuples())
         self.custom = {(cv.key, cv.source): row_dict(cv)
                        for cv in q(select(CustomValue).where(CustomValue.canonical_id == src))}
         self.dst_custom = {(k, src_) for k, src_ in session.execute(select(CustomValue.key, CustomValue.source)
@@ -162,7 +177,8 @@ class Pre:
 
     def size(self) -> int:
         return (len(self.chains) + len(self.xwalk) + len(self.aliases) + len(self.locks) + len(self.art)
-                + len(self.votes) + len(self.ach) + len(self.custom) + len(self.lists) + len(self.follows)
+                + len(self.votes) + len(self.ach) + len(self.sets) + len(self.stats) + len(self.custom) + len(self.lists)
+                + len(self.follows)
                 + len(self.prices) + len(self.relations) + len(self.reviews))
 
 
@@ -215,9 +231,18 @@ def finish(session: Session, rec: MergeRecord, pre: Pre, ended: list[str]) -> No
         for aid, data in sorted(pre.ach.items()):
             a = session.get(Achievement, aid)
             if a is None:
-                items.append(("ach_dropped", aid, data, None))
+                items.append(("ach_dropped", aid, {**data, "_texts": pre.ach_texts.get(aid, [])}, None))
             else:
-                items.append(("ach", aid, {"key": data["key"]}, data_hash(_ach_data(a))))
+                # `set_key` only when the move renamed it (§12.1.1): older records have no such field
+                moved = {"key": data["key"]} | ({"set_key": data["set_key"]} if a.set_key != data["set_key"] else {})
+                items.append(("ach", aid, moved, data_hash(_ach_data(a))))
+        for sid, data in sorted(pre.sets.items()):
+            row = session.get(AchievementSet, sid)
+            if row is not None:  # sets are never dropped on a merge, at most renamed
+                items.append(("ach_set", sid, {"set_key": data["set_key"]}, None))
+        for (source, ext), data in sorted(pre.stats.items()):
+            moved = (source, ext) not in pre.dst_stats  # else the survivor's copy won and this one was dropped
+            items.append(("stat" if moved else "stat_dropped", f"{source}\n{ext}", None if moved else data, None))
         for (key, source), data in sorted(pre.custom.items()):
             if (key, source) in pre.dst_custom:
                 items.append(("custom_dropped", f"{key}\n{source}", data, None))
@@ -532,6 +557,8 @@ def _preview_item(session: Session, i: MergeRecordItem, dst: str, moves: dict[st
                 moves["achievements"] += 1
     elif kind == "ach_dropped":
         restores["achievements"] += 1
+    elif kind in ("ach_set", "stat", "stat_dropped"):
+        pass  # carried with the achievements; not counted apart
     elif kind == "custom":
         key, source = ref.split("\n", 1)
         cv = session.get(CustomValue, (dst, key, source))
@@ -613,14 +640,42 @@ def _restore_item(session: Session, i: MergeRecordItem, src: str, dst: str, move
         if key and key != a.key and session.scalars(select(Achievement.id).where(
                 Achievement.canonical_id == src, Achievement.key == key)).first() is None:
             a.key = key
+        if (i.data or {}).get("set_key"):
+            a.set_key = i.data["set_key"]
         moves["achievements"] += 1
     elif kind == "ach_dropped":
+        data = i.data
+        # identity inside a source is (external id, name) (C12 §12.1.4); a key clash also keeps the survivor's row
+        same = ((Achievement.source == data["source"]) & (Achievement.external_id == data["external_id"])
+                & (Achievement.norm_name == data["norm_name"]))
         if session.get(Achievement, ref) is None and session.scalars(select(Achievement.id).where(
-                Achievement.canonical_id == src,
-                ((Achievement.source == i.data["source"]) & (Achievement.norm_name == i.data["norm_name"]))
-                | (Achievement.key == i.data["key"]))).first() is None:
-            session.add(row_from(Achievement, {**i.data, "canonical_id": src}))
+                Achievement.canonical_id == src, same | (Achievement.key == data["key"]))).first() is None:
+            session.add(row_from(Achievement, {**{k: v for k, v in data.items() if k != "_texts"},
+                                               "canonical_id": src}))
+            session.flush()
+            for t in data.get("_texts") or []:
+                session.add(row_from(AchievementText, t))
             restores["achievements"] += 1
+    elif kind == "ach_set":
+        row = session.get(AchievementSet, ref)
+        if row is not None and row.canonical_id == dst:
+            want = (i.data or {}).get("set_key") or row.set_key
+            clash = session.scalars(select(AchievementSet.id).where(
+                AchievementSet.canonical_id == src, AchievementSet.source == row.source,
+                AchievementSet.set_key == want)).first()
+            if clash is None:
+                row.canonical_id, row.set_key = src, want
+            else:  # the restored record already has that set again: this copy is not needed
+                session.delete(row)
+    elif kind == "stat":
+        source, ext = ref.split("\n", 1)
+        row = session.get(AchievementStat, (dst, source, ext))
+        if row is not None and session.get(AchievementStat, (src, source, ext)) is None:
+            row.canonical_id = src
+    elif kind == "stat_dropped":
+        source, ext = ref.split("\n", 1)
+        if session.get(AchievementStat, (src, source, ext)) is None:
+            session.add(row_from(AchievementStat, {**i.data, "canonical_id": src}))
     elif kind == "custom":
         key, source = ref.split("\n", 1)
         cv = session.get(CustomValue, (dst, key, source))

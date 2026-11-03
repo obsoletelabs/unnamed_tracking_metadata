@@ -29,9 +29,11 @@ def seed(session, ctx, ext="620", title="Portal 2"):
 
 
 def stored(session, cid, source=None):
-    """name -> (id, key), read straight from the database (not from the ORM identity map)."""
+    """name -> (id, key) of the live (not retired, C12 §12.1.3) rows, read straight from the database (not from
+    the ORM identity map)."""
     session.expire_all()
-    sql = "SELECT id, key, name FROM achievement WHERE canonical_id = :c" + (" AND source = :s" if source else "")
+    sql = ("SELECT id, key, name FROM achievement WHERE canonical_id = :c AND retired_at IS NULL"
+           + (" AND source = :s" if source else ""))
     return {r.name: (r.id, r.key) for r in session.execute(text(sql), {"c": cid, "s": source})}
 
 
@@ -68,6 +70,8 @@ def test_refreshes_keep_ids_and_keys_in_the_database(session, ctx):
     assert after["Big Collector"] == first["Collector"] and after["Winner"] == first["Winner"]
     assert "Secret Ending" not in after and after["Newcomer"][0] not in {v[0] for v in first.values()}
     assert after["Newcomer"][1] == ak1("steam:ACH_NEW")
+    gone = session.get(Achievement, first["Secret Ending"][0])  # retired, not deleted: it keeps id and key
+    assert gone is not None and gone.retired_at is not None and gone.key == first["Secret Ending"][1]
     row = session.get(Achievement, first["Collector"][0])
     assert (row.description, row.norm_name) == ("now more", "big collector")  # updated in place
 
@@ -75,7 +79,7 @@ def test_refreshes_keep_ids_and_keys_in_the_database(session, ctx):
     facets.set_achievements(session, ctx, cid, "steam", STEAM)
     session.commit()
     again = stored(session, cid)
-    assert again["Secret Ending"][1] == first["Secret Ending"][1] and again["Winner"] == first["Winner"]
+    assert again["Secret Ending"] == first["Secret Ending"] and again["Winner"] == first["Winner"]  # revived
 
 
 def test_editor_round_trip_rename_keeps_id_and_key(session, ctx):
@@ -395,8 +399,12 @@ def test_api_fields_and_ids_survive_repeated_puts_across_pages(api):
     renamed = next(e for e in after if e["name"] == "Renamed 0399")
     assert renamed["key"] == by_name["Achievement 0399"]["key"] and renamed["id"] == by_name["Achievement 0399"]["id"]
     with api.st.maker() as s:  # and the database agrees with the API
-        rows = {r.key: r.id for r in s.scalars(select(Achievement).where(Achievement.canonical_id == api.cid))}
+        every = list(s.scalars(select(Achievement).where(Achievement.canonical_id == api.cid)))
+        rows = {r.key: r.id for r in every if r.retired_at is None}
         assert rows == {e["key"]: e["id"] for e in after}
+        # the 50 dropped entries are retired (C12 §12.1.3), keeping the ids and keys they had
+        assert {r.key: r.id for r in every if r.retired_at is not None} == {
+            k: i for k, i in old.items() if k not in rows}
     # reveal accepts a key as well as an id
     shown = next(e for e in pages(api, reveal=secret["key"]) if e["hidden"])
     assert shown["revealed"] and shown["name"] == "Achievement 0007" and shown["key_identity"] == "curator:ACH_7"
