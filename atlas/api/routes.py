@@ -1006,10 +1006,10 @@ ArtLang = Annotated[str | None, Query(max_length=35, description="Prefer artwork
 
 @router.get("/games/{cid}/artwork", tags=["read"])
 def get_artwork(cid: str, st: St, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
-                region: ArtRegion = None, lang: ArtLang = None, include_duplicates: bool = True):
+                region: ArtRegion = None, lang: ArtLang = None, include_duplicates: bool = False):
     """Every image of a record, best first (C12 §12.5.7): curator, then the community's choice, then not a
     duplicate, role fit, class, trust, region and language match, priority and measured size. `primary` is the
-    best of each kind that is not an exact duplicate. `include_duplicates=false` leaves the duplicates out.
+    best of each kind that is not an exact duplicate. Exact duplicates are left out unless `include_duplicates=1`.
     Curator tokens also see `near_duplicate_of` (a perceptual match, reported and never hidden)."""
     from ..dates import REGION_RE
 
@@ -1198,26 +1198,36 @@ def price_status(session: Sess, _: Annotated[auth.Principal, Depends(require("ad
 
 @router.get("/artwork/{art_id}/image", tags=["read"])
 def get_artwork_image(art_id: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
-    """The image of one artwork row (C12 §12.5.5, H50): the cached bytes of a `proxy` source; a 307 to the
-    original only for a `redirect` source and only to one of that source's allow-listed hosts; 404 otherwise (an
-    image not cached yet, a source that is `none`, an address outside the allow-list)."""
+    """The image of one artwork row (C12 §12.5.5, §12.5.8, §12.7.2, H50).
+
+    * the cached bytes of a `proxy` source (`public, max-age=300`, digest as ETag);
+    * otherwise, for a provider row (a `redirect` source, or a `proxy` source not cached yet), a 307 to the
+      original (`private, max-age=300`, unchanged), but only when its host is in the source's `redirect_hosts` or
+      in the admin's explicit `media_allowed_hosts`: there is no open redirect;
+    * 404 for any other host, for a source that is `none`, and for an uncached curated, community or uploaded
+      image (those are only ever served from this node's cache)."""
     from fastapi.responses import RedirectResponse
 
     art = session.get(Artwork, art_id)
     if art is None:
         raise HTTPException(404, "no such image")
-    fetch = media.fetch_policy(st.ctx.settings, art.source, art.url)
-    if fetch == "proxy" and art.blob_hash and media.find_blob(st.ctx.settings, art.blob_hash):
+    settings = st.ctx.settings
+    fetch = media.fetch_policy(settings, art.source, art.url)
+    if fetch == "none":
+        raise HTTPException(404, "image is not served here")
+    if fetch == "proxy" and art.blob_hash and media.find_blob(settings, art.blob_hash):
         return media_response(st, art.blob_hash, etag=True)
-    if fetch != "redirect":
-        raise HTTPException(404, "image is not available yet" if fetch == "proxy" else "image is not served here")
+    if source_class(art.source) != "provider" or media.is_upload(settings, art.url):
+        raise HTTPException(404, "image is not available yet")
     try:
-        _scheme, host, _port, _ip = media.check_url(art.url, st.ctx.settings)  # public https addresses only
+        _scheme, host, _port, _ip = media.check_url(art.url, settings)  # public https addresses only
     except media.MediaError:
         raise HTTPException(404, "image is not available") from None
-    if host.lower() not in media_policy.policy(st.ctx.settings, art.source).redirect_hosts:
+    allowed = set(media_policy.policy(settings, art.source).redirect_hosts)
+    allowed |= {h.lower() for h in (settings.media_allowed_hosts or ())}
+    if host.lower() not in allowed:
         raise HTTPException(404, "image is not available")
-    return RedirectResponse(art.url, status_code=307, headers={"Cache-Control": "public, max-age=300"})
+    return RedirectResponse(art.url, status_code=307, headers={"Cache-Control": "private, max-age=300"})
 
 
 def media_response(st: AppState, digest: str, *, etag: bool = False):

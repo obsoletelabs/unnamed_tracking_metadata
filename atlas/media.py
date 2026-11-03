@@ -23,7 +23,7 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import httpx
-from PIL import Image, ImageSequence, UnidentifiedImageError
+from PIL import Image, ImageOps, ImageSequence, UnidentifiedImageError
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -286,26 +286,34 @@ def reencode_upload(data: bytes, settings: Settings) -> tuple[bytes, str, str, i
     try:
         with Image.open(io.BytesIO(data)) as img:
             fmt = img.format
-            if fmt == "GIF":
-                frames = [f.copy() for f in ImageSequence.Iterator(img)]
-                durations = [f.info.get("duration", 100) for f in frames]
-                first = frames[0]
-                first.info = {}
-                first.save(out, "GIF", save_all=len(frames) > 1, append_images=frames[1:],
-                           duration=durations if len(frames) > 1 else durations[0],
-                           loop=img.info.get("loop", 0), optimize=False)
-            elif fmt == "JPEG":
-                clean = img.convert("RGB") if img.mode not in ("RGB", "L") else img.copy()
+            if fmt == "JPEG":
+                # apply the EXIF orientation before the EXIF goes, or a phone photo comes out rotated
+                clean = ImageOps.exif_transpose(img)
+                clean = clean.convert("RGB") if clean.mode not in ("RGB", "L") else clean.copy()
                 clean.info = {}
                 clean.save(out, "JPEG", quality=92)
-            elif fmt == "WEBP":
-                frames = [f.copy() for f in ImageSequence.Iterator(img)]
-                frames[0].info = {}
-                frames[0].save(out, "WEBP", lossless=True, save_all=len(frames) > 1, append_images=frames[1:])
-            else:  # PNG
-                clean = img.copy()
-                clean.info = {}
-                clean.save(out, "PNG")
+            else:
+                # what is drawing, not metadata, is kept: transparency, frame durations and the loop count
+                frames, durations = [], []
+                for frame in ImageSequence.Iterator(img):
+                    copy = frame.copy()  # loads the frame: WebP sets its duration only then
+                    durations.append(frame.info.get("duration", 100))
+                    copy.info = {k: frame.info[k] for k in ("transparency",) if k in frame.info}
+                    frames.append(copy)
+                first, animated = frames[0], len(frames) > 1
+                anim: dict[str, Any] = {}
+                if animated:
+                    anim = {"save_all": True, "append_images": frames[1:], "duration": durations,
+                            "loop": img.info.get("loop", 0)}
+                if "transparency" in first.info:
+                    anim["transparency"] = first.info["transparency"]
+                if fmt == "GIF":
+                    first.save(out, "GIF", optimize=False, **anim)
+                elif fmt == "WEBP":
+                    anim.pop("transparency", None)  # WebP carries alpha in the pixels (RGBA)
+                    first.save(out, "WEBP", lossless=True, **anim)
+                else:  # PNG, and APNG with all its frames
+                    first.save(out, "PNG", **anim)
     except (OSError, ValueError, EOFError) as exc:
         raise MediaError("not a valid image", "bad_image") from exc
     data = out.getvalue()

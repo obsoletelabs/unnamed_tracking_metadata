@@ -511,6 +511,11 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
         for model in (Artwork, Achievement, AchievementSet, AchievementStat):
             for row in session.scalars(select(model).where(model.canonical_id == old, model.source == obs.source)):
                 row.canonical_id = cid
+        session.flush()
+        from .facets import dedupe
+
+        for record in (old, cid):  # §12.5.4: a duplicate_of must not point at a row now on the other record
+            dedupe(session, ctx.settings, record)
     session.flush()
     who = actor or ("sync" if not log else "curator")
     matching.add_rejection(session, "chain", matching.chain_hash(obs.source, obs.source_scope, obs.external_id), old,

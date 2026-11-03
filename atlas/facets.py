@@ -49,6 +49,7 @@ SET_KEY_RE = re.compile(r"[a-z0-9._-]{1,64}\Z")
 PLATFORM_RE = re.compile(r"[a-z0-9._-]{1,50}\Z")
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 _PRINTABLE = re.compile(r"[\x00-\x1f\x7f]")
+_PROSE_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # control characters other than tab and newlines
 SET_KIND_ORDER = {k: n for n, k in enumerate(vocab.ACHIEVEMENT_SET_KINDS)}
 ORDERS = ("rarity", "source", "name")
 
@@ -158,9 +159,11 @@ def _as_of(value: Any) -> str:
     if not isinstance(value, str) or not _DATE_RE.fullmatch(value):
         raise AtlasError("rarity as_of must be a date (YYYY-MM-DD)")
     try:
-        date.fromisoformat(value)
+        when = date.fromisoformat(value)
     except ValueError as exc:
         raise AtlasError("rarity as_of must be a date (YYYY-MM-DD)") from exc
+    if when > _today() + timedelta(days=1):  # a future date would stay "fresh" and newest for ever (§12.1.6)
+        raise AtlasError("rarity as_of must not be in the future")
     return value
 
 
@@ -221,10 +224,14 @@ def _clean_i18n(value: Any) -> dict[str, dict[str, str]]:
         loc = clean_locale(tag, "i18n language")
         if not isinstance(text, dict):
             raise AtlasError("each i18n entry must be an object with name and description")
-        name = str(text.get("name") or "").strip()
-        if not name or len(name) > 200:
+        name = text.get("name")
+        if not isinstance(name, str) or not name.strip():
             raise AtlasError("each translation needs a name (max 200)")
-        out[loc] = {"name": name, "description": str(text.get("description") or "")[:2000]}
+        name = _text(name, "translated name", 200)
+        description = text.get("description") or ""
+        if not isinstance(description, str) or len(description) > 2000 or _PROSE_CONTROL.search(description):
+            raise AtlasError("translated description must be text of at most 2000 characters")
+        out[loc] = {"name": name, "description": description}
     return out
 
 
@@ -645,7 +652,8 @@ def _write_texts(session: Session, row: Achievement, i18n: dict[str, dict[str, s
 
 def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: list[dict[str, Any]], *,
                      sets: list[dict[str, Any]] | None = None, redistributable: bool = False, log: bool = True,
-                     ordered: bool = False, adopt_keys: bool = False, measured_at: date | None = None) -> int:
+                     ordered: bool = False, adopt_keys: bool = False, measured_at: date | None = None,
+                     written_on: date | None = None) -> int:
     """Replace what one source says, reconciling its rows in place (CONTRACTS-v1 C2.2, C12 §12.1).
 
     Each item is matched to an existing row of this source by its key (or the row id the editor submits),
@@ -656,12 +664,19 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
     order as `position` (for lists people arranged by hand); `source_order` is always the list index. `sets` is
     the list-level set definitions (absent: every item is in `base`). `adopt_keys` is for signed feed entries:
     the authority's key replaces a mirror's own, so every node publishes the same key. `measured_at` is the date
-    a provider measured its percentages (an import passes today)."""
+    a provider measured its percentages (an import passes today). `written_on` stands for "today" when a
+    percent arrives without a date: a mirror passes the date of the signed entry's origin timestamp, so the
+    authority and every mirror store the same date (§12.1.6)."""
     write_lock(session)
     _live(session, cid)
     source = norm_namespace(source)
     items = clean_achievements(items)
     set_rows = clean_sets(sets)
+    from .matching import follow
+
+    for s in set_rows:  # §12.1.1: a DLC set names the DLC's own record, never the record it belongs to
+        if s.get("dlc") and (s["dlc"] == cid or follow(session, s["dlc"]) == cid):
+            raise AtlasError(f"set {s['key']!r} names this record as its own dlc")
     known = {"base"} | {s["key"] for s in set_rows}
     for it in items:
         if it.get("set", "base") not in known:
@@ -734,7 +749,7 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
         session.flush()
 
     # 4. update matched rows in place, add the new ones
-    today = _today()
+    today = written_on or _today()
     texts: list[tuple[Achievement, dict[str, Any] | None]] = []
     for index, (it, row, key) in enumerate(zip(items, match, final, strict=True)):
         before_pct, before_as_of = (None, None) if row is None else (row.global_percent, row.percent_as_of)
@@ -756,7 +771,7 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
         row.icon_licence, row.icon_attribution = it.get("icon_licence"), it.get("icon_attribution")
         row.retired_at = None
         # §12.1.6: when the percent was measured. A stated date wins; a provider import passes the fetch date; an
-        # unchanged value keeps its date; otherwise the date this node first stored the value.
+        # unchanged value keeps its date; otherwise the write date (on a mirror: the signed entry's origin date).
         pct = it.get("global_percent")
         if pct is None:
             row.percent_as_of = None
@@ -1163,8 +1178,10 @@ def achievement_listing(session: Session, ctx: Ctx, cid: str, *, reveal: bool | 
                          locked_icon_url=_media(m["locked_icon_blob"]), icon_licence=m["icon_licence"],
                          icon_attribution=m["icon_attribution"])
         else:
+            # no position either: a curated position would leak the order of the real names (§12.1.3, §12.1.8)
             entry.update(name=HIDDEN_NAME, description="", lang=None, external_ids={}, key_identity=None,
-                         icon_url=None, locked_icon_url=None, icon_licence=None, icon_attribution=None)
+                         icon_url=None, locked_icon_url=None, icon_licence=None, icon_attribution=None,
+                         position=None)
         entry["_sort"] = (ord_row.source_order if ord_row is not None else None, lead.name)
         entries.append(entry)
 

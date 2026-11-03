@@ -93,7 +93,8 @@ def candidate(settings: Settings, source_engine, authority: str, confirm_mirror:
                             raise PromotionError(f"retained entry {row.seq} is not supported by this release "
                                                  f"({outcome.message}); upgrade before recovery")
                         target.add(ReplicatedChange(node_id=authority, seq=row.seq, kind=row.kind, body=row.body,
-                                                    body_hash=row.body_hash, signature=row.signature, key_id=row.key_id))
+                                                    body_hash=row.body_hash, signature=row.signature, key_id=row.key_id,
+                                                    created_at=row.created_at))
                         target.flush()
                         if row.kind != "key_rotation":
                             # Use the same replay contract as a follower, then sign the original public payload
@@ -102,7 +103,8 @@ def candidate(settings: Settings, source_engine, authority: str, confirm_mirror:
                             if outcome.action == feed_schema.APPLY:
                                 try:
                                     with target.begin_nested():
-                                        sync._apply(target, ctx, identity.node_id, seq, row.kind, outcome.body)
+                                        with sync.entry_at(row.created_at):
+                                            sync._apply(target, ctx, identity.node_id, seq, row.kind, outcome.body)
                                 except (sync.InvalidEntry, AtlasError):
                                     pass  # as on the source mirror: an entry it could not apply stays unapplied
                         expected += 1

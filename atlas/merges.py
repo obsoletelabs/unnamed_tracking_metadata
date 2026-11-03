@@ -444,6 +444,11 @@ def unmerge(session: Session, ctx: Any, merge_id: str, *, actor: str, dry_run: b
     session.flush()
     late = _late_chains(session, src_id, dst_id, listed_chains, listed_keys, apply=True)
     session.flush()
+    from .facets import dedupe
+
+    for record in (src_id, dst_id):  # §12.5.4: exact duplicates are recomputed once the rows are apart again
+        dedupe(session, ctx.settings, record)
+    session.flush()
     review_id = None
     if conflicts or late["review"]:
         concern = [*({"kind": c["kind"], "ref": c["ref"]} for c in conflicts),

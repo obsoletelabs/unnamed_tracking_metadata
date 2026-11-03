@@ -105,7 +105,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_MEDIA_MAX_BYTES` | `10485760` | Largest image accepted (bytes). **live** |
 | `ATLAS_MEDIA_MAX_PIXELS` | `40000000` | Largest image by pixel count (decompression-bomb guard). |
 | `ATLAS_MEDIA_CACHE_BATCH` | `10` | Images processed per background pass. |
-| `ATLAS_MEDIA_ALLOWED_HOSTS` | — | If non-empty, only these hostnames may be downloaded from. Always public addresses only. |
+| `ATLAS_MEDIA_ALLOWED_HOSTS` | — | If non-empty, only these hostnames may be downloaded from. Always public addresses only. A provider image not cached yet may also be redirected to these hosts by `/api/v2/artwork/{id}/image`. |
 | `ATLAS_MEDIA_HTTPS_ONLY` | `true` | New downloads need `https` (C12 §12.6, H40). A redirect from https to http is refused either way. |
 | `ATLAS_MEDIA_FETCH_DEADLINE_S` | `20` | Seconds one download may take in all, redirects and body included (5-60). |
 | `ATLAS_MEDIA_HOST_CONCURRENCY` | `2` | Simultaneous downloads from one host, per process. |

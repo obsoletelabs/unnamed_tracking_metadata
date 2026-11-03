@@ -141,12 +141,14 @@ place never hints at their name or rarity.
 **Rarity.** Every entry has `rarity: {percent, source, as_of, stale, band}` (and `global_percent`, the same
 percent, for older clients). A fresh provider measurement wins; then a fresh curated or community value; when nothing
 is younger than `ATLAS_ACHIEVEMENT_PERCENT_MAX_AGE_DAYS` (30) the newest value is shown with `stale: true`. A value
-without a date (stored before this release) counts as stale. `band` is `common` (50 % or more), `uncommon` (20 %),
+without a date (stored before this release) counts as stale. A percent sent without a date is dated by its write;
+a mirror dates it by the feed entry that carried it, so the authority and its mirrors show the same date. A date in
+the future is refused. `band` is `common` (50 % or more), `uncommon` (20 %),
 `rare` (5 %), `very_rare` (1 %) or `ultra_rare`. Without a Steam Web API key Atlas still stores Steam's public
 percentages and shows them on the entries that name the same external id. The editor has a **Rarity (%)** field.
 
 **Spoilers.** A response that reveals any hidden entry is sent `Cache-Control: private, no-store`. A redacted entry
-has no name, description, icon, external ids, `lang` or translation.
+has no name, description, icon, external ids, `lang`, translation or curated `position`.
 
 **Federation.** None of this enters the signed feed yet: an authority signs the version 1 list (without the fields
 above, without a later entry whose name repeats an earlier one, and without icons whose licence needs attribution),

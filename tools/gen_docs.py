@@ -140,7 +140,7 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                                          "fresher value from another source wins (C12 §12.1.6)."),
     "achievement_retired_retention_days": ("Limits", "Days a retired achievement row (one its source no longer lists) "
                                            "is kept, with its id and key, before it is deleted (C12 §12.1.3, H37)."),
-    "media_allowed_hosts": ("Artwork", "If non-empty, only these hostnames may be downloaded from. Always public addresses only."),
+    "media_allowed_hosts": ("Artwork", "If non-empty, only these hostnames may be downloaded from. Always public addresses only. A provider image not cached yet may also be redirected to these hosts by `/api/v2/artwork/{id}/image`."),
     "backup_dir": ("Backups", "Folder for scheduled backups (use a persistent volume). Unset = no scheduled backups."),
     "backup_interval_hours": ("Backups", "Hours between scheduled backups (default 24)."),
     "backup_keep": ("Backups", "How many scheduled backups to keep (default 14)."),

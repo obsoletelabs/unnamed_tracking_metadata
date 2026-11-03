@@ -30,10 +30,15 @@ Downgrade keeps the data aside (the A15-A17 pattern; CONTRACT-AMENDMENTS A18 #2)
 * Curated artwork rows whose licence keeps them out of the CC0 feed (`cc-by`, `cc-by-sa`, `publisher_press`,
   `provider_terms`) or that are `local_only` are moved to `artwork_rows_0035_kept` with their votes: the previous
   release would sign them with the next write of their source.
-* The new columns of the remaining rows go to `achievement_cols_0035_kept` / `artwork_cols_0035_kept`; then the
-  columns are dropped and `uq_achievement` is re-created.
-Upgrading again restores all of it. Rows of records merged meanwhile follow the merge; a set-aside row whose key
-or identity the previous release gave to a new row in the meantime stays out (the newer row wins).
+* Curated achievement rows whose `icon_licence` is withheld lose their icon addresses (and cached icons) for as
+  long as the previous release runs, for the same reason: it would sign them into the CC0 feed with the next write
+  of the list. The addresses are kept with the row's new columns.
+* The new columns of the remaining rows go to `achievement_cols_0035_kept` / `artwork_cols_0035_kept`, the
+  declared image size included; then the columns are dropped and `uq_achievement` is re-created.
+Upgrading again restores all of it. A withheld icon comes back only when the previous release left the row's
+icons empty, and a declared size only when the row's width and height are still the measured ones it kept. Rows of
+records merged meanwhile follow the merge; a set-aside row whose key or identity the previous release gave to a new
+row in the meantime stays out (the newer row wins).
 """
 from __future__ import annotations
 
@@ -59,6 +64,7 @@ WITHHELD = ("cc-by", "cc-by-sa", "publisher_press", "provider_terms")
 MAX_HOPS = 32
 BATCH = 1000
 
+ICONS = ("icon_url", "locked_icon_url", "icon_blob_hash", "locked_icon_blob_hash")
 ACH_NEW = (("set_key", sa.String(64)), ("source_order", sa.Integer()), ("status", sa.String(16)),
            ("retired_at", sa.DateTime(timezone=True)), ("text_locale", sa.String(35)), ("percent_as_of", sa.Date()),
            ("icon_licence", sa.String(24)), ("icon_attribution", sa.String(300)),
@@ -240,8 +246,16 @@ def _restore(bind, tables: set[str]) -> None:
     if ACH_COLS in tables:
         for row in bind.execute(sa.select(_kept(ACH_COLS, kept_cols))).all():
             if row.id in ach_ids:
-                bind.execute(achievement_new.update().where(achievement_new.c.id == row.id)
-                             .values(**_typed(ACH_NEW, _json(row.data))))
+                data = _json(row.data)
+                values = _typed(ACH_NEW, data)
+                icons = data.get("_icons")
+                if icons:  # withheld icons set aside; the previous release may have given the row new ones
+                    now = bind.execute(sa.select(*(achievement_new.c[c] for c in ICONS[:2])).where(
+                        achievement_new.c.id == row.id)).first()
+                    if now is not None and not any(now):
+                        values.update({c: icons.get(c) for c in ICONS})
+                if values:
+                    bind.execute(achievement_new.update().where(achievement_new.c.id == row.id).values(**values))
         op.drop_table(ACH_COLS)
     if ACH_ROWS in tables:
         for row in bind.execute(sa.select(_kept(ACH_ROWS, kept_rows)).order_by(sa.text("id"))).all():
@@ -264,8 +278,15 @@ def _restore(bind, tables: set[str]) -> None:
         art_ids = {r.id for r in bind.execute(sa.select(artwork_new.c.id))}
         for row in bind.execute(sa.select(_kept(ART_COLS, kept_cols))).all():
             if row.id in art_ids:
-                bind.execute(artwork_new.update().where(artwork_new.c.id == row.id)
-                             .values(**_typed(ART_NEW, _json(row.data))))
+                data = _json(row.data)
+                values = _typed(ART_NEW, data)
+                now = bind.execute(sa.select(artwork_new.c.width, artwork_new.c.height).where(
+                    artwork_new.c.id == row.id)).first()
+                if "_wh" not in data or now is None or [now.width, now.height] != data["_wh"]:
+                    # the previous release wrote a new declaration into width/height: that one is the declaration
+                    values.pop("declared_width", None), values.pop("declared_height", None)
+                if values:
+                    bind.execute(artwork_new.update().where(artwork_new.c.id == row.id).values(**values))
         op.drop_table(ART_COLS)
     if ART_ROWS in tables:
         users = {r.id for r in bind.execute(sa.select(app_user.c.id))}
@@ -331,10 +352,16 @@ def downgrade() -> None:
         bind.execute(text_t.delete().where(text_t.c.achievement_id == data["id"]))
         bind.execute(achievement_old.delete().where(achievement_old.c.id == data["id"]))
 
-    # 2. the new columns of the rows that stay
+    # 2. the new columns of the rows that stay; a curated icon under a withheld licence is set aside with them
     defaults = {"set_key": "base"}
-    for r in bind.execute(sa.select(achievement_new.c.id, *(achievement_new.c[c] for c, _t in ACH_NEW))).mappings():
+    for r in bind.execute(sa.select(achievement_new.c.id, achievement_new.c.source,
+                                    *(achievement_new.c[c] for c in ICONS),
+                                    *(achievement_new.c[c] for c, _t in ACH_NEW))).mappings().all():
         data = {c: _plain(r[c]) for c, _t in ACH_NEW if r[c] is not None and r[c] != defaults.get(c)}
+        if r["source"] in CURATED and r["icon_licence"] in WITHHELD and (r["icon_url"] or r["locked_icon_url"]):
+            data["_icons"] = {c: r[c] for c in ICONS}
+            bind.execute(achievement_new.update().where(achievement_new.c.id == r["id"])
+                         .values(**{c: None for c in ICONS}))
         if data:
             bind.execute(cols_t.insert().values(id=r["id"], data=data))
 
@@ -348,9 +375,13 @@ def downgrade() -> None:
         bind.execute(art_rows_t.insert().values(id=r["id"], canonical_id=r["canonical_id"], data=data))
         bind.execute(vote.delete().where(vote.c.artwork_id == r["id"]))
         bind.execute(artwork_old.delete().where(artwork_old.c.id == r["id"]))
-    for r in bind.execute(sa.select(artwork_new.c.id, *(artwork_new.c[c] for c, _t in ART_NEW))).mappings():
+    for r in bind.execute(sa.select(artwork_new.c.id, artwork_new.c.width, artwork_new.c.height,
+                                    *(artwork_new.c[c] for c, _t in ART_NEW))).mappings():
         data = {c: _plain(r[c]) for c, _t in ART_NEW if r[c] not in (None, False)}
-        data.pop("declared_width", None), data.pop("declared_height", None)  # re-derived from width/height
+        if (data.get("declared_width"), data.get("declared_height")) == (r["width"], r["height"]):
+            data.pop("declared_width", None), data.pop("declared_height", None)  # re-derived from width/height
+        elif "declared_width" in data or "declared_height" in data:
+            data["_wh"] = [r["width"], r["height"]]  # the measured size the declaration belongs to
         if data:
             bind.execute(art_cols_t.insert().values(id=r["id"], data=data))
 
