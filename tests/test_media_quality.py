@@ -262,6 +262,46 @@ def test_api_lists_exact_duplicates_only_on_request(tmp_path, resolver):  # noqa
         assert full["results"][1]["duplicate_of"] == full["results"][0]["id"]
 
 
+def test_api_keeps_the_legacy_order_unless_quality_is_asked(tmp_path, resolver):  # noqa: F811
+    """D2 (amendment A18 #18): a client that takes the first image keeps getting it. The default list keeps the
+    pre-C12 order (priority across kinds), `best` is the §12.5.7 pick per kind, and `order=quality` opts in."""
+    s = build_settings(database_url=f"sqlite:///{tmp_path}/a.db", bootstrap_admin_token="m" * 40, role="local",
+                       media_dir=str(tmp_path / "media"), media_cache_enabled=False)
+    with TestClient(main.create_app(s)) as api:
+        api.headers["Authorization"] = "Bearer " + "m" * 40
+        st = api.app.state.atlas
+        with st.maker() as session:
+            gid = seed(session, st.ctx)
+            session.commit()
+        assert api.put(f"/api/v2/games/{gid}/artwork", json={"items": [
+            {"kind": "key_art", "url": "https://img.test/square.png", "width": 1, "height": 1, "priority": 10},
+            {"kind": "key_art", "url": "https://img.test/tall.png", "width": 600, "height": 900, "priority": 15},
+            {"kind": "logo", "url": "https://img.test/logo.png", "priority": 20}]}).status_code == 200
+        media.cache_pending(st.maker, s, serve({"https://img.test/square.png": image(40, 40),
+                                                "https://img.test/tall.png": image(60, 90),
+                                                "https://img.test/logo.png": image(90, 30)}))
+        with st.maker() as session:  # what was stored, not only what the route says
+            stored = {a.url: a for a in session.scalars(select(Artwork).where(Artwork.canonical_id == gid))}
+            assert facets.role_fit(stored["https://img.test/square.png"]) is False
+            assert facets.role_fit(stored["https://img.test/tall.png"]) is True
+
+        legacy = api.get(f"/api/v2/games/{gid}/artwork").json()
+        assert legacy["order"] == "legacy"
+        assert [r["url"] for r in legacy["results"]] == [
+            "https://img.test/square.png", "https://img.test/tall.png", "https://img.test/logo.png"]
+        assert legacy["primary"]["key_art"]["url"] == "https://img.test/square.png"  # unchanged for old clients
+        assert legacy["best"]["key_art"]["url"] == "https://img.test/tall.png"  # the misfit ranks lower
+        assert legacy["best"]["logo"]["url"] == "https://img.test/logo.png"
+        assert api.get(f"/api/v2/games/{gid}/artwork?order=legacy").json() == legacy
+
+        quality = api.get(f"/api/v2/games/{gid}/artwork?order=quality").json()
+        assert quality["order"] == "quality"
+        assert [r["url"] for r in quality["results"]] == [
+            "https://img.test/tall.png", "https://img.test/logo.png", "https://img.test/square.png"]
+        assert quality["primary"] == quality["best"] == legacy["best"]
+        assert api.get(f"/api/v2/games/{gid}/artwork?order=best").status_code == 422
+
+
 def test_policy_none_or_redirect_stops_downloads_and_serving(tmp_path, resolver):  # noqa: F811
     s = build_settings(database_url=f"sqlite:///{tmp_path}/a.db", bootstrap_admin_token="m" * 40, role="local",
                        media_dir=str(tmp_path / "media"), media_cache_enabled=False)

@@ -938,12 +938,29 @@ def near_duplicates(rows: list[Artwork]) -> dict[str, str]:
     return out
 
 
+def legacy_art_rank(settings: Any, a: Artwork) -> tuple[Any, ...]:
+    """The order `GET /games/{cid}/artwork` has always listed images in, across kinds (before C12): the community's
+    `preferred` first, then trust, priority and age; url and source only break the remaining ties. Clients that
+    take the first image rely on it, so it stays the API default (C12 §12.5.7, amendment A18 #18)."""
+    return (not a.preferred, -settings.trust(a.source), a.priority, a.created_at, a.url, a.source)
+
+
+ART_ORDERS = ("legacy", "quality")
+
+
 def merged_artwork(session: Session, ctx: Ctx, cid: str, *, region: str | None = None, lang: str | None = None,
-                   include_duplicates: bool = True) -> list[Artwork]:
+                   include_duplicates: bool = True, order: str = "quality") -> list[Artwork]:
+    """Every image of a record. `order="quality"` (default here) ranks by §12.5.7; `order="legacy"` keeps the
+    pre-C12 list order that v1 API clients see by default."""
+    if order not in ART_ORDERS:
+        raise ValueError(f"unknown artwork order {order!r}")
     rows = list(session.scalars(select(Artwork).where(Artwork.canonical_id == cid)))
     if not include_duplicates:
         rows = [a for a in rows if a.duplicate_of is None]
-    rows.sort(key=lambda a: art_rank(ctx.settings, a, region=region, lang=lang))
+    if order == "legacy":
+        rows.sort(key=lambda a: legacy_art_rank(ctx.settings, a))
+    else:
+        rows.sort(key=lambda a: art_rank(ctx.settings, a, region=region, lang=lang))
     return rows
 
 
