@@ -121,7 +121,8 @@ def test_upgrading_again_brings_the_derived_data_back(url, target):
     if target == "0030":
         assert after[ids["locked"]]["version"] > before[ids["locked"]]["version"]
     assert pending(engine) is None
-    with maker() as s:  # the rebuild cursor is gone too: a later `atlas dates rebuild` starts from the beginning
+    with maker() as s:  # the repair's cursor is gone too, and it never touched `atlas dates rebuild`'s
+        assert s.get(NodeState, dates_rebuild.PENDING_CURSOR) is None
         assert s.get(NodeState, dates_rebuild.CURSOR) is None
     db.upgrade(url, settings=settings)  # nothing left to do: idempotent
     assert state(maker) == (after, again)
@@ -164,12 +165,55 @@ def test_an_interrupted_rebuild_resumes_where_it_stopped(url, monkeypatch):
         dates_rebuild.finish_pending(maker, settings)
     assert pending(engine) == "running"
     with maker() as s:
-        assert s.get(NodeState, dates_rebuild.CURSOR) is not None
+        assert s.get(NodeState, dates_rebuild.PENDING_CURSOR) is not None
     monkeypatch.setattr(dates_rebuild, "run", lambda m, c, **kw: seen.append(kw["restart"]) or real(m, c, **kw))
     assert dates_rebuild.finish_pending(maker, settings)["finished"] is True
     assert seen == [True, False]  # the first run starts over, the second continues from the cursor
     after, again = state(maker)
     assert without_version(after) == without_version(before) and again == conflicts
+    assert pending(engine) is None
+    engine.dispose()
+
+
+def test_the_repair_leaves_an_operators_rebuild_cursor_alone(url):
+    """`atlas dates rebuild` stopped half way (its cursor in `node_state`); the rollback repair runs from the start
+    under its own cursor and finishes, and the operator's rebuild still resumes where it stopped."""
+    settings, engine, maker, ctx = node(url)
+    seed(maker, ctx)
+    before, conflicts = state(maker)
+    assert dates_rebuild.run(maker, ctx, batch=1, limit=1)["finished"] is False
+    with maker() as s:
+        operator = s.get(NodeState, dates_rebuild.CURSOR).value
+    db.downgrade(url, "0030", settings)
+    db.upgrade(url, settings=settings)
+    assert pending(engine) is None
+    after, again = state(maker)
+    assert without_version(after) == without_version(before) and again == conflicts
+    with maker() as s:
+        assert s.get(NodeState, dates_rebuild.CURSOR).value == operator
+        assert s.get(NodeState, dates_rebuild.PENDING_CURSOR) is None
+    engine.dispose()
+
+
+def test_a_second_process_skips_the_repair_while_one_holds_it(url):
+    """PostgreSQL, several workers or replicas starting together: the one holding the claim does the work, the
+    others neither start a second run nor touch the marker or the cursor. A claim dies with its connection."""
+    if not url.startswith("postgresql"):
+        pytest.skip("the claim is a PostgreSQL advisory lock; SQLite has a single writer")
+    settings, engine, maker, ctx = node(url)
+    seed(maker, ctx)
+    db.downgrade(url, "0030", settings)
+    db.upgrade(url)
+    with engine.connect() as other:  # another worker holds the claim
+        assert other.execute(text("SELECT pg_try_advisory_lock(727276)")).scalar() is True
+        other.commit()
+        assert dates_rebuild.finish_pending(maker, settings) == {"rebuilt": 0, "changed": 0, "finished": False,
+                                                                 "busy": True}
+        assert pending(engine) == "pending"
+        with maker() as s:
+            assert s.get(NodeState, dates_rebuild.PENDING_CURSOR) is None
+    # that worker's connection closed (it finished or died): the claim is free again
+    assert dates_rebuild.finish_pending(maker, settings)["finished"] is True
     assert pending(engine) is None
     engine.dispose()
 

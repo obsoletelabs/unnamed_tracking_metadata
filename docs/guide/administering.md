@@ -98,7 +98,9 @@ Reviewers handle proposals, duplicates and reported comments ([Reviewing](review
   start) re-derives every record once, restoring partial and regional release dates, `explain._meta` and the
   conflict index. It runs in batches and resumes after an interruption. A record whose view comes back unchanged
   keeps its version (only its explain is rewritten); one whose view the downgrade had changed is bumped, so
-  clients see it come back. On a large database this makes that first start slower.
+  clients see it come back. On a large database this makes that first start slower. On PostgreSQL only one
+  process does it (the others start without waiting), and it keeps its own progress, so an `atlas dates rebuild`
+  you had running is not reset.
 * Review the activity log occasionally; it is your audit trail.
 
 ## Artwork quality (C12)
