@@ -275,8 +275,10 @@ def _run(folder, postgres_admin_url, report):
         checks.append("mirror combines two independently pinned authorities")
         probe = local.admin.post("/admin/peers/probe", data={"csrf": csrf(local.admin), "url": mirror.url,
                                                            "token": mirror.follower})
-        assert "Authority feeds available" in probe.text
-        assert a.identity.node_id in probe.text and b.identity.node_id in probe.text
+        # C13 §7.2: the choose-feed screen offers each feed the mirror relays (and its own) as its own form
+        assert "Confirm this node and choose its feed" in probe.text
+        for authority in (a, b):
+            assert f'data-feed-option="relayed" data-feed-node="{authority.identity.node_id}"' in probe.text
         la, lb = local.add_peer(mirror, a), local.add_peer(mirror, b)
         assert local.sync(la) is None and local.sync(lb) is None
         assert local.game(aid)["title"] == mirror.game(aid)["title"]
