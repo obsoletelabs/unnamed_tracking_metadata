@@ -298,6 +298,7 @@ class Lab:
     postgres_admin_url: str | None = None
     keep_logs: Path | None = None
     pythons: dict[str, str] = field(default_factory=dict)  # node name -> interpreter of another release
+    env: dict[str, dict[str, str]] = field(default_factory=dict)  # node name -> extra ATLAS_* settings
     password: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     nodes: dict[str, LabNode] = field(default_factory=dict)
     peers: dict[tuple[str, str], str] = field(default_factory=dict)
@@ -326,7 +327,8 @@ class Lab:
             if name not in self.nodes:
                 database = {"official": self._databases[0], "indie": self._databases[1]}.get(name)
                 python = self.pythons.get(name) or os.environ.get(f"ATLAS_LAB_PYTHON_{name.upper()}")
-                node = LabNode(self._folder, name, ROLES[name], database, password=self.password, python=python)
+                node = LabNode(self._folder, name, ROLES[name], database, password=self.password, python=python,
+                               extra_env=self.env.get(name))
                 self._stack.callback(node.close)
                 self.nodes[name] = node
                 node.start()
