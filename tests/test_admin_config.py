@@ -177,7 +177,7 @@ def test_logo_upload_validation_and_display(site):  # noqa: F811
         r = site.post("/admin/branding/logo", data={"csrf": t}, files={"file": (name, data, "image/png")})
         assert r.status_code == 400, name
     assert site.post("/admin/branding/logo/remove", data={"csrf": t}).status_code == 303
-    assert "/media/" not in site.get("/").text.split("<main>")[0]  # the logo is gone from the header
+    assert "/media/" not in site.get("/").text.split('<main id="main" tabindex="-1">')[0]  # the logo is gone from the header
 
 
 def test_default_pages_exist_and_markdown_is_safe(site):  # noqa: F811
