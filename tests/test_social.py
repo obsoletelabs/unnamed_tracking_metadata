@@ -388,7 +388,7 @@ def test_follow_a_game_and_read_the_inbox(site):  # noqa: F811
     assert site.get(f"/go/{nid}").status_code == 404  # someone else's notification
     r = bob.get(f"/go/{nid}")
     assert r.status_code == 303 and r.headers["location"].startswith(f"/game/{gid}")
-    assert "badge warn" not in bob.get("/notifications").text.split("<main>")[1].split("</h1>")[0]
+    assert "badge warn" not in bob.get("/notifications").text.split('<main id="main" tabindex="-1">')[1].split("</h1>")[0]
 
 
 def test_comment_flow_with_moderation(site):  # noqa: F811
