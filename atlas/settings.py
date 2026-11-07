@@ -44,10 +44,16 @@ class Settings(BaseSettings):
     federation_snapshot_fields: list[Literal["title", "provider_ids"]] = Field(
         default_factory=lambda: ["title", "provider_ids"])
     # C13 §5: open `wait` + quarantined rows per feed before the follower stops applying it (backlog_full), and how
-    # many waiting rows one introduction applies per transaction. (Enrichment of introduced records, §5.5/H56, is
-    # not in this release: amendment A19.)
+    # many waiting rows one introduction applies per transaction.
     sync_max_open_failures: int = Field(default=10_000, ge=1)
     sync_wake_batch: int = Field(default=500, ge=1, le=5000)
+    # H56 (owner decision pending, safe default OFF; the contract recommends on): when a `record` arrives, fetch the
+    # game from this node's OWN enabled providers (its own keys and quota) by the store ids the record carries, so
+    # description, art and achievements are built here without anything being redistributed (C13 §5.1 step 4).
+    # Only store ids no other record here holds, only ids the provider accepts, at most
+    # `sync_enrich_per_peer_per_hour` fetches per upstream feed (the rest wait for the next hour).
+    sync_enrich_from_own_providers: bool = False
+    sync_enrich_per_peer_per_hour: int = Field(default=200, ge=1, le=10_000)
     # C13 §6.3: ask the feed's own signer for an image digest before the third-party origin is tried.
     sync_media_prefer_peer: bool = True
     # H58 (owner decision pending, safe default off): may `/api/v2/sync/media` hand a pinned peer the cached bytes of a

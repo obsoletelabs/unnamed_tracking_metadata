@@ -270,3 +270,44 @@ def test_promotion_rebuilds_introductions_from_the_log(session, ctx):
     session.execute(FeedIntroduced.__table__.delete())
     assert feed.rebuild_introduced(session) == 1
     assert introduced(session) == {cid: (1, "record", None)}
+
+
+def test_artwork_clash_emits_what_was_stored(session, ctx):
+    """T-A6 (R4e): the curator's list names an image the record's Steam fetch already holds (same kind and address).
+    It stays Steam's and is not stored for the curator, so the signed entry leaves it out too: a follower stores
+    exactly what this node stores for the curator."""
+    from atlas.models import Artwork
+
+    c15 = at(ctx, emit_protocol="1.5")
+    cid = provider_only(session, c15)
+    shared = {"kind": "key_art", "url": "https://cdn.steam.example/1962700/header.jpg"}
+    facets.set_artwork(session, c15, cid, "steam", [shared])
+    skipped: list[dict] = []
+    shot = {"kind": "screenshot", "url": "https://img.example.org/s.png"}
+    facets.set_artwork(session, c15, cid, "curator", [shared, shot], redistributable=True, skipped=skipped)
+    session.commit()
+    stored = sorted((a.source, a.kind, a.url) for a in session.scalars(select(Artwork).where(
+        Artwork.canonical_id == cid)))
+    assert stored == [("curator", "screenshot", "https://img.example.org/s.png"), ("steam", "key_art", shared["url"])]
+    assert skipped == [{**shared, "held_by": "steam", "reason": "held_by_another_source"}]
+    [(_, kind, body)] = [e for e in log(session) if e[1] == "artwork"]
+    assert [(i["kind"], i["url"]) for i in body["items"]] == [("screenshot", "https://img.example.org/s.png")]
+
+
+def test_bridge_chosen_while_min_follower_below_1_5(session, ctx):
+    """T-A9: emit 1.5 with `min_follower_protocol` 1.1 and the bridge on: a follower at 1.1 may still be served, and
+    it would park a `record`, so the introduction is the bridge `obs` (a 1.0 shape), not `record`. Without the
+    bridge, the same settings introduce with `record`."""
+    mixed = at(ctx, emit_protocol="1.5", min_follower_protocol="1.1", federation_bridge_record_obs=True)
+    assert feed.introduction_mode(mixed.settings) == "bridge"
+    cid = provider_only(session, mixed)
+    facets.set_artwork(session, mixed, cid, "curator", ART, redistributable=True)
+    session.commit()
+    entries = log(session)
+    assert [kind for _, kind, _ in entries] == ["obs", "artwork"]
+    assert entries[0][2]["observation"]["source"] == "atlas-record"
+    for _, kind, body in entries:  # nothing a 1.1 follower would park
+        assert feed_schema.parse_protocol(feed_schema.KIND_SINCE.get(kind, "1.0")) <= feed_schema.parse_protocol("1.1")
+        assert feed_schema.classify(kind, body).action == feed_schema.APPLY
+    assert introduced(session)[cid][1] == "bridge"
+    assert feed.introduction_mode(at(ctx, emit_protocol="1.5", min_follower_protocol="1.1").settings) == "record"

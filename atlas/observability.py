@@ -190,6 +190,18 @@ class Stats:
         for origin, info in upstreams.items():
             lines.append(f"atlas_sync_waiting_entries{{node_id={json.dumps(origin)}}} "
                          f"{(info.get('waiting') or {}).get('count', 0)}")
+        lines.append("# TYPE atlas_sync_waiting_records gauge")  # distinct records the entries wait for
+        for origin, info in upstreams.items():
+            lines.append(f"atlas_sync_waiting_records{{node_id={json.dumps(origin)}}} "
+                         f"{(info.get('waiting') or {}).get('records', 0)}")
+        lines.append("# TYPE atlas_sync_open_failures gauge")  # wait + quarantine, against sync_max_open_failures
+        for origin, info in upstreams.items():
+            lines.append(f"atlas_sync_open_failures{{node_id={json.dumps(origin)}}} "
+                         f"{(info.get('waiting') or {}).get('count', 0) + info['quarantined']['count']}")
+        lines.append("# TYPE atlas_sync_woken_total counter")  # records whose arrival applied waiting entries
+        for (origin, trigger), count in sorted(sync.woken_counts(session).items()):
+            if trigger in sync.WOKEN_TRIGGERS:
+                lines.append(f"atlas_sync_woken_total{{node_id={json.dumps(origin)},trigger=\"{trigger}\"}} {count}")
         lines.append("# TYPE atlas_peer_status gauge")
         for peer in full["peers"]:
             for name in sync.PEER_STATUSES:
