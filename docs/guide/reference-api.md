@@ -89,6 +89,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
+| `GET` | `/admin/peers/probe` | admin | (undocumented) |
 | `GET` | `/prices/status` | admin | Stored price observations, how many the next purge removes, retention bounds, and the price channel's state (protocol 1.6, disabled in this release). |
 | `GET` | `/status` | admin | Role, feed head, replication cursors, the number of feed entries that failed to apply and the named heads per upstream. |
 | `GET` | `/sync/failures` | admin | Mirrored feed entries that could not be applied and still need attention: parked (need a newer release), quarantined, or waiting for their game (`disposition` `wait`, `waiting_for`); `next_try_at` for quarantined ones. |
