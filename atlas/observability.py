@@ -194,7 +194,7 @@ class Stats:
         for peer in full["peers"]:
             for name in sync.PEER_STATUSES:
                 lines.append(f'atlas_peer_status{{peer_id="{peer["id"]}",status="{name}"}} '
-                             f'{int(peer["status"] == name)}')
+                             f'{int(peer["status"]["code"] == name)}')
         if state.ctx.settings.role == "authority":
             records = feed.records_summary(session)
             lines += ["# TYPE atlas_feed_records gauge",

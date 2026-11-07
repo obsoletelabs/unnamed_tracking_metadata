@@ -153,12 +153,11 @@ class PreviousNode(Node):
             return db.execute("SELECT id, last_error FROM peer WHERE node_id = ?", (node_id,)).fetchone()
 
     def add_peer(self, remote, authority=None):
-        from .multinode_drill import csrf
+        from .multinode_drill import add_peer_form
 
         identity = (authority or remote).identity
-        response = self.admin.post("/admin/peers", data={"csrf": csrf(self.admin), "name": (authority or remote).name,
-                    "url": remote.url, "node_id": identity.node_id, "public_key": identity.public_b64,
-                    "token": remote.follower})
+        response = add_peer_form(self.admin, remote.url, remote.follower, identity.node_id, identity.public_b64,
+                                 (authority or remote).name)
         assert response.status_code == 303, f"add peer on {self.name}: {response.status_code}"
         return self._peer(identity.node_id)[0]
 

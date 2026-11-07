@@ -7,7 +7,9 @@ authority and mirror apps in-process. Assertions are on the follower's `peer` ro
 
 from __future__ import annotations
 
+import json
 import re
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -15,19 +17,25 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from atlas import main, secrets_box, sync
-from atlas.models import AuditEntry, Canonical, Peer
+from atlas.models import AuditEntry, Canonical, Peer, ReplicatedFeed
+from atlas.web import federation
 
 from .conftest import build_settings
 from .test_sync_compat import Node, pull
 from .test_web import signup, token
 
 
-def routed(nodes: dict[str, Node]) -> httpx.Client:
+def routed(nodes: dict[str, Node], strip: tuple[str, ...] = ()) -> httpx.Client:
+    """Outbound HTTP lands on the apps in-process. `strip` removes A19's additive `/sync/info` keys, standing in
+    for an upstream of an older release (1.0-1.4 send no `own_head`)."""
     def handle(request: httpx.Request) -> httpx.Response:
         target = nodes[request.url.host]
         r = target.client.request(request.method, request.url.raw_path.decode(), headers=dict(request.headers),
                                   content=request.content)
-        return httpx.Response(r.status_code, content=r.content, headers={"content-type": r.headers.get(
+        content = r.content
+        if strip and request.url.path.endswith("/sync/info") and r.status_code == 200:
+            content = json.dumps({k: v for k, v in r.json().items() if k not in strip}).encode()
+        return httpx.Response(r.status_code, content=content, headers={"content-type": r.headers.get(
             "content-type", "application/json")})
     return httpx.Client(transport=httpx.MockTransport(handle))
 
@@ -51,6 +59,13 @@ def form_fields(html: str, option: str) -> dict[str, str]:
     return dict(re.findall(r'name="([a-z_]+)" value="([^"]*)"', block))
 
 
+def option_tag(html: str, option: str) -> str:
+    return re.search(rf'<form[^>]*data-feed-option="{option}"[^>]*>', html).group(0)
+
+
+ACKS = {"ack_relayed_fingerprint": "on", "ack_empty": "on"}
+
+
 def peers(user) -> list[Peer]:
     with user.st.maker() as s:
         return list(s.scalars(select(Peer).order_by(Peer.created_at)))
@@ -69,10 +84,16 @@ def test_probing_a_mirror_offers_its_own_empty_feed_and_recommends_the_relayed_a
     assert own["node_id"] == mirror.node_id and relayed["node_id"] == authority.node_id
     assert relayed["via_node_id"] == mirror.node_id and own["via_node_id"] == ""
     assert re.search(r'data-feed-option="relayed"[^>]*>.*?recommended', html, re.S)
-    assert "has signed nothing of its own" in html
+    assert html.index('data-feed-option="own"') < html.index('data-feed-option="relayed"')  # own feed first
+    assert "empty_feed" in option_tag(html, "own") and "own_feed_empty_but_relayed_has_data" in option_tag(html, "own")
+    assert "⚠ Empty: following this receives nothing" in html
+    assert own["empty"] == "1" and relayed["empty"] == ""
 
     relayed["csrf"] = t
-    add = user.post("/admin/peers", data=relayed)
+    unacked = user.post("/admin/peers", data=relayed)  # a relayed feed: compare its fingerprint first
+    assert unacked.status_code == 400 and "compared the fingerprint" in unacked.text
+    assert peers(user) == []
+    add = user.post("/admin/peers", data={**relayed, "ack_relayed_fingerprint": "on"})
     assert add.status_code == 303
     [peer] = peers(user)
     assert (peer.node_id, peer.follow, peer.via_node_id, peer.url) == (authority.node_id, "relayed", mirror.node_id,
@@ -93,11 +114,101 @@ def test_a_tampered_choice_is_refused(world):
     t = token(user, "/admin/peers")
     html = user.post("/admin/peers/probe", data={"csrf": t, "url": "http://mirror.test", "token": mirror.token}).text
     relayed = {**form_fields(html, "relayed"), "csrf": t}
+    expired = federation.probe_token(SimpleNamespace(csrf=t), relayed["url"], relayed["node_id"],
+                                     relayed["public_key"], "relayed", relayed["via_node_id"], False, 1)
+    other_session = federation.probe_token(SimpleNamespace(csrf="another-session"), relayed["url"],
+                                           relayed["node_id"], relayed["public_key"], "relayed",
+                                           relayed["via_node_id"], False)
     for change in ({"follow": "own"}, {"via_node_id": ""}, {"url": "http://central.test"},
-                   {"probe_token": "0" * 64}):
-        r = user.post("/admin/peers", data={**relayed, **change})
+                   {"probe_token": "0" * 64}, {"empty": "1"}, {"public_key": form_fields(html, "own")["public_key"]},
+                   {"probe_token": expired}, {"probe_token": other_session}):
+        r = user.post("/admin/peers", data={**relayed, **ACKS, **change})
         assert r.status_code == 400, change
     assert peers(user) == []
+
+
+def test_add_peer_requires_explicit_choice_and_acks(world):
+    """T-P2: no choice, no probe token, or a missing acknowledgement answers 400; nothing is pinned from form
+    fields alone (the legacy add form without `follow` is gone from the admin route)."""
+    authority, mirror, user, _ = world
+    t = token(user, "/admin/peers")
+    html = user.post("/admin/peers/probe", data={"csrf": t, "url": "http://mirror.test", "token": mirror.token}).text
+    own = {**form_fields(html, "own"), "csrf": t}
+    legacy = {k: own[k] for k in ("csrf", "url", "node_id", "public_key", "name", "token")}
+    assert user.post("/admin/peers", data=legacy).status_code == 400  # no choice
+    assert user.post("/admin/peers", data={**legacy, "follow": "own", **ACKS}).status_code == 400  # no probe token
+    no_empty_ack = user.post("/admin/peers", data={**own, "ack_relayed_fingerprint": "on"})
+    assert no_empty_ack.status_code == 400 and "no entries yet" in no_empty_ack.text
+    no_fp_ack = user.post("/admin/peers", data={**own, "ack_empty": "on"})  # plain http: the own feed needs it too
+    assert no_fp_ack.status_code == 400 and "compared the fingerprint" in no_fp_ack.text
+    assert peers(user) == []
+    assert user.post("/admin/peers", data={**own, **ACKS}).status_code == 303
+    [peer] = peers(user)
+    assert (peer.follow, peer.node_id) == ("own", mirror.node_id)
+    with user.st.maker() as s:
+        assert s.scalars(select(AuditEntry).where(AuditEntry.action == "peer_add")).one().detail["empty"] is True
+
+
+def test_probe_always_checks_sync_scope(world):
+    """T-P10: the probe always calls `/sync/changes`. A token without the sync scope is named on the screen and
+    every follow button is disabled."""
+    authority, mirror, user, _ = world
+    with mirror.st.maker() as s:
+        from atlas import auth
+
+        _row, read_only = auth.create_token(s, "read-only", ["read"])
+        s.commit()
+    t = token(user, "/admin/peers")
+    html = user.post("/admin/peers/probe", data={"csrf": t, "url": "http://mirror.test", "token": read_only}).text
+    assert 'data-probe="no-sync-scope"' in html and "needs the <em>sync</em> scope" in html
+    for option in ("own", "relayed"):
+        block = re.search(rf'<form[^>]*data-feed-option="{option}".*?</form>', html, re.S).group(0)
+        assert re.search(r"<button[^>]*disabled", block)
+    full = user.post("/admin/peers/probe", data={"csrf": t, "url": "http://mirror.test", "token": mirror.token}).text
+    assert 'data-probe="no-sync-scope"' not in full
+
+
+def test_key_mismatch_option_disabled(world, tmp_path):
+    """T-P11: a feed whose key differs from the one this node already retains for that node id is offered
+    disabled, never re-pinned from the probe, and refused by the add route even with a valid token."""
+    authority, mirror, user, _ = world
+    other = Node(tmp_path, "other", "authority")
+    with user.st.maker() as s:
+        s.add(ReplicatedFeed(node_id=authority.node_id, public_key=other.st.ctx.identity.trust_public_b64))
+        s.commit()
+    t = token(user, "/admin/peers")
+    html = user.post("/admin/peers/probe", data={"csrf": t, "url": "http://mirror.test", "token": mirror.token}).text
+    tag = option_tag(html, "relayed")
+    assert 'data-feed-trust="key_mismatch"' in tag
+    block = re.search(r'<form[^>]*data-feed-option="relayed".*?</form>', html, re.S).group(0)
+    assert "<button" not in block and "differs from the one you already trust" in block
+    r = user.post("/admin/peers", data={**form_fields(html, "relayed"), "csrf": t, **ACKS})
+    assert r.status_code == 409 and peers(user) == []
+
+
+def test_an_older_upstream_that_relays_another_feed_is_followed_for_its_own_catalogue(tmp_path):
+    """C13 §7.1 / T-P10: an authority of 1.0-1.4 sends no `own_head`. The probe learns it from `/sync/changes` and
+    recommends the authority's own catalogue, not a non-empty copy of another authority it relays (R1)."""
+    central, second = Node(tmp_path, "central", "authority"), Node(tmp_path, "second", "authority")
+    central.publish("Hades")
+    second.publish("Celeste")
+    second.publish("Tunic")
+    pull(central, second)  # central relays second's feed (2 entries); its own feed holds 1
+    app = main.create_app(build_settings(database_url=f"sqlite:///{tmp_path}/u.db", role="local",
+                                         media_cache_enabled=False, secret_key="k" * 32))
+    with TestClient(app, base_url="http://localhost:8000", follow_redirects=False) as user:
+        app.state.atlas.http = routed({"central.test": central}, strip=("own_head", "introduced_through",
+                                                                         "media_withheld", "records"))
+        signup(user, "alice")
+        t = token(user, "/admin/peers")
+        html = user.post("/admin/peers/probe", data={"csrf": t, "url": "http://central.test",
+                                                     "token": central.token}).text
+        own_tag, relayed_tag = option_tag(html, "own"), option_tag(html, "relayed")
+        assert "recommended" in re.search(r'<form[^>]*data-feed-option="own".*?</h3>', html, re.S).group(0)
+        assert "recommended" not in re.search(r'<form[^>]*data-feed-option="relayed".*?</h3>', html, re.S).group(0)
+        assert "head_unknown" not in own_tag and "empty_feed" not in own_tag and "smaller_than_own" not in relayed_tag
+        assert "1 signed entry" in html and "2 signed entries" in html
+
 
 
 def test_following_a_mirrors_own_feed_reports_empty_and_never_falls_back(world):
@@ -105,7 +216,7 @@ def test_following_a_mirrors_own_feed_reports_empty_and_never_falls_back(world):
     authority, mirror, user, _ = world
     t = token(user, "/admin/peers")
     html = user.post("/admin/peers/probe", data={"csrf": t, "url": "http://mirror.test", "token": mirror.token}).text
-    user.post("/admin/peers", data={**form_fields(html, "own"), "csrf": t})
+    user.post("/admin/peers", data={**form_fields(html, "own"), "csrf": t, **ACKS})
     [peer] = peers(user)
     assert peer.follow == "own" and peer.node_id == mirror.node_id
     note = user.post(f"/admin/peers/{peer.id}/sync", data={"csrf": t})
@@ -161,8 +272,11 @@ def test_sync_status_lists_peers_with_their_status(world):
         s.add(Peer(name="off", url="http://mirror.test", node_id=authority.node_id,
                    public_key=authority.st.ctx.identity.trust_public_b64, enabled=False, follow="relayed"))
         s.commit()
-        assert [(p["name"], p["status"], p["follow"]) for p in sync.status(s, user.st.ctx)["peers"]] == [
-            ("off", "paused", "relayed")]
+        [summary] = sync.status(s, user.st.ctx)["peers"]
+        assert (summary["name"], summary["status"]["code"], summary["follow"]) == ("off", "paused", "relayed")
+        assert summary["status"] == {"code": "paused", "label": "Paused", "tone": "warn", "detail": None,
+                                     "action": "resume"}
+        assert summary["waiting"] == []
     statuses = {sync.peer_status(Peer(enabled=True, last_ok_at=None, last_error=None), None),
                 sync.peer_status(Peer(enabled=True, last_ok_at=None, last_error="ConnectError: refused"), None)}
     assert statuses == {"not_contacted", "unreachable"}
