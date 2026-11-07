@@ -5,7 +5,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import quote
 
 import httpx
@@ -21,6 +21,7 @@ from . import (
     client_changes,
     custom,
     dates_rebuild,
+    enrich,
     facets,
     feed,
     mail,
@@ -200,7 +201,7 @@ def _mailer(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> No
         stop.wait(3)
 
 
-def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
+def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st: Any = None) -> None:
     delay = ctx.settings.sync_interval_seconds
     try:  # once after an upgrade: entries parked by the previous release may apply now (C1.9)
         sync.startup_replay(maker, ctx)
@@ -220,6 +221,11 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) ->
             except Exception as exc:  # keep serving local data through any upstream failure
                 log.warning("sync failed: %s", exc)
                 wait = min(delay * 4, 900)
+            if st is not None and enrich.enabled(ctx.settings):  # C13 §5.1 step 4, H56: off by default
+                try:
+                    enrich.run(maker, st)
+                except Exception as exc:
+                    log.warning("enrichment from own providers failed: %s", exc)
             stop.wait(wait)
 
 
@@ -321,7 +327,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if ctx.settings.backup_dir:
             threading.Thread(target=_backups, args=(engine, ctx, stop), daemon=True, name="atlas-backup").start()
         if True:  # peers can be added at runtime, so the loop always runs
-            threading.Thread(target=_sync_loop, args=(maker, ctx, stop), daemon=True, name="atlas-sync").start()
+            threading.Thread(target=_sync_loop, args=(maker, ctx, stop, app.state.atlas), daemon=True,
+                             name="atlas-sync").start()
         threading.Thread(target=_group_loop, args=(maker, ctx, stop), daemon=True, name="atlas-group").start()
         yield
         stop.set()

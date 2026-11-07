@@ -270,27 +270,29 @@ class IntroduceRefused(ValueError):
 
 
 def candidates(session: Session, scope: str, after: str = "", limit: int | None = None) -> list[Canonical]:
-    """Live records `introduce` would publish, in id order after `after`. `missing`: named by a signed entry while
-    nothing could introduce them (`legacy_unintroduced`). `all`: every live record not introduced yet."""
-    query = select(Canonical).where(Canonical.merged_into.is_(None), Canonical.id > after)
+    """Records `introduce` would publish, in id order after `after`. `missing`: named by a signed entry while
+    nothing could introduce them (`legacy_unintroduced`), merged since or not: a follower's entries that name a
+    merged-away record (its artwork, the merge itself) wait for it, and its `record` lets them apply in feed order
+    before the merge moves them. `all`: every live record not introduced yet."""
+    query = select(Canonical).where(Canonical.id > after)
     introduced = select(FeedIntroduced.canonical_id).where(FeedIntroduced.via != VIA_LEGACY)
     if scope == "missing":
         query = query.where(Canonical.id.in_(select(FeedIntroduced.canonical_id)
                                              .where(FeedIntroduced.via == VIA_LEGACY)))
     else:
-        query = query.where(Canonical.id.not_in(introduced))
+        query = query.where(Canonical.merged_into.is_(None), Canonical.id.not_in(introduced))
     query = query.order_by(Canonical.id)
     return list(session.scalars(query.limit(limit) if limit else query))
 
 
 def unintroduced_count(session: Session, scope: str = "all") -> int:
-    query = select(func.count()).select_from(Canonical).where(Canonical.merged_into.is_(None))
-    if scope == "missing":
+    query = select(func.count()).select_from(Canonical)
+    if scope == "missing":  # merged ones too (see `candidates`)
         query = query.where(Canonical.id.in_(select(FeedIntroduced.canonical_id)
                                              .where(FeedIntroduced.via == VIA_LEGACY)))
     else:
-        query = query.where(Canonical.id.not_in(select(FeedIntroduced.canonical_id)
-                                                .where(FeedIntroduced.via != VIA_LEGACY)))
+        query = query.where(Canonical.merged_into.is_(None), Canonical.id.not_in(
+            select(FeedIntroduced.canonical_id).where(FeedIntroduced.via != VIA_LEGACY)))
     return session.scalar(query) or 0
 
 

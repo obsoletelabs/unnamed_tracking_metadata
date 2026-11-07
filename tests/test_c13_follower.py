@@ -113,8 +113,8 @@ def test_the_bridge_lets_an_old_follower_apply_at_once(tmp_path):
 
 
 def test_a_record_folds_in_the_followers_own_copy_of_the_same_game(tmp_path):
-    """T-F4: the follower fetched the same Steam game itself. The record's store id folds its purely local record
-    into the authority's, so the sidecars land on one record and the follower's provider data is kept."""
+    """T-F6 (first half): the follower fetched the same Steam game itself. The record's store id folds its purely
+    local record into the authority's, so the sidecars land on one record and the follower's provider data is kept."""
     authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
     mirror = Node(tmp_path, "mirror", "mirror")
     local = provider_only(mirror, "Subnautica 2 (local fetch)")
@@ -130,8 +130,8 @@ def test_a_record_folds_in_the_followers_own_copy_of_the_same_game(tmp_path):
 
 
 def test_a_detach_of_an_unfederated_observation_is_a_noop_and_its_record_follows(tmp_path):
-    """T-F5: the follower never had the moved observation; the detach changes nothing, and the `record` right after
-    it creates the new record."""
+    """T-A8 (follower side): the follower never had the moved observation; the detach changes nothing, and the
+    `record` right after it creates the new record."""
     authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
     mirror = Node(tmp_path, "mirror", "mirror")
     cid = provider_only(authority, "Pair", "10")
@@ -150,8 +150,8 @@ def test_a_detach_of_an_unfederated_observation_is_a_noop_and_its_record_follows
 
 
 def test_wake_is_batched_and_the_retry_pass_applies_the_rest(tmp_path):
-    """T-F6: more waiting entries than `sync_wake_batch`: the wake applies a batch and the retry pass in the same
-    pull applies the rest."""
+    """T-F14: more waiting entries than `sync_wake_batch`: the wake applies them batch by batch in the same pull,
+    in feed order, so the last list is the one left."""
     authority = Node(tmp_path, "authority", "authority")
     mirror = Node(tmp_path, "mirror", "mirror", sync_wake_batch=2)
     cid = provider_only(authority)
@@ -170,7 +170,7 @@ def test_wake_is_batched_and_the_retry_pass_applies_the_rest(tmp_path):
 
 
 def test_open_failures_are_bounded(tmp_path):
-    """T-F7: at `sync_max_open_failures` open entries the follower stops applying (`backlog_full`) and keeps its
+    """T-F13: at `sync_max_open_failures` open entries the follower stops applying (`backlog_full`) and keeps its
     cursor; nothing is lost: the entries stay retained."""
     authority = Node(tmp_path, "authority", "authority")
     mirror = Node(tmp_path, "mirror", "mirror", sync_max_open_failures=2)
@@ -463,3 +463,167 @@ def test_removing_a_peer_abandons_its_waiting_entries(tmp_path):
         sync.rescan(s, authority.node_id)
         s.commit()
     assert waiting(mirror, authority) == [(1, "artwork", "wait", "dropped_by_previous_release", cid, 2)]
+
+
+def test_upstream_defect_subreason_on_1_5_feed(tmp_path):
+    """T-F5: a feed at 1.5 that has published every record it names through `introduced_through` still signs a
+    sidecar for a record it never introduced (an upstream bug, signed here past the gate). The follower keeps it
+    waiting, but names it as the upstream's defect, not as "will arrive"."""
+    from atlas.models import Peer
+
+    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    authority.publish("Hades")
+    with authority.st.maker() as s:
+        assert feed.introduce_batch(s, authority.st.ctx, "missing")["finished"] is True
+        assert feed.introduced_through(s) == 1
+        s.commit()
+    cid = provider_only(authority)
+    seq = authority.emit("artwork", {"canonical_id": cid, "source": "curator", "items": ART})
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == [(seq, "artwork", "wait", "waiting_for_record", cid, 1)]
+    with mirror.st.maker() as s:
+        s.add(Peer(name="Central", url="http://upstream", node_id=authority.node_id, follow="own",
+                   public_key=authority.st.ctx.identity.trust_public_b64))
+        s.commit()
+        [group] = sync.waiting_groups(s, authority.node_id, name="Central")
+        assert (group["subreason"], group["label"]) == ("upstream_defect",
+                                                        "Waiting for its game: Central's feed is missing it")
+        assert group["title"] is None and "never published the record itself" in group["note"]
+    assert mirror.heads(authority)["state"] == "waiting"
+
+
+def test_unlock_waits_behind_waiting_lock(tmp_path):
+    """T-F16: a lock and the unlock after it both name a record the follower does not hold. The unlock waits too
+    (it is not an idempotent no-op on an unknown record), so when the record arrives the lock applies and then the
+    unlock: the field ends up unlocked, as on the authority."""
+    from atlas.models import Lock
+
+    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(authority)
+    with authority.st.maker() as s:
+        service.set_lock(s, authority.st.ctx, cid, "title", "Subnautica 2 (Curated)", actor="curator")
+        service.clear_lock(s, authority.st.ctx, cid, "title")
+        s.commit()
+    pull(mirror, authority)
+    assert [(r[1], r[2], r[4]) for r in waiting(mirror, authority)] == [("lock", "wait", cid), ("unlock", "wait", cid)]
+    configure(authority, emit_protocol="1.5")
+    with authority.st.maker() as s:
+        feed.introduce_batch(s, authority.st.ctx, "missing")
+        s.commit()
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == []
+    with mirror.st.maker() as s:
+        assert s.get(Lock, (cid, "title")) is None
+        assert s.get(Canonical, cid).view["title"] == "Subnautica 2"
+    with authority.st.maker() as s:
+        assert s.get(Lock, (cid, "title")) is None
+
+
+def test_merge_rewaits_for_second_canonical(tmp_path):
+    """T-F16: a merge names two records the follower does not hold. It waits for the first; when that arrives and
+    the second is still missing, the same row waits again, for the second (no attempt counted); the second's
+    arrival applies the merge. Each arrival that applied something counts once in `atlas_sync_woken_total`."""
+    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    a, b = provider_only(authority, "Alpha", "201"), provider_only(authority, "Beta", "202")
+    seq = authority.emit("merge", {"src": a, "dst": b})  # as a release before C13 signed it: nothing introduced
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == [(seq, "merge", "wait", "waiting_for_record", a, 1)]
+    with authority.st.maker() as s:
+        feed.ensure_introduced(s, authority.st.ctx, a, "backfill")
+        s.commit()
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == [(seq, "merge", "wait", "waiting_for_record", b, 1)]
+    with mirror.st.maker() as s:
+        assert s.get(Canonical, a).merged_into is None
+    with authority.st.maker() as s:
+        feed.ensure_introduced(s, authority.st.ctx, b, "backfill")
+        s.commit()
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == []
+    with mirror.st.maker() as s:
+        assert s.get(Canonical, a).merged_into == b
+        assert sync.woken_counts(s) == {(authority.node_id, "record"): 1}  # the first arrival applied nothing
+
+
+def test_merge_does_not_follow_redirect(tmp_path):
+    """T-F16: the follower merged X into Y here. The authority later merges X into Z. A sidecar would follow X to Y,
+    but a merge never does: re-targeting it would join Y and Z, which nobody decided. It is recorded for the
+    operator, and Y stays a record of its own."""
+    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    x, y, z = authority.publish("Doom"), authority.publish("Doom (1993)"), authority.publish("Doom Classic")
+    pull(mirror, authority)
+    with mirror.st.maker() as s:
+        service.merge_canonicals(s, mirror.st.ctx, x, y, actor="admin")
+        s.commit()
+    with authority.st.maker() as s:
+        service.merge_canonicals(s, authority.st.ctx, x, z, actor="curator")
+        s.commit()
+    pull(mirror, authority)
+    with mirror.st.maker() as s:
+        assert s.get(Canonical, y).merged_into is None and s.get(Canonical, z).merged_into is None
+        assert s.get(Canonical, x).merged_into == y
+    [row] = waiting(mirror, authority)
+    assert (row[1], row[2], row[4]) == ("merge", "quarantined", None)
+
+
+def test_a_legacy_merge_of_a_record_never_published_applies_after_introduce(tmp_path):
+    """A legacy (pre-1.5) authority set artwork on a provider-only record A and then merged A into another
+    provider-only record B. Followers never heard of either: the artwork and the merge wait for A. `introduce
+    --missing` publishes A as well, although it is merged now (signed entries name it), so the follower creates A,
+    applies the artwork, merges A into B and ends with what the authority holds."""
+    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    a, b = provider_only(authority, "Alpha", "301"), provider_only(authority, "Beta", "302")
+    curate_art(authority, a)
+    with authority.st.maker() as s:
+        service.merge_canonicals(s, authority.st.ctx, a, b, actor="curator")
+        s.commit()
+    pull(mirror, authority)
+    assert [(r[1], r[4]) for r in waiting(mirror, authority)] == [("artwork", a), ("merge", a)]
+    configure(authority, emit_protocol="1.5")
+    with authority.st.maker() as s:
+        assert feed.unintroduced_count(s, "missing") == 2
+        assert feed.introduce_batch(s, authority.st.ctx, "missing")["introduced"] == 2
+        s.commit()
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == []
+    with mirror.st.maker() as s:
+        assert s.get(Canonical, a).merged_into == b
+    assert art(mirror, b) == art(authority, b) == ART_ROWS
+    assert mirror.heads(authority)["state"] == "in_sync"
+
+
+def test_waiting_groups_carry_a_title_when_one_is_known(tmp_path):
+    """C13 §8.1: a waiting group names its game when this node knows a title: the record is already here from
+    another feed (`here`), or the entry of the same feed that would bring it carries one but did not apply
+    (`observation`). Otherwise the title is None and the page says "A game ... hasn't published yet"."""
+    from atlas.ids import ulid
+
+    a = Node(tmp_path, "a", "authority", emit_protocol="1.5")
+    b = Node(tmp_path, "b", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(a)
+    b.emit("artwork", {"canonical_id": cid, "source": "curator", "items": ART})
+    pull(mirror, b)
+    with mirror.st.maker() as s:
+        [group] = sync.waiting_groups(s, b.node_id)
+        assert (group["title"], group["title_provenance"]) == (None, None)
+    curate_art(a, cid)  # A introduces the record; B's entry keeps waiting for B (§5.3 scope)
+    pull(mirror, a)
+    with mirror.st.maker() as s:
+        [group] = sync.waiting_groups(s, b.node_id)
+        assert (group["title"], group["title_provenance"]) == ("Subnautica 2", "here")
+
+    broken = "atlas:01m5a1vhdrabwv215gqg1g8nx9"
+    bad = b.emit("obs", {"canonical_id": broken, "media_type": "game",
+                         "observation": {"id": "not-a-ulid", "source_kind": "manual", "source": "manual",
+                                         "source_scope": "b", "external_id": ulid(),
+                                         "payload": {"title": "Outer   Wilds"}, "source_updated_at": None,
+                                         "observed_at": "2026-01-01T00:00:00+00:00"}})
+    b.emit("artwork", {"canonical_id": broken, "source": "curator", "items": ART})
+    pull(mirror, b)
+    with mirror.st.maker() as s:
+        group = next(g for g in sync.waiting_groups(s, b.node_id) if g["canonical_id"] == broken)
+    assert (group["subreason"], group["blocked_by"]) == ("blocked_by_entry", bad)
+    assert (group["title"], group["title_provenance"]) == ("Outer Wilds", "observation")
