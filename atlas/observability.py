@@ -165,7 +165,8 @@ class Stats:
         # Compatibility heads per upstream feed (C1.7). Labels: trusted upstream node ids and fixed names only.
         from . import sync
 
-        upstreams = sync.status(session, state.ctx)["upstreams"]
+        full = sync.status(session, state.ctx)
+        upstreams = full["upstreams"]
         lines = ["# TYPE atlas_sync_upstream_head gauge"]
         for origin, info in upstreams.items():
             for head in ("observed", "downloaded", "verified", "applied"):
@@ -184,6 +185,22 @@ class Stats:
                       f"atlas_sync_rewound{{{label}}} {int(bool(info['rewound']))}",
                       f"atlas_sync_backlog_full{{{label}}} {int(bool(parked.get('backlog_full')))}",
                       f"atlas_sync_in_sync{{{label}}} {int(info['in_sync'])}"]
+        # C13 §7.7: entries waiting for a record, per upstream feed, and one status per peer (fixed names only)
+        lines.append("# TYPE atlas_sync_waiting_entries gauge")
+        for origin, info in upstreams.items():
+            lines.append(f"atlas_sync_waiting_entries{{node_id={json.dumps(origin)}}} "
+                         f"{(info.get('waiting') or {}).get('count', 0)}")
+        lines.append("# TYPE atlas_peer_status gauge")
+        for peer in full["peers"]:
+            for name in sync.PEER_STATUSES:
+                lines.append(f'atlas_peer_status{{peer_id="{peer["id"]}",status="{name}"}} '
+                             f'{int(peer["status"] == name)}')
+        if state.ctx.settings.role == "authority":
+            records = feed.records_summary(session)
+            lines += ["# TYPE atlas_feed_records gauge",
+                      f'atlas_feed_records{{state="introduced"}} {records["introduced"]}',
+                      f'atlas_feed_records{{state="not_federated"}} {records["not_federated"]}',
+                      f'atlas_feed_records{{state="missing"}} {feed.unintroduced_count(session, "missing")}']
         return lines
 
     def _providers(self, state, session):
