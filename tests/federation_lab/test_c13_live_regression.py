@@ -12,16 +12,21 @@ waiting artwork on the mirror and, through the mirror's relay, on the plain node
 nodes' databases.
 
 The same failure against real 1.0 and 1.1 followers: `python -m tools.skew_drill --scenario records`.
+
+This covers part of C13 §10.2 (see CONTRACT-AMENDMENTS A19 #11 for the steps it does not run: the contract's
+upstream U with a 23-entry legacy shape and a relayed empty feed F, the `records` 7/5/2 counts, variant 3a,
+`introduce --all` with a silent record Q, `atlas_sync_woken_total`, and variants 7a, 7a' and 7b).
 """
 
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from sqlalchemy import select
 
-from atlas import feed, service
+from atlas import feed, service, sync
 from atlas.contract import ObservationBatchV1
 from atlas.models import Artwork, Canonical, NodeState, SyncFailure
 from tools.multinode_drill import csrf
@@ -83,6 +88,39 @@ def test_sidecars_for_unintroduced_record_wait_for_their_game_and_recover(lab):
             assert row.attempts == 1  # waiting is not failing
     info = official.client.get("/api/v2/sync/info", headers=official.headers()).json()
     assert info["records"]["not_federated"] == 1 and info["introduced_through"] is None
+
+    # What the operator sees (§10.2 step 3): a caught-up peer with one change waiting for its game, never "degraded".
+    page = mirror.admin.get("/admin/peers").text
+    assert re.search(r'data-peer-status="caught_up_waiting"', page)
+    assert "waiting for its game" in page.lower()
+    for wrong in ("degraded", "apply error", "unknown or merged canonical"):
+        assert wrong not in page.lower(), wrong
+    with mirror.state.maker() as session:
+        [group] = sync.waiting_groups(session, official.node_id)
+        assert (group["subreason"], group["canonical_id"], group["kinds"]) == (
+            "upstream_unpublished", cid, {"artwork": 1})
+
+    # Step 4: more pulls change nothing: still waiting, no attempts counted.
+    for _ in range(25):
+        assert lab.sync("mirror", "official") is None
+    with mirror.state.maker() as session:
+        row = session.get(SyncFailure, (official.node_id, art_seq))
+        assert (row.disposition, row.attempts, row.resolved_at) == ("wait", 1, None)
+
+    # Step 2 on the lab's shape: probing the mirror lists its own (empty) feed first, flagged and not recommended;
+    # following it without the acknowledgement answers 400 and pins nothing.
+    probe = local2.admin.post("/admin/peers/probe", data={"csrf": csrf(local2.admin, "/admin/peers"),
+                                                         "url": mirror.url, "token": mirror.follower})
+    assert probe.status_code == 200
+    own_tag = re.search(r'<form[^>]*data-feed-option="own"[^>]*>', probe.text).group(0)
+    assert "empty_feed" in own_tag and probe.text.index('data-feed-option="own"') < probe.text.index(
+        'data-feed-option="relayed"')
+    own_head = re.search(r'<form[^>]*data-feed-option="own".*?</h3>', probe.text, re.S).group(0)
+    assert "recommended" not in own_head  # (local2 already follows the relayed feeds, so none is offered here)
+    own = dict(re.findall(r'name="([a-z_]+)" value="([^"]*)"',
+                          re.search(r'<form[^>]*data-feed-option="own".*?</form>', probe.text, re.S).group(0)))
+    refused = local2.admin.post("/admin/peers", data={**own, "ack_relayed_fingerprint": "on"})
+    assert refused.status_code == 400
 
     # The authority raises its emit protocol to 1.5 in Admin → Peers: that schedules the introduction.
     form = {"csrf": csrf(official.admin, "/admin/peers"), "emit_protocol": "1.5", "password": lab.password,

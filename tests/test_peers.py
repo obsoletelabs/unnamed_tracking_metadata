@@ -136,8 +136,12 @@ def test_admin_adds_a_peer_after_confirming_its_identity_and_syncs(pair_sites):
     assert probe.status_code == 200 and "Confirm this node" in probe.text
     nid = central.st.ctx.identity.node_id
     assert " ".join(nid[i:i + 4] for i in range(0, 16, 4)) in probe.text  # the fingerprint to compare
-    add = node.post("/admin/peers", data={"csrf": t, "url": "http://central.test", "token": tok, "name": "Central",
-                                          "node_id": nid, "public_key": central.st.ctx.identity.public_b64})
+    import re
+
+    block = re.search(r'<form[^>]*data-feed-option="own".*?</form>', probe.text, re.S).group(0)
+    fields = dict(re.findall(r'name="([a-z_]+)" value="([^"]*)"', block))
+    assert (fields["node_id"], fields["follow"], fields["empty"]) == (nid, "own", "")
+    add = node.post("/admin/peers", data={**fields, "csrf": t, "ack_relayed_fingerprint": "on"})
     assert add.status_code == 303
     with node.st.maker() as s:
         peer = s.scalars(select(Peer)).one()
@@ -163,7 +167,7 @@ def test_peer_validation_and_permissions(pair_sites):
     for url in ("ftp://x.test", "https://user:pw@x.test", "https://x.test/?a=1", "http://", "not a url"):
         assert node.post("/admin/peers/probe", data={"csrf": t, "url": url}).status_code == 400, url
     wrong = node.post("/admin/peers", data={"csrf": t, "url": "http://central.test", "name": "x",
-                                            "node_id": "0000000000000000",
+                                            "node_id": "0000000000000000", "follow": "own",
                                             "public_key": central.st.ctx.identity.public_b64})
     assert wrong.status_code == 400 and "does not match" in wrong.text
     assert node.post("/admin/peers/probe", data={"csrf": t, "url": "http://unreachable.invalid"}).status_code in (200, 400)
@@ -180,8 +184,15 @@ def test_storing_a_peer_token_needs_the_secret_key(tmp_path):
         signup(c, "alice")
         t = token(c, "/admin/peers")
         ident = u.state.atlas.ctx.identity
+        from types import SimpleNamespace
+
+        from atlas.web import federation
+
+        chosen = federation.probe_token(SimpleNamespace(csrf=t), "http://x.test", ident.node_id, ident.public_b64,
+                                        "own", None, False)
         r = c.post("/admin/peers", data={"csrf": t, "url": "http://x.test", "name": "x", "node_id": ident.node_id,
-                                         "public_key": ident.public_b64, "token": "atl_secret"})
+                                         "public_key": ident.public_b64, "token": "atl_secret", "follow": "own",
+                                         "probe_token": chosen, "ack_relayed_fingerprint": "on"})
         assert r.status_code == 400 and "ATLAS_SECRET_KEY" in r.text
 
 
