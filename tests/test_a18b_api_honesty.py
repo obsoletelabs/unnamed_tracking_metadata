@@ -167,6 +167,10 @@ def test_curator_artwork_put_reports_the_images_another_source_holds(tmp_path):
             {"kind": "key_art", "url": held, "held_by": "steam", "reason": "held_by_another_source"}]}
         with st.maker() as s:
             rows = sorted((a.source, a.url) for a in s.scalars(select(Artwork).where(Artwork.canonical_id == cid)))
+            signed = s.scalars(select(ChangeLog).where(ChangeLog.kind == "artwork").order_by(ChangeLog.seq.desc())
+                               ).first()
         assert rows == [("curator", fresh), ("steam", held)]  # persisted: the image stays the other source's
+        # the signed entry says what was stored: a follower does not file the other source's image as the curator's
+        assert signed is not None and [i["url"] for i in signed.body["items"]] == [fresh]
         r = client.put(f"/api/v2/games/{cid}/artwork", headers=cur, json={"items": [{"kind": "key_art", "url": fresh}]})
         assert r.json() == {"count": 1, "stored": 1, "skipped": []}

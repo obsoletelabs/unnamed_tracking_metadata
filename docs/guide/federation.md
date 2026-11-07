@@ -222,8 +222,11 @@ applying anything. An observation this release accepts but the old one rejected 
 `dropped_by_previous_release`, and so are a `relation` entry, an achievement list (for example one with
 a `platinum` tier) and a lock or unlock (for example a `releases` lock) whose effect is missing here. For
 lists and locks only the newest entry per record and source (or per record and field) counts: an
-older one that a later entry replaced is not recovered, and one whose record was merged since is left
-alone. These rows sit below the applied head, so they no longer block, but the upstream stays
+older one that a later entry replaced is not recovered. One whose record the feed merged since is judged
+on the survivor, where the authority's merge carried it (the survivor's own duplicates and own lock
+win), and `--historical` lands it there. A list is compared on the fields it stores for each item
+(identity, text, icons, kind, tier, points, percent, set, status, locale, icon licence), not on
+translations or order. These rows sit below the applied head, so they no longer block, but the upstream stays
 `parked` (and promotion is refused) until they are dealt with. Rescanning again after the replay
 records nothing: the state then holds. `python -m tools.skew_drill --scenario rescan` runs this
 recovery against the real 1.0 release.

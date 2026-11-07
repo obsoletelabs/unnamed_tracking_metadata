@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from atlas import facets, service, sync
 from atlas.merge import RELEASE_LOCKS
-from atlas.models import Achievement, Lock, SyncFailure
+from atlas.models import Achievement, Lock, ReplicatedChange, SyncFailure
 
 from .test_sync_compat import Node, pull
 
@@ -174,20 +174,164 @@ def test_a_lock_this_node_pinned_itself_is_not_taken_for_a_drop(tmp_path, monkey
     assert locks(mirror, cid)["releases"] == RELEASES
 
 
-def test_a_dropped_entry_on_a_record_merged_since_is_left_alone(tmp_path, monkeypatch):
-    """Re-applying a list to a record that was merged since would not land where it did on the authority; rescan
-    does not judge it (no false work), and the merge itself carried the survivor's state."""
+def merge(node, src, dst):
+    with node.st.maker() as s:
+        service.merge_canonicals(s, node.st.ctx, src, dst, actor="curator")
+        s.commit()
+
+
+def all_achievements(node, cid):
+    """Every row of the record, retired ones included, with the fields a list sets."""
+    with node.st.maker() as s:
+        return sorted((a.source, a.name, a.tier, a.key, a.retired_at is None) for a in s.scalars(
+            select(Achievement).where(Achievement.canonical_id == cid)))
+
+
+def test_a_dropped_entry_on_a_record_merged_since_lands_on_the_survivor(tmp_path, monkeypatch):
+    """A platinum list and a releases lock on A, then A merged into B: the authority's merge carried both to B. A
+    1.0 follower dropped both and its merge carried nothing. Rescan judges the entries on the survivor and parks
+    them, and the historical replay lands them where the authority's merge did."""
     authority, mirror = fed(tmp_path)
     a, b = authority.publish("Merge Src"), authority.publish("Merge Dst")
     pull(mirror, authority)
     put_achievements(authority, a, [{"name": "All", "tier": "platinum"}])
-    with authority.st.maker() as s:
-        service.merge_canonicals(s, authority.st.ctx, a, b, actor="curator")
-        s.commit()
+    lock(authority, a, "releases", RELEASES)
+    merge(authority, a, b)
+    with monkeypatch.context() as m:
+        as_1_0(m)
+        pull(mirror, authority)
+    assert achievements(mirror, b) == [] and locks(mirror, b) == {}  # the 1.0 symptom on the survivor
+    assert mirror.heads(authority)["state"] == "in_sync"
+
+    assert rescan(mirror, authority)["parked"] == 2
+    assert mirror.heads(authority)["state"] != "in_sync"  # recorded: status no longer claims all is held
+    out = historical(mirror)[authority.node_id]
+    assert out["recovered_parked"] == 2 and out["state"] == "in_sync", out
+    assert all_achievements(mirror, b) == all_achievements(authority, b) != []
+    assert all_achievements(mirror, a) == all_achievements(authority, a) == []
+    assert locks(mirror, b) == locks(authority, b) == {"releases": RELEASES}
+    assert locks(mirror, a) == locks(authority, a) == {}
+    assert view(mirror, b) == view(authority, b) and view(mirror, b)["releases"] == RELEASES
+    assert mirror.failures(authority) == []
+    assert rescan(mirror, authority)["parked"] == 0  # idempotent: the survivor now holds it
+    historical(mirror)
+    assert all_achievements(mirror, b) == all_achievements(authority, b)
+
+
+def test_a_dropped_list_on_a_merged_record_reconciles_with_what_the_merge_carried(tmp_path, monkeypatch):
+    """The follower applied A's first list and B's own list; A's second (platinum) list was dropped; the merge
+    carried A's first list, and B's own duplicate won. The replay reconciles the carried rows in place (keys kept,
+    the replaced item retired) and the survivor's duplicate still wins, exactly as on the authority."""
+    authority, mirror = fed(tmp_path)
+    a, b = authority.publish("Carried Src"), authority.publish("Carried Dst")
+    put_achievements(authority, a, [{"name": "Start", "tier": "bronze"}, {"name": "Old", "tier": "silver"},
+                                    {"name": "Shared", "tier": "gold"}])
+    put_achievements(authority, b, [{"name": "Shared", "tier": "bronze"}])
+    lock(authority, a, "releases", RELEASES)
+    lock(authority, b, "release_date", "2031")
+    pull(mirror, authority)
+    put_achievements(authority, a, [{"name": "Start", "tier": "gold"}, {"name": "All", "tier": "platinum"},
+                                    {"name": "Shared", "tier": "platinum"}])
+    lock(authority, a, "releases", [{**RELEASES[0], "date": "2032"}])
+    merge(authority, a, b)
+    with monkeypatch.context() as m:
+        as_1_0(m)
+        pull(mirror, authority)
+    assert all_achievements(mirror, b) != all_achievements(authority, b)
+    assert rescan(mirror, authority)["parked"] == 2
+    out = historical(mirror)[authority.node_id]
+    assert out["recovered_parked"] == 2 and out["state"] == "in_sync", out
+    assert all_achievements(mirror, b) == all_achievements(authority, b)
+    assert ("curator", "Shared", "bronze") in {(s, n, t) for s, n, t, _, live in all_achievements(mirror, b) if live}
+    assert locks(mirror, b) == locks(authority, b)
+    assert locks(mirror, b)["releases"][0]["date"] == "2032"
+    assert mirror.failures(authority) == []
+    assert rescan(mirror, authority)["parked"] == 0
+
+
+def test_a_dropped_entry_on_a_merged_record_that_a_later_survivor_entry_replaced_is_not_resurrected(
+        tmp_path, monkeypatch):
+    """After the merge the authority replaced the survivor's list and lock for the same source and field: those
+    later entries decide, so A's dropped list and lock are not recovered (nothing parked, the follower already
+    holds what the authority holds)."""
+    authority, mirror = fed(tmp_path)
+    a, b = authority.publish("Replaced Src"), authority.publish("Replaced Dst")
+    pull(mirror, authority)
+    put_achievements(authority, a, [{"name": "All", "tier": "platinum"}])
+    lock(authority, a, "releases", RELEASES)
+    merge(authority, a, b)
+    put_achievements(authority, b, [{"name": "Only", "tier": "gold"}])
+    lock(authority, b, "releases", [{**RELEASES[0], "date": "2033"}])
+    unlock(authority, b, "releases")
     with monkeypatch.context() as m:
         as_1_0(m)
         pull(mirror, authority)
     assert rescan(mirror, authority)["parked"] == 0
+    assert [(n, t) for n, t, _ in achievements(mirror, b)] == [(n, t) for n, t, _ in achievements(authority, b)]
+    assert locks(mirror, b) == locks(authority, b) == {}
+
+
+def test_a_dropped_lock_on_a_merged_record_whose_survivor_had_its_own_lock_is_left_alone(tmp_path, monkeypatch):
+    """The authority's merge dropped A's releases lock because B had its own (`lock_dropped`): the follower's
+    survivor keeps B's lock too, so that entry is not parked and B's value stays (also under a historical replay)."""
+    authority, mirror = fed(tmp_path)
+    a, b = authority.publish("Own Lock Src"), authority.publish("Own Lock Dst")
+    own = [{**RELEASES[0], "date": "2029"}]
+    lock(authority, b, "releases", own)
+    pull(mirror, authority)
+    lock(authority, a, "releases", RELEASES)
+    put_achievements(authority, a, [{"name": "All", "tier": "platinum"}])  # parked, so the replay runs
+    merge(authority, a, b)
+    with monkeypatch.context() as m:
+        as_1_0(m)
+        pull(mirror, authority)
+    assert locks(authority, b) == locks(mirror, b) == {"releases": own}
+    assert rescan(mirror, authority)["parked"] == 1  # the list only
+    historical(mirror)
+    assert all_achievements(mirror, b) == all_achievements(authority, b) != []
+    assert locks(mirror, b) == locks(authority, b)
+    assert locks(mirror, a) == locks(authority, a) == {}
+    assert mirror.failures(authority) == []
+    assert rescan(mirror, authority)["parked"] == 0
+
+
+def test_a_historical_replay_over_a_merge_leaves_what_the_merge_carried_where_it_is(tmp_path, monkeypatch):
+    """The replay starts before both lists and the merge (an early dropped lock elsewhere is parked). Re-running
+    B's own list must not retire the rows A's later merge carried onto B, and re-running A's lists must not
+    duplicate them: the survivor ends exactly as on the authority, and a second replay changes nothing."""
+    authority, mirror = fed(tmp_path)
+    x, a, b = authority.publish("Early"), authority.publish("Replayed Src"), authority.publish("Replayed Dst")
+    pull(mirror, authority)
+    with monkeypatch.context() as m:
+        as_1_0(m)
+        lock(authority, x, "releases", RELEASES)
+        pull(mirror, authority)
+    put_achievements(authority, a, [{"name": "Start", "tier": "bronze"}, {"name": "Shared", "tier": "gold"}])
+    put_achievements(authority, b, [{"name": "Shared", "tier": "silver"}, {"name": "Own", "tier": "gold"}])
+    put_achievements(authority, a, [{"name": "Start", "tier": "gold"}, {"name": "Shared", "tier": "gold"},
+                                    {"name": "New", "tier": "bronze"}])
+    lock(authority, a, "release_date", "2030")
+    merge(authority, a, b)
+    put_achievements(authority, authority.publish("After"), [{"name": "Late", "tier": "bronze"}])
+    pull(mirror, authority)
+    before = all_achievements(mirror, b)
+    assert before == all_achievements(authority, b)
+    assert rescan(mirror, authority)["parked"] == 1  # the early lock only
+    out = historical(mirror)[authority.node_id]
+    assert out["recovered_parked"] == 1 and out["state"] == "in_sync", out
+    assert all_achievements(mirror, b) == all_achievements(authority, b) == before
+    assert locks(mirror, b) == locks(authority, b) and locks(mirror, x) == locks(authority, x)
+    assert mirror.failures(authority) == []
+    with mirror.st.maker() as s:  # a second replay from the start changes nothing either
+        for seq in range(1, authority.head() + 1):
+            entry = s.get(ReplicatedChange, (authority.node_id, seq))
+            with sync.entry_at(entry.created_at):
+                assert sync.apply_entry(s, mirror.st.ctx, authority.node_id, seq, entry.kind, entry.body,
+                                        may_park=False) in ("apply", "noop")
+        s.commit()
+    assert all_achievements(mirror, b) == all_achievements(authority, b)
+    assert locks(mirror, b) == locks(authority, b)
+    assert mirror.failures(authority) == []
 
 
 def test_an_achievements_entry_this_release_refuses_is_quarantined_by_the_replay(tmp_path, monkeypatch):

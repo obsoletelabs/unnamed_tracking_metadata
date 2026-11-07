@@ -289,7 +289,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     with maker() as s:  # a relation restore left by migration 0032 (a no-op unless one is pending)
         if relations.finish_restore(s) is not None:
             s.commit()
-    if (rebuilt := dates_rebuild.finish_pending(maker, settings)) is not None:  # after a rollback (0031/0034)
+    if (rebuilt := dates_rebuild.finish_pending(maker, settings)) is not None and not rebuilt.get("busy"):
         log.info("re-derived %d record(s) after a downgrade and re-upgrade (%d changed)", rebuilt["rebuilt"],
                  rebuilt["changed"])
     with maker() as s:
