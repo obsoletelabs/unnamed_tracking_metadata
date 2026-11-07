@@ -54,6 +54,7 @@
     "lock",
     "unlock",
     "key_rotation",
-    "relation"
+    "relation",
+    "record"
   ]
 }

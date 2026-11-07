@@ -29,19 +29,28 @@ relation between two works with a type from `vocab.RELATION_TYPES`. A 1.1-1.3 fo
 and parks it (`unsupported_kind`); an unknown type or op parks a 1.4 follower (`unsupported_value`). Below
 emit protocol 1.4 an authority keeps relations local (C1.6, H13): nothing is appended.
 
-Protocol 1.5 (C8.3) is the price channel: a *separate* signed channel (`/api/v2/sync/price-changes`, its own
+Protocol 1.5 (CONTRACT-C13 §3.2) adds the feed kind `record` (`{canonical_id, media_type, title, provider_ids,
+because}`): a record introduced by identity only, signed before any other entry that names it, so a follower never
+receives artwork, achievements, custom values, locks, merges or relations for a game it has never heard of. A
+1.1-1.4 follower parks it (`unsupported_kind`); an unknown `because` parks a 1.5 follower (`unsupported_value`).
+
+Protocol 1.6 (C8.3) is the price channel: a *separate* signed channel (`/api/v2/sync/price-changes`, its own
 sequence, domain `atlas-price-v1`), never entries in this feed, announced by the capability `price-channel-v1`.
 This release designs and registers it (`PRICE_CHANNEL`) but does not emit it: `CHANNEL_ENABLED` is False, the
-capability is not advertised, the endpoint answers 404 and `PROTOCOL` stays 1.4. The feed kind `price` is
-reserved, so a follower of this release parks a `price` entry that ever appears in the main feed
-(`unsupported_kind`), and this node refuses to sign one at any emit protocol.
+capability is not advertised and the endpoint answers 404. The feed kind `price` is reserved, so a follower of this
+release parks a `price` entry that ever appears in the main feed (`unsupported_kind`), and this node refuses to sign
+one at any emit protocol.
 
-Protocols 1.6-1.8 are provisional (CONTRACT-C11 §1.4, H36): 1.6 adds the kinds `unmerge` and `distinct` and lock
-body version 2 (`_requires` `field-clear-v1` for an explicit clear, `merge-guard-v1` for the `_no_merge` guard); 1.7
-achievements body v2 (`ach-v2`); 1.8 artwork body v2 (`art-v2`, artwork kind `trailer`). This release (A17) records
-all of them in the permanent `*_SINCE` maps and reserves them: a follower of this release parks them, and
-`check_emit` refuses them at every emit protocol. In particular a `lock` body naming `_no_merge` is never signed
-as a version 1 body (it would park every pre-C11 follower).
+Protocols 1.7-1.9 are provisional (CONTRACT-C11 §1.4, H36): 1.7 adds the kinds `unmerge` and `distinct` and lock
+body version 2 (`_requires` `field-clear-v1` for an explicit clear, `merge-guard-v1` for the `_no_merge` guard); 1.8
+achievements body v2 (`ach-v2`); 1.9 artwork body v2 (`art-v2`, artwork kind `trailer`). The permanent `*_SINCE`
+maps record all of them and this release reserves them: a follower of this release parks them, and `check_emit`
+refuses them at every emit protocol. In particular a `lock` body naming `_no_merge` is never signed as a version 1
+body (it would park every pre-C11 follower).
+
+The price channel and the C11/C12 reservations were 1.5-1.8 until A19: C13's `record` took the first minor no
+release had advertised and each of them moved up one (CONTRACT-C13 §3.1, D13.1, owner decision H52). No release ever
+advertised or applied any of them, so no node disagrees about what those numbers mean.
 """
 
 from __future__ import annotations
@@ -57,7 +66,7 @@ from . import vocab
 # ---- versions -------------------------------------------------------------------------------------------
 
 #: The federation wire protocol this release speaks and applies ("MAJOR.MINOR").
-PROTOCOL = "1.4"
+PROTOCOL = "1.5"
 #: Pre-A1 releases advertise no protocol; they speak this.
 LEGACY_PROTOCOL = "1.0"
 #: Version of the observation payload schema (`SourceObservationV1`).
@@ -77,24 +86,32 @@ VALUE_FEATURE: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "
 #: `_requires` tokens reserved by later protocol minors, with the protocol that ships them. A node
 #: never emits one before its `emit_protocol` reaches that protocol (H13); this release cannot apply them.
 RESERVED_TOKENS: dict[str, str] = {"tier-platinum": "1.2", "dates-v1": "1.3", "relation-v1": "1.4",
-                                   "price-channel-v1": "1.5", "field-clear-v1": "1.6", "merge-guard-v1": "1.6",
-                                   "ach-v2": "1.7", "art-v2": "1.8"}
+                                   "price-channel-v1": "1.6", "field-clear-v1": "1.7", "merge-guard-v1": "1.7",
+                                   "ach-v2": "1.8", "art-v2": "1.9"}
 
 # Permanent maps (CONTRACT-C11 §1.4 rule 1): the protocol that introduced each gated construct. `check_emit`
 # consults them for the construct's whole life, so it keeps refusing it below that protocol after the construct
-# ships (an entry leaves RESERVED_* when its applying release merges, never these maps).
+# ships (an entry leaves RESERVED_* when its applying release merges, never these maps). The H52 shift (C13 §3.1)
+# moved the unreleased reservations up one minor; once a release that advertises any of them is tagged, its number
+# is permanent.
 #: Feed kinds added after 1.0.
-KIND_SINCE: dict[str, str] = {"relation": "1.4", "price": "1.5", "unmerge": "1.6", "distinct": "1.6"}
+KIND_SINCE: dict[str, str] = {"relation": "1.4", "record": "1.5", "price": "1.6", "unmerge": "1.7", "distinct": "1.7"}
 #: `_requires` tokens.
 TOKEN_SINCE: dict[str, str] = {"tier-platinum": "1.2", "dates-v1": "1.3", "relation-v1": "1.4",
-                               "price-channel-v1": "1.5", "field-clear-v1": "1.6", "merge-guard-v1": "1.6",
-                               "ach-v2": "1.7", "art-v2": "1.8"}
+                               "price-channel-v1": "1.6", "field-clear-v1": "1.7", "merge-guard-v1": "1.7",
+                               "ach-v2": "1.8", "art-v2": "1.9"}
 #: Closed-vocabulary values added after 1.0, as (vocabulary, value).
-VALUE_SINCE: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "1.2", ("lock_field", "_no_merge"): "1.6",
-                                           ("artwork_kind", "trailer"): "1.8"}
+VALUE_SINCE: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "1.2", ("lock_field", "_no_merge"): "1.7",
+                                           ("artwork_kind", "trailer"): "1.9"}
 #: Body versions above 1, as (kind, version).
-BODY_SINCE: dict[tuple[str, int], str] = {("lock", 2): "1.6", ("unlock", 2): "1.6", ("achievements", 2): "1.7",
-                                          ("artwork", 2): "1.8"}
+BODY_SINCE: dict[tuple[str, int], str] = {("lock", 2): "1.7", ("unlock", 2): "1.7", ("achievements", 2): "1.8",
+                                          ("artwork", 2): "1.9"}
+#: C13 §3.2: the protocol of the `record` kind, and the reserved namespaces a `record` (or a bridge observation)
+#: never carries in `provider_ids`: an Atlas id or a curated namespace there could claim a follower's own record.
+RECORD_PROTOCOL = "1.5"
+RECORD_SOURCE = "atlas-record"
+RECORD_RESERVED_NAMESPACES = frozenset({"atlas", RECORD_SOURCE, "curator", "manual", "community"})
+RECORD_TITLE_MAX = 300
 #: The lock "field" of the C11 merge guard. Only ever a lock body version 2 (`merge-guard-v1`).
 NO_MERGE_FIELD = "_no_merge"
 
@@ -208,17 +225,20 @@ FEED_KINDS: dict[str, KindSpec] = {spec.name: spec for spec in (
     KindSpec("relation", "1.4", 1, 1, frozenset({"op", "from", "to", "type", "source"}),
              "A relation between two works added or ended (`from` is the DLC, port, member...; `to` the parent).",
              values={"op": "relation_op", "type": "relation_type"}),
+    KindSpec("record", "1.5", 1, 1, frozenset({"canonical_id", "media_type", "title", "provider_ids", "because"}),
+             "A record introduced by identity only: its id, type, display title and store ids.",
+             values={"because": "record_because"}),
 )}
 
 #: Kinds reserved by later protocols. A follower of this release parks them; this node never emits them.
 #: (`relation` was reserved for 1.4 and shipped in A15.) `price` is reserved so that a price that reaches the main
 #: feed by mistake parks instead of being dropped: prices belong to their own channel (C8.3, `PRICE_CHANNEL`).
-#: `unmerge` and `distinct` (C11 §11.12, protocol 1.6) are reserved by A17: merge records, unmerge and rejections
-#: are local in this release; the federated kinds ship with C11-5.
-RESERVED_KINDS: dict[str, str] = {"price": "1.5", "unmerge": "1.6", "distinct": "1.6"}
+#: `unmerge` and `distinct` (C11 §11.12, protocol 1.7 after the H52 shift) are reserved by A17: merge records,
+#: unmerge and rejections are local in this release; the federated kinds ship with C11-5.
+RESERVED_KINDS: dict[str, str] = {"price": "1.6", "unmerge": "1.7", "distinct": "1.7"}
 
 
-# ---- the price channel (C8.3, protocol 1.5; designed, emission disabled) --------------------------------
+# ---- the price channel (C8.3, protocol 1.6 after the H52 shift; designed, emission disabled) -------------
 
 @dataclass(frozen=True)
 class ChannelSpec:
@@ -250,7 +270,7 @@ PRICE_FIELDS = frozenset({"id", "canonical_id", "provider", "product_id", "packa
 CHANNEL_ENABLED = False
 
 PRICE_CHANNEL = ChannelSpec(
-    name="price", since="1.5", capability="price-channel-v1", endpoint="/api/v2/sync/price-changes",
+    name="price", since="1.6", capability="price-channel-v1", endpoint="/api/v2/sync/price-changes",
     snapshot="/api/v2/sync/price-snapshot", sequence="price_feed_seq", domain=b"atlas-price-v1\n",
     cursor_suffix="#price", fields=PRICE_FIELDS,
     nested={"provenance": frozenset({"node", "method", "fetch_id"}),
@@ -288,6 +308,7 @@ def vocabularies() -> dict[str, Any]:
         "relation_op": frozenset(vocab.RELATION_OPS),
         "price_availability": frozenset(vocab.PRICE_AVAILABILITY),
         "price_source_kind": frozenset(vocab.PRICE_SOURCE_KINDS),
+        "record_because": frozenset(vocab.RECORD_BECAUSE),
     }
 
 

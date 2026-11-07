@@ -57,7 +57,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `PUT` | `/games/{cid}/relations` | curate | Replace the record's own outgoing relations (`{relations: [{to, type}]}`, at most 200). Self relations, cycles, a second parent of the same kind and memberships that do not point at a series or collection are refused and nothing changes. Published at `emit_protocol` 1.4, kept local below: the answer says `published: false` with `reason` (`emit_protocol` with `pending`, or `local_node`), and `changed.published` counts relations stored while gated that this call signed. |
 | `GET` | `/merges` | curate | Merge records of a record (`canonical_id`). |
 | `GET` | `/merges/{merge_id}` | curate | One merge record with its item counts. |
-| `POST` | `/merges/{merge_id}/unmerge` | curate | Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published needs `emit_protocol` 1.6 (409 `emit_protocol`). |
+| `POST` | `/merges/{merge_id}/unmerge` | curate | Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published needs `emit_protocol` 1.7 (409 `emit_protocol`). |
 | `GET` | `/observations/{oid}/decision` | curate | The newest match decision recorded for one observation. |
 | `POST` | `/observations/{oid}/detach` | curate | Split one source record off onto its own record. |
 | `POST` | `/prices` | curate | Store up to 500 price observations (integer minor units; floats, unknown currencies or regions and inconsistent discounts are a 422). Per item: `stored`, `duplicate`, `conflict`, `unknown_record`, `expired` or `invalid`. Nothing is published. See [Prices](prices.md). |
@@ -82,13 +82,13 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `GET` | `/sync/changes` | sync | Signed entries after `since`; optional `node_id` selects a retained original authority feed. |
 | `GET` | `/sync/digest` | sync | Digest of the replicated observations of this node's feed (or a retained one with `node_id`), for `atlas sync reconcile`. Observations only; cached up to 60 s (`cached_seconds`). |
 | `GET` | `/sync/info` | read | Stable trust root, current signer, signed successor proofs, available original feeds, and the federation protocol, feed kinds and capabilities this node speaks. |
-| `GET` | `/sync/price-changes` | sync | The price channel (protocol 1.5, capability `price-channel-v1`). Designed but disabled in this release: always 404. |
+| `GET` | `/sync/price-changes` | sync | The price channel (protocol 1.6, capability `price-channel-v1`). Designed but disabled in this release: always 404. |
 
 ## admin
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
-| `GET` | `/prices/status` | admin | Stored price observations, how many the next purge removes, retention bounds, and the price channel's state (protocol 1.5, disabled in this release). |
+| `GET` | `/prices/status` | admin | Stored price observations, how many the next purge removes, retention bounds, and the price channel's state (protocol 1.6, disabled in this release). |
 | `GET` | `/status` | admin | Role, feed head, replication cursors, the number of feed entries that failed to apply and the named heads per upstream. |
 | `GET` | `/sync/failures` | admin | Mirrored feed entries that could not be applied and still need attention: parked (need a newer release) or quarantined. |
 | `POST` | `/sync/failures/retry` | admin | Retry failed mirrored entries now, whatever the automatic attempt count. |

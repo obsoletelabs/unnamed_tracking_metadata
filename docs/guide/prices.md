@@ -118,7 +118,7 @@ atlas prices status    # counts, rows due for purge, retention bounds, channel s
 
 Prices are included in backups like every other table.
 
-## Federation: protocol 1.5, not enabled in this release
+## Federation: protocol 1.6, not enabled in this release
 
 Prices will replicate over a **separate signed channel**, not through the main feed. The main feed is
 contiguous and kept forever, while prices change often and expire. The design (CONTRACTS-v1 C8.3) is fixed
@@ -126,7 +126,7 @@ and registered in `atlas/feed_schema.py` (`PRICE_CHANNEL`):
 
 | | |
 | --- | --- |
-| Protocol | 1.5, capability `price-channel-v1` |
+| Protocol | 1.6 (1.5 until the C13 renumbering, H52), capability `price-channel-v1` |
 | Endpoint | `/api/v2/sync/price-changes?since=` with its own sequence (`price_feed_seq`) |
 | Signature | The feed's message layout under the domain `atlas-price-v1`, so a price signature never verifies as a feed entry |
 | Follower cursor | `<node>#price` |

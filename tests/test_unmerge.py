@@ -229,7 +229,7 @@ def test_a_published_merge_cannot_be_undone_below_protocol_1_6(session, ctx):
     assert rec.feed_seq is not None
     with pytest.raises(merges.MergeError) as err:
         merges.unmerge(session, ctx, rec.id, actor="cur")
-    assert err.value.code == "emit_protocol" and "1.6" in str(err.value)
+    assert err.value.code == "emit_protocol" and "1.7" in str(err.value)
     session.rollback()
     assert session.get(Canonical, b).merged_into == a
 
@@ -406,7 +406,7 @@ def test_a_published_merge_stays_refused_after_the_node_changes_role(session, ct
     relabelled = Ctx(settings=build_settings(role="local"), identity=ctx.identity)
     with pytest.raises(merges.MergeError) as err:
         merges.unmerge(session, relabelled, rec.id, actor="cur")
-    assert err.value.code == "emit_protocol" and "1.6" in str(err.value)
+    assert err.value.code == "emit_protocol" and "1.7" in str(err.value)
     session.rollback()
     assert session.get(Canonical, b).merged_into == a
     assert session.get(MergeRecord, rec.id).reverted_at is None

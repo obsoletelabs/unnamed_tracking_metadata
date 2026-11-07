@@ -583,7 +583,7 @@ def _mark_distinct(session: Session, a: str, b: str, *, actor: str, note: str = 
 @router.post("/distinct", tags=["curate"])
 def distinct_add(body: DistinctBody, session: Sess, p: Annotated[auth.Principal, Depends(require("curate"))]):
     """Mark two records as different works: matching never merges them and no review pairs them again. Local to
-    this node in this release (federated distinct needs emit protocol 1.6)."""
+    this node in this release (federated distinct needs emit protocol 1.7)."""
     return _mark_distinct(session, body.a, body.b, actor=p.name, note=body.note)
 
 
@@ -1223,7 +1223,7 @@ def post_prices(body: prices.PriceBatch, session: Sess,
 @router.get("/prices/status", tags=["admin"])
 def price_status(session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]):
     """How many price observations are stored, how many the next purge removes, and the price channel's state
-    (protocol 1.5, disabled in this release)."""
+    (protocol 1.6, disabled in this release)."""
     return prices.status(session)
 
 
@@ -1351,9 +1351,9 @@ def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(requ
 @router.get("/sync/price-changes", tags=["federation"])
 def sync_price_changes(_: Annotated[auth.Principal, Depends(require("sync"))],
                        since: Annotated[int, Query(ge=0)] = 0):
-    """The price channel (C8.3, protocol 1.5): designed, not enabled in this release. It answers 404, and
+    """The price channel (C8.3, protocol 1.6): designed, not enabled in this release. It answers 404, and
     `/sync/info` does not list the `price-channel-v1` capability, so no follower ever reads prices from it."""
-    raise HTTPException(404, "the price channel (protocol 1.5) is not enabled on this node")
+    raise HTTPException(404, f"the price channel (protocol {feed_schema.PRICE_CHANNEL.since}) is not enabled on this node")
 
 
 @router.get("/sync/digest", tags=["federation"])

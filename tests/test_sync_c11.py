@@ -28,17 +28,17 @@ def fed(tmp_path):
 
 
 def test_registry_reserves_the_c11_constructs_and_keeps_the_since_maps():
-    assert feed_schema.PROTOCOL == "1.4"
+    assert feed_schema.PROTOCOL == "1.5"  # C13's record; the C11 constructs moved up one (H52)
     for kind in C11_KINDS:
-        assert feed_schema.RESERVED_KINDS[kind] == "1.6" == feed_schema.KIND_SINCE[kind]
+        assert feed_schema.RESERVED_KINDS[kind] == "1.7" == feed_schema.KIND_SINCE[kind]
         assert kind not in feed_schema.FEED_KINDS
-    for token, since in {"field-clear-v1": "1.6", "merge-guard-v1": "1.6", "ach-v2": "1.7", "art-v2": "1.8"}.items():
+    for token, since in {"field-clear-v1": "1.7", "merge-guard-v1": "1.7", "ach-v2": "1.8", "art-v2": "1.9"}.items():
         assert feed_schema.RESERVED_TOKENS[token] == since == feed_schema.TOKEN_SINCE[token]
         assert token not in feed_schema.known_tokens()
-    assert feed_schema.BODY_SINCE[("lock", 2)] == "1.6" and feed_schema.BODY_SINCE[("artwork", 2)] == "1.8"
+    assert feed_schema.BODY_SINCE[("lock", 2)] == "1.7" and feed_schema.BODY_SINCE[("artwork", 2)] == "1.9"
     table = feed_schema.markdown_table()
     for kind in C11_KINDS:
-        assert f"| `{kind}` | 1.6 (reserved) | not in this release | parked by this release |" in table
+        assert f"| `{kind}` | 1.7 (reserved) | not in this release | parked by this release |" in table
 
 
 @pytest.mark.parametrize("protocol", feed_schema.protocol_choices())
@@ -47,16 +47,16 @@ def test_check_emit_refuses_every_c11_construct_at_every_protocol(protocol):
                        ("distinct", {"a": "atlas:a", "b": "atlas:b"})):
         with pytest.raises(feed_schema.EmitGateError) as err:
             feed_schema.check_emit(kind, body, protocol)
-        assert err.value.needed == "1.6"
+        assert err.value.needed == "1.7"
     with pytest.raises(feed_schema.EmitGateError) as err:  # an explicit clear is a lock body version 2
         feed_schema.check_emit("lock", {"_v": 2, "canonical_id": "atlas:a", "field": "title", "clear": True,
                                         "_requires": ["field-clear-v1"]}, protocol)
-    assert err.value.needed == "1.6"
+    assert err.value.needed == "1.7"
     with pytest.raises(feed_schema.EmitGateError):  # the merge guard is never a version 1 lock
         feed_schema.check_emit("lock", {"canonical_id": "atlas:a", "field": "_no_merge", "value": "x"}, protocol)
     with pytest.raises(feed_schema.EmitGateError) as err:
         feed_schema.check_emit("artwork", {"_v": 2, "canonical_id": "atlas:a", "source": "s", "items": []}, protocol)
-    assert err.value.needed == "1.8"
+    assert err.value.needed == "1.9"
     with pytest.raises(feed_schema.EmitGateError) as err:
         feed_schema.check_emit("artwork", {"canonical_id": "atlas:a", "source": "s", "items": [],
                                            "_requires": ["art-v2"]}, protocol)
