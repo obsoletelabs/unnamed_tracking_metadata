@@ -134,7 +134,8 @@ test.describe('failed mirror entries (#90)', () => {
     await expect(section).toBeVisible();
     const stuck = section.locator('tr[data-failure="2"]'); // its retained entry is missing, so it keeps failing
     await expect(stuck).toContainText(/canonical_id|retained entry is missing/);
-    await expect(stuck).toContainText('automatic retries stopped');
+    // C13 §5.2: automatic retries back off (at most every 6 hours) instead of stopping after 20 attempts.
+    await expect(stuck).toContainText('next try');
     const before = Number((await stuck.locator('td').nth(3).innerText()).match(/^\d+/)[0]);
     const hadHealable = (await section.locator('tr[data-failure="1"]').count()) > 0;
 
