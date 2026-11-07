@@ -63,7 +63,7 @@ RESOLVE_REASON = {"contradicted": "ambiguous", "unresolved_atlas": "ambiguous", 
 
 #: §11.5 rule 5. `possible_duplicate` adds round(score x 10).
 REVIEW_PRIORITY = {"id_conflict": 30, "bridge_deferred": 25, "title_contradicted": 20, "unmerge_check": 15,
-                   "possible_duplicate": 10}
+                   "possible_duplicate": 10, "cross_origin_duplicate": 10}  # C13 §5.1 step 3 (a follower)
 REVIEW_KINDS = tuple(REVIEW_PRIORITY)
 #: Kinds a "merge" resolution does not apply to: an `unmerge_check` names the survivor and the record an unmerge just
 #: split off it. Its resolutions in this release are `detach` and `dismiss` (move_chain / move_row are deferred).
