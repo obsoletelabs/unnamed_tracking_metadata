@@ -673,6 +673,7 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         elif kind == "artwork":
             facets.set_artwork(session, ctx, body["canonical_id"], body["source"], body["items"],
                                redistributable=True, log=False)
+            _note_media_origin(session, node_id, body)
         else:  # the authority's stored keys win, so mirror and authority publish the same keys (C2.2)
             from .merge import source_class
 
@@ -755,6 +756,23 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
     else:  # classify() parks unknown kinds; reaching here means the registry and this function disagree
         raise KeyError(f"no apply rule for feed kind {kind!r}")
     return None
+
+
+def _note_media_origin(session: Session, node_id: str, body: dict[str, Any]) -> None:
+    """C13 §6.1: the rows an `artwork` entry listed came from `node_id`'s feed, so their bytes can be asked of the
+    peer that serves it. Only the content address is taken from the URL (never anything else)."""
+    from . import media
+    from .models import Artwork
+
+    urls = {i.get("url") for i in body.get("items") or [] if isinstance(i, dict) and isinstance(i.get("url"), str)}
+    if not urls:
+        return
+    for art in session.scalars(select(Artwork).where(Artwork.canonical_id == body["canonical_id"],
+                                                     Artwork.url.in_(sorted(urls)[:200]))):
+        art.origin_node = node_id[:64]
+        if art.peer_digest is None and (digest := media.url_digest(art.url)):
+            art.peer_digest, art.digest_provenance = digest, "url"
+    session.flush()
 
 
 def _apply_record(session: Session, ctx: Ctx, node_id: str, seq: int, body: dict[str, Any]) -> str | None:

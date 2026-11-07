@@ -121,6 +121,22 @@ def _waiting(p: Ctx) -> dict:
                                 for cid, n, first, since, node in groups]}
 
 
+def _media_line(p: Ctx, peer: Peer) -> dict | None:
+    """C13 §6.5: images of the rows this peer's feed delivered: how many are here, fetched from the peer or from
+    their origin, and how many could not be fetched (the reasons are on each game's artwork page)."""
+    from ..models import Artwork
+
+    rows = p.session.execute(select(Artwork.blob_hash.is_not(None), Artwork.fetched_from, Artwork.fail_count)
+                             .where(Artwork.origin_node == peer.node_id)).all()
+    if not rows:
+        return None
+    label = f"peer:{peer.id}"
+    return {"total": len(rows), "cached": sum(1 for c, _, _ in rows if c),
+            "from_peer": sum(1 for c, f, _ in rows if c and f == label),
+            "from_origin": sum(1 for c, f, _ in rows if c and f == "origin"),
+            "failing": sum(1 for c, _, n in rows if not c and n)}
+
+
 def _records(p: Ctx) -> dict | None:
     """C13 §4.2 on an authority: live records its feed names nowhere, and whether it can publish them now."""
     if p.st.ctx.settings.role != "authority":
@@ -160,7 +176,8 @@ def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, sta
         rows.append({"peer": peer, "seq": cur.last_seq if cur else 0, "fp": fingerprint(peer.node_id),
                      "heads": h, "status": sync.peer_status(peer, h),
                      "inferred": sync.inferred_follow(p.session, peer.id) if peer.follow is None else None,
-                     "via_fp": fingerprint(peer.via_node_id) if peer.via_node_id else None})
+                     "via_fp": fingerprint(peer.via_node_id) if peer.via_node_id else None,
+                     "media": _media_line(p, peer)})
     s = p.st.ctx.settings
     failures = list(p.session.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None),
                                                                 SyncFailure.disposition != sync.WAIT)

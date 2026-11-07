@@ -12,6 +12,7 @@ import hashlib
 import io
 import ipaddress
 import os
+import re
 import socket
 import tempfile
 import threading
@@ -393,13 +394,127 @@ def measure(art: Artwork, data: bytes, w: int, h: int) -> None:
     art.dhash = dhash(data)
 
 
+# ---- from the peer that delivered the row (C13 §6) -----------------------------------------------------------
+
+DIGEST_RE = re.compile(r"/(?:api/v2/)?media/([0-9a-f]{64})(?:\.[a-z]{3,4})?\Z")
+SOURCES_KEPT = 5
+
+
+def url_digest(url: str | None) -> str | None:
+    """A peer's own content address in an image URL (`…/media/<sha256>`), the only part discovery keeps."""
+    if not url:
+        return None
+    found = DIGEST_RE.search(urlsplit(url).path)
+    return found.group(1) if found else None
+
+
+def _tried(art: Artwork, source: str, error: str | None) -> None:
+    """Keep why each source failed (C13 §6.3): the last few attempts, newest last, bounded."""
+    entries = [e for e in (art.sources_tried or []) if isinstance(e, dict) and e.get("source") != source]
+    entries.append({"source": source[:80], "error": error, "at": now().isoformat()})
+    art.sources_tried = entries[-SOURCES_KEPT:]
+
+
+def peer_for(session: Session, origin: str | None) -> Any:
+    """The enabled peer this node replicates `origin`'s feed from (directly or through a relay)."""
+    if not origin:
+        return None
+    from .models import Peer
+
+    return session.scalars(select(Peer).where(Peer.node_id == origin, Peer.enabled.is_(True))
+                           .order_by(Peer.created_at)).first()
+
+
+def _peer_request(client: httpx.Client, base: str, digest: str, token: str | None, settings: Settings) -> bytes:
+    """GET `<peer>/api/v2/sync/media/<sha256>`. The peer's address was pinned by the operator, so this exact
+    origin is allowed even on a private network (the C12 public-address rule is for provider URLs); no redirects
+    are followed, and the body is bounded and must hash to the digest asked for."""
+    headers = {"Accept": "image/*", "User-Agent": "atlas-metadata/2"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        with client.stream("GET", f"{base.rstrip('/')}/api/v2/sync/media/{digest}", headers=headers,
+                           timeout=httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT), follow_redirects=False) as resp:
+            if resp.status_code != 200:
+                raise MediaError(f"peer status {resp.status_code}", _status_code(resp.status_code))
+            buf = bytearray()
+            for chunk in resp.iter_bytes():
+                buf += chunk
+                if len(buf) > settings.media_max_bytes:
+                    raise MediaError("image too large", "too_large")
+    except httpx.TimeoutException as exc:
+        raise MediaError(f"peer fetch failed: {type(exc).__name__}", "timeout") from exc
+    except httpx.HTTPError as exc:
+        raise MediaError(f"peer fetch failed: {type(exc).__name__}", "status_5xx") from exc
+    if hashlib.sha256(buf).hexdigest() != digest:
+        raise MediaError("peer sent bytes that do not match the digest", "bad_image")
+    return bytes(buf)
+
+
+def discover_digest(session: Session, settings: Settings, art: Artwork, peer: Any, client: httpx.Client,
+                    token: str | None) -> str | None:
+    """The digest the peer stores this image under: from the URL when it is a content address, else from the
+    peer's artwork list for the record (only `media_url` of the item with this kind and address is read)."""
+    if art.peer_digest:
+        return art.peer_digest
+    digest, provenance = url_digest(art.url), "url"
+    if digest is None:
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        try:
+            resp = client.get(f"{peer.url.rstrip('/')}/api/v2/games/{art.canonical_id}/artwork", headers=headers,
+                              timeout=httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT), follow_redirects=False)
+            items = resp.json() if resp.status_code == 200 else []
+        except (httpx.HTTPError, ValueError):
+            items = []
+        items = items.get("results", []) if isinstance(items, dict) else []
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and item.get("url") == art.url and item.get("kind") == art.kind:
+                digest = url_digest(item.get("media_url") if isinstance(item.get("media_url"), str) else None)
+                break
+        provenance = "peer_api"
+    if digest:
+        art.peer_digest, art.digest_provenance = digest, provenance
+    return digest
+
+
+def _from_peer(session: Session, settings: Settings, art: Artwork, client: httpx.Client) -> bytes | None:
+    """Try the peer that delivered the row first (C13 §6.2); None when there is no such peer or it failed."""
+    if not getattr(settings, "sync_media_prefer_peer", True) or not art.origin_node:
+        return None
+    peer = peer_for(session, art.origin_node)
+    if peer is None:
+        return None
+    from . import secrets_box
+
+    label = f"peer:{peer.id}"
+    try:
+        token = secrets_box.decrypt(settings, peer.token_enc) if peer.token_enc else None
+        digest = discover_digest(session, settings, art, peer, client, token)
+        if digest is None:
+            _tried(art, label, "not_on_peer")
+            return None
+        data = _peer_request(client, peer.url, digest, token, settings)
+    except MediaError as exc:
+        _tried(art, label, exc.code)
+        return None
+    except secrets_box.SecretsError:
+        _tried(art, label, "peer_token")
+        return None
+    art.fetched_from = label
+    return data
+
+
 def cache_one(session: Session, settings: Settings, art: Artwork, client: httpx.Client) -> bool:
     try:
-        data = _request(client, art.url, settings)
+        data = _from_peer(session, settings, art, client)
+        if data is None:
+            data = _request(client, art.url, settings)
+            art.fetched_from = "origin"
         ext, ctype, w, h = validate_image(data, settings)
         digest = store(settings, data, ext)
     except MediaError as exc:
         art.last_error = exc.code
+        _tried(art, "origin", exc.code)
         if exc.deferred:  # the per-host limit: try again in a minute, without backing off
             art.next_try_at = now() + timedelta(minutes=1)
             return False
