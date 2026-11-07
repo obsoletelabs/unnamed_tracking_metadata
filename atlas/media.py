@@ -451,6 +451,14 @@ def _peer_request(client: httpx.Client, base: str, digest: str, token: str | Non
     return bytes(buf)
 
 
+def _answers_as_signer(session: Session, peer: Any) -> bool:
+    """Whether `peer` serves its own feed (`follow = own`, or inferred so for a peer added before C13)."""
+    from . import sync
+
+    follow = peer.follow or (sync.inferred_follow(session, peer.id) or {}).get("follow")
+    return follow == sync.FOLLOW_OWN
+
+
 def discover_digest(session: Session, settings: Settings, art: Artwork, peer: Any, client: httpx.Client,
                     token: str | None) -> str | None:
     """The digest the peer stores this image under: from the URL when it is a content address, else from the
@@ -458,6 +466,8 @@ def discover_digest(session: Session, settings: Settings, art: Artwork, peer: An
     if art.peer_digest:
         return art.peer_digest
     digest, provenance = url_digest(art.url), "url"
+    if digest is None and not _answers_as_signer(session, peer):
+        raise MediaError("a relay is not asked for digests", "relay_unsigned")  # C13 §6.3: it did not sign the rows
     if digest is None:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         try:

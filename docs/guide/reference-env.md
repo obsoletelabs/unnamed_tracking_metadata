@@ -46,6 +46,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_SYNC_MAX_OPEN_FAILURES` | `10000` | Follower: open waiting and quarantined entries per upstream feed before it stops applying that feed and reports `backlog_full` (nothing is lost; the entries stay retained). |
 | `ATLAS_SYNC_WAKE_BATCH` | `500` | Follower: waiting entries applied per transaction when their record arrives (1-5000); the retry pass of the same pull applies the rest. |
 | `ATLAS_SYNC_MEDIA_PREFER_PEER` | `true` | Follower: fetch an image first from the peer whose feed delivered its artwork row (`/api/v2/sync/media/{sha256}`, hash checked), then from the original address. |
+| `ATLAS_FEDERATION_MEDIA_UNKNOWN_LICENCE` | `false` | Whether `/api/v2/sync/media` hands a pinned peer the cached bytes of a curated image whose licence is unknown (none stated). Off: only `cc0` and owner uploads are served; peers fetch the rest from the original address. |
 | `ATLAS_GROUP_VIEW_MAX_AGE_HOURS` | `24` | Node groups: how recent (hours, 1-168) a third member's view must be before delegated or privileged group actions. **live** |
 | `ATLAS_GROUP_SYNC_INTERVAL` | `60` | Node groups: seconds between pulls of every member's state (30-86400). |
 | `ATLAS_GROUP_PROFILE_SYNC` | `true` | Node groups: sync the preferences linked users chose over the private group channel. Off sends and applies nothing. **live** |
