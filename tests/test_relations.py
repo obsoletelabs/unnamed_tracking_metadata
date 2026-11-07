@@ -788,18 +788,18 @@ def test_a_replicated_cycle_is_quarantined_without_blocking(fed):
     assert relation_state(mirror)[0] == [(a, b, "dlc_of")]
 
 
-def test_a_relation_to_a_record_not_here_yet_is_retried(fed):
+def test_a_relation_to_a_record_not_here_yet_waits_for_it(fed):
+    """C13 §5.2 (A19): a relation naming a record the follower does not hold yet waits for it (it used to be
+    quarantined and retried); the record's arrival applies it in the same pull."""
     authority, mirror = fed
     a = authority.publish("Rt A")
     ghost = canonical_id()
     seq = authority.emit("relation", {"op": "add", "from": a, "to": ghost, "type": "port_of", "source": "curator"})
     pull(mirror, authority)
-    assert mirror.failures(authority) == [(seq, "relation", "quarantined", "apply_error")]
+    assert mirror.failures(authority) == [(seq, "relation", "wait", "waiting_for_record")]
+    assert mirror.heads(authority)["applied_head"] == seq  # not blocked
     authority.emit("obs", {**observation("Rt Ghost"), "canonical_id": ghost})
     pull(mirror, authority)
-    with mirror.st.maker() as s:
-        sync.retry_failures(s, mirror.st.ctx)
-        s.commit()
     assert mirror.failures(authority) == [] and relation_state(mirror)[0] == [(a, ghost, "port_of")]
 
 

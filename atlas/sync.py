@@ -1547,11 +1547,28 @@ def rescan(session: Session, node_id: str) -> dict[str, int]:
     rows = session.scalars(select(ReplicatedChange).where(ReplicatedChange.node_id == node_id,
                                                           ReplicatedChange.seq <= applied)
                            .order_by(ReplicatedChange.seq).execution_options(yield_per=500))
+    introduced: dict[str, int] = {}  # record id -> first retained entry of this feed that introduced it
+    unseen: list[tuple[int, str, str]] = []  # sidecars that named a record before this feed introduced it
     for row in rows:
         counts["scanned"] += 1
+        body = row.body if isinstance(row.body, dict) else {}
+        cid = body.get("canonical_id")
+        made = body.get(_INTRODUCING.get(row.kind, ""))
+        if isinstance(made, str):
+            introduced.setdefault(made, row.seq)
         existing = session.get(SyncFailure, (node_id, row.seq))
         if existing is not None and existing.resolved_at is None:
             continue  # already tracked
+        if existing is None and row.kind in _SIDECARS and feed_schema.classify(row.kind, body).action == APPLY:
+            missing = missing_record(session, row.kind, body)
+            if missing is not None:  # C13 §5.6: an earlier release dropped it; it waits for its record now
+                _record(session, node_id, row.seq, row.kind, WAIT, WAITING_FOR_RECORD,
+                        f"waiting for record {missing}: an earlier release dropped this entry because the feed "
+                        "had not introduced it (found by rescan)", {"kind": row.kind}, waiting_for=missing)
+                counts["waiting"] = counts.get("waiting", 0) + 1
+            elif isinstance(cid, str) and cid not in introduced and row.kind in _SIDECARS_STATELESS:
+                unseen.append((row.seq, row.kind, cid))
+            continue
         outcome = feed_schema.classify(row.kind, row.body)
         if outcome.action == PARK:
             _record(session, node_id, row.seq, row.kind, PARK, outcome.reason, outcome.message, outcome.detail)
@@ -1582,9 +1599,17 @@ def rescan(session: Session, node_id: str) -> dict[str, int]:
                 _record(session, node_id, row.seq, row.kind, QUARANTINE, "invalid",
                         "InvalidEntry: observation fails the observation contract (found by rescan)", {"kind": "obs"})
                 counts["quarantined"] += 1
+    for seq, kind, cid in unseen:
+        # The record arrived later in this feed (a bridge observation or `record`), after an earlier release had
+        # dropped this entry without recording it: park it so `replay --historical` re-applies it in feed order.
+        if introduced.get(cid, 0) > seq:
+            _record(session, node_id, seq, kind, PARK, "dropped_by_previous_release",
+                    f"an earlier release dropped this {kind} entry because its record had not arrived yet; "
+                    "`atlas sync replay --historical` applies it", {"kind": kind})
+            counts["parked"] += 1
     counts["parked"] += _rescan_replaced_state(session, node_id, applied)
     if waiting := _rescan_waiting(session, node_id):
-        counts["waiting"] = waiting
+        counts["waiting"] = counts.get("waiting", 0) + waiting
     return counts
 
 
@@ -1611,6 +1636,12 @@ def _rescan_waiting(session: Session, node_id: str) -> int:
 #: newest entry per piece says what this node should hold. A 1.0 release dropped such an entry when its value was
 #: new to it (a `platinum` tier, a `releases` lock) without recording anything (Phase 4 D1).
 _REPLACING = ("achievements", "lock", "unlock")
+#: C13 §5.6 rescan: sidecar kinds a 1.0 release dropped without recording anything when their record had not arrived
+#: (`AtlasError` swallowed); `_SIDECARS_STATELESS` are those `_rescan_replaced_state` cannot judge by comparing state.
+_SIDECARS = ("artwork", "achievements", "custom", "lock")
+_SIDECARS_STATELESS = ("artwork", "custom")
+#: Entries that bring a record into existence on a follower, and the field that names it.
+_INTRODUCING = {"obs": "canonical_id", "record": "canonical_id", "detach": "new_canonical_id"}
 
 
 def _state_key(kind: str, body: dict[str, Any]) -> tuple[str, str, str] | None:
