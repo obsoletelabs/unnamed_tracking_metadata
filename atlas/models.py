@@ -992,11 +992,6 @@ class Peer(Base):
     # is the relay that answered when it was chosen). NULL: a peer added before A19, whose mode is still inferred.
     follow: Mapped[str | None] = mapped_column(String(8), nullable=True)
     via_node_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # C13 §7.4 (migration 0036): which feed the operator chose to follow. `own`: the answering node's own feed
-    # (`node_id` must answer; never a relay fallback). `relayed`: the pinned feed through this relay (`via_node_id`
-    # is the relay that answered when it was chosen). NULL: a peer added before A19, whose mode is still inferred.
-    follow: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    via_node_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class FollowerSeen(Base):

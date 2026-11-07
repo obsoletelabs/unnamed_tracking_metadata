@@ -166,7 +166,7 @@ def retry_sync_failures(st: St, session: Sess, _: Annotated[auth.Principal, Depe
                         limit: Annotated[int, Query(ge=1, le=500)] = 100) -> dict[str, Any]:
     """Retry failed mirrored entries now, whatever the automatic attempt count."""
     service.write_lock(session)
-    result = sync.retry_failures(session, st.ctx, limit=limit, max_attempts=None)
+    result = sync.retry_failures(session, st.ctx, limit=limit, due_only=False)
     session.commit()
     return {**result, "open": sync.open_failures(session)}
 

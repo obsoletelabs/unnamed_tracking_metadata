@@ -118,7 +118,7 @@ def test_peers_page_lists_failed_entries_and_retry_resolves_what_it_can(site):
                               first_failed_at=now, last_attempt_at=now))
         s.commit()
     page = site.get("/admin/peers").text
-    assert 'data-failure="1"' in page and 'data-failure="2"' in page and "automatic retries stopped" in page
+    assert 'data-failure="1"' in page and 'data-failure="2"' in page and "next try" in page  # C13 backoff
     assert "ValueError: synthetic" in page
     r = site.post("/admin/peers/failures/retry", data={"csrf": token(site, "/admin/peers")})
     assert r.status_code == 200
@@ -169,7 +169,7 @@ def test_peers_page_shows_protocol_and_parked_entries(site):
         s.add(FollowerSeen(token_id="t" * 26, protocol="1.0", last_seen_at=now))
         s.commit()
     page = site.get("/admin/peers").text
-    assert 'data-protocol="own">1.4<' in page and 'data-protocol="emit"><strong>1.0<' in page
+    assert 'data-protocol="own">1.5<' in page and 'data-protocol="emit"><strong>1.0<' in page
     assert 'data-failure="7" data-disposition="parked"' in page and "unsupported kind" in page
     assert 'data-follower-protocol="1.0"' in page and "(deleted token)" in page
 
