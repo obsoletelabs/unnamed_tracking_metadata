@@ -111,6 +111,7 @@ def candidate(settings: Settings, source_engine, authority: str, confirm_mirror:
                         tail = row.body_hash
                     if expected != head + 1:
                         raise PromotionError("retained feed changed or is incomplete")
+                    feed.rebuild_introduced(target)  # C13: the new feed introduced what the old one did
                     # Recovered schema belongs to the replacement authority and can be administered there.
                     for model in (MediaType, FieldDef):
                         for definition in target.scalars(select(model)):

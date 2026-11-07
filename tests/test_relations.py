@@ -743,7 +743,9 @@ def test_restore_after_a_downgrade_converges_with_a_follower_that_applied_the_me
         s.execute(text("UPDATE canonical SET merged_into = :dst, view = '{}', explain = '{}', "
                        "version = version + 1 WHERE id = :src"), p)
         s.execute(text("UPDATE canonical SET version = version + 1 WHERE id = :dst"), p)
-        feed.emit(s, authority.st.ctx, "merge", {"src": dup, "dst": game})
+        # signed as that release signed it (it has no `feed_introduced` table: C13 introductions came later)
+        feed.append(s, authority.st.ctx.identity, "merge", {"src": dup, "dst": game},
+                    protocol=feed_schema.emit_protocol(authority.st.ctx.settings))
         s.commit()
     pull(mirror, authority)
     assert mirror.failures(authority) == []

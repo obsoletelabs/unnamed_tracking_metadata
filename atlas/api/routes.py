@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .. import (
@@ -1337,7 +1338,21 @@ def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(requ
         seen = session.get(NodeState, "sync_protocol:" + row.node_id)
         if seen is not None and feed_schema.valid_protocol(seen.value):
             item["protocol"] = seen.value  # what the relayed authority was seen advertising; not re-signed
+        item["empty"] = item["head"] == 0  # C13 §3.4: known but nothing retained yet (a relay, not an origin)
         feeds.append(item)
+    # C13 §3.4 (additive): this node's own feed head, so a prober can tell an empty origin from a relay; what its
+    # authority feed introduced; and how much of its cached media it does not serve to peers.
+    extra: dict[str, Any] = {"own_head": feed.head_seq(session)}
+    try:  # additive: a schema still behind (a rolled-back database) answers without them, never with an error
+        with session.begin_nested():
+            extra["introduced_through"] = feed.introduced_through(session)
+            extra["media_withheld"] = session.scalar(select(func.count()).select_from(Artwork).where(
+                Artwork.blob_hash.is_not(None),
+                (Artwork.redistributable.is_(False)) | (Artwork.local_only.is_(True)))) or 0
+            if s.role == "authority":
+                extra["records"] = feed.records_summary(session)
+    except SQLAlchemyError:
+        extra = {"own_head": extra["own_head"]}
     return {"node_id": identity.node_id, "public_key": identity.trust_public_b64,
             "signing_key_id": identity.key_id, "rotations": key_rotation.own_history(session, identity.node_id),
             "role": s.role, "kind": s.kind(), "operator": s.node_operator,
@@ -1345,7 +1360,7 @@ def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(requ
             "protocol": feed_schema.PROTOCOL, "min_follower_protocol": s.min_follower_protocol,
             "emit_protocol": feed_schema.emit_protocol(s), "observation_schema": feed_schema.OBSERVATION_SCHEMA,
             "kinds": feed_schema.kinds_advertised(), "capabilities": feed_schema.capabilities(),
-            "feeds": feeds}
+            "feeds": feeds, **extra}
 
 
 @router.get("/sync/price-changes", tags=["federation"])

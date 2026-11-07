@@ -22,6 +22,7 @@ from . import (
     custom,
     dates_rebuild,
     facets,
+    feed,
     mail,
     matching,
     media,
@@ -208,6 +209,10 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) ->
     with httpx.Client() as client:
         while not stop.is_set():
             wait = delay
+            try:  # C13 §4.2: an `introduce` scheduled when the emit protocol was raised into 1.5
+                feed.run_pending(maker, ctx)
+            except Exception as exc:
+                log.warning("scheduled introduce failed: %s", exc)
             try:
                 results = sync.sync_peers(maker, ctx, client)
                 if any(not v.startswith("ok") for v in results.values()):
