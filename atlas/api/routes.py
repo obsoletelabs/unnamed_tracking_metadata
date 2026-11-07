@@ -5,7 +5,7 @@ import time
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -1281,6 +1281,19 @@ def media_response(st: AppState, digest: str, *, etag: bool = False):
 @router.get("/media/{digest}", tags=["read"])
 def get_media(digest: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
     if not media.servable(session, st.ctx.settings, digest):  # a provider switched to redirect/none (§12.5.5)
+        raise HTTPException(404, "no such image")
+    return media_response(st, digest)
+
+
+@router.get("/sync/media/{digest}", tags=["federation"])
+def sync_media(digest: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")], st: St, session: Sess,
+               _: Annotated[auth.Principal, Depends(require("sync"))]):
+    """C13 §6.2: the cached bytes of an image this node federates, for the followers that received its row. Only a
+    blob that a redistributable, not-local-only artwork row references is served; anything else is 404, so this
+    never discloses provider-only or private media. Content addressed: the follower checks the hash."""
+    federable = session.scalar(select(func.count()).select_from(Artwork).where(
+        Artwork.blob_hash == digest, Artwork.redistributable.is_(True), Artwork.local_only.is_(False)))
+    if not federable:
         raise HTTPException(404, "no such image")
     return media_response(st, digest)
 
