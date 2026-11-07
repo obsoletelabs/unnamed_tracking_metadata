@@ -909,9 +909,12 @@ def test_historical_replay_applies_skipped_entries_and_their_dependants_in_feed_
     assert mirror.heads(authority)["applied_head"] == authority.head() and mirror.failures() == []
 
     with mirror.st.maker() as session:
-        assert sync.rescan(session, authority.node_id)["parked"] == 1
+        counts = sync.rescan(session, authority.node_id)
         session.commit()
-    assert mirror.failures(authority) == [(source_seq, "obs", "parked", "dropped_by_previous_release")]
+    assert (counts["parked"], counts["waiting"]) == (1, 1)
+    # C13 §5.6: the merge the old release dropped (its source record never arrived) now waits for that record.
+    assert mirror.failures(authority) == [(source_seq, "obs", "parked", "dropped_by_previous_release"),
+                                          (merge_seq, "merge", "wait", "dropped_by_previous_release")]
 
     # The startup replay never applies rows below the cursor.
     with mirror.st.maker() as session:

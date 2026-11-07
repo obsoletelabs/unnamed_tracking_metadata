@@ -48,7 +48,8 @@ def seed_failed_mirror_entries() -> None:
     """Two open `sync_failure` rows, written straight into the throwaway node's SQLite file.
 
     seq 1 has its retained entry (a no-op `key_rotation` kind), so retrying it succeeds. seq 2 has none, so a
-    retry keeps failing and the reason stays on screen. Both automatic retries were used up on seq 2."""
+    retry keeps failing and the reason stays on screen. seq 2 has 20 attempts: before C13 that stopped automatic
+    retries; now they back off (the row shows its next try)."""
     stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
     con = sqlite3.connect(DB)
     try:
