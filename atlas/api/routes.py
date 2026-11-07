@@ -167,6 +167,33 @@ def sync_status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(requ
                                                    .limit(200))]}
 
 
+@router.get("/admin/peers/probe", tags=["admin"])
+def probe_peer(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))],
+               url: Annotated[str, Query(max_length=300)],
+               peer_token: Annotated[str | None, Header(alias="Atlas-Peer-Token", max_length=200)] = None
+               ) -> dict[str, Any]:
+    """Look a node up before following it (C13 §7.1), for scripts, tests and the CLI: what the admin form's
+    choose-feed screen shows, as JSON (`node`, `token`, `records`, `feeds[]` with `trust`, `warnings` and
+    `recommended`, `default_feed`). The token for the probed node goes in the `Atlas-Peer-Token` header (never the
+    URL). Nothing is pinned: `probe_token` is null, because adding a peer stays an admin-form action bound to a
+    session. 400 for a bad address, 502 when the node cannot be verified, 504 when it did not answer in time.
+
+    Private and loopback addresses are accepted on purpose (peers often share a host or network; the admin form
+    probes the same way): the call is admin-only and makes two read requests. The 502 detail echoes the error the
+    node gave, to the admin who asked."""
+    from .. import peer_probe
+
+    try:
+        target = peer_probe.clean_url(url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    try:
+        result = peer_probe.probe(session, st.http, target, (peer_token or "").strip() or None)
+    except peer_probe.ProbeError as exc:
+        raise HTTPException(504 if exc.unreachable else 502, f"could not verify that node: {exc}") from None
+    return {"url": target, **peer_probe.public(result)}
+
+
 @router.post("/sync/failures/retry", tags=["admin"])
 def retry_sync_failures(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))],
                         limit: Annotated[int, Query(ge=1, le=500)] = 100) -> dict[str, Any]:
