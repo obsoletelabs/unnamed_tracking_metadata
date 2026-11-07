@@ -146,8 +146,11 @@ def test_admin_adds_a_peer_after_confirming_its_identity_and_syncs(pair_sites):
     with node.st.maker() as s:
         peer = s.scalars(select(Peer)).one()
         assert peer.token_enc and tok not in peer.token_enc and peer.node_id == nid
+        assert peer.last_ok_at is not None  # adding it pulled the first page at once (C13 §7.3)
+    with node.st.maker() as s:
+        assert s.get(Canonical, r.canonical_id).view["title"] == "Hades"
     synced = node.post(f"/admin/peers/{peer.id}/sync", data={"csrf": t})
-    assert synced.status_code == 200 and "Synced 1 entries" in synced.text
+    assert synced.status_code == 200 and "Sync failed" not in synced.text
     with node.st.maker() as s:
         assert s.get(Canonical, r.canonical_id).view["title"] == "Hades"
     again = node.post("/admin/peers/probe", data={"csrf": t, "url": "http://central.test", "token": tok})

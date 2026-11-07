@@ -7,14 +7,13 @@ import hashlib
 import hmac
 from datetime import UTC, datetime
 from typing import Annotated
-from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 
-from .. import accounts, auth, feed, feed_schema, key_rotation, runtime, secrets_box, service, sync
+from .. import accounts, auth, feed, feed_schema, key_rotation, peer_probe, runtime, secrets_box, service, sync
 from ..models import FollowerSeen, NodeState, Peer, ReplicatedFeed, Setting, SyncCursor, SyncFailure, Token, User
 from ..service import AtlasError
 from ..signing import key_id_for, load_identity, signing_key_at_rest
@@ -63,16 +62,13 @@ def rotate_signing_key(p: Annotated[Ctx, Depends(local_admin_form)], confirm: An
 
 
 def clean_url(raw: str) -> str:
-    url = raw.strip().rstrip("/")
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password \
-            or parts.query or parts.fragment or len(url) > 300 or any(c.isspace() for c in url):
-        raise HTTPException(400, "Use a plain http(s) address such as https://atlas.example.org")
-    return url
+    try:
+        return peer_probe.clean_url(raw)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
 
 
-def fingerprint(node_id: str) -> str:
-    return " ".join(node_id[i:i + 4] for i in range(0, len(node_id), 4))
+fingerprint = peer_probe.fingerprint
 
 
 FAILURES_SHOWN = 50
@@ -196,8 +192,9 @@ def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, sta
     for peer in p.session.scalars(select(Peer).order_by(Peer.created_at)):
         cur = cursors.get(peer.node_id)
         h = heads.get(peer.node_id)
+        described = sync.describe_peer(p.session, p.st.ctx.settings, peer, h)
         rows.append({"peer": peer, "seq": cur.last_seq if cur else 0, "fp": fingerprint(peer.node_id),
-                     "heads": h, "status": sync.peer_status(peer, h),
+                     "heads": h, "status": described["code"], "badge": described,
                      "inferred": sync.inferred_follow(p.session, peer.id) if peer.follow is None else None,
                      "via_fp": fingerprint(peer.via_node_id) if peer.via_node_id else None,
                      "media": _media_line(p, peer)})
@@ -259,9 +256,7 @@ PROBE_DOMAIN = "atlas-peer-probe-v1\n"
 FOLLOWS = (sync.FOLLOW_OWN, sync.FOLLOW_RELAYED)
 #: C13 §7.1: a probe's choices are valid for ten minutes.
 PROBE_TTL = 600
-#: §7.1: the probe asks for the entries after this sequence, so it learns the head (and proves the sync scope)
-#: without downloading anything.
-PROBE_SINCE = 2**53 - 1
+PROBE_SINCE = peer_probe.PROBE_SINCE
 
 
 def probe_token(p: Ctx, url: str, node_id: str, public_key: str, follow: str, via: str | None, empty: bool,
@@ -289,91 +284,10 @@ def check_probe_token(p: Ctx, token: str, url: str, node_id: str, public_key: st
     return hmac.compare_digest(expected, token)
 
 
-def _kind(info: dict) -> str:
-    k = str(info.get("kind", info.get("role", "")))
-    return k if k in ("official", "community", "mirror", "local") else "community"
-
-
-def _verified(node_id: object, key: object) -> bool:
-    try:
-        return isinstance(node_id, str) and isinstance(key, str) and key_id_for(base64.b64decode(key)) == node_id
-    except ValueError:
-        return False
-
-
-def _trust(p: Ctx, node_id: str, public_key: str, peers_now: dict[str, str]) -> str:
-    """C13 §7.1 `trust`: `already_peer`, `key_mismatch` (the key differs from the one pinned or retained for that
-    node id: never re-pinned from here) or `new`."""
-    retained = p.session.get(ReplicatedFeed, node_id)
-    pinned = peers_now.get(node_id)
-    if (pinned is not None and pinned != public_key) or (retained is not None and retained.public_key != public_key):
-        return "key_mismatch"
-    return "already_peer" if pinned is not None else "new"
-
-
 def feed_options(p: Ctx, url: str, info: dict, own_head: int | None = None) -> list[dict]:
-    """The feeds a probed node offers (C13 §7.1-§7.2): its own first, then each authority feed it relays, with how
-    much of each it holds. `own_head` is what `/sync/changes` reported (an older upstream sends no `own_head` in
-    `/sync/info`). A relayed feed is recommended only when the own feed is known to be empty (a pure mirror)."""
-    peers_now = {n: k for n, k in p.session.execute(select(Peer.node_id, Peer.public_key))}
-    if own_head is None and type(info.get("own_head")) is int:
-        own_head = info["own_head"]
-    options = [{"follow": sync.FOLLOW_OWN, "node_id": str(info["node_id"]), "public_key": str(info["public_key"]),
-                "via": None, "head": own_head, "empty": own_head == 0, "role": info.get("role", "?"),
-                "kind": _kind(info), "label": "This node's own feed"}]
-    for f in info.get("feeds", []) or []:
-        if not isinstance(f, dict) or not _verified(f.get("node_id"), f.get("public_key")):
-            continue
-        head = f.get("head") if type(f.get("head")) is int else None
-        options.append({"follow": sync.FOLLOW_RELAYED, "node_id": f["node_id"], "public_key": f["public_key"],
-                        "via": str(info["node_id"]), "head": head, "empty": bool(f.get("empty", head == 0)),
-                        "role": "authority", "kind": "official", "label": "An authority feed it relays"})
-    for o in options:
-        o["fp"] = fingerprint(o["node_id"])
-        o["trust"] = _trust(p, o["node_id"], o["public_key"], peers_now)
-        o["already"] = o["trust"] == "already_peer"
-        o["disabled"] = o["trust"] != "new"
-        o["probe_token"] = probe_token(p, url, o["node_id"], o["public_key"], o["follow"], o["via"], o["empty"])
-        warnings = []
-        if o["empty"]:
-            warnings.append("empty_feed")
-        if o["head"] is None:
-            warnings.append("head_unknown")
-        if o["follow"] == sync.FOLLOW_RELAYED and own_head is not None and o["head"] is not None \
-                and o["head"] < own_head:
-            warnings.append("smaller_than_own")
-        o["warnings"] = warnings
-    own = options[0]
-    if own_head == 0 and any(o["head"] for o in options[1:]):
-        own["warnings"].append("own_feed_empty_but_relayed_has_data")
-    usable = [o for o in options if not o["disabled"]]
-    if own_head == 0:  # a genuine pure mirror: the relayed feed that holds the most
-        best = max((o for o in usable if o["follow"] == sync.FOLLOW_RELAYED and o["head"]),
-                   key=lambda o: o["head"], default=None)
-    else:  # the own feed whenever it is not known to be empty, even when its head is unknown (an older upstream)
-        best = own if own in usable else None
-    for o in options:
-        o["recommended"] = o is best
-    return options
-
-
-def _probe_head(p: Ctx, target: str, headers: dict) -> tuple[int | None, bool | None]:
-    """C13 §7.1: `/sync/changes?since=<max>&limit=1`, always made: the own head, and whether the token has the sync
-    scope. (None, False) for a 401/403; (None, None) when the call failed otherwise."""
-    try:
-        resp = p.st.http.get(f"{target}/api/v2/sync/changes", params={"since": PROBE_SINCE, "limit": 1},
-                             headers={**headers, "Atlas-Protocol": feed_schema.PROTOCOL}, timeout=10)
-    except httpx.HTTPError:
-        return None, None
-    if resp.status_code in (401, 403):
-        return None, False
-    if resp.status_code != 200:
-        return None, None
-    try:
-        head = resp.json().get("head")
-    except (ValueError, AttributeError):
-        return None, True
-    return (head if type(head) is int and 0 <= head < 2**63 else None), True
+    """`peer_probe.feed_options` with each option's session-bound `probe_token` (C13 §7.1-§7.3)."""
+    return peer_probe.feed_options(p.session, info, own_head, token_for=lambda o: probe_token(
+        p, url, o["node_id"], o["public_key"], o["follow"], o["via"], o["empty"]))
 
 
 @router.post("/admin/peers/probe", response_class=HTMLResponse)
@@ -381,32 +295,26 @@ def probe(p: Annotated[Ctx, Depends(admin_form)], url: Annotated[str, Form(max_l
           token: Annotated[str, Form(max_length=200)] = "", name: Annotated[str, Form(max_length=80)] = "",
           feed_node_id: Annotated[str, Form(max_length=64)] = ""):
     target = clean_url(url)
-    headers = {"Authorization": f"Bearer {token.strip()}"} if token.strip() else {}
     try:
-        resp = p.st.http.get(f"{target}/api/v2/sync/info", headers=headers, timeout=10)
-        resp.raise_for_status()
-        info = resp.json()
-        if not _verified(info.get("node_id"), info.get("public_key")):
-            raise ValueError("the node's id does not match its public key")
-        own_head, can_sync = _probe_head(p, target, headers)
-        options = feed_options(p, target, info, own_head)
+        result = peer_probe.probe(p.session, p.st.http, target, token.strip() or None, token_for=lambda o: probe_token(
+            p, target, o["node_id"], o["public_key"], o["follow"], o["via"], o["empty"]))
+        options = result["feeds"]
         if feed_node_id:  # the previous release's relay form: one chosen authority feed
             options = [o for o in options if o["node_id"] == feed_node_id and o["follow"] == sync.FOLLOW_RELAYED]
             if not options:
-                raise ValueError("That authority feed is not available from this relay.")
+                raise peer_probe.ProbeError("That authority feed is not available from this relay.")
             for o in options:
                 o["recommended"] = not o["disabled"]
-    except httpx.TimeoutException:
-        return peers(p, error="Could not verify that node: it did not answer in time (unreachable).")  # type: ignore[arg-type]
-    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+    except peer_probe.ProbeError as exc:
         return peers(p, error=f"Could not verify that node: {exc}")  # type: ignore[arg-type]
     if all(o["already"] for o in options):
         return peers(p, error="That node is already a peer.")  # type: ignore[arg-type]
-    return peers(p, probe={"url": target, "token": token.strip(), "name": name.strip() or info.get("name", ""),  # type: ignore[arg-type]
-                           "role": info.get("role", "?"), "kind": _kind(info), "fp": fingerprint(str(info["node_id"])),
-                           "node_id": str(info["node_id"]), "options": options,
-                           "can_sync": can_sync, "https": target.startswith("https://"),
-                           "protocol": str(info.get("protocol") or feed_schema.LEGACY_PROTOCOL)[:16]})
+    node = result["node"]
+    return peers(p, probe={"url": target, "token": token.strip(), "name": name.strip() or node["name"],  # type: ignore[arg-type]
+                           "role": node["role"], "kind": node["kind"], "fp": node["fp"], "node_id": node["node_id"],
+                           "options": options, "can_sync": result["token"]["sync"],
+                           "https": target.startswith("https://"), "protocol": node["protocol"],
+                           "protocol_ok": node["protocol_ok"], "records": result["records"]})
 
 
 @router.post("/admin/peers")
@@ -459,7 +367,29 @@ def add_peer(p: Annotated[Ctx, Depends(admin_form)], url: Annotated[str, Form(ma
     p.session.add(row)
     accounts.audit(p.session, p.me.id, "peer_add", node_id, {"url": target, "follow": row.follow,
                                                             "via": row.via_node_id, "empty": is_empty})
-    return go("/admin/peers", "saved")
+    p.session.commit()  # the peer is saved whatever the first pull does
+    return go("/admin/peers#peer-" + row.id, first_pull(p, row, token.strip() or None))
+
+
+def first_pull(p: Ctx, row: Peer, token: str | None) -> str:
+    """C13 §7.3 "Then": pull one page right after adding, so the operator sees the real
+    badge at once ("Copying: 23 of 23", "Caught up · 4 changes waiting for their game") instead of "Not contacted
+    yet" until the next interval. The probe timeout applies to each request (`/sync/info`, then `/sync/changes`),
+    not to the whole call: applying the page and waking waiting entries run inside this request, so it can take
+    longer than PROBE_TIMEOUT. A timeout leaves the peer saved and not contacted; any other error is recorded on
+    the peer as a sync failure is."""
+    try:
+        sync.pull_once(p.st.maker, p.st.ctx, p.st.http, row.url, token, {row.node_id: row.public_key},
+                       follow=row.follow, peer_id=row.id, timeout=peer_probe.PROBE_TIMEOUT)
+        row.last_error, row.last_ok_at = None, datetime.now(UTC)
+        note = "peer_following"
+    except httpx.TimeoutException:
+        note = "peer_not_contacted"
+    except Exception as exc:  # recorded on the peer, as the sync loop does
+        row.last_error = f"{type(exc).__name__}: {exc}"[:300]
+        note = "peer_failed"
+    p.session.commit()
+    return note
 
 
 @router.post("/admin/peers/{pid}/follow")
