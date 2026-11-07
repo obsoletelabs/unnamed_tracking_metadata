@@ -176,3 +176,101 @@ def test_a_tile_falls_back_to_another_cached_image(pair):
         s.scalars(select(Artwork).where(Artwork.kind == "key_art")).one().blob_hash = None
         s.commit()
         assert primary_art(P(authority, s), [cid]) == {cid: "a" * 64}
+
+
+def recording(authority: Node, answers: dict | None = None):
+    """An outbound client that records every request and lets `answers[path]` (a callable) stand in for the peer;
+    anything else on `authority.test` lands on the authority app, and any other host fails as unresolvable."""
+    seen: list[tuple[str, str]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.host, request.url.path))
+        for path, answer in (answers or {}).items():
+            if request.url.path == path:
+                return answer(request)
+        if request.url.host != "authority.test":
+            raise httpx.ConnectError("unresolvable", request=request)
+        r = authority.client.request(request.method, request.url.raw_path.decode(), headers=dict(request.headers))
+        return httpx.Response(r.status_code, content=r.content, headers={"content-type": r.headers.get(
+            "content-type", "application/json")})
+    return httpx.Client(transport=httpx.MockTransport(handle)), seen
+
+
+def cache_with(mirror: Node, http: httpx.Client) -> Artwork:
+    with mirror.st.maker() as s:
+        art = s.scalars(select(Artwork)).one()
+        art.next_try_at, art.sources_tried = None, None
+        media.cache_one(s, mirror.st.ctx.settings, art, http)
+        s.commit()
+    with mirror.st.maker() as s:
+        return s.scalars(select(Artwork)).one()
+
+
+def test_discovery_never_requests_media_url_host(pair):
+    """T-M9: the peer's artwork list names an internal host in `media_url`. Only the trailing digest is taken from
+    it; the only requests go to the configured peer: its artwork list, then `/api/v2/sync/media/<digest>`."""
+    authority, mirror, cid, digest, data = pair
+    listing = {"results": [{"kind": "key_art", "url": ORIGIN, "media_url": f"http://10.0.0.1/media/{digest}"}]}
+    http, seen = recording(authority, {f"/api/v2/games/{cid}/artwork": lambda r: httpx.Response(200, json=listing)})
+    art = cache_with(mirror, http)
+    assert art.blob_hash == digest and art.digest_provenance == "peer_api"
+    assert {host for host, _ in seen} == {"authority.test"}
+    assert [path for _, path in seen] == [f"/api/v2/games/{cid}/artwork", f"/api/v2/sync/media/{digest}"]
+
+
+def test_peer_fetch_refuses_redirect(pair):
+    """T-M10: the peer answers the media request with a redirect to a private address. It is not followed: the
+    source is recorded as `too_many_redirects` and nothing is requested from the redirect target."""
+    authority, mirror, cid, digest, data = pair
+    bounce = {f"/api/v2/sync/media/{digest}": lambda r: httpx.Response(302, headers={
+        "location": "http://10.0.0.1/admin"})}
+    http, seen = recording(authority, bounce)
+    art = cache_with(mirror, http)
+    assert art.blob_hash is None
+    assert ("peer", "too_many_redirects") in [(e["source"].split(":")[0], e["error"]) for e in art.sources_tried]
+    assert all(host != "10.0.0.1" for host, _ in seen)
+    assert seen.count(("authority.test", f"/api/v2/sync/media/{digest}")) == 1
+
+
+def test_peer_reported_digest_does_not_block_origin(pair, monkeypatch):
+    """T-M11: a digest the peer reported (unsigned) is a hint. The peer no longer has those bytes and the origin
+    serves an updated image with another digest: the origin's bytes are stored, recorded as the origin's digest."""
+    authority, mirror, cid, digest, data = pair
+    newer = png((10, 200, 10))
+    monkeypatch.setattr(media, "check_url", lambda url, settings: ("https", "img.invalid", 443, "93.184.216.34"))
+    with mirror.st.maker() as s:
+        row = s.scalars(select(Artwork)).one()
+        row.peer_digest, row.digest_provenance = "e" * 64, "peer_api"
+        s.commit()
+    http, _ = recording(authority, {"/key.png": lambda r: httpx.Response(200, content=newer,
+                                                                         headers={"content-type": "image/png"})})
+    art = cache_with(mirror, http)
+    assert art.blob_hash == hashlib.sha256(newer).hexdigest() != "e" * 64
+    assert (art.fetched_from, art.peer_digest, art.digest_provenance) == ("origin", art.blob_hash, "origin")
+
+
+def test_no_discovery_through_relay(pair):
+    """T-M12: a peer that relays the feed (`follow = relayed`) did not sign the rows, so it is never asked for a
+    digest (no artwork-list request at all); the row goes to its origin."""
+    authority, mirror, cid, digest, data = pair
+    with mirror.st.maker() as s:
+        s.scalars(select(Peer)).one().follow = "relayed"
+        s.commit()
+    http, seen = recording(authority)
+    art = cache_with(mirror, http)
+    assert art.peer_digest is None and not any("/games/" in path for _, path in seen)
+    assert art.sources_tried[0]["error"] == "relay_unsigned"
+
+
+def test_own_provider_rows_never_fetched_from_peer(pair):
+    """T-M13: a row this node imported from its own provider (no feed delivered it, as with C13 §5.1 step 4
+    enrichment) is fetched from its origin only: no peer is asked, even one that holds the same image."""
+    authority, mirror, cid, digest, data = pair
+    with mirror.st.maker() as s:
+        row = s.scalars(select(Artwork)).one()
+        row.origin_node, row.source, row.redistributable = None, "steam", False
+        s.commit()
+    http, seen = recording(authority)
+    art = cache_with(mirror, http)
+    assert seen == [] and art.blob_hash is None  # the origin cannot resolve; the peer was never contacted
+    assert [e["source"] for e in art.sources_tried] == ["origin"]

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import ipaddress
+import logging
 import os
 import re
 import socket
@@ -31,6 +32,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from .models import Achievement, Artwork, now
 from .providers.media_policy import policy
 from .settings import Settings
+
+log = logging.getLogger("atlas.media")
 
 FORMATS = {"PNG": ("png", "image/png"), "JPEG": ("jpg", "image/jpeg"), "WEBP": ("webp", "image/webp"),
            "GIF": ("gif", "image/gif")}
@@ -435,6 +438,8 @@ def _peer_request(client: httpx.Client, base: str, digest: str, token: str | Non
     try:
         with client.stream("GET", f"{base.rstrip('/')}/api/v2/sync/media/{digest}", headers=headers,
                            timeout=httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT), follow_redirects=False) as resp:
+            if 300 <= resp.status_code < 400:  # C13 §6.2: never followed, so a peer cannot bounce us inward
+                raise MediaError(f"peer redirected ({resp.status_code}); not followed", "too_many_redirects")
             if resp.status_code != 200:
                 raise MediaError(f"peer status {resp.status_code}", _status_code(resp.status_code))
             buf = bytearray()
@@ -522,6 +527,13 @@ def cache_one(session: Session, settings: Settings, art: Artwork, client: httpx.
             art.fetched_from = "origin"
         ext, ctype, w, h = validate_image(data, settings)
         digest = store(settings, data, ext)
+        if art.fetched_from == "origin" and art.peer_digest and art.peer_digest != digest \
+                and art.digest_provenance != "signed":
+            # C13 §6.2 step 3: a digest a peer reported (unsigned) is a hint only. The origin's bytes differ (the
+            # image was updated, or the peer is stale): keep them, and record that the digest is the origin's.
+            log.info("artwork %s %s: origin bytes differ from the %s digest %s; stored as the origin's",
+                     art.canonical_id, art.kind, art.digest_provenance, art.peer_digest[:12])
+            art.peer_digest, art.digest_provenance = digest, "origin"
     except MediaError as exc:
         art.last_error = exc.code
         _tried(art, "origin", exc.code)
