@@ -45,6 +45,14 @@ platinum achievement list and a `releases` lock through its API. The 1.0 release
 anything; after an in-place upgrade `atlas sync replay --rescan` must record both (`dropped_by_previous_release`),
 `atlas sync replay --historical` must apply them, and a second rescan must record nothing. Without
 `--previous-ref`/`--previous-dir` it runs against the 1.0 release.
+
+`--scenario records` (C13, A19) reproduces the live failure against any earlier release: a provider-only record is
+never signed, so its curator artwork is quarantined on a 1.1+ follower (`unknown or merged canonical`) and dropped
+without a trace by 1.0. With the bridge on (`ATLAS_FEDERATION_BRIDGE_RECORD_OBS=true`) `atlas feed introduce
+--missing` signs a bridge observation the old release applies; a 1.1+ release's own retry then applies the artwork;
+on 1.0 `atlas sync replay --rescan` after the in-place upgrade (migration 0036) finds it and `--historical` applies
+it.
+Without `--previous-ref`/`--previous-dir` it runs against the 1.0 release.
 """
 
 from __future__ import annotations
@@ -623,17 +631,173 @@ def run_rescan(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None =
     return report
 
 
+def _provider_only(node: Node, title: str, steam: str) -> str:
+    """A record whose only observation is a provider's (not redistributable): the feed never signs an `obs` for it,
+    so before C13 nothing ever introduced it to followers (the live failure)."""
+    from atlas import service
+    from atlas.contract import ObservationBatchV1
+
+    body = ObservationBatchV1.model_validate({
+        "connection": {"source_kind": "metadata", "source": "steam", "source_scope": "skew-drill"},
+        "observations": [{"external_id": steam, "title": title, "provider_ids": {"steam": steam}}]})
+    with node.state.maker() as session:
+        [result] = service.ingest(session, node.state.ctx, body, system=True)
+        session.commit()
+    return result.canonical_id
+
+
+def _current_cli(node: Node, *argv: str) -> subprocess.CompletedProcess:
+    """Run this checkout's CLI against `node`'s database, with the node's settings."""
+    env = _clean_env() | {"ATLAS_DATABASE_URL": node.database_url, "ATLAS_ROLE": node.role,
+                          "ATLAS_PUBLIC_URL": node.url, "ATLAS_SECRET_KEY": node.encryption_key,
+                          "ATLAS_MEDIA_DIR": str(node.root / f"{node.name}-media")} | node.extra_env
+    return subprocess.run([sys.executable, "-c", "import sys; from atlas.cli import main; sys.exit(main(sys.argv[1:]))",
+                           *argv], cwd=ROOT, env=env, capture_output=True, text=True)
+
+
+def _open_failures(node: PreviousNode) -> list[tuple[str, str]]:
+    with sqlite3.connect(node.db_path) as db:
+        return db.execute("SELECT kind, error FROM sync_failure WHERE resolved_at IS NULL ORDER BY seq").fetchall()
+
+
+def _artwork(node: PreviousNode, cid: str) -> list[tuple[str, str]]:
+    with sqlite3.connect(node.db_path) as db:
+        return db.execute("SELECT kind, url FROM artwork WHERE canonical_id = ? ORDER BY kind, url",
+                          (cid,)).fetchall()
+
+
+def run_records(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) -> dict[str, Any]:
+    """C13 (A19) live failure: curator artwork for a provider-only record reaches a previous-release follower that
+    never received the record. A 1.1+ release quarantines it (`unknown or merged canonical`); 1.0 drops it without a
+    trace. The bridge (C13 §4.1) plus `atlas feed introduce --missing` introduce the record with a bridge observation
+    the old release understands; a 1.1+ release's own retry then applies the artwork, and on 1.0 the rescan after
+    the in-place upgrade (migration 0036) finds it and `--historical` applies it."""
+    report: dict[str, Any] = {"drill": "skew-records", "started_at": datetime.now(UTC).isoformat(),
+                              "checks": [], "transport": "isolated loopback HTTP, development mode, SQLite"}
+    checks = report["checks"]
+    with tempfile.TemporaryDirectory(prefix="atlas-skewrec-", ignore_cleanup_errors=True) as folder, \
+            ExitStack() as stack:
+        root = Path(folder)
+        source, python, commit = _prepare(root, previous_ref, previous_dir)
+        report["previous"] = {"ref": previous_ref if previous_dir is None else str(previous_dir), "commit": commit}
+        report["current"] = {"commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
+                                                      text=True).stdout.strip()}
+        follower = PreviousNode(root, "local-previous", "local", source, python)
+        stack.callback(follower.close)
+        follower.start()
+        old_info = follower.client.get("/api/v2/sync/info", headers=follower.headers()).json()
+        speaks = old_info.get("protocol", "1.0")
+        report["previous"]["protocol"] = speaks
+        authority = Node(root, "authority", "authority", extra_env={"ATLAS_EMIT_PROTOCOL": speaks})
+        stack.callback(authority.close)
+        authority.start()
+        checks.append(f"the follower runs a {speaks} release; the authority (this checkout) emits {speaks} with the "
+                      "bridge off (the default)")
+
+        first = authority.publish("Skew Records First")
+        peer = follower.add_peer(authority)
+        assert follower.sync(peer) is None
+        assert follower.game(first)["title"] == "Skew Records First"
+
+        cid = _provider_only(authority, "Skew Provider Only", "4242001")
+        art = [{"kind": "key_art", "url": "https://img.example.org/skew-key.png"}]
+        curator = authority.headers(authority.admin_token)
+        response = authority.client.put(f"/api/v2/games/{cid}/artwork", headers=curator, json={"items": art})
+        assert response.status_code == 200, response.text
+        later = authority.publish("Skew Records Later")
+        assert follower.sync(peer) is None
+        failures = _open_failures(follower)
+        # 1.0 swallows the error and records nothing; 1.1 and later quarantine the entry and retry it.
+        quarantines = speaks != "1.0"
+        if quarantines:
+            assert [k for k, _ in failures] == ["artwork"], failures
+            assert "unknown or merged canonical" in failures[0][1], failures
+        else:
+            assert failures == [], failures
+        assert _artwork(follower, cid) == []
+        assert follower.game(later)["title"] == "Skew Records Later"
+        info = authority.client.get("/api/v2/sync/info", headers=authority.headers()).json()
+        assert info["records"]["not_federated"] == 1, info.get("records")
+        report["reproduced"] = {"open_failures": failures, "authority_records": info["records"]}
+        checks.append("reproduced: the provider-only record is never signed and its curator artwork never lands on "
+                      "the follower (" + ("quarantined as `unknown or merged canonical`" if quarantines else
+                                          "dropped without a trace by the 1.0 release") +
+                      "); the authority's /sync/info counts the record as not federated")
+
+        refused = _current_cli(authority, "feed", "introduce", "--missing")
+        assert refused.returncode == 2 and "enable the bridge" in refused.stderr, (refused.stdout, refused.stderr)
+        authority.stop()
+        authority.extra_env["ATLAS_FEDERATION_BRIDGE_RECORD_OBS"] = "true"
+        authority.start()
+        dry = _current_cli(authority, "feed", "introduce", "--missing", "--dry-run")
+        assert dry.returncode == 0, (dry.stdout, dry.stderr)
+        planned = json.loads(dry.stdout)
+        assert (planned["would_introduce"], planned["mode"]) == (1, "bridge"), planned
+        done = _current_cli(authority, "feed", "introduce", "--missing")
+        assert done.returncode == 0, (done.stdout, done.stderr)
+        result = json.loads(done.stdout)
+        assert (result["introduced"], result["finished"]) == (1, True), result
+        checks.append("`atlas feed introduce --missing` refuses (exit 2) at emit protocol "
+                      f"{speaks} with the bridge off; with ATLAS_FEDERATION_BRIDGE_RECORD_OBS=true it plans and "
+                      "signs one bridge observation and finishes")
+
+        assert follower.sync(peer) is None
+        assert follower.game(cid)["title"] == "Skew Provider Only"
+        with sqlite3.connect(follower.db_path) as db:
+            sources = db.execute("SELECT source FROM observation WHERE canonical_id = ?", (cid,)).fetchall()
+        assert sources == [("atlas-record",)], sources
+        assert _open_failures(follower) == []
+        if quarantines:
+            assert _artwork(follower, cid) == [("key_art", art[0]["url"])]
+            checks.append(f"the unmodified {speaks} follower applies the bridge observation (source atlas-record), "
+                          "its own retry applies the quarantined artwork, and no failure stays open")
+        else:
+            assert _artwork(follower, cid) == []
+            checks.append("the unmodified 1.0 follower applies the bridge observation (source atlas-record) and now "
+                          "holds the record; the artwork it dropped earlier stays missing (1.0 kept no trace)")
+
+        follower.upgrade()
+        if not quarantines:
+            rescan = follower.cli("sync", "replay", "--rescan")
+            assert rescan.returncode == 3 and "recorded 1 parked" in rescan.stdout, (rescan.stdout, rescan.stderr)
+            with sqlite3.connect(follower.db_path) as db:
+                reasons = db.execute("SELECT kind, reason FROM sync_failure WHERE resolved_at IS NULL").fetchall()
+            assert reasons == [("artwork", "dropped_by_previous_release")], reasons
+            replay = follower.cli("sync", "replay", "--historical")
+            assert replay.returncode == 0, (replay.stdout, replay.stderr)
+            assert _artwork(follower, cid) == [("key_art", art[0]["url"])]
+            checks.append("after the in-place upgrade `atlas sync replay --rescan` finds the artwork entry 1.0 "
+                          "dropped before the record arrived (dropped_by_previous_release, exit 3) and "
+                          "`--historical` applies it")
+        assert follower.sync(peer) is None
+        assert _artwork(follower, cid) == [("key_art", art[0]["url"])]
+        assert _open_failures(follower) == []
+        status = follower.cli("sync", "status", "--json")
+        assert status.returncode == 0, (status.stdout, status.stderr)
+        with sqlite3.connect(follower.db_path) as db:
+            head = db.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+        report["upgraded_schema"] = head
+        checks.append(f"after an in-place upgrade (schema {head}) the follower stays converged and "
+                      "`atlas sync status` exits 0")
+    report["status"] = "passed"
+    report["finished_at"] = datetime.now(UTC).isoformat()
+    return report
+
+
 def main_cli() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--previous-ref", default=DEFAULT_PREVIOUS, help="git ref of the previous release")
     parser.add_argument("--previous-dir", type=Path,
                         help="an existing checkout of the previous release with its own .venv (skips git and uv)")
     parser.add_argument("--output", type=Path, help="write the JSON report here")
-    parser.add_argument("--scenario", choices=("1.0", "platinum", "dates", "relations", "rescan"), default="1.0",
+    parser.add_argument("--scenario", choices=("1.0", "platinum", "dates", "relations", "rescan", "records"),
+                        default="1.0",
                         help="1.0: the previous 1.0 release (default); platinum: a 1.1 release meets platinum; "
                              "dates: a 1.2 release meets partial and regional release dates; relations: any "
                              "earlier release meets relations from a 1.4 authority; rescan: a 1.0 release drops "
-                             "a platinum list and a releases lock, recovered after the upgrade")
+                             "a platinum list and a releases lock, recovered after the upgrade; records: any "
+                             "earlier release quarantines artwork of a never-introduced record, recovered by the "
+                             "bridge and `atlas feed introduce --missing`")
     args = parser.parse_args()
     if args.scenario == "platinum":
         if args.previous_dir is None and args.previous_ref == DEFAULT_PREVIOUS:
@@ -647,6 +811,8 @@ def main_cli() -> None:
         report = run_relations(args.previous_ref, args.previous_dir)
     elif args.scenario == "rescan":
         report = run_rescan(args.previous_ref, args.previous_dir)
+    elif args.scenario == "records":
+        report = run_records(args.previous_ref, args.previous_dir)
     else:
         report = run(args.previous_ref, args.previous_dir)
     text = json.dumps(report, indent=2) + "\n"

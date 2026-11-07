@@ -15,6 +15,7 @@ from .conftest import batch
 from .test_sync_compat import Node, pull
 
 ART = [{"kind": "key_art", "url": "https://img.example.org/key.png"}]
+ART_ROWS = [("key_art", "https://img.example.org/key.png")]
 
 
 def configure(node: Node, **changes) -> None:
@@ -192,6 +193,70 @@ def test_rescan_turns_an_old_unknown_record_quarantine_into_waiting(tmp_path):
         s.commit()
     assert counts["waiting"] == 1
     assert waiting(mirror, authority) == [(1, "artwork", "wait", "waiting_for_record", cid, 20)]
+
+
+def as_a_1_0_release_left_it(node: Node, origin: Node, cid: str) -> None:
+    """A 1.0 release swallowed the "unknown canonical" error of a sidecar: no `sync_failure` row, no artwork."""
+    with node.st.maker() as s:
+        s.execute(SyncFailure.__table__.delete().where(SyncFailure.node_id == origin.node_id))
+        s.execute(Artwork.__table__.delete().where(Artwork.canonical_id == cid))
+        s.commit()
+
+
+def test_rescan_finds_sidecars_a_1_0_release_dropped_before_their_record(tmp_path):
+    """T-F9 (C13 §5.6): a 1.0 release recorded nothing for artwork whose record had not arrived. After the upgrade
+    the rescan makes it wait while the record is still unknown, and the record's arrival applies it."""
+    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(authority)
+    curate_art(authority, cid)
+    pull(mirror, authority)
+    as_a_1_0_release_left_it(mirror, authority, cid)
+    with mirror.st.maker() as s:
+        counts = sync.rescan(s, authority.node_id)
+        s.commit()
+    assert counts == {"scanned": 1, "parked": 0, "quarantined": 0, "waiting": 1}
+    assert waiting(mirror, authority) == [(1, "artwork", "wait", "waiting_for_record", cid, 1)]
+    with mirror.st.maker() as s:
+        assert "found by rescan" in s.get(SyncFailure, (authority.node_id, 1)).error
+    configure(authority, emit_protocol="1.5")
+    with authority.st.maker() as s:
+        feed.introduce_batch(s, authority.st.ctx, "missing")
+        s.commit()
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == []
+    assert art(mirror, cid) == ART_ROWS
+    with mirror.st.maker() as s:
+        assert sync.rescan(s, authority.node_id) == {"scanned": 2, "parked": 0, "quarantined": 0}
+
+
+def test_rescan_parks_sidecars_a_1_0_release_dropped_when_their_record_came_later(tmp_path):
+    """T-F10 (C13 §5.6): the 1.0 release already received the record (the bridge observation, signed after the
+    artwork) before the upgrade. The rescan parks the artwork as dropped_by_previous_release; `replay --historical`
+    applies it in feed order; a second rescan records nothing."""
+    authority = Node(tmp_path, "authority", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(authority)
+    curate_art(authority, cid)
+    configure(authority, federation_bridge_record_obs=True)
+    with authority.st.maker() as s:
+        assert feed.introduce_batch(s, authority.st.ctx, "missing")["introduced"] == 1
+        s.commit()
+    pull(mirror, authority)
+    assert art(mirror, cid) == ART_ROWS  # this release waited, then applied it
+    as_a_1_0_release_left_it(mirror, authority, cid)
+    with mirror.st.maker() as s:
+        counts = sync.rescan(s, authority.node_id)
+        s.commit()
+    assert counts == {"scanned": 2, "parked": 1, "quarantined": 0}
+    with mirror.st.maker() as s:
+        row = s.get(SyncFailure, (authority.node_id, 1))
+        assert (row.disposition, row.reason) == ("parked", "dropped_by_previous_release")
+        sync.replay(s, mirror.st.ctx, authority.node_id, historical=True)
+        s.commit()
+    assert art(mirror, cid) == ART_ROWS
+    with mirror.st.maker() as s:
+        assert sync.rescan(s, authority.node_id) == {"scanned": 2, "parked": 0, "quarantined": 0}
+        assert s.get(SyncFailure, (authority.node_id, 1)).resolved_at is not None
 
 
 def test_one_feed_cannot_supersede_another_feeds_observation(tmp_path):

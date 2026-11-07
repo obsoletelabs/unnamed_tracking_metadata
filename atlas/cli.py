@@ -224,6 +224,9 @@ def cmd_sync(args) -> int:
                     print(f"{n}: scanned {c['scanned']} applied entries; recorded {c['parked']} parked and "
                           f"{c['quarantined']} quarantined that earlier releases skipped. Nothing was re-applied; "
                           "run `atlas sync replay --historical` to re-apply them in feed order.")
+                    if c.get("waiting"):
+                        print(f"  {c['waiting']} entries now wait for a record the feed has not introduced yet; they "
+                              "apply when it arrives.")
                 upstreams = sync.status(session, ctx)["upstreams"]
                 return _exit_for({n: upstreams[n] for n in nodes if n in upstreams})
             result = sync.replay(session, ctx, args.node, limit=args.limit, historical=args.historical)
@@ -412,12 +415,12 @@ def cmd_feed(args) -> int:
 
     settings, maker = _maker()
     scope = "all" if args.all else "missing"
-    with maker() as session:
-        ctx = Ctx(settings, load_identity(session, settings))
-        if args.dry_run:
+    ctx = _ctx(settings, maker)  # the emit protocol raised in Admin → Peers is a runtime setting
+    if args.dry_run:
+        with maker() as session:
             print(json.dumps({"scope": scope, "would_introduce": feed.unintroduced_count(session, scope),
-                              "mode": feed.introduction_mode(settings), **feed.records_summary(session)}))
-            return 0
+                              "mode": feed.introduction_mode(ctx.settings), **feed.records_summary(session)}))
+        return 0
     total = 0
     while True:
         with maker() as session:
