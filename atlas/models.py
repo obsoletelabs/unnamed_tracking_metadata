@@ -444,14 +444,36 @@ class SyncFailure(Base):
     last_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # parked: needs a newer release; blocks the applied head (C1.4). quarantined: a known entry that
-    # failed validation or apply; does not block, retried automatically.
+    # failed validation or apply; does not block, retried automatically with backoff. wait (C13 §5.2): the entry
+    # names a record this node has not received yet; it does not block, is not retried on the pull clock, and is
+    # applied when that record arrives on the same feed (`sync.wake_waiting`).
     disposition: Mapped[str] = mapped_column(String(16), default="quarantined", server_default="quarantined")
-    # unsupported_kind|_version|_capability|_field|_value, or invalid|apply_error|skipped
+    # unsupported_kind|_version|_capability|_field|_value, or invalid|apply_error|skipped, or (wait)
+    # waiting_for_record|dropped_by_previous_release
     reason: Mapped[str] = mapped_column(String(32), default="apply_error", server_default="apply_error")
     detail: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)  # {kind, _v, unknown, requires}
+    # C13 §5.2: the canonical id a `wait` row waits for (migration 0036)
+    waiting_for: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     __table_args__ = (Index("ix_sync_failure_open", "resolved_at", "node_id", "seq"),
-                      Index("ix_sync_failure_parked", "node_id", "disposition", "seq"))
+                      Index("ix_sync_failure_parked", "node_id", "disposition", "seq"),
+                      Index("ix_sync_failure_waiting", "waiting_for", "resolved_at"))
+
+
+class FeedIntroduced(Base):
+    """C13 §4.1: which records this node's own signed feed has introduced, and by which entry (migration 0036).
+
+    `via` is `obs` (an observation), `record` (the 1.5 kind), `bridge` (an `atlas-record` observation), `detach`
+    (the record a detach created) or `legacy` (`legacy_unintroduced`: named by a signed entry while neither the
+    bridge nor protocol 1.5 was available, so nothing could introduce it; `seq` is NULL). Authority-side only."""
+
+    __tablename__ = "feed_introduced"
+
+    canonical_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    via: Mapped[str] = mapped_column(String(8))
+    because: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    introduced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class ReplicatedFeed(Base):
@@ -557,6 +579,15 @@ class Artwork(Base):
     last_error: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # an upload whose licence cannot enter the CC0 feed stays on this node (§12.5.5, H47)
     local_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # C13 §6 (migration 0036). `origin_node`: the feed whose signed `artwork` entry delivered the row (NULL for rows
+    # this node wrote or imported itself; only feed rows are ever asked of a peer). `fetched_from`: `local`,
+    # `peer:<node_id>`, `origin` or `upload`. `sources_tried`: the sources of the last attempt, in order.
+    # `peer_digest` / `digest_provenance`: a sha256 learned for the row and how (`signed`, `peer_reported`, `origin`).
+    origin_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fetched_from: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    sources_tried: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    peer_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    digest_provenance: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     __table_args__ = (UniqueConstraint("canonical_id", "kind", "url", name="uq_artwork"),
                       Index("ix_artwork_dup", "canonical_id", "kind", "blob_hash"))
@@ -956,6 +987,16 @@ class Peer(Base):
     last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     remote_protocol: Mapped[str | None] = mapped_column(String(16), nullable=True)  # last advertised by the peer
+    # C13 §7.4 (migration 0036): which feed the operator chose to follow. `own`: the answering node's own feed
+    # (`node_id` must answer; never a relay fallback). `relayed`: the pinned feed through this relay (`via_node_id`
+    # is the relay that answered when it was chosen). NULL: a peer added before A19, whose mode is still inferred.
+    follow: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    via_node_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # C13 §7.4 (migration 0036): which feed the operator chose to follow. `own`: the answering node's own feed
+    # (`node_id` must answer; never a relay fallback). `relayed`: the pinned feed through this relay (`via_node_id`
+    # is the relay that answered when it was chosen). NULL: a peer added before A19, whose mode is still inferred.
+    follow: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    via_node_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class FollowerSeen(Base):
