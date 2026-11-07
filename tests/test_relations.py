@@ -28,7 +28,7 @@ from .test_sync_compat import Node, observation, pull
 from .test_web import _wait_for_startup_replay, signup, token
 
 # C11 (A17) reserved the merge-undo kinds for protocol 1.6.
-RESERVED_C11 = {"price": "1.5", "unmerge": "1.6", "distinct": "1.6"}
+RESERVED_C11 = {"price": "1.6", "unmerge": "1.7", "distinct": "1.7"}  # after the H52 shift (C13)
 
 # ---- helpers --------------------------------------------------------------------------------------------
 
@@ -80,7 +80,7 @@ def test_relation_kind_is_registered_with_closed_vocabularies():
     spec = feed_schema.FEED_KINDS["relation"]
     assert (spec.since, spec.emit, spec.apply) == ("1.4", 1, 1)
     assert spec.fields == {"op", "from", "to", "type", "source"}
-    assert feed_schema.PROTOCOL == "1.4" and feed_schema.RESERVED_KINDS == RESERVED_C11
+    assert feed_schema.PROTOCOL == "1.5" and feed_schema.RESERVED_KINDS == RESERVED_C11
     assert feed_schema.vocabularies()["relation_type"] == set(vocab.RELATION_TYPES)
     assert feed_schema.vocabularies()["relation_op"] == {"add", "end"}
     assert relations.TYPES == vocab.RELATION_TYPES

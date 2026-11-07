@@ -8,7 +8,7 @@ unmerge leaves a row edited on `dst` after the merge where it is and reports it 
 
 Unmerge is LIFO along a chain of merges (a merge whose survivor was merged again is blocked until that later
 merge is undone). In this release merge records, unmerge and rejections are local: an authority cannot undo a merge
-it already signed into its feed until the federated `unmerge` kind ships (protocol 1.6, C11-5).
+it already signed into its feed until the federated `unmerge` kind ships (protocol 1.7, C11-5).
 """
 
 from __future__ import annotations

@@ -152,7 +152,7 @@ has no name, description, icon, external ids, `lang`, translation or curated `po
 
 **Federation.** None of this enters the signed feed yet: an authority signs the version 1 list (without the fields
 above, without a later entry whose name repeats an earlier one, and without icons whose licence needs attribution),
-and logs what it left out (`ach_downgrade`). The version 2 body (`ach-v2`, protocol 1.7) is reserved; a follower of
+and logs what it left out (`ach_downgrade`). The version 2 body (`ach-v2`, protocol 1.8) is reserved; a follower of
 this release parks it.
 
 ## Hidden achievements

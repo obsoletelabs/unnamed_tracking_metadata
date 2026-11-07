@@ -467,7 +467,8 @@ def merge_preview(session: Session, ctx: Ctx, src: str, dst: str) -> dict[str, A
                            "dropped_locks": sorted(f for f in locks_s if f in locks_d),
                            "undoable": not signed}
     if signed:
-        out["undo_note"] = "this merge cannot be undone until federation emit protocol 1.6 (feed kind 'unmerge')"
+        unmerge = feed_schema.KIND_SINCE['unmerge']
+        out["undo_note"] = f"this merge cannot be undone until federation emit protocol {unmerge} (feed kind 'unmerge')"
     return out
 
 
@@ -587,14 +588,14 @@ def lock_needs_dates_protocol(field: str, value: Any) -> bool:
     return field == "release_date" and isinstance(value, str) and dates.precision_of(value) != "day"
 
 
-#: C11 §11.8: a federated explicit clear is a lock body version 2 (`field-clear-v1`, protocol 1.6).
+#: C11 §11.8: a federated explicit clear is a lock body version 2 (`field-clear-v1`, protocol 1.7).
 CLEAR_PROTOCOL = feed_schema.TOKEN_SINCE["field-clear-v1"]
 
 
 def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, actor: str = "",
              local_only: bool = False, log: bool = True, clear: bool = False) -> Canonical:
     """Pin a field, or with `clear` mark it deliberately empty (C11 §11.8; `value` must then be None). JSON null
-    never clears anything. A clear that would enter the signed feed needs protocol 1.6 and is refused; a
+    never clears anything. A clear that would enter the signed feed needs protocol 1.7 and is refused; a
     `local_only` clear is always allowed."""
     signed = log and not local_only and ctx.settings.role == "authority"
     if clear:

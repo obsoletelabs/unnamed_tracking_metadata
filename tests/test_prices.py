@@ -25,7 +25,7 @@ from .conftest import batch
 from .test_sync_compat import Node, pull
 
 # C11 (A17) reserved the merge-undo kinds for protocol 1.6.
-RESERVED_C11 = {"price": "1.5", "unmerge": "1.6", "distinct": "1.6"}
+RESERVED_C11 = {"price": "1.6", "unmerge": "1.7", "distinct": "1.7"}  # after the H52 shift (C13)
 
 NOW = datetime.now(UTC).replace(microsecond=0)
 
@@ -77,25 +77,25 @@ def count(node) -> int:
         return s.scalar(select(func.count(PriceObservation.id)))
 
 
-# ---- registry: the 1.5 channel is designed, registered and off --------------------------------------------
+# ---- registry: the 1.6 channel is designed, registered and off --------------------------------------------
 
 def test_price_channel_is_registered_reserved_and_disabled():
     channel = feed_schema.PRICE_CHANNEL
-    assert (channel.since, channel.capability, channel.endpoint) == ("1.5", "price-channel-v1",
+    assert (channel.since, channel.capability, channel.endpoint) == ("1.6", "price-channel-v1",
                                                                      "/api/v2/sync/price-changes")
     assert channel.domain == signing.PRICE_DOMAIN == b"atlas-price-v1\n" and channel.domain != signing.DOMAIN
     assert (channel.sequence, channel.cursor_suffix) == ("price_feed_seq", "#price")
     assert feed_schema.CHANNEL_ENABLED is False
-    assert feed_schema.PROTOCOL == "1.4"  # 1.5 ships with the release that enables the channel
+    assert feed_schema.PROTOCOL == "1.5"  # 1.6 ships with the release that enables the channel (1.5 is C13's record)
     assert feed_schema.RESERVED_KINDS == RESERVED_C11 and "price" not in feed_schema.FEED_KINDS
-    assert feed_schema.RESERVED_TOKENS["price-channel-v1"] == "1.5"
+    assert feed_schema.RESERVED_TOKENS["price-channel-v1"] == "1.6"
     assert "price-channel-v1" not in feed_schema.capabilities()
     assert "price-channel-v1" not in feed_schema.known_tokens()
     vocabularies = feed_schema.vocabularies()
     assert vocabularies["price_availability"] == {"available", "unavailable", "preorder", "free", "unreleased",
                                                   "delisted", "unknown"}
     assert vocabularies["price_source_kind"] == {"provider", "manual"}
-    assert "| `price` | 1.5 (reserved) | not in this release | parked by this release |" in feed_schema.markdown_table()
+    assert "| `price` | 1.6 (reserved) | not in this release | parked by this release |" in feed_schema.markdown_table()
 
 
 def test_the_channel_body_is_exactly_the_registered_c8_shape(node):
@@ -114,7 +114,7 @@ def test_the_channel_body_is_exactly_the_registered_c8_shape(node):
 def test_no_emit_protocol_signs_a_price_into_the_main_feed(protocol):
     with pytest.raises(feed_schema.EmitGateError) as err:
         feed_schema.check_emit("price", {"canonical_id": "atlas:x", "amount_minor": 1}, protocol)
-    assert err.value.needed == "1.5"
+    assert err.value.needed == "1.6"
 
 
 # ---- money ------------------------------------------------------------------------------------------------
@@ -415,7 +415,7 @@ def test_retention_hides_then_purge_deletes(node):
     assert sorted(r["product_id"] for r in visible) == ["b", "c"]
     status = node.client.get("/api/v2/prices/status", headers=h(node.admin)).json()
     assert (status["observations"], status["due_for_purge"], status["records"]) == (3, 1, 1)
-    assert status["channel"] == {"protocol": "1.5", "capability": "price-channel-v1",
+    assert status["channel"] == {"protocol": "1.6", "capability": "price-channel-v1",
                                  "endpoint": "/api/v2/sync/price-changes", "enabled": False}
     assert status["retention_days"] == {"default": 30, "max": 365}
 
@@ -538,7 +538,7 @@ def test_nothing_price_related_is_emitted_by_default(node):
 
     info = node.client.get("/api/v2/sync/info", headers=h(node.token)).json()
     assert "price-channel-v1" not in info["capabilities"] and "price" not in info["kinds"]
-    assert info["protocol"] == "1.4" and info["emit_protocol"] == "1.4"
+    assert info["protocol"] == "1.5" and info["emit_protocol"] == "1.5"
     channel = node.client.get("/api/v2/sync/price-changes?since=0", headers=h(node.token))
     assert channel.status_code == 404 and "price" not in json.dumps(node.client.get(
         "/api/v2/sync/digest", headers=h(node.token)).json())

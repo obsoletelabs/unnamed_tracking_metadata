@@ -45,6 +45,8 @@ RELATION_TYPES: tuple[str, ...] = (
     "mod_of", "modpack_of", "total_conversion_of", "series_member", "collection_member")
 #: C6.3 operations of a `relation` feed entry (Atlas-only; not part of the shared file).
 RELATION_OPS: tuple[str, ...] = ("add", "end")
+#: C13 §3.2, why an authority signed a `record` entry (protocol 1.5; Atlas-only, not part of the shared file).
+RECORD_BECAUSE: tuple[str, ...] = ("publish", "sidecar", "merge", "detach", "relation", "backfill")
 #: C5, partial and regional release dates (protocol 1.3; validated in `atlas/dates.py`).
 DATE_PRECISIONS: tuple[str, ...] = ("year", "month", "day")
 RELEASE_CATEGORIES: tuple[str, ...] = ("full", "early_access", "beta", "rerelease", "port", "demo")
