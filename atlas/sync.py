@@ -1562,13 +1562,13 @@ def rescan(session: Session, node_id: str) -> dict[str, int]:
         if existing is None and row.kind in _SIDECARS and feed_schema.classify(row.kind, body).action == APPLY:
             missing = missing_record(session, row.kind, body)
             if missing is not None:  # C13 §5.6: an earlier release dropped it; it waits for its record now
-                _record(session, node_id, row.seq, row.kind, WAIT, WAITING_FOR_RECORD,
+                _record(session, node_id, row.seq, row.kind, WAIT, "dropped_by_previous_release",
                         f"waiting for record {missing}: an earlier release dropped this entry because the feed "
                         "had not introduced it (found by rescan)", {"kind": row.kind}, waiting_for=missing)
                 counts["waiting"] = counts.get("waiting", 0) + 1
-            elif isinstance(cid, str) and cid not in introduced and row.kind in _SIDECARS_STATELESS:
+                continue
+            if isinstance(cid, str) and cid not in introduced and row.kind in _SIDECARS_STATELESS:
                 unseen.append((row.seq, row.kind, cid))
-            continue
         outcome = feed_schema.classify(row.kind, row.body)
         if outcome.action == PARK:
             _record(session, node_id, row.seq, row.kind, PARK, outcome.reason, outcome.message, outcome.detail)
@@ -1636,9 +1636,10 @@ def _rescan_waiting(session: Session, node_id: str) -> int:
 #: newest entry per piece says what this node should hold. A 1.0 release dropped such an entry when its value was
 #: new to it (a `platinum` tier, a `releases` lock) without recording anything (Phase 4 D1).
 _REPLACING = ("achievements", "lock", "unlock")
-#: C13 §5.6 rescan: sidecar kinds a 1.0 release dropped without recording anything when their record had not arrived
-#: (`AtlasError` swallowed); `_SIDECARS_STATELESS` are those `_rescan_replaced_state` cannot judge by comparing state.
-_SIDECARS = ("artwork", "achievements", "custom", "lock")
+#: C13 §5.6 rescan: kinds naming a record that a 1.0 release dropped without recording anything when the record had not
+#: arrived (`AtlasError` swallowed, or an early return); `_SIDECARS_STATELESS` are those whose drop is also found when
+#: the record arrived later (`_rescan_replaced_state` judges achievements and locks by comparing state).
+_SIDECARS = ("artwork", "achievements", "custom", "lock", "unlock", "merge", "detach", "relation")
 _SIDECARS_STATELESS = ("artwork", "custom")
 #: Entries that bring a record into existence on a follower, and the field that names it.
 _INTRODUCING = {"obs": "canonical_id", "record": "canonical_id", "detach": "new_canonical_id"}
