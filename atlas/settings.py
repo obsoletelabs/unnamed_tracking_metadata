@@ -43,12 +43,11 @@ class Settings(BaseSettings):
     # H53: what a `record` (or bridge observation) carries besides the id and type: a subset of title, provider_ids.
     federation_snapshot_fields: list[Literal["title", "provider_ids"]] = Field(
         default_factory=lambda: ["title", "provider_ids"])
-    # C13 §5: open `wait` + quarantined rows per feed before the follower stops applying it (backlog_full), how many
-    # waiting rows one introduction applies per transaction, and enrichment of introduced records (H56).
+    # C13 §5: open `wait` + quarantined rows per feed before the follower stops applying it (backlog_full), and how
+    # many waiting rows one introduction applies per transaction. (Enrichment of introduced records, §5.5/H56, is
+    # not in this release: amendment A19.)
     sync_max_open_failures: int = Field(default=10_000, ge=1)
     sync_wake_batch: int = Field(default=500, ge=1, le=5000)
-    sync_enrich_from_own_providers: bool = True
-    sync_enrich_per_peer_per_hour: int = Field(default=200, ge=0, le=100_000)
     # C13 §6.3: ask the feed's own signer for an image digest before the third-party origin is tried.
     sync_media_prefer_peer: bool = True
 
