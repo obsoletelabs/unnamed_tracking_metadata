@@ -121,9 +121,41 @@ def _valid_observation(o: Any) -> bool:
         return False
 
 
-# Automatic retries stop here so a permanently broken entry is not re-run on every pull; an
-# administrator can still retry it by hand.
-AUTO_RETRY_LIMIT = 20
+#: C13 §5.2: an entry that names a record this node does not hold yet. Not a failure: it is recorded, does not
+#: block (the cursor moves on), and is applied when its record arrives (`wake_waiting`). A sync_failure
+#: disposition only; never a C10 group disposition.
+WAIT = "wait"
+WAITING_FOR_RECORD = "waiting_for_record"
+#: C13 §5.4: quarantined entries are retried with exponential backoff instead of stopping after a fixed count:
+#: the first retry on the next pull, then after 1, 2, 4 ... minutes, at most every 6 hours.
+BACKOFF_CAP = timedelta(hours=6)
+
+
+def retry_delay(attempts: int) -> timedelta:
+    if attempts <= 1:
+        return timedelta(0)
+    return min(timedelta(minutes=2 ** min(attempts - 2, 20)), BACKOFF_CAP)
+
+
+def next_retry_at(row: SyncFailure) -> datetime | None:
+    if row.disposition != QUARANTINE or row.resolved_at is not None:
+        return None
+    last = _aware(row.last_attempt_at) or datetime.now(UTC)
+    return last + retry_delay(row.attempts)
+
+
+def _named(kind: str, body: dict[str, Any]) -> list[str]:
+    from . import feed
+
+    return feed.named(kind, body)
+
+
+def missing_record(session: Session, kind: str, body: dict[str, Any]) -> str | None:
+    """The first record an entry names that this node does not hold (C13 §5.2), or None."""
+    for cid in _named(kind, body):
+        if session.get(Canonical, cid) is None:
+            return cid
+    return None
 
 
 # ---- applying one entry -----------------------------------------------------------------------------------
@@ -153,6 +185,13 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         log.warning("invalid feed entry %s (%s) from %s: %s", seq, kind, node_id, outcome.message)
         _record(session, node_id, seq, kind, QUARANTINE, "invalid", outcome.message, outcome.detail)
         return QUARANTINE
+    if (waiting := missing_record(session, kind, outcome.body or {})) is not None:
+        if existing is None or existing.disposition != WAIT or existing.resolved_at is not None:
+            log.info("feed entry %s (%s) from %s waits for record %s", seq, kind, node_id, waiting)
+        _record(session, node_id, seq, kind, WAIT, WAITING_FOR_RECORD,
+                f"waiting for record {waiting}: the feed has not introduced it yet", {"kind": kind},
+                waiting_for=waiting, count=existing is None or existing.disposition != WAIT)
+        return WAIT
     try:
         with session.begin_nested():
             result = _apply(session, ctx, node_id, seq, kind, outcome.body)
@@ -170,7 +209,36 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
     if failure is not None and failure.resolved_at is None:
         failure.resolved_at = datetime.now(UTC)
         failure.last_attempt_at = failure.resolved_at
+    if kind in ("obs", "record", "detach"):  # an entry that can create a record: wake what waits for it
+        created = (outcome.body or {}).get("new_canonical_id" if kind == "detach" else "canonical_id")
+        if isinstance(created, str):
+            wake_waiting(session, ctx, node_id, created)
     return NOOP if result == NOOP else APPLY
+
+
+def wake_waiting(session: Session, ctx: Ctx, node_id: str, cid: str, *, limit: int | None = None) -> int:
+    """Apply, in feed order, the entries of `node_id`'s feed that wait for `cid` (C13 §5.3). Scoped to that feed:
+    another feed's entries naming the same record wake when that feed introduces it (or by the retry pass, which
+    also picks up anything beyond `sync_wake_batch` before the next pull)."""
+    if session.get(Canonical, cid) is None:
+        return 0
+    limit = limit or getattr(ctx.settings, "sync_wake_batch", 500)
+    rows = session.scalars(select(SyncFailure).where(
+        SyncFailure.node_id == node_id, SyncFailure.disposition == WAIT, SyncFailure.resolved_at.is_(None),
+        SyncFailure.waiting_for == cid).order_by(SyncFailure.seq).limit(limit)).all()
+    woken = 0
+    for row in rows:
+        entry = session.get(ReplicatedChange, (row.node_id, row.seq))
+        if entry is None:
+            continue
+        with entry_at(entry.created_at):
+            if apply_entry(session, ctx, row.node_id, row.seq, entry.kind, entry.body, may_park=False) in (APPLY,
+                                                                                                          NOOP):
+                woken += 1
+    if woken:
+        log.info("record %s arrived from %s: %d waiting entr%s applied", cid, node_id, woken,
+                 "y" if woken == 1 else "ies")
+    return woken
 
 
 #: The origin timestamp of the entry being applied (set by `entry_at`, read by `_apply_body`). A context
@@ -208,17 +276,21 @@ def origin_time(value: Any) -> datetime:
 
 
 def _record(session: Session, node_id: str, seq: int, kind: str, disposition: str, reason: str, message: str,
-            detail: dict[str, Any] | None) -> None:
+            detail: dict[str, Any] | None, *, waiting_for: str | None = None, count: bool = True) -> None:
+    """`count=False` re-checks a waiting entry without counting an attempt: waiting is not failing (C13 §5.2)."""
     message = message[:2000]
     now = datetime.now(UTC)
     failure = session.get(SyncFailure, (node_id, seq))
     if failure is None:
         session.add(SyncFailure(node_id=node_id, seq=seq, kind=kind[:32], error=message, attempts=1,
                                 first_failed_at=now, last_attempt_at=now, disposition=disposition, reason=reason,
-                                detail=detail))
+                                detail=detail, waiting_for=waiting_for))
     else:
-        failure.error, failure.attempts, failure.last_attempt_at = message, failure.attempts + 1, now
+        failure.error, failure.last_attempt_at = message, now
+        if count:
+            failure.attempts += 1
         failure.disposition, failure.reason, failure.detail = disposition, reason, detail
+        failure.waiting_for = waiting_for
         failure.resolved_at = None
     session.flush()
 
@@ -228,20 +300,36 @@ def _record_failure(session: Session, node_id: str, seq: int, kind: str, exc: Ex
 
 
 def retry_failures(session: Session, ctx: Ctx, node_id: str | None = None, *, limit: int = 100,
-                   max_attempts: int | None = AUTO_RETRY_LIMIT) -> dict[str, int]:
+                   max_attempts: int | None = None, due_only: bool | None = None,
+                   started: datetime | None = None) -> dict[str, int]:
     """Re-apply quarantined entries, oldest first. Application is idempotent, so a retry that succeeds
     converges without duplicating anything. Parked entries are never retried out of order: they are
     re-classified in sequence by the pull and by `replay`.
 
     A retry runs after the entries behind it have applied, so it never regresses newer state: an entry that a
     later applied entry of the same feed replaced is resolved as superseded without being applied, and custom
-    values are applied only for the keys no later applied entry set (`superseding`)."""
+    values are applied only for the keys no later applied entry set (`superseding`).
+
+    Automatic retries (`due_only`, the default unless `max_attempts` is given) take only rows whose backoff has
+    passed (C13 §5.4); an administrator's retry takes every row. Waiting entries whose record is here now are
+    applied too (the rest of a wake larger than `sync_wake_batch`, or a record that came from elsewhere)."""
+    due_only = max_attempts is None if due_only is None else due_only
+    woken = _wake_ready(session, ctx, node_id, limit)
     query = select(SyncFailure).where(SyncFailure.resolved_at.is_(None), SyncFailure.disposition == QUARANTINE)
     if node_id is not None:
         query = query.where(SyncFailure.node_id == node_id)
     if max_attempts is not None:
         query = query.where(SyncFailure.attempts < max_attempts)
-    rows = session.scalars(query.order_by(SyncFailure.node_id, SyncFailure.seq).limit(limit)).all()
+    if due_only:
+        now = datetime.now(UTC)
+        candidates = session.scalars(query.order_by(SyncFailure.last_attempt_at, SyncFailure.seq)
+                                     .limit(limit * 10)).all()
+        # `started`: a row that failed during this pull is not retried in it (its first retry is the next pull)
+        rows = sorted((r for r in candidates if (next_retry_at(r) or now) <= now
+                       and (started is None or (_aware(r.last_attempt_at) or now) < started)),
+                      key=lambda r: (r.node_id, r.seq))[:limit]
+    else:
+        rows = session.scalars(query.order_by(SyncFailure.node_id, SyncFailure.seq).limit(limit)).all()
     resolved = 0
     for row in rows:
         entry = session.get(ReplicatedChange, (row.node_id, row.seq))
@@ -263,7 +351,43 @@ def retry_failures(session: Session, ctx: Ctx, node_id: str | None = None, *, li
             result = apply_entry(session, ctx, row.node_id, row.seq, entry.kind, body, may_park=False)
         if result in (APPLY, NOOP):
             resolved += 1
-    return {"retried": len(rows), "resolved": resolved, "still_failing": len(rows) - resolved}
+    out = {"retried": len(rows), "resolved": resolved, "still_failing": len(rows) - resolved}
+    if woken:
+        out["woken"] = woken
+    return out
+
+
+def _wake_ready(session: Session, ctx: Ctx, node_id: str | None, limit: int) -> int:
+    """Waiting entries whose record this node holds now, oldest first (C13 §5.3)."""
+    query = select(SyncFailure).where(SyncFailure.resolved_at.is_(None), SyncFailure.disposition == WAIT,
+                                      SyncFailure.waiting_for.in_(select(Canonical.id)))
+    if node_id is not None:
+        query = query.where(SyncFailure.node_id == node_id)
+    woken = 0
+    for row in session.scalars(query.order_by(SyncFailure.node_id, SyncFailure.seq).limit(limit)).all():
+        entry = session.get(ReplicatedChange, (row.node_id, row.seq))
+        if entry is None or row.resolved_at is not None:
+            continue
+        with entry_at(entry.created_at):
+            if apply_entry(session, ctx, row.node_id, row.seq, entry.kind, entry.body, may_park=False) in (APPLY,
+                                                                                                          NOOP):
+                woken += 1
+    return woken
+
+
+def open_waiting(session: Session, node_id: str | None = None) -> dict[str, Any]:
+    """`waiting` (C13 §5.5): how many entries wait, for how many records, and the oldest."""
+    base = [SyncFailure.disposition == WAIT, SyncFailure.resolved_at.is_(None)]
+    if node_id is not None:
+        base.append(SyncFailure.node_id == node_id)
+    count = session.scalar(select(func.count()).select_from(SyncFailure).where(*base)) or 0
+    if not count:
+        return {"count": 0, "records": 0, "oldest_seq": None, "since": None}
+    records = session.scalar(select(func.count(func.distinct(SyncFailure.waiting_for))).where(*base)) or 0
+    oldest = session.scalar(select(func.min(SyncFailure.seq)).where(*base))
+    since = session.scalar(select(func.min(SyncFailure.first_failed_at)).where(*base))
+    return {"count": count, "records": records, "oldest_seq": oldest,
+            "since": _aware(since).isoformat() if since else None}
 
 
 # ---- retry ordering: a late retry never overwrites a later entry ------------------------------------------
@@ -486,18 +610,20 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         _ensure_canonical(session, cid, body.get("media_type"))
         if session.get(Observation, o["id"]) is not None:
             return NOOP  # idempotent replay
-        prior = session.scalars(
+        # C13 R5: a feed supersedes only its own observations (and this node's local ones). Another feed's
+        # observation of the same source record stays current: one authority cannot retire what another signed.
+        priors = [p for p in session.scalars(
             select(Observation).where(
                 Observation.source == o["source"], Observation.source_scope == o["source_scope"],
                 Observation.external_id == o["external_id"], Observation.is_current.is_(True),
             )
-        ).first()
+        ) if p.origin_node is None or p.origin_node == node_id]
         # A later entry of the same feed already superseded this observation (an in-order replay of
         # retained history, `replay --historical`): store it as history and leave the newer one current.
-        superseded = bool(prior and prior.origin_node == node_id and prior.origin_seq is not None
-                          and prior.origin_seq > seq)
-        if prior and not superseded:
-            prior.is_current = False
+        superseded = any(p.origin_node == node_id and p.origin_seq is not None and p.origin_seq > seq for p in priors)
+        if not superseded:
+            for p in priors:
+                p.is_current = False
         obs = Observation(
             id=o["id"], canonical_id=cid, source_kind=o["source_kind"], source=o["source"],
             source_scope=o["source_scope"], external_id=o["external_id"], payload=o["payload"],
@@ -584,9 +710,16 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         if s.merged_into or d.merged_into:
             raise AtlasError("merge of a record that was merged elsewhere", "conflict")
         service.merge_canonicals(session, ctx, src, dst, actor="sync", log=False, cause="sync", origin=(node_id, seq))
+    elif kind == "record":
+        return _apply_record(session, ctx, node_id, seq, body)
     elif kind == "detach":
         obs = session.get(Observation, body["observation_id"])
-        if obs is not None and obs.canonical_id == body["new_canonical_id"]:
+        if obs is None:
+            # C13 §5.2: the authority never signed that observation (a provider fetch). There is nothing to move
+            # here; the new record arrives as its own `record` entry right after this one.
+            log.info("detach %s from %s: observation %s was never federated", seq, node_id, body["observation_id"])
+            return NOOP
+        if obs.canonical_id == body["new_canonical_id"]:
             return NOOP  # already detached
         if session.get(Canonical, body["new_canonical_id"]) is not None:
             # The detach created this record, so it already ran; the observation may have moved on since
@@ -622,6 +755,36 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
     else:  # classify() parks unknown kinds; reaching here means the registry and this function disagree
         raise KeyError(f"no apply rule for feed kind {kind!r}")
     return None
+
+
+def _apply_record(session: Session, ctx: Ctx, node_id: str, seq: int, body: dict[str, Any]) -> str | None:
+    """C13 §5.1: a `record` creates the record (or finds it) with its identity observation: source `atlas-record`,
+    scoped to the signing feed, with the id the authority stored (`feed.record_obs_id`), the display title and
+    the store ids. It ranks below every provider. Its store ids fold a purely local twin in, as an observation's
+    do. Applied again (or after the bridge observation of the same record) it changes nothing."""
+    from . import feed
+
+    cid = body.get("canonical_id")
+    if not isinstance(cid, str) or not cid.startswith("atlas:") or len(cid) > 40:
+        raise InvalidEntry("canonical_id is not an Atlas id")
+    row = session.get(Canonical, cid)
+    if row is not None and row.merged_into is not None:
+        return NOOP  # merged since: the survivor carries what it introduced
+    oid = feed.record_obs_id(node_id, cid)
+    if session.get(Observation, oid) is not None:
+        return NOOP
+    payload: dict[str, Any] = {}
+    title = body.get("title")
+    if isinstance(title, str) and title.strip():
+        payload["title"] = " ".join(title.split())[:feed_schema.RECORD_TITLE_MAX]
+    if ids := feed.strip_ids(body.get("provider_ids")):
+        payload["provider_ids"] = ids
+    at = _ENTRY_AT.get() or datetime.now(UTC)
+    synthetic = {"canonical_id": cid, "media_type": body.get("media_type"),
+                 "observation": {"id": oid, "source_kind": "metadata", "source": feed_schema.RECORD_SOURCE,
+                                 "source_scope": node_id, "external_id": cid, "payload": payload,
+                                 "source_updated_at": None, "observed_at": at.isoformat()}}
+    return _apply_body(session, ctx, node_id, seq, "obs", synthetic)
 
 
 # ---- entries on a record this feed merged later (`replay --historical`) -------------------------------------
@@ -817,6 +980,12 @@ def _int_state(session: Session, key: str) -> int | None:
         return None
 
 
+def _open_for(session: Session, node_id: str) -> int:
+    return session.scalar(select(func.count()).select_from(SyncFailure).where(
+        SyncFailure.node_id == node_id, SyncFailure.resolved_at.is_(None),
+        SyncFailure.disposition.in_((QUARANTINE, WAIT)))) or 0
+
+
 def _blocking(session: Session, node_id: str, applied: int) -> SyncFailure | None:
     row = session.get(SyncFailure, (node_id, applied + 1))
     return row if row is not None and row.resolved_at is None and row.disposition == PARK else None
@@ -858,11 +1027,14 @@ def upstream_status(session: Session, ctx_or_settings: Any, node_id: str) -> dic
         rewound = json.loads(rewound_raw) if rewound_raw else None
     except ValueError:
         rewound = {"reason": rewound_raw}
+    waiting = open_waiting(session, node_id)
+    bound = getattr(settings, "sync_max_open_failures", 10_000)
+    failures_full = applied < verified and quarantined_count + waiting["count"] >= bound
     if refused:
         state = "refused"
     elif rewound:
         state = "rewound"  # the authority's history no longer matches what this node verified
-    elif parked and parked["backlog_full"]:
+    elif (parked and parked["backlog_full"]) or failures_full:
         state = "backlog_full"
     elif parked:
         state = "parked"
@@ -872,11 +1044,13 @@ def upstream_status(session: Session, ctx_or_settings: Any, node_id: str) -> dic
         state = "behind"
     elif quarantined_count:
         state = "degraded"
+    elif waiting["count"]:
+        state = "waiting"  # caught up; some entries wait for records this feed has not introduced (C13 §5.5)
     else:
         state = "in_sync"
     return {"observed_head": observed, "downloaded_head": downloaded, "verified_head": verified,
             "applied_head": applied, "parked": parked,
-            "quarantined": {"count": quarantined_count, "oldest_seq": oldest},
+            "quarantined": {"count": quarantined_count, "oldest_seq": oldest}, "waiting": waiting,
             "refused": refused, "rewound": rewound, "upstream_protocol": upstream_protocol,
             "own_protocol": PROTOCOL,
             "upstream_behind": claimed is not None and claimed < verified,
@@ -893,7 +1067,47 @@ def upstream_nodes(session: Session) -> list[str]:
 
 
 def status(session: Session, ctx_or_settings: Any) -> dict[str, Any]:
-    return {"upstreams": {n: upstream_status(session, ctx_or_settings, n) for n in upstream_nodes(session)}}
+    upstreams = {n: upstream_status(session, ctx_or_settings, n) for n in upstream_nodes(session)}
+    return {"upstreams": upstreams, "peers": [peer_summary(session, p, upstreams.get(p.node_id))
+                                              for p in session.scalars(select(Peer).order_by(Peer.created_at))]}
+
+
+#: C13 §7.5: one honest status per peer, in the order they are decided.
+PEER_STATUSES = ("paused", "not_contacted", "needs_you", "unreachable", "empty", "catching_up",
+                 "caught_up_waiting", "caught_up")
+_TRANSPORT_ERRORS = ("ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "ReadError",
+                     "WriteError", "RemoteProtocolError", "HTTPStatusError", "NetworkError", "TimeoutException")
+
+
+def peer_status(peer: Peer, heads: dict[str, Any] | None) -> str:
+    """`needs_you`: something only the operator can resolve (refused, rewound, parked behind an upgrade, a full
+    backlog, entries that fail). `empty`: contacted, but the feed it follows holds nothing (a mirror's own feed)."""
+    if not peer.enabled:
+        return "paused"
+    if peer.last_ok_at is None and peer.last_error is None and not heads:
+        return "not_contacted"
+    if heads and (heads["state"] in ("refused", "rewound", "backlog_full", "parked") or heads["quarantined"]["count"]):
+        return "needs_you"
+    if peer.last_error:  # a transport failure is the network's; anything else (a refused key, a moved node) is yours
+        return "unreachable" if peer.last_error.startswith(_TRANSPORT_ERRORS) else "needs_you"
+    if not heads or heads["state"] == "unknown":
+        return "not_contacted" if peer.last_ok_at is None else "catching_up"
+    if heads["verified_head"] == 0 and heads["observed_head"] == 0:
+        return "empty"
+    if heads["state"] == "behind":
+        return "catching_up"
+    if heads["waiting"]["count"]:
+        return "caught_up_waiting"
+    return "caught_up"
+
+
+def peer_summary(session: Session, peer: Peer, heads: dict[str, Any] | None) -> dict[str, Any]:
+    inferred = inferred_follow(session, peer.id) if peer.follow is None else None
+    return {"id": peer.id, "name": peer.name, "url": peer.url, "node_id": peer.node_id, "enabled": peer.enabled,
+            "follow": peer.follow, "via_node_id": peer.via_node_id,
+            "inferred_follow": (inferred or {}).get("follow"), "status": peer_status(peer, heads),
+            "last_ok_at": _aware(peer.last_ok_at).isoformat() if peer.last_ok_at else None,
+            "last_error": peer.last_error, "remote_protocol": peer.remote_protocol}
 
 
 # ---- protocol negotiation (C1.3) ----------------------------------------------------------------------------
@@ -961,11 +1175,19 @@ def _apply_pending(session: Session, ctx: Ctx, node_id: str, *, limit: int | Non
     Returns (entries processed, new applied head); the cursor is updated here."""
     applied = applied_head(session, node_id)
     processed, seq = 0, applied
+    # C13 §5.4: a feed whose entries keep failing or waiting stops applying at a bound (`backlog_full`) rather
+    # than recording without limit; downloading and relaying go on.
+    bound = getattr(ctx.settings, "sync_max_open_failures", 10_000)
+    open_now = _open_for(session, node_id)
     rows = session.scalars(select(ReplicatedChange).where(ReplicatedChange.node_id == node_id,
                                                           ReplicatedChange.seq > applied)
                            .order_by(ReplicatedChange.seq).execution_options(yield_per=500))
     for row in rows:
         if row.seq != seq + 1 or (limit is not None and processed >= limit):
+            break
+        if open_now >= bound:
+            log.warning("feed %s: %d open failures or waiting entries (the bound is %d); applying paused",
+                        node_id, open_now, bound)
             break
         failure = session.get(SyncFailure, (node_id, row.seq))
         skipped = failure is not None and failure.disposition == QUARANTINE and failure.reason == "skipped"
@@ -973,6 +1195,8 @@ def _apply_pending(session: Session, ctx: Ctx, node_id: str, *, limit: int | Non
             result = apply_entry(session, ctx, node_id, row.seq, row.kind, row.body, may_park=not skipped)
         if result == PARK:
             break
+        if result in (QUARANTINE, WAIT):
+            open_now += 1
         seq, processed = row.seq, processed + 1
     if seq != applied:
         cursor = session.get(SyncCursor, node_id)
@@ -984,10 +1208,37 @@ def _apply_pending(session: Session, ctx: Ctx, node_id: str, *, limit: int | Non
     return processed, seq
 
 
+FOLLOW_OWN, FOLLOW_RELAYED = "own", "relayed"
+INFERRED = "peer_inferred:"
+
+
+def _note_inferred(maker: sessionmaker[Session], peer_id: str, mode: str, via: str | None) -> None:
+    """C13 §7.4: a peer added before A19 has no explicit choice. What the pull inferred is recorded for the
+    operator to confirm; it is never written onto the peer."""
+    value = json.dumps({"follow": mode, "via": via, "at": datetime.now(UTC).isoformat()}, sort_keys=True)
+    with maker() as session:
+        current = _state(session, INFERRED + peer_id)
+        if current is None or json.loads(current).get("follow") != mode or json.loads(current).get("via") != via:
+            service.write_lock(session)
+            _set_state(session, INFERRED + peer_id, value)
+            session.commit()
+
+
+def inferred_follow(session: Session, peer_id: str) -> dict[str, Any] | None:
+    raw = _state(session, INFERRED + peer_id)
+    try:
+        return json.loads(raw) if raw else None
+    except ValueError:
+        return None
+
+
 def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upstream_url: str,
-              token: str | None, trusted: dict[str, str] | None = None) -> int:
+              token: str | None, trusted: dict[str, str] | None = None, *, follow: str | None = None,
+              peer_id: str | None = None) -> int:
     """Negotiate, fetch one page from the verified head, verify and retain it, then apply in order.
-    Returns the number of entries fetched. `trusted` maps node id -> public key."""
+    Returns the number of entries fetched. `trusted` maps node id -> public key. `follow` is the peer's explicit
+    choice (C13 §7.4): `own` never falls back to a relayed feed, `relayed` always takes the pinned relayed feed;
+    None (a peer added before A19, or the environment upstream) infers as before."""
     keys = ctx.settings.trusted_keys if trusted is None else trusted
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     headers[feed_schema.PROTOCOL_HEADER] = PROTOCOL
@@ -996,8 +1247,21 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
     meta = top = info.json()
     node_id = meta["node_id"]
     relay = False
-    if node_id not in keys:
-        available = {f.get("node_id") for f in meta.get("feeds", []) if isinstance(f, dict)}
+    available = {f.get("node_id") for f in meta.get("feeds", []) if isinstance(f, dict)}
+    if follow == FOLLOW_OWN:
+        # C13 §7.4: the operator chose this node's own feed. Never fall back to a feed it relays: a node that
+        # answers with another identity is not the peer that was pinned.
+        if node_id not in keys:
+            raise SyncError(f"this peer follows the node's own feed, but {upstream_url} now answers as {node_id}; "
+                            "check the address, or add the authority feed it relays as its own peer")
+    elif follow == FOLLOW_RELAYED:
+        choices = available & keys.keys()
+        if not choices:
+            raise SyncError(f"{upstream_url} no longer relays the pinned authority feed")
+        node_id = choices.pop()
+        meta = next(f for f in meta["feeds"] if f.get("node_id") == node_id)
+        relay = True
+    elif node_id not in keys:
         choices = available & keys.keys()
         if len(choices) == 1:
             node_id = choices.pop()
@@ -1005,6 +1269,9 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
             relay = True
         elif len(choices) > 1:
             raise SyncError("relay has several trusted feeds; configure a separate peer for each authority")
+    if follow is None and peer_id is not None:
+        inferred = FOLLOW_RELAYED if relay else FOLLOW_OWN
+        _note_inferred(maker, peer_id, inferred, top.get("node_id") if relay else None)
     pub = keys.get(node_id)
     if pub is None:
         raise SyncError(f"upstream key {node_id} is not trusted (pin it under Admin → Peers or in ATLAS_TRUSTED_KEYS)")
@@ -1073,6 +1340,7 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
     with maker() as session:
         try:
             service.write_lock(session)  # SQLite: BEGIN IMMEDIATE (atlas.db); PostgreSQL: advisory lock
+            started = datetime.now(UTC)
             expected = since
             try:
                 key_rotation.remember(session, node_id, history)
@@ -1103,7 +1371,7 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
                 expected = e["seq"]
             session.flush()
             _apply_pending(session, ctx, node_id)
-            retry_failures(session, ctx, node_id)
+            retry_failures(session, ctx, node_id, started=started)
             verified_now = verified_head(session, node_id)
             if type(advertised_head) is int and verified_now <= advertised_head < 2**63:
                 # Operational watermark only: this transport-reported head is not signed
@@ -1129,10 +1397,11 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
 
 
 def pull_all(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upstream_url: str,
-             token: str | None, max_pages: int = 1000, trusted: dict[str, str] | None = None) -> int:
+             token: str | None, max_pages: int = 1000, trusted: dict[str, str] | None = None, *,
+             follow: str | None = None, peer_id: str | None = None) -> int:
     total = 0
     for _ in range(max_pages):
-        n = pull_once(maker, ctx, client, upstream_url, token, trusted)
+        n = pull_once(maker, ctx, client, upstream_url, token, trusted, follow=follow, peer_id=peer_id)
         total += n
         if n < ctx.settings.sync_batch_size:
             break
@@ -1146,9 +1415,9 @@ def sync_peers(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client) -> 
 
     results: dict[str, str] = {}
     s = ctx.settings
-    jobs: list[tuple[str, str, str | None, dict[str, str], str | None]] = []
+    jobs: list[tuple[str, str, str | None, dict[str, str], str | None, str | None]] = []
     if s.upstream_url:
-        jobs.append(("env", s.upstream_url, s.upstream_token, s.trusted_keys, None))
+        jobs.append(("env", s.upstream_url, s.upstream_token, s.trusted_keys, None, None))
     with maker() as session:
         for peer in session.scalars(select(Peer).where(Peer.enabled.is_(True))):
             try:
@@ -1157,11 +1426,11 @@ def sync_peers(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client) -> 
                 peer.last_error = str(exc)[:300]
                 results[peer.name] = peer.last_error
                 continue
-            jobs.append((peer.name, peer.url, token, {peer.node_id: peer.public_key}, peer.id))
+            jobs.append((peer.name, peer.url, token, {peer.node_id: peer.public_key}, peer.id, peer.follow))
         session.commit()
-    for name, url, token, trusted, peer_id in jobs:
+    for name, url, token, trusted, peer_id, follow in jobs:
         try:
-            n = pull_all(maker, ctx, client, url, token, trusted=trusted)
+            n = pull_all(maker, ctx, client, url, token, trusted=trusted, follow=follow, peer_id=peer_id)
             results[name] = f"ok, {n} entries"
             error = None
         except Exception as exc:
@@ -1296,7 +1565,28 @@ def rescan(session: Session, node_id: str) -> dict[str, int]:
                         "InvalidEntry: observation fails the observation contract (found by rescan)", {"kind": "obs"})
                 counts["quarantined"] += 1
     counts["parked"] += _rescan_replaced_state(session, node_id, applied)
+    if waiting := _rescan_waiting(session, node_id):
+        counts["waiting"] = waiting
     return counts
+
+
+def _rescan_waiting(session: Session, node_id: str) -> int:
+    """C13 §5.6: an entry an earlier release quarantined because its record was unknown (or that it gave up
+    retrying) waits for that record now, so it is applied as soon as the record arrives."""
+    converted = 0
+    rows = session.scalars(select(SyncFailure).where(
+        SyncFailure.node_id == node_id, SyncFailure.resolved_at.is_(None), SyncFailure.disposition == QUARANTINE,
+        SyncFailure.reason == "apply_error")).all()
+    for row in rows:
+        entry = session.get(ReplicatedChange, (row.node_id, row.seq))
+        if entry is None or not isinstance(entry.body, dict):
+            continue
+        waiting = missing_record(session, entry.kind, entry.body)
+        if waiting is not None:
+            row.disposition, row.reason, row.waiting_for = WAIT, WAITING_FOR_RECORD, waiting
+            converted += 1
+    session.flush()
+    return converted
 
 
 #: Kinds whose entries replace a whole piece of state (a source's achievement list, one field's lock), so only the
@@ -1542,6 +1832,10 @@ def startup_replay(maker: sessionmaker[Session], ctx: Ctx) -> dict[str, Any] | N
         if _state(session, "sync_replayed_for") == marker:
             return None
         result = replay(session, ctx)
+        # C13 §5.3: entries migration 0036 turned into waiting ones whose record is already here (it was merged)
+        woken = _wake_ready(session, ctx, None, 10_000)
+        if woken:
+            log.info("startup: %d waiting feed entries applied", woken)
         _set_state(session, "sync_replayed_for", marker)
         session.commit()
     if any(r["parked"] for r in result.values()):

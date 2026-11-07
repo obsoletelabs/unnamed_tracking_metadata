@@ -1,0 +1,242 @@
+"""CONTRACT-C13 §5 (A19): a follower waits for a record instead of quarantining what names it, and applies the
+waiting entries when the record arrives.
+
+Real nodes (the FastAPI app on SQLite files) talking through the real routes, as in `test_sync_compat`. Every
+test asserts the follower's database: `sync_failure` rows, the cursor, observations, records and artwork."""
+
+from __future__ import annotations
+
+from sqlalchemy import select
+
+from atlas import facets, feed, service, sync
+from atlas.models import Artwork, Canonical, Observation, ReplicatedChange, SyncCursor, SyncFailure
+
+from .conftest import batch
+from .test_sync_compat import Node, pull
+
+ART = [{"kind": "key_art", "url": "https://img.example.org/key.png"}]
+
+
+def configure(node: Node, **changes) -> None:
+    node.st.ctx.settings = node.st.ctx.settings.model_copy(update=changes)
+
+
+def provider_only(node: Node, title="Subnautica 2", steam="1962700") -> str:
+    with node.st.maker() as s:
+        [result] = service.ingest(s, node.st.ctx, batch("steam", [{"external_id": steam, "title": title,
+                                                                    "provider_ids": {"steam": steam}}]), system=True)
+        s.commit()
+    return result.canonical_id
+
+
+def curate_art(node: Node, cid: str, items=ART) -> None:
+    with node.st.maker() as s:
+        facets.set_artwork(s, node.st.ctx, cid, "curator", items, redistributable=True)
+        s.commit()
+
+
+def waiting(node: Node, origin: Node):
+    with node.st.maker() as s:
+        return [(f.seq, f.kind, f.disposition, f.reason, f.waiting_for, f.attempts) for f in s.scalars(
+            select(SyncFailure).where(SyncFailure.node_id == origin.node_id, SyncFailure.resolved_at.is_(None))
+            .order_by(SyncFailure.seq))]
+
+
+def art(node: Node, cid: str):
+    with node.st.maker() as s:
+        return sorted((a.kind, a.url) for a in s.scalars(select(Artwork).where(Artwork.canonical_id == cid)))
+
+
+def cursor(node: Node, origin: Node) -> int:
+    with node.st.maker() as s:
+        row = s.get(SyncCursor, origin.node_id)
+        return row.last_seq if row else 0
+
+
+def test_the_live_failure_waits_and_recovers_once_the_authority_introduces_the_record(tmp_path):
+    """T-F1/T-F3: the observed shape. The 1.0-emitting authority signs artwork for a provider-only record. The
+    follower records the entry as waiting (not quarantined, not counted as attempts), moves its cursor on, and
+    reports `waiting`. Once the authority emits 1.5 and runs `introduce --missing`, the next pull applies the
+    `record` and, in the same transaction, the waiting artwork."""
+    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(authority)
+    curate_art(authority, cid)
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == [(1, "artwork", "wait", "waiting_for_record", cid, 1)]
+    assert cursor(mirror, authority) == 1  # it does not block
+    pull(mirror, authority)
+    pull(mirror, authority)
+    assert waiting(mirror, authority)[0][5] == 1  # waiting is not failing: no attempts counted
+    status = mirror.heads(authority)
+    assert status["state"] == "waiting" and status["waiting"]["count"] == 1 and status["waiting"]["records"] == 1
+    assert status["quarantined"]["count"] == 0
+
+    configure(authority, emit_protocol="1.5")
+    with authority.st.maker() as s:
+        assert feed.introduce_batch(s, authority.st.ctx, "missing")["introduced"] == 1
+        s.commit()
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == []
+    assert art(mirror, cid) == [("key_art", "https://img.example.org/key.png")]
+    with mirror.st.maker() as s:
+        record = s.get(Canonical, cid)
+        assert record.view.get("title") == "Subnautica 2"
+        obs = s.get(Observation, feed.record_obs_id(authority.node_id, cid))
+        assert (obs.source, obs.source_scope, obs.origin_node, obs.origin_seq) == (
+            "atlas-record", authority.node_id, authority.node_id, 2)
+        failure = s.get(SyncFailure, (authority.node_id, 1))
+        assert failure.resolved_at is not None
+    with authority.st.maker() as s:
+        assert s.get(Observation, feed.record_obs_id(authority.node_id, cid)).payload == obs.payload
+    assert mirror.heads(authority)["state"] == "in_sync"
+
+
+def test_the_bridge_lets_an_old_follower_apply_at_once(tmp_path):
+    """T-F2: with the bridge on, the authority introduces the record with an `atlas-record` observation before the
+    artwork, so the artwork applies on the first pull and nothing waits."""
+    authority = Node(tmp_path, "authority", "authority", federation_bridge_record_obs=True)
+    mirror = Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(authority)
+    curate_art(authority, cid)
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == []
+    assert art(mirror, cid) == [("key_art", "https://img.example.org/key.png")]
+    with mirror.st.maker() as s:
+        assert s.get(Observation, feed.record_obs_id(authority.node_id, cid)).source == "atlas-record"
+
+
+def test_a_record_folds_in_the_followers_own_copy_of_the_same_game(tmp_path):
+    """T-F4: the follower fetched the same Steam game itself. The record's store id folds its purely local record
+    into the authority's, so the sidecars land on one record and the follower's provider data is kept."""
+    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    local = provider_only(mirror, "Subnautica 2 (local fetch)")
+    cid = provider_only(authority)
+    curate_art(authority, cid)
+    pull(mirror, authority)
+    with mirror.st.maker() as s:
+        assert s.get(Canonical, local).merged_into == cid
+        sources = {o.source for o in s.scalars(select(Observation).where(Observation.canonical_id == cid))}
+        assert sources == {"steam", "atlas-record"}
+        assert s.get(Canonical, cid).view["title"] == "Subnautica 2 (local fetch)"  # a provider outranks it
+    assert art(mirror, cid) == [("key_art", "https://img.example.org/key.png")]
+
+
+def test_a_detach_of_an_unfederated_observation_is_a_noop_and_its_record_follows(tmp_path):
+    """T-F5: the follower never had the moved observation; the detach changes nothing, and the `record` right after
+    it creates the new record."""
+    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(authority, "Pair", "10")
+    with authority.st.maker() as s:
+        service.ingest(s, authority.st.ctx, batch("gog", [{"external_id": "g1", "title": "Pair Two",
+                                                            "provider_ids": {"steam": "10"}}]), system=True)
+        moved = s.scalars(select(Observation).where(Observation.source == "gog")).one()
+        new = service.detach_observation(s, authority.st.ctx, moved.id, actor="t").id
+        s.commit()
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == []
+    with mirror.st.maker() as s:
+        assert s.get(Canonical, cid) is not None and s.get(Canonical, new) is not None
+        kinds = [r.kind for r in s.scalars(select(ReplicatedChange).order_by(ReplicatedChange.seq))]
+    assert kinds == ["record", "detach", "record"]
+
+
+def test_wake_is_batched_and_the_retry_pass_applies_the_rest(tmp_path):
+    """T-F6: more waiting entries than `sync_wake_batch`: the wake applies a batch and the retry pass in the same
+    pull applies the rest."""
+    authority = Node(tmp_path, "authority", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror", sync_wake_batch=2)
+    cid = provider_only(authority)
+    for n in range(5):
+        curate_art(authority, cid, [{"kind": "screenshot", "url": f"https://img.example.org/s{m}.png"}
+                                    for m in range(n + 1)])
+    pull(mirror, authority)
+    assert len(waiting(mirror, authority)) == 5
+    configure(authority, emit_protocol="1.5")
+    with authority.st.maker() as s:
+        feed.introduce_batch(s, authority.st.ctx, "missing")
+        s.commit()
+    pull(mirror, authority)
+    assert waiting(mirror, authority) == []
+    assert len(art(mirror, cid)) == 5  # the last list, applied after the earlier ones (feed order)
+
+
+def test_open_failures_are_bounded(tmp_path):
+    """T-F7: at `sync_max_open_failures` open entries the follower stops applying (`backlog_full`) and keeps its
+    cursor; nothing is lost: the entries stay retained."""
+    authority = Node(tmp_path, "authority", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror", sync_max_open_failures=2)
+    for n in range(4):
+        curate_art(authority, provider_only(authority, f"Game {n}", str(100 + n)))
+    pull(mirror, authority)
+    assert len(waiting(mirror, authority)) == 2
+    assert cursor(mirror, authority) == 2
+    status = mirror.heads(authority)
+    assert status["state"] == "backlog_full" and status["verified_head"] == 4
+
+
+def test_rescan_turns_an_old_unknown_record_quarantine_into_waiting(tmp_path):
+    """T-F8: a row a previous release quarantined as "unknown canonical" waits for its record after a rescan."""
+    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(authority)
+    curate_art(authority, cid)
+    pull(mirror, authority)
+    with mirror.st.maker() as s:  # as the previous release left it
+        row = s.get(SyncFailure, (authority.node_id, 1))
+        row.disposition, row.reason, row.waiting_for, row.attempts = "quarantined", "apply_error", None, 20
+        row.error = "AtlasError: unknown or merged canonical"
+        s.commit()
+    with mirror.st.maker() as s:
+        counts = sync.rescan(s, authority.node_id)
+        s.commit()
+    assert counts["waiting"] == 1
+    assert waiting(mirror, authority) == [(1, "artwork", "wait", "waiting_for_record", cid, 20)]
+
+
+def test_one_feed_cannot_supersede_another_feeds_observation(tmp_path):
+    """R5: two authorities sign an observation of the same source record. On a follower of both, the second does
+    not retire the first; each feed still supersedes its own."""
+    from atlas.ids import canonical_id, ulid
+
+    a, b = Node(tmp_path, "a", "authority"), Node(tmp_path, "b", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror")
+
+    def obs(title):
+        return {"canonical_id": canonical_id(), "media_type": "game",
+                "observation": {"id": ulid(), "source_kind": "manual", "source": "manual", "source_scope": "shared",
+                                "external_id": "same-record", "payload": {"title": title},
+                                "source_updated_at": None, "observed_at": "2026-01-01T00:00:00+00:00"}}
+
+    first, second, third = obs("From A"), obs("From B"), obs("From A again")
+    a.emit("obs", first)
+    pull(mirror, a)
+    b.emit("obs", second)
+    pull(mirror, b)
+    with mirror.st.maker() as s:
+        current = {o.id: o.is_current for o in s.scalars(select(Observation).where(
+            Observation.external_id == "same-record"))}
+    assert current == {first["observation"]["id"]: True, second["observation"]["id"]: True}
+    a.emit("obs", third)
+    pull(mirror, a)
+    with mirror.st.maker() as s:
+        current = {o.id: o.is_current for o in s.scalars(select(Observation).where(
+            Observation.external_id == "same-record"))}
+    assert current == {first["observation"]["id"]: False, second["observation"]["id"]: True,
+                       third["observation"]["id"]: True}
+
+
+def test_sync_info_reports_what_the_feed_introduced(tmp_path):
+    """C13 §3.4: the additive `/sync/info` fields an operator and a prober read."""
+    authority = Node(tmp_path, "authority", "authority")
+    cid = provider_only(authority)
+    curate_art(authority, cid)
+    info = authority.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {authority.token}"}).json()
+    assert info["own_head"] == 1 and info["introduced_through"] is None
+    assert info["records"] == {"live": 1, "introduced": 0, "not_federated": 1}
+    assert info["media_withheld"] == 0 and info["protocol"] == "1.5" and "record" in info["kinds"]
+    mirror = Node(tmp_path, "mirror", "mirror")
+    pull(mirror, authority)
+    relayed = mirror.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {mirror.token}"}).json()
+    assert "records" not in relayed and relayed["own_head"] == 0
+    assert [(f["node_id"], f["empty"]) for f in relayed["feeds"]] == [(authority.node_id, False)]
