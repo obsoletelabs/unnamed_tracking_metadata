@@ -221,7 +221,8 @@ def test_rescan_finds_sidecars_a_1_0_release_dropped_before_their_record(tmp_pat
         counts = sync.rescan(s, authority.node_id)
         s.commit()
     assert counts == {"scanned": 1, "parked": 0, "quarantined": 0, "waiting": 1}
-    assert waiting(mirror, authority) == [(1, "artwork", "wait", "waiting_for_record", cid, 1)]
+    assert waiting(mirror, authority) == [(1, "artwork", "wait", "dropped_by_previous_release", cid, 1)]
+    assert mirror.heads(authority)["state"] == "waiting"
     with mirror.st.maker() as s:
         assert "found by rescan" in s.get(SyncFailure, (authority.node_id, 1)).error
     configure(authority, emit_protocol="1.5")
