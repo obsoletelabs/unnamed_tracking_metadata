@@ -97,6 +97,12 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                                "retained)."),
     "sync_wake_batch": ("Federation", "Follower: waiting entries applied per transaction when their record arrives "
                         "(1-5000); the retry pass of the same pull applies the rest."),
+    "sync_enrich_from_own_providers": ("Federation", "Follower (owner decision H56, off by default): when a `record` "
+                                       "arrives, fetch the game from this node's own providers by the store ids it "
+                                       "carries, so art and achievements arrive without redistribution. See "
+                                       "[Changes waiting for their game](federation.md#changes-waiting-for-their-game)."),
+    "sync_enrich_per_peer_per_hour": ("Federation", "Follower: at most this many own-provider fetches per upstream "
+                                      "feed and hour (1-10000); the rest wait for the next hour."),
     "sync_media_prefer_peer": ("Federation", "Follower: fetch an image first from the peer whose feed delivered its "
                                "artwork row (`/api/v2/sync/media/{sha256}`, hash checked), then from the original "
                                "address."),

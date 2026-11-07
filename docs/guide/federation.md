@@ -74,7 +74,12 @@ On the **follower** (set `ATLAS_ROLE=mirror` or `local`, and `ATLAS_SECRET_KEY` 
 
 1. **Admin → Peers → Add a peer:** address + token → **Look up node**.
 2. Atlas shows the node's id. **Compare it with what you were told.** Then choose **which feed to follow** (below) and **Confirm this node and choose its feed**.
-3. **Sync now** to pull immediately; afterwards it follows every `ATLAS_SYNC_INTERVAL_SECONDS` (60 by default). The peer list shows what it follows, a status, position, last success and any error.
+3. Adding the peer **pulls the first page at once**. Each of its two requests to the node gives up after ten
+   seconds, and applying the page happens before the screen returns, so a slow node or a large first page can
+   take longer than that; if the node does not answer in time the peer is saved as *Not contacted yet* and the
+   sync worker tries again. Afterwards it follows every
+   `ATLAS_SYNC_INTERVAL_SECONDS` (60 by default); **Sync now** pulls immediately. The peer list shows what it
+   follows, a status in plain numbers, position, last success and any error.
 
 ### Which feed to follow
 
@@ -107,24 +112,42 @@ Atlas inferred from the last sync and a banner asks you to confirm it once (**Ad
 
 ### Peer status
 
-| Status | Meaning |
-| --- | --- |
-| Caught up | every entry the upstream reported is verified and applied, nothing waits |
-| Caught up · some entries waiting | applied up to the head, but some entries wait for their game (see below) |
-| Catching up | the upstream has entries this node has not applied yet |
-| Empty feed | the upstream's chosen feed has no entries: often the wrong feed was chosen |
-| Not contacted yet | added, never synced |
-| Unreachable | the last sync could not connect (DNS, TLS, timeout) |
-| Needs you | refused, rewound, parked behind an upgrade, or too many open entries (`backlog_full`): open the peer for the reason |
-| Paused | the peer is disabled |
+| Status | Badge (example) | Meaning |
+| --- | --- | --- |
+| `caught_up` | Caught up | every entry the upstream reported is verified and applied, nothing waits |
+| `caught_up_waiting` | Caught up · 4 changes waiting for their game | applied up to the head, but some entries wait for their game or could not be applied (see below) |
+| `catching_up` | Copying: 11 of 23 | the upstream has entries this node has not applied yet |
+| `empty` | Connected · nothing published | the chosen feed has no entries: often the wrong feed was chosen |
+| `not_contacted` | Not contacted yet | added, never synced (or the first pull did not answer in time) |
+| `unreachable` | Can't reach it | no successful sync for three sync intervals (`3 × ATLAS_SYNC_INTERVAL_SECONDS`) and the last attempt could not connect (DNS, TLS, timeout); a single failed attempt only adds "Last attempt failed" to the line under the badge |
+| `needs_you` | Blocked: needs you | refused, rewound, parked behind an upgrade, or too many open entries (`backlog_full`): open the peer for the reason |
+| `paused` | Paused | the peer is disabled |
 
-Entries that could not be applied (quarantined) leave a caught-up peer at **Caught up · some entries waiting**, with
-a line naming them; they retry on their own with backoff.
+Under the badge a line gives the numbers: entries to go, how many games have not arrived from that peer yet, how
+many changes could not be applied, the position (`X of Y entries`) and, for a peer whose own feed you follow, how
+many of its records it publishes ("7 of 7 records published", or "Atlas Central has 2 records it does not
+publish", which turns the badge amber). An upstream of an older release does not report record counts: the line
+says "record count unknown". Entries that could not be applied (quarantined) retry on their own with backoff.
 
-`GET /api/v2/sync/status` → `peers[].status` is `{code, label, tone, detail, action}` (the code is one of the above:
-`caught_up`, `caught_up_waiting`, `catching_up`, `empty`, `not_contacted`, `unreachable`, `needs_you`, `paused`), and
-`peers[].waiting[]` lists the waiting groups (`cause`, `subreason`, `label`, `count`, `canonical_id`, `kinds`, `seqs`,
-`since`, `retry`, `action`, `note`).
+`GET /api/v2/sync/status` → `peers[].status` is `{code, label, tone, detail, action}` (the code is one of the
+above), and `peers[].waiting[]` lists the waiting groups (`cause`, `subreason`, `label`, `title`,
+`title_provenance`, `count`, `canonical_id`, `kinds`, `seqs`, `since`, `retry`, `action`, `note`).
+
+### Looking a node up from a script
+
+`GET /api/v2/admin/peers/probe?url=<address>` (an admin token; the peer's token in the `Atlas-Peer-Token` header,
+never in the address) answers what the Look up screen shows, as JSON: `node` (id, fingerprint, name, role,
+protocol and whether this release can follow it), `token` (`read`, `sync`), `records` (the upstream's counts, or
+`null` for an older release or a mirror), `feeds[]` (`origin` `own` or `relayed`, `node_id`, `public_key`, `head`,
+`empty`, `trust`, `recommended`, `warnings` such as `empty_feed` or `smaller_than_own`) and `default_feed`. It
+changes nothing and pins nothing: adding a peer stays in Admin → Peers, where the choice is bound to the lookup.
+A bad address answers 400, a node that cannot be verified (for example the token was refused) 502, and one that
+does not answer 504. The 502 answer includes the error the node gave, for the admin who asked.
+
+Like the Look up form, this makes the server contact the address you give, and it accepts private and loopback
+addresses: peers often run on the same host or network, so the private-address rule that protects media fetches
+from provider URLs does not apply here. Only an admin token can call it, and it only makes the two read requests
+above.
 
 You can also configure a single upstream with environment variables (`ATLAS_UPSTREAM_URL`, `ATLAS_UPSTREAM_TOKEN`, `ATLAS_TRUSTED_KEYS`; see [Environment variables](reference-env.md)); use whichever you prefer, and you can follow several peers from the UI.
 
@@ -294,12 +317,23 @@ feed (in batches of `ATLAS_SYNC_WAKE_BATCH`, each flushed before the next). Only
 wakes its own entries: another feed's entries naming the same game keep waiting until that feed introduces it.
 Admin → Peers lists waiting entries grouped by peer and game, headed **Waiting for its game**, with the reason (the
 upstream has not published it yet; its feed is missing it although `/sync/info.introduced_through` says otherwise; or
-the entry that brings it did not apply) and **Copy a note** for the upstream's operator. Removing a peer resolves its
+the entry that brings it did not apply) and **Copy a note** for the upstream's operator. Each group names the game
+when this node knows it: from its own copy ("this node already holds it from another source") or from the entry
+that brings it; otherwise it reads "A game … hasn't published yet". Removing a peer resolves its
 waiting entries as `abandoned` (`atlas sync replay --rescan` finds them again if you follow the feed again).
 
 An artwork, achievements, custom-field, lock, unlock or relation entry for a game that was merged on this node applies
 to the surviving record (merges and detaches never follow a redirect). A record whose store id already belongs to a
 record another upstream introduced is never merged into it: Review lists the pair as `cross_origin_duplicate`.
+
+**Filling a record in from this node's own providers (owner decision H56, off by default).** A `record` carries the
+game's store ids, not its provider data. With `ATLAS_SYNC_ENRICH_FROM_OWN_PROVIDERS=true` a follower queues a fetch
+from **its own** configured providers by those ids (Steam, IGDB, …: only providers this node has keys for), and the
+sync worker attaches what they return to the record: art, description and achievements arrive without anything
+being redistributed between nodes. A store id this node already maps to another record (a cross-origin duplicate) is
+never fetched; an id the provider would refuse is counted, not requested; at most
+`ATLAS_SYNC_ENRICH_PER_PEER_PER_HOUR` (200) fetches run per upstream feed each hour, and the rest wait. A follower
+signs nothing for it. Leave it off until the owner decides (it calls the providers' APIs on every follower).
 
 Older followers: a 1.1–1.4 follower quarantines such an entry and its own retry (at most 20 attempts) applies it
 once the bridge observation has arrived; the drill checks this against a real 1.1 release. A 1.0 follower drops it; after upgrading, `atlas sync replay --rescan` finds it (it waits
