@@ -141,13 +141,19 @@ def sync_failures(session: Sess, _: Annotated[auth.Principal, Depends(require("a
     """Mirrored feed entries that could not be applied and still need attention."""
     rows = session.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))
                            .order_by(SyncFailure.node_id, SyncFailure.seq).limit(limit)).all()
+    def retry_at(f: SyncFailure) -> str | None:
+        when = sync.next_retry_at(f)
+        return when.isoformat() if when else None
+
     return {"open": sync.open_failures(session),
             "parked": sync.open_failures(session, feed_schema.PARK),
             "quarantined": sync.open_failures(session, feed_schema.QUARANTINE),
+            "waiting": sync.open_failures(session, sync.WAIT),  # C13 §5.2 (additive)
             "failures": [{"node_id": f.node_id, "seq": f.seq, "kind": f.kind, "error": f.error,
                           "disposition": f.disposition, "reason": f.reason, "detail": f.detail,
                           "attempts": f.attempts, "first_failed_at": f.first_failed_at.isoformat(),
-                          "last_attempt_at": f.last_attempt_at.isoformat()} for f in rows]}
+                          "last_attempt_at": f.last_attempt_at.isoformat(),
+                          "waiting_for": f.waiting_for, "next_try_at": retry_at(f)} for f in rows]}
 
 
 @router.get("/sync/status", tags=["admin"])

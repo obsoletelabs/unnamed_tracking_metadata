@@ -73,8 +73,38 @@ On the **authority** (administrator):
 On the **follower** (set `ATLAS_ROLE=mirror` or `local`, and `ATLAS_SECRET_KEY` so the token can be stored encrypted):
 
 1. **Admin → Peers → Add a peer:** address + token → **Look up node**.
-2. Atlas shows the node's id. **Compare it with what you were told.** Then **Trust this node and replicate from it**.
-3. **Sync now** to pull immediately; afterwards it follows every `ATLAS_SYNC_INTERVAL_SECONDS` (60 by default). The peer list shows position, last success and any error.
+2. Atlas shows the node's id. **Compare it with what you were told.** Then choose **which feed to follow** (below) and **Confirm this node and choose its feed**.
+3. **Sync now** to pull immediately; afterwards it follows every `ATLAS_SYNC_INTERVAL_SECONDS` (60 by default). The peer list shows what it follows, a status, position, last success and any error.
+
+### Which feed to follow
+
+A node can sign its own feed and relay the feeds of others (a mirror relays its authorities'). The lookup lists every
+feed the node offers, with its head, and recommends one that is not empty:
+
+* **Its own feed** (`own`): the node's own signed entries. Choose it for an authority. A peer that follows its own
+  feed never falls back to a relayed one: if the node later answers as someone else, the sync fails with "now
+  answers as …" instead of silently following another feed.
+* **A feed it relays** (`relayed`): an authority's feed served through this node (for example a local node that
+  follows an authority through its mirror). The authority's identity is pinned, not the relay's.
+
+Peers added before this release have no choice recorded. They keep working as before; Admin → Peers shows the feed
+Atlas inferred from the last sync and a banner asks you to confirm it once (**Admin → Peers → Confirm**). The
+choice is bound to what you looked up (`probe_token`), so a form cannot be replayed with another key.
+
+### Peer status
+
+| Status | Meaning |
+| --- | --- |
+| Caught up | every entry the upstream reported is verified and applied, nothing waits |
+| Caught up · some entries waiting | applied up to the head, but some entries wait for their game (see below) |
+| Catching up | the upstream has entries this node has not applied yet |
+| Empty feed | the upstream's chosen feed has no entries: often the wrong feed was chosen |
+| Not contacted yet | added, never synced |
+| Unreachable | the last sync could not connect (DNS, TLS, timeout) |
+| Needs you | refused, rewound, parked or quarantined entries: open the peer for the reason |
+| Paused | the peer is disabled |
+
+The same codes are in `GET /api/v2/sync/status` → `peers[].status`.
 
 You can also configure a single upstream with environment variables (`ATLAS_UPSTREAM_URL`, `ATLAS_UPSTREAM_TOKEN`, `ATLAS_TRUSTED_KEYS`; see [Environment variables](reference-env.md)); use whichever you prefer, and you can follow several peers from the UI.
 
@@ -88,7 +118,8 @@ You can also configure a single upstream with environment variables (`ATLAS_UPST
 ## Operating it
 
 * **Position/lag:** Admin → Peers shows each peer's position; `GET /api/v2/status` (admin) shows the authority's feed head.
-* **Entries that fail to apply:** a mirror never drops one silently. An entry this release does not understand is *parked* and holds later entries back until an upgrade (see [Compatibility and upgrades](#compatibility-and-upgrades)). If a known feed entry cannot be applied it is rolled back, recorded as *quarantined*, and the rest of the page still applies. Each pull retries the recorded entries from the signed copy the mirror retains (up to 20 automatic attempts each; retries are idempotent, so they converge without duplicates). A retry never overwrites newer state: when a later entry of the same feed has already replaced what the failed entry would set (a source's artwork or achievement list, a lock, a relation that a later entry added or ended, the schema), the failed entry is resolved as superseded (`superseded_by` in its detail) without being applied, and a failed custom-values entry applies only the keys no later entry set. A failed merge is applied and then the later entries that already applied to either record (locks, artwork, achievements, custom values, relations) are re-applied in feed order (`replayed` in its detail); if a later merge of the same records already applied, the merge stays quarantined with reason `out_of_order` for an administrator, because the order of two merges decides what survives. `GET /api/v2/status` shows the open count as `sync_failures`, `GET /api/v2/sync/failures` lists them with the error and attempt count, and `POST /api/v2/sync/failures/retry` retries them immediately, including ones past the automatic limit.
+* **Entries that fail to apply:** a mirror never drops one silently. An entry this release does not understand is *parked* and holds later entries back until an upgrade (see [Compatibility and upgrades](#compatibility-and-upgrades)). If a known feed entry cannot be applied it is rolled back, recorded as *quarantined*, and the rest of the page still applies. The next pull retries it from the signed copy the mirror retains, then after 1, 2, 4 … minutes, at most every 6 hours, without giving up (retries are idempotent, so they converge without duplicates). A retry never overwrites newer state: when a later entry of the same feed has already replaced what the failed entry would set (a source's artwork or achievement list, a lock, a relation that a later entry added or ended, the schema), the failed entry is resolved as superseded (`superseded_by` in its detail) without being applied, and a failed custom-values entry applies only the keys no later entry set. A failed merge is applied and then the later entries that already applied to either record (locks, artwork, achievements, custom values, relations) are re-applied in feed order (`replayed` in its detail); if a later merge of the same records already applied, the merge stays quarantined with reason `out_of_order` for an administrator, because the order of two merges decides what survives. An entry that names a game this node does not hold yet is not a failure: it *waits* for that game (see [Changes waiting for their game](#changes-waiting-for-their-game)). `GET /api/v2/status` shows the open count as `sync_failures`, `GET /api/v2/sync/failures` lists them with the error, attempt count and next try, and `POST /api/v2/sync/failures/retry` retries them immediately. At `ATLAS_SYNC_MAX_OPEN_FAILURES` (10 000) open entries for one feed the follower stops applying that feed and reports `backlog_full`; nothing is lost.
+* **Images:** a follower fetches the bytes of a replicated image first from the peer whose feed delivered the artwork row (`GET /api/v2/sync/media/{sha256}`, `sync` scope, only images that peer may redistribute; the bytes must hash to the digest), then from the original address (`ATLAS_SYNC_MEDIA_PREFER_PEER`). The artwork view lists the last sources tried and why each failed. A tile without a cached cover falls back to another cached image of the game.
 * **Add a mirror:** nothing to do on the authority except issue a token.
 * **Remove a peer:** *Remove*; data already received stays.
 * **Disaster recovery:** a current verified database backup preserves identity. If that is unavailable, a mirror with complete retained signatures can build an [offline recovery candidate](recovery.md) under a fresh root; followers explicitly retire the old origin and pin the new one.
@@ -210,6 +241,44 @@ appends nothing to its feed. A relation that was already published is not remove
 below 1.4 (HTTP 409 `emit_protocol`): its followers would keep it. As with dates, raising the protocol does
 **not** publish relations made before; re-save them (remove and add) to publish them.
 
+### Changes waiting for their game
+
+Provider data (a Steam or IGDB fetch) is never signed, so a game an authority knows only from providers was never
+in its feed. Before this release, a curator's artwork, achievements, custom values, locks, merges or relations on
+such a game still reached followers, which had never heard of the game: they quarantined the entry ("unknown or
+merged canonical"), retried it 20 times and gave up (a 1.0 follower dropped it without a trace).
+
+Now the authority **introduces** a game before it signs anything that names it:
+
+| Emit protocol | Bridge (`ATLAS_FEDERATION_BRIDGE_RECORD_OBS`) | What introduces the game |
+| --- | --- | --- |
+| 1.5 or higher | any (off once `min_follower_protocol` is 1.5) | a `record` entry: id, media type, display title and store ids, no provider content |
+| below 1.5 | **on** | an ordinary observation of the source `atlas-record` with the same fields, which every follower release applies |
+| below 1.5 | off (the default) | nothing: the entry is signed as before and the game is counted as not federated |
+
+What a `record` carries is limited by `ATLAS_FEDERATION_SNAPSHOT_FIELDS`. `ATLAS_FEDERATION_INTRODUCE=all` also
+introduces every game created from provider data alone; the default `referenced` introduces a game only when a
+signed entry first names it. `/api/v2/sync/info` → `records` shows how many live games the feed introduced and how
+many it did not (`not_federated`), and Admin → Peers shows the same numbers with a button to introduce them.
+
+Games named before the upgrade are introduced by **`atlas feed introduce --missing`** (try `--dry-run` first; it
+prints how many and in which mode). It works in resumable batches (`--batch`, `--limit`) and refuses (exit 2) while
+nothing can introduce a game (emit protocol below 1.5 and the bridge off). `--all` introduces every live game not
+introduced yet. Raising the emit protocol to 1.5 in Admin → Peers schedules `--missing` for the sync worker.
+
+On a follower of this release, an entry that names a game it does not hold **waits** for it instead of failing:
+it is recorded with the reason `waiting_for_record` and the game it waits for, no attempt is counted, the cursor
+moves on and the upstream's state is `waiting`. When the game arrives (a `record`, a bridge observation or any
+observation of it) the waiting entries are applied in feed order in the same pull (`ATLAS_SYNC_WAKE_BATCH` per
+transaction; the retry pass applies the rest). Admin → Peers lists waiting entries grouped by game. A follower
+never redirects a waiting entry to the survivor of a merge it has not received: it waits for the authority's merge.
+
+Older followers: a 1.1–1.4 follower quarantines such an entry and its own retry (at most 20 attempts) applies it
+once the bridge observation has arrived; the drill checks this against a real 1.1 release. A 1.0 follower drops it; after upgrading, `atlas sync replay --rescan` finds it (it waits
+if the game is still unknown, or is parked as `dropped_by_previous_release` if the game arrived later) and
+`--historical` applies it. `python -m tools.skew_drill --scenario records --previous-dir <release>` runs this
+against a real 1.0 or 1.1 release.
+
 ### Upgrading a network
 
 1. Upgrade followers (mirrors first, then local nodes). They keep following older authorities.
@@ -256,6 +325,7 @@ atlas sync replay --rescan [--node N]          # one-time recovery after upgradi
 atlas sync replay --historical [--node N] [--dry-run]  # re-apply retained entries from the oldest recovered one
 atlas sync skip --node N --seq S --reason TEXT # give up on one parked entry (quarantined, audited)
 atlas sync reconcile --node N --dry-run        # compare this node's view with the upstream's /sync/digest
+atlas feed introduce --missing|--all [--dry-run] [--batch B] [--limit L]  # authority: introduce games (exit 2 refused)
 ```
 
 `replay` exits 0 when converged, 3 while entries are still parked (the reason is printed), 4 when

@@ -71,6 +71,12 @@ def test_the_live_failure_waits_and_recovers_once_the_authority_introduces_the_r
     status = mirror.heads(authority)
     assert status["state"] == "waiting" and status["waiting"]["count"] == 1 and status["waiting"]["records"] == 1
     assert status["quarantined"]["count"] == 0
+    from .test_sync_compat import _admin
+
+    listed = mirror.client.get("/api/v2/sync/failures", headers={"Authorization": f"Bearer {_admin(mirror)}"}).json()
+    assert (listed["waiting"], listed["quarantined"]) == (1, 0)
+    assert {k: listed["failures"][0][k] for k in ("disposition", "waiting_for", "next_try_at")} == {
+        "disposition": "wait", "waiting_for": cid, "next_try_at": None}
 
     configure(authority, emit_protocol="1.5")
     with authority.st.maker() as s:

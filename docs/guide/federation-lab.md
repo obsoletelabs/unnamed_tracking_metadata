@@ -56,6 +56,7 @@ Every scenario ends with assertions on node databases: observation rows by id, c
 | Wrong authority | `test_faults.py` | A URL serving another authority, a wrong pinned key and a relay that lacks the pinned feed are all refused |
 | Revoked credential | `test_faults.py` | A revoked sync token stops replication without damage; a replacement resumes it |
 | Version skew | `test_version_skew.py` | See below |
+| Changes for a game never introduced (release-blocking) | `test_c13_live_regression.py` | The live failure: artwork for a game the authority knows only from a provider waits on every follower (not quarantined, cursor at head, state `waiting`); raising the emit protocol to 1.5 and `atlas feed introduce --missing` introduce the game and the next sync applies game and artwork everywhere, the plain nodes through the mirror. The same shape against real 1.0 and 1.1 followers: `python -m tools.skew_drill --scenario records --previous-dir <release>` |
 
 ### Version skew and the expected failures
 
