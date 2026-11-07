@@ -130,7 +130,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_TAGLINE` | `Media metadata, merged and sourced` | Home page line. Editable in Admin → Settings. **live** |
 | `ATLAS_FOOTER_TEXT` | `Community metadata. Contributions are CC0.` | Footer text. Editable in Admin → Settings. **live** |
 | `ATLAS_ACCENT_COLOR` | `#6aa8ff` | Accent colour, dark theme. Editable in Admin → Settings. **live** |
-| `ATLAS_ACCENT_COLOR_LIGHT` | `#1f6fe0` | Accent colour, light theme. Editable in Admin → Settings. **live** |
+| `ATLAS_ACCENT_COLOR_LIGHT` | `#1a5fc2` | Accent colour, light theme. Editable in Admin → Settings. **live** |
 | `ATLAS_DEFAULT_THEME` | `auto` | `auto`, `dark` or `light`. Editable in Admin → Settings. **live** |
 | `ATLAS_LOGO_HASH` | — | Set by uploading a logo in Admin → Settings; not meant to be set by hand. **live** |
 | `ATLAS_NAV_LINKS` | — | Extra menu links. Editable in Admin → Settings. **live** |

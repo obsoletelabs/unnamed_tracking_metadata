@@ -12,7 +12,7 @@ These can be changed live in **Admin → Settings** without restarting. Each cha
 | **Tagline** (`tagline`) | text | `Media metadata, merged and sourced` | One line under the title on the home page. |
 | **Footer text** (`footer_text`) | text | `Community metadata. Contributions are CC0.` | Plain text shown in the footer. |
 | **Accent colour (dark theme)** (`accent_color`) | colour | `#6aa8ff` |  |
-| **Accent colour (light theme)** (`accent_color_light`) | colour | `#1f6fe0` |  |
+| **Accent colour (light theme)** (`accent_color_light`) | colour | `#1a5fc2` |  |
 | **Theme** (`default_theme`) | auto / dark / light | `auto` | 'auto' follows each visitor's system setting. |
 | **Navigation links** (`nav_links`) | list of links | — | One per line: Label \| address. Addresses may be /paths or https:// links. |
 

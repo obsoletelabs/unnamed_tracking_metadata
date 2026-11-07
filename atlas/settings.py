@@ -149,7 +149,7 @@ class Settings(BaseSettings):
     tagline: str = "Media metadata, merged and sourced"
     footer_text: str = "Community metadata. Contributions are CC0."
     accent_color: str = "#6aa8ff"  # dark theme accent
-    accent_color_light: str = "#1f6fe0"
+    accent_color_light: str = "#1a5fc2"  # 5.4:1 on the lightest surfaces (#1f6fe0 was 4.2:1 on --surface-2)
     default_theme: Literal["auto", "dark", "light"] = "auto"
     logo_hash: str | None = None
     inherit_schema: bool = True  # mirrors/locals adopt the upstream authority's media types and fields
