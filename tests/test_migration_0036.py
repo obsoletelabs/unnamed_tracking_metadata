@@ -125,7 +125,7 @@ def test_migration_converts_unknown_record_quarantine_to_wait(url):
     assert rows[6][:3] == ("wait", "waiting_for_record", "atlas:01zzzzzzzzzzzzzzzzzzzzzzzz")
     assert rows[7][:3] == ("wait", "waiting_for_record", "atlas:01zzzzzzzzzzzzzzzzzzzzzzzz")
     assert rows[8][:3] == ("wait", "waiting_for_record", "atlas:01yyyyyyyyyyyyyyyyyyyyyyyy")  # the missing src
-    assert rows[9][:3] == ("wait", "waiting_for_record", M)  # known but merged: the wake pass applies it
+    assert rows[9][:3] == ("quarantined", "apply_error", None)  # known but merged: the retry follows the redirect
     assert rows[10][:3] == ("quarantined", "apply_error", None)  # another error stays what it was
     assert rows[6][3] == 20  # attempts are history; a waiting row never counts them again
 
@@ -136,18 +136,23 @@ def test_migration_converts_unknown_record_quarantine_to_wait(url):
     assert version(engine) == PREVIOUS
     assert "follow" not in columns(engine, "peer") and "waiting_for" not in columns(engine, "sync_failure")
     assert "origin_node" not in columns(engine, "artwork")
-    assert not inspect(engine).has_table("feed_introduced") and inspect(engine).has_table("peer_0036_kept")
+    assert not inspect(engine).has_table("feed_introduced") and not inspect(engine).has_table("peer_0036_kept")
+    with engine.connect() as c:  # the choice is kept aside in node_state: the schema is exactly 0035's
+        kept = c.execute(text("SELECT value FROM node_state WHERE key = 'peer_0036_kept'")).scalar()
+    assert [k["follow"] for k in __import__("json").loads(kept)] == ["own"]
     rows = failures(engine)
-    for seq in (6, 7, 8, 9):  # the previous release retries them as it did before, from attempt 0
+    for seq in (6, 7, 8):  # the previous release retries them as it did before, from attempt 0
         assert rows[seq][:2] == ("quarantined", "apply_error") and rows[seq][2] == 0
         assert "unknown canonical" in rows[seq][3]
+    assert rows[9][:2] == ("quarantined", "apply_error")  # it never waited: unchanged
     assert rows[10] == ("quarantined", "apply_error", 4, "AtlasError: something else")
 
     db.upgrade(url, HEAD)
     rows = failures(engine)
-    assert {seq: rows[seq][:2] for seq in (6, 7, 8, 9)} == {seq: ("wait", "waiting_for_record") for seq in (6, 7, 8, 9)}
+    assert {seq: rows[seq][:2] for seq in (6, 7, 8)} == {seq: ("wait", "waiting_for_record") for seq in (6, 7, 8)}
     with engine.connect() as c:
         assert c.execute(text("SELECT follow FROM peer")).scalar() == "own"  # the choice came back
         assert c.execute(text("SELECT count(*) FROM feed_introduced")).scalar() == 3
+        assert c.execute(text("SELECT count(*) FROM node_state WHERE key = 'peer_0036_kept'")).scalar() == 0
     assert not inspect(engine).has_table("peer_0036_kept")
     engine.dispose()

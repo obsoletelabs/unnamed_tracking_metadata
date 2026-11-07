@@ -10,12 +10,13 @@ Upgrade (CONTRACT-C13 §9.3):
   `via = legacy` (`legacy_unintroduced`, `seq` NULL): `atlas feed introduce --missing` publishes it once the emit
   protocol reaches 1.5 or the bridge is on. A node that signs nothing (mirror, local) gets an empty table.
 * `peer.follow` and `peer.via_node_id` (NULL: a peer added before A19, whose mode stays inferred until the operator
-  confirms it). A choice kept aside by a downgrade (`peer_0036_kept`) is restored.
+  confirms it). A choice kept aside by a downgrade (`node_state["peer_0036_kept"]`) is restored.
 * `sync_failure.waiting_for` and the index `ix_sync_failure_waiting`. Open quarantined `apply_error` rows of the
   kinds that name records, whose error says the record was unknown ("unknown canonical", "unknown or merged
   canonical", "merge of an unknown record", "unknown record ..."), become `wait` / `waiting_for_record`, waiting
-  for the first named record this node does not hold (or, when it holds them all, the first one: it was merged
-  since, and the startup wake pass applies the row through the redirect).
+  for the first named record this node does not hold. A row whose records are all here now (one was merged
+  since) stays `quarantined`: its next automatic retry applies it to the survivor (C13 §5.2 redirects; a `merge`
+  or `detach` keeps its own rules).
 * `artwork` gains `origin_node`, `fetched_from`, `sources_tried`, `peer_digest` and `digest_provenance`.
   `origin_node` is backfilled from the retained `artwork` entries: a row a retained entry lists (same record,
   source and address) came from that entry's feed.
@@ -23,7 +24,9 @@ Upgrade (CONTRACT-C13 §9.3):
 Downgrade (needs no flag; the previous release reads every remaining row correctly):
 * `wait` rows become `quarantined` / `apply_error` with `attempts = 0` and an "unknown canonical" message, so the
   previous release retries them exactly as it retried them before; upgrading again turns them back into `wait`.
-* `peer.follow` / `peer.via_node_id` of every peer that has a choice are kept aside in `peer_0036_kept`.
+* `peer.follow` / `peer.via_node_id` of every peer that has a choice are kept aside as JSON in the existing
+  `node_state` table (key `peer_0036_kept`, which the previous release never reads), so the schema at 0035 is
+  exactly the previous release's.
 * `feed_introduced` is dropped (upgrading again rebuilds it from the feed itself), as are the media columns (they
   describe the cache, which the previous release keeps using as before).
 """
@@ -104,12 +107,18 @@ def upgrade() -> None:
 
 
 def _restore_peers(bind: Any) -> None:
-    if not sa.inspect(bind).has_table(PEER_KEPT):
+    raw = bind.execute(sa.text("SELECT value FROM node_state WHERE key = :k"), {"k": PEER_KEPT}).scalar()
+    if raw is None:
         return
-    for pid, follow, via in bind.execute(sa.text(f"SELECT id, follow, via_node_id FROM {PEER_KEPT}")).all():
-        bind.execute(sa.text("UPDATE peer SET follow = :f, via_node_id = :v WHERE id = :i"),
-                     {"f": follow, "v": via, "i": pid})
-    op.drop_table(PEER_KEPT)
+    try:
+        kept = json.loads(raw)
+    except ValueError:
+        kept = []
+    for item in kept if isinstance(kept, list) else []:
+        if isinstance(item, dict) and item.get("follow") in ("own", "relayed"):
+            bind.execute(sa.text("UPDATE peer SET follow = :f, via_node_id = :v WHERE id = :i"),
+                         {"f": item["follow"], "v": item.get("via_node_id"), "i": str(item.get("id"))})
+    bind.execute(sa.text("DELETE FROM node_state WHERE key = :k"), {"k": PEER_KEPT})
 
 
 def _backfill_introduced(bind: Any) -> None:
@@ -157,10 +166,11 @@ def _waiting_rows(bind: Any) -> None:
             continue
         missing = [c for c in names
                    if bind.execute(sa.text("SELECT 1 FROM canonical WHERE id = :c"), {"c": c}).first() is None]
-        waiting = (missing or names)[0]
+        if not missing:
+            continue  # merged since: the retry applies it through the redirect
         bind.execute(sa.text(
             "UPDATE sync_failure SET disposition = 'wait', reason = 'waiting_for_record', waiting_for = :w "
-            "WHERE node_id = :n AND seq = :s"), {"w": waiting, "n": node_id, "s": seq})
+            "WHERE node_id = :n AND seq = :s"), {"w": missing[0], "n": node_id, "s": seq})
 
 
 def _artwork_origins(bind: Any) -> None:
@@ -192,11 +202,10 @@ def downgrade() -> None:
         "UPDATE sync_failure SET disposition = 'quarantined', reason = 'apply_error', attempts = 0, error = :m "
         "WHERE disposition = 'wait'"), {"m": DOWN_MESSAGE})
     kept = bind.execute(sa.text("SELECT id, follow, via_node_id FROM peer WHERE follow IS NOT NULL")).all()
-    op.create_table(PEER_KEPT, sa.Column("id", sa.String(26), primary_key=True),
-                    sa.Column("follow", sa.String(8)), sa.Column("via_node_id", sa.String(64), nullable=True))
+    bind.execute(sa.text("DELETE FROM node_state WHERE key = :k"), {"k": PEER_KEPT})
     if kept:
-        table = sa.table(PEER_KEPT, sa.column("id"), sa.column("follow"), sa.column("via_node_id"))
-        bind.execute(table.insert(), [{"id": i, "follow": f, "via_node_id": v} for i, f, v in kept])
+        bind.execute(sa.text("INSERT INTO node_state (key, value) VALUES (:k, :v)"), {"k": PEER_KEPT, "v": json.dumps(
+            [{"id": i, "follow": f, "via_node_id": v} for i, f, v in kept], sort_keys=True)})
     with op.batch_alter_table("artwork") as batch:
         for name, _kind in ART_COLUMNS:
             batch.drop_column(name)

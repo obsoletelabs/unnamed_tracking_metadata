@@ -312,3 +312,154 @@ def test_sync_info_reports_what_the_feed_introduced(tmp_path):
     relayed = mirror.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {mirror.token}"}).json()
     assert "records" not in relayed and relayed["own_head"] == 0
     assert [(f["node_id"], f["empty"]) for f in relayed["feeds"]] == [(authority.node_id, False)]
+
+
+def test_wake_batches_large_groups_in_order(tmp_path):
+    """T-F14: more waiting entries than `sync_wake_batch`, and a newer entry for the same record in the same page.
+    Every waiting entry applies (in batches) before the next entry of the feed, so the newest list wins, as on the
+    authority, and nothing is left open."""
+    authority = Node(tmp_path, "authority", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror", sync_wake_batch=2)
+    cid = provider_only(authority)
+    for n in range(5):
+        curate_art(authority, cid, [{"kind": "screenshot", "url": f"https://img.example.org/s{n}.png"}])
+    pull(mirror, authority)
+    assert len(waiting(mirror, authority)) == 5
+    configure(authority, emit_protocol="1.5")
+    with authority.st.maker() as s:
+        feed.introduce_batch(s, authority.st.ctx, "missing")
+        s.commit()
+    curate_art(authority, cid, [{"kind": "screenshot", "url": "https://img.example.org/newest.png"}])
+    pull(mirror, authority)
+    assert art(mirror, cid) == art(authority, cid) == [("screenshot", "https://img.example.org/newest.png")]
+    assert waiting(mirror, authority) == []
+    with mirror.st.maker() as s:
+        assert s.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))).first() is None
+    assert mirror.heads(authority)["state"] == "in_sync"
+
+
+def test_wake_is_scoped_to_introducing_feed(tmp_path):
+    """T-F12: feed B signs artwork for a record only feed A introduces. When A introduces it, B's entry keeps
+    waiting: not on A's pull, not on B's retry pass, not on the startup wake. B cannot stage changes for A's record."""
+    a = Node(tmp_path, "a", "authority", emit_protocol="1.5")
+    b = Node(tmp_path, "b", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(a)
+    b.emit("artwork", {"canonical_id": cid, "source": "curator",
+                       "items": [{"kind": "key_art", "url": "https://img.example.org/staged.png"}]})
+    pull(mirror, b)
+    assert waiting(mirror, b) == [(1, "artwork", "wait", "waiting_for_record", cid, 1)]
+    curate_art(a, cid)  # A introduces the record (a `record` entry) before its own artwork
+    pull(mirror, a)
+    assert art(mirror, cid) == ART_ROWS
+    pull(mirror, b)
+    with mirror.st.maker() as s:
+        assert sync.retry_failures(s, mirror.st.ctx, b.node_id, due_only=False)["retried"] == 0
+        assert sync._wake_ready(s, mirror.st.ctx, None, 100) == 0
+        s.commit()
+    assert waiting(mirror, b) == [(1, "artwork", "wait", "waiting_for_record", cid, 1)]
+    assert art(mirror, cid) == ART_ROWS  # the staged list never landed
+    assert mirror.heads(b)["state"] == "waiting"
+
+
+def test_sidecar_for_locally_merged_record_applies_to_survivor(tmp_path):
+    """T-F4: the follower's operator merged two records here. A later artwork entry for the merged-away record
+    applies to the survivor (C13 §5.2 redirects) instead of failing for ever."""
+    authority = Node(tmp_path, "authority", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    x, y = authority.publish("Hades"), authority.publish("Hades (duplicate)")
+    pull(mirror, authority)
+    with mirror.st.maker() as s:
+        service.merge_canonicals(s, mirror.st.ctx, x, y, actor="admin")
+        s.commit()
+    curate_art(authority, x)
+    pull(mirror, authority)
+    assert art(mirror, y) == ART_ROWS
+    with mirror.st.maker() as s:
+        assert s.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))).first() is None
+    assert mirror.heads(authority)["state"] == "in_sync"
+
+
+def test_record_apply_cross_origin_opens_review(tmp_path):
+    """T-F6 (second half): two authorities each publish a record for the same Steam game. On a follower of both,
+    the second record is not merged into the first: a `cross_origin_duplicate` review names both, with the shared
+    store id as evidence. Applying the record again opens nothing new."""
+    from atlas.models import ReviewItem
+
+    a = Node(tmp_path, "a", "authority", emit_protocol="1.5")
+    b = Node(tmp_path, "b", "authority", emit_protocol="1.5")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    first, second = provider_only(a, "Subnautica 2", "1962700"), provider_only(b, "Subnautica 2", "1962700")
+    curate_art(a, first)
+    curate_art(b, second)
+    pull(mirror, a)
+    pull(mirror, b)
+    with mirror.st.maker() as s:
+        assert s.get(Canonical, first).merged_into is None and s.get(Canonical, second).merged_into is None
+        [item] = s.scalars(select(ReviewItem).where(ReviewItem.kind == "cross_origin_duplicate")).all()
+        assert (item.canonical_id, item.candidates, item.status) == (second, [[first, 1.0]], "open")
+        assert item.evidence == [{"kind": "shared_store_id", "namespace": "steam", "external_id": "1962700"}]
+        sync.replay(s, mirror.st.ctx, b.node_id)
+        s.commit()
+    with mirror.st.maker() as s:
+        assert len(s.scalars(select(ReviewItem).where(ReviewItem.kind == "cross_origin_duplicate")).all()) == 1
+
+
+def test_upstream_defect_needs_introduced_through(tmp_path):
+    """T-F15: without `introduced_through` the group reads `upstream_unpublished`; once the upstream says it
+    introduced every record through a seq this node has applied, the same group is reported as the upstream's
+    defect. The copy-a-note text names the record and the fix."""
+    from atlas.models import NodeState
+
+    authority = Node(tmp_path, "authority", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(authority)
+    curate_art(authority, cid)
+    pull(mirror, authority)
+    with mirror.st.maker() as s:
+        [group] = sync.waiting_groups(s, authority.node_id)
+    assert (group["subreason"], group["canonical_id"], group["kinds"], group["seqs"]) == (
+        "upstream_unpublished", cid, {"artwork": 1}, [1, 1])
+    assert "atlas feed introduce --missing" in group["note"] and cid in group["note"]
+    with authority.st.maker() as s:  # a broken upstream: it claims everything is introduced
+        s.add(NodeState(key=feed.INTRODUCED_THROUGH, value="1"))
+        s.commit()
+    pull(mirror, authority)
+    with mirror.st.maker() as s:
+        [group] = sync.waiting_groups(s, authority.node_id)
+        assert group["subreason"] == "upstream_defect"
+        assert s.get(NodeState, "sync_introduced_through:" + authority.node_id).value == "1"
+
+
+def test_waiting_has_no_attempt_cap(tmp_path):
+    """T-F3: thirty pulls later the entry still waits, with its single attempt, and nothing says retries stopped."""
+    authority = Node(tmp_path, "authority", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(authority)
+    curate_art(authority, cid)
+    for _ in range(30):
+        pull(mirror, authority)
+    assert waiting(mirror, authority) == [(1, "artwork", "wait", "waiting_for_record", cid, 1)]
+    with mirror.st.maker() as s:
+        assert "stopped" not in s.get(SyncFailure, (authority.node_id, 1)).error
+
+
+def test_removing_a_peer_abandons_its_waiting_entries(tmp_path):
+    """C13 §5.2: removing a peer resolves its open waits as `abandoned` (they stop counting toward the bound); a
+    rescan after following the feed again re-flags them."""
+    authority = Node(tmp_path, "authority", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror")
+    cid = provider_only(authority)
+    curate_art(authority, cid)
+    pull(mirror, authority)
+    with mirror.st.maker() as s:
+        assert sync.abandon_waiting(s, authority.node_id) == 1
+        s.commit()
+    assert waiting(mirror, authority) == []
+    with mirror.st.maker() as s:
+        row = s.get(SyncFailure, (authority.node_id, 1))
+        assert (row.disposition, row.reason, row.resolved_at is not None) == ("wait", "abandoned", True)
+        assert sync.open_waiting(s, authority.node_id)["count"] == 0
+        sync.rescan(s, authority.node_id)
+        s.commit()
+    assert waiting(mirror, authority) == [(1, "artwork", "wait", "dropped_by_previous_release", cid, 2)]
