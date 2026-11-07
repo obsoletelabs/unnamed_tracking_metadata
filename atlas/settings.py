@@ -33,6 +33,24 @@ class Settings(BaseSettings):
     min_follower_protocol: str = "1.0"
     # Highest protocol this node's own feed may use. Unset = min_follower_protocol. Raised in Admin → Peers.
     emit_protocol: str | None = None
+    # CONTRACT-C13 (A19). Environment settings in this release, like A17/A18's (amendment A19).
+    # H54: below protocol 1.5, introduce records with an ordinary 1.0 observation of the source `atlas-record`
+    # (every follower applies it). Off by default: it publishes titles and store ids as an observation.
+    federation_bridge_record_obs: bool = False
+    # H55: `referenced` introduces a record when a signed entry first names it; `all` introduces every live record,
+    # provider imports included. The safe default is `referenced` (owner decision pending).
+    federation_introduce: Literal["referenced", "all"] = "referenced"
+    # H53: what a `record` (or bridge observation) carries besides the id and type: a subset of title, provider_ids.
+    federation_snapshot_fields: list[Literal["title", "provider_ids"]] = Field(
+        default_factory=lambda: ["title", "provider_ids"])
+    # C13 §5: open `wait` + quarantined rows per feed before the follower stops applying it (backlog_full), how many
+    # waiting rows one introduction applies per transaction, and enrichment of introduced records (H56).
+    sync_max_open_failures: int = Field(default=10_000, ge=1)
+    sync_wake_batch: int = Field(default=500, ge=1, le=5000)
+    sync_enrich_from_own_providers: bool = True
+    sync_enrich_per_peer_per_hour: int = Field(default=200, ge=0, le=100_000)
+    # C13 §6.3: ask the feed's own signer for an image digest before the third-party origin is tried.
+    sync_media_prefer_peer: bool = True
 
     # Resolution
     auto_match_threshold: float = Field(default=0.85, ge=0.5, le=1.0)
@@ -228,7 +246,13 @@ class Settings(BaseSettings):
         return self.email_verification or ("required" if self.role == "authority" else "optional")
 
     def trust(self, source: str) -> int:
-        return self.source_trust.get(source, self.default_trust)
+        """`atlas-record` (C13 §3.3) ranks below every provider unless configured: its observation only carries a
+        display title until real observations arrive."""
+        return self.source_trust.get(source, RECORD_TRUST if source == "atlas-record" else self.default_trust)
+
+
+#: The trust of the `atlas-record` source (C13 §3.3), below every listed provider (`rawg` 50 is the lowest).
+RECORD_TRUST = 1
 
 
 @lru_cache

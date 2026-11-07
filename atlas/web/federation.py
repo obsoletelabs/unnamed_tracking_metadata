@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
-from .. import accounts, auth, feed_schema, key_rotation, runtime, secrets_box, service, sync
+from .. import accounts, auth, feed, feed_schema, key_rotation, runtime, secrets_box, service, sync
 from ..models import FollowerSeen, Peer, Setting, SyncCursor, SyncFailure, Token, User
 from ..service import AtlasError
 from ..signing import key_id_for, load_identity, signing_key_at_rest
@@ -150,6 +150,10 @@ def set_emit_protocol(p: Annotated[Ctx, Depends(admin_form)], emit_protocol: Ann
                                                               "followers_behind": behind[:20]})
     p.session.flush()
     p.st.ctx.settings = runtime.effective(p.st.base or s, runtime.load(p.session))
+    record = feed_schema.parse_protocol(feed_schema.RECORD_PROTOCOL)
+    if raising and feed_schema.parse_protocol(current) < record <= feed_schema.parse_protocol(emit_protocol) \
+            and p.st.ctx.settings.role == "authority" and feed.unintroduced_count(p.session, "missing"):
+        feed.schedule_introduce(p.session, "missing")  # C13 §4.2: the sync worker publishes them in batches
     return go("/admin/peers", "saved")
 
 

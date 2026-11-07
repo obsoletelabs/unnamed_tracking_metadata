@@ -194,6 +194,8 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
     reserved = set(ctx.settings.source_trust) | ctx.settings.redistributable_sources
     if ns in reserved and not trusted:
         raise AtlasError(f"source {ns!r} is reserved; it needs a token with the curate scope", "forbidden")
+    if ns == feed_schema.RECORD_SOURCE:  # C13 §3.2: only a feed's own `record` entries write this source
+        raise AtlasError(f"source {ns!r} is reserved for record identities", "forbidden")
     horizon = int(now().timestamp()) + 86400
     results: list[IngestResult] = []
     touched: dict[str, str] = {}  # record -> client change cause, rebuilt once at the end
@@ -335,6 +337,8 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
                     "source_updated_at": obs.source_updated_at, "observed_at": obs.observed_at.isoformat(),
                 },
             })
+        elif ctx.settings.role == "authority" and getattr(ctx.settings, "federation_introduce", "") == "all":
+            feed.ensure_introduced(session, ctx, cid, "publish")  # C13 §4.3 (H55): publish every record
         method = "forced" if decision.reason == "forced" else \
             ({"exact": "exact", "fuzzy": "fuzzy"}.get(decision.reason, "crosswalk") if decision.assigned else "none")
         results.append(IngestResult(
@@ -390,6 +394,10 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
             raise AtlasError("these records are marked as different works; merge with override_distinct to "
                              "end that decision", "distinct", rejection_id=rej.id)
         ended.append(rej.id)
+    if log and ctx.settings.role == "authority":
+        # C13 §4.1: introduce both while their identity (title, store ids) is still on them
+        for cid in (src, dst):
+            feed.ensure_introduced(session, ctx, cid, "merge")
     try:
         record, pre = merges.begin(session, s, d, cause=cause, actor=actor, decision_id=decision_id,
                                    review_id=review_id, origin=origin)
@@ -528,9 +536,15 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
         rebuild(session, ctx, old, cause="detach")
         new = rebuild(session, ctx, cid, cause="detach")
     if log and ctx.settings.role == "authority":
-        feed.emit(session, ctx, "detach", {
+        seq = feed.emit(session, ctx, "detach", {
             "observation_id": observation_id, "canonical_id": old, "new_canonical_id": cid,
         })
+        # C13 §4.1: a follower creates the new record only when it holds the moved observation (it was signed);
+        # otherwise the new record gets its own `record` (or bridge observation) right after the detach.
+        if obs.redistributable:
+            feed.mark(session, cid, seq, feed.VIA_DETACH, "detach")
+        else:
+            feed.ensure_introduced(session, ctx, cid, "detach")
     return new
 
 
