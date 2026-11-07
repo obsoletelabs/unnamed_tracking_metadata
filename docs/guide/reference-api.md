@@ -93,7 +93,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `GET` | `/status` | admin | Role, feed head, replication cursors, the number of feed entries that failed to apply and the named heads per upstream. |
 | `GET` | `/sync/failures` | admin | Mirrored feed entries that could not be applied and still need attention: parked (need a newer release), quarantined, or waiting for their game (`disposition` `wait`, `waiting_for`); `next_try_at` for quarantined ones. |
 | `POST` | `/sync/failures/retry` | admin | Retry failed mirrored entries now, whatever their backoff. |
-| `GET` | `/sync/status` | admin | Protocol versions, named heads (observed, downloaded, verified, applied), parked, quarantined and waiting entries per upstream, the protocol each follower last spoke, and (additive) `peers[]`: each peer's id, name, what it follows and its status code (see [Peer status](federation.md#peer-status)). |
+| `GET` | `/sync/status` | admin | Protocol versions, named heads (observed, downloaded, verified, applied), parked, quarantined and waiting entries per upstream, the protocol each follower last spoke, and (additive) `peers[]`: each peer's id, name, what it follows, its status `{code, label, tone, detail, action}` and its waiting groups `waiting[]` (see [Peer status](federation.md#peer-status)). |
 | `GET` | `/tokens` | admin | List API tokens. |
 | `POST` | `/tokens` | admin | Create a token; the secret is returned once. |
 | `DELETE` | `/tokens/{tid}` | admin | Revoke a token. |

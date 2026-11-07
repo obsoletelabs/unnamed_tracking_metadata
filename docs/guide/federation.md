@@ -78,8 +78,11 @@ On the **follower** (set `ATLAS_ROLE=mirror` or `local`, and `ATLAS_SECRET_KEY` 
 
 ### Which feed to follow
 
-A node can sign its own feed and relay the feeds of others (a mirror relays its authorities'). The lookup lists every
-feed the node offers, with its head, and recommends one that is not empty:
+A node can sign its own feed and relay the feeds of others (a mirror relays its authorities'). The lookup reads
+`/sync/info` and always asks `/sync/changes` for the node's own head (which also proves the token has the **sync**
+scope; without it the screen says so and every follow button is disabled). It lists the node's own feed first, then
+every feed it relays, each with its head, and recommends the own feed unless that is known to be empty (a pure
+mirror), in which case it recommends the relayed feed that holds the most:
 
 * **Its own feed** (`own`): the node's own signed entries. Choose it for an authority. A peer that follows its own
   feed never falls back to a relayed one: if the node later answers as someone else, the sync fails with "now
@@ -87,9 +90,20 @@ feed the node offers, with its head, and recommends one that is not empty:
 * **A feed it relays** (`relayed`): an authority's feed served through this node (for example a local node that
   follows an authority through its mirror). The authority's identity is pinned, not the relay's.
 
+Two choices need an explicit acknowledgement, checked by the server (a form without it answers 400):
+
+* following a **relayed** feed, or any feed at a plain `http` address: "I compared the fingerprint with that
+  operator" (`ack_relayed_fingerprint`);
+* following an **empty** feed: "Follow it anyway — it has no entries yet" (`ack_empty`).
+
+A feed whose key differs from the one this node already pinned or retains for that node id (`key_mismatch`) is shown
+disabled and is never re-pinned from the lookup. The choice is bound to what you looked up (`probe_token`, an HMAC
+over the address, the feed's node id and key, the mode, the relay and whether it was empty, keyed to your session and
+valid for ten minutes), so a form cannot be replayed with another key, mode or session; the add form without a
+choice is refused.
+
 Peers added before this release have no choice recorded. They keep working as before; Admin → Peers shows the feed
-Atlas inferred from the last sync and a banner asks you to confirm it once (**Admin → Peers → Confirm**). The
-choice is bound to what you looked up (`probe_token`), so a form cannot be replayed with another key.
+Atlas inferred from the last sync and a banner asks you to confirm it once (**Admin → Peers → Confirm**).
 
 ### Peer status
 
@@ -101,10 +115,16 @@ choice is bound to what you looked up (`probe_token`), so a form cannot be repla
 | Empty feed | the upstream's chosen feed has no entries: often the wrong feed was chosen |
 | Not contacted yet | added, never synced |
 | Unreachable | the last sync could not connect (DNS, TLS, timeout) |
-| Needs you | refused, rewound, parked or quarantined entries: open the peer for the reason |
+| Needs you | refused, rewound, parked behind an upgrade, or too many open entries (`backlog_full`): open the peer for the reason |
 | Paused | the peer is disabled |
 
-The same codes are in `GET /api/v2/sync/status` → `peers[].status`.
+Entries that could not be applied (quarantined) leave a caught-up peer at **Caught up · some entries waiting**, with
+a line naming them; they retry on their own with backoff.
+
+`GET /api/v2/sync/status` → `peers[].status` is `{code, label, tone, detail, action}` (the code is one of the above:
+`caught_up`, `caught_up_waiting`, `catching_up`, `empty`, `not_contacted`, `unreachable`, `needs_you`, `paused`), and
+`peers[].waiting[]` lists the waiting groups (`cause`, `subreason`, `label`, `count`, `canonical_id`, `kinds`, `seqs`,
+`since`, `retry`, `action`, `note`).
 
 You can also configure a single upstream with environment variables (`ATLAS_UPSTREAM_URL`, `ATLAS_UPSTREAM_TOKEN`, `ATLAS_TRUSTED_KEYS`; see [Environment variables](reference-env.md)); use whichever you prefer, and you can follow several peers from the UI.
 
@@ -269,9 +289,17 @@ introduced yet. Raising the emit protocol to 1.5 in Admin → Peers schedules `-
 On a follower of this release, an entry that names a game it does not hold **waits** for it instead of failing:
 it is recorded with the reason `waiting_for_record` and the game it waits for, no attempt is counted, the cursor
 moves on and the upstream's state is `waiting`. When the game arrives (a `record`, a bridge observation or any
-observation of it) the waiting entries are applied in feed order in the same pull (`ATLAS_SYNC_WAKE_BATCH` per
-transaction; the retry pass applies the rest). Admin → Peers lists waiting entries grouped by game. A follower
-never redirects a waiting entry to the survivor of a merge it has not received: it waits for the authority's merge.
+observation of it) the waiting entries are applied in feed order in the same pull, before the next entry of that
+feed (in batches of `ATLAS_SYNC_WAKE_BATCH`, each flushed before the next). Only the feed that introduced the game
+wakes its own entries: another feed's entries naming the same game keep waiting until that feed introduces it.
+Admin → Peers lists waiting entries grouped by peer and game, headed **Waiting for its game**, with the reason (the
+upstream has not published it yet; its feed is missing it although `/sync/info.introduced_through` says otherwise; or
+the entry that brings it did not apply) and **Copy a note** for the upstream's operator. Removing a peer resolves its
+waiting entries as `abandoned` (`atlas sync replay --rescan` finds them again if you follow the feed again).
+
+An artwork, achievements, custom-field, lock, unlock or relation entry for a game that was merged on this node applies
+to the surviving record (merges and detaches never follow a redirect). A record whose store id already belongs to a
+record another upstream introduced is never merged into it: Review lists the pair as `cross_origin_duplicate`.
 
 Older followers: a 1.1–1.4 follower quarantines such an entry and its own retry (at most 20 attempts) applies it
 once the bridge observation has arrived; the drill checks this against a real 1.1 release. A 1.0 follower drops it; after upgrading, `atlas sync replay --rescan` finds it (it waits
