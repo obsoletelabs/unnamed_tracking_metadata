@@ -13,9 +13,10 @@ nodes' databases.
 
 The same failure against real 1.0 and 1.1 followers: `python -m tools.skew_drill --scenario records`.
 
-This covers part of C13 §10.2 (see CONTRACT-AMENDMENTS A19 #11 for the steps it does not run: the contract's
-upstream U with a 23-entry legacy shape and a relayed empty feed F, the `records` 7/5/2 counts, variant 3a,
-`introduce --all` with a silent record Q, `atlas_sync_woken_total`, and variants 7a, 7a' and 7b).
+This covers C13 §10.2 on the wired network (relays included). The contract's own shape (upstream U with a relayed
+empty feed F, the `records` 7/5/2 counts, `introduce --all` with a silent record Q, `atlas_sync_woken_total`) and
+variants 7a and 7a' are `test_c13_contract_shape.py`; variant 3a is in-process (`tests/test_c13_peers.py`); variant
+7b ("Look it up") is an open owner decision and not built.
 """
 
 from __future__ import annotations
