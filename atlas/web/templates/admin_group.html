@@ -43,7 +43,7 @@
 <section class="card" aria-labelledby="g-card" data-group-status="{{ group.status }}"><h2 id="g-card">{{ group.name }}</h2>
   <dl class="facts">
     <dt>Group fingerprint</dt><dd><code class="fingerprint">{{ fp(group.group_id) }}</code></dd>
-    <dt>Status</dt><dd><span class="badge {{ 'ok' if group.status == 'active' else 'warn' }}">{{ group.status }}</span></dd>
+    <dt>Status</dt><dd><span class="badge status {{ 'ok' if group.status == 'active' else 'warn' }}">{{ group.status }}</span></dd>
     <dt>Group root</dt><dd>{{ {'holder': 'on this node (passphrase-locked)', 'moved': 'moved to another member', 'none': 'on another member or offline'}[group.root_state] }}</dd>
     <dt>Recovery</dt><dd>{{ group.recovery.threshold }}-of-{{ group.recovery['keys']|length }}</dd>
     <dt>Revocation lists</dt><dd>{% if crl_seq %}{% for issuer, seq in crl_seq.items() %}<span class="chip">{{ 'root' if issuer == 'root' else fp(issuer) }} #{{ seq }}</span> {% endfor %}{% else %}none yet{% endif %}</dd>
@@ -59,14 +59,14 @@
   <form class="inline" method="post" action="/admin/group/sync">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Sync with members now</button></form>
 </section>
 <section aria-labelledby="g-members"><h2 id="g-members">Members ({{ members|length }})</h2>
-<div class="table-scroll"><table data-group-members><thead><tr><th scope="col">Node</th><th scope="col">Address</th><th scope="col">Permissions</th><th scope="col">Certificate</th><th scope="col">Status</th><th scope="col">Last seen</th><th scope="col">Actions</th></tr></thead><tbody>
+<div class="table-scroll"><table class="data-cards" data-group-members><thead><tr><th scope="col">Node</th><th scope="col">Address</th><th scope="col">Permissions</th><th scope="col">Certificate</th><th scope="col">Status</th><th scope="col">Last seen</th><th scope="col">Actions</th></tr></thead><tbody>
 {% for m in members %}{% set cert = certs[m.node_id] %}<tr data-member="{{ m.node_id }}" data-member-status="{{ m.status }}">
-  <td><code class="fingerprint"><strong>{{ fp(m.node_id) }}</strong></code><div class="small">{{ m.name }}{% if m.node_id == me_id %} <span class="badge">this node</span>{% endif %}</div></td>
-  <td class="small">{{ m.url }}{% if cert and not cert.body.member.url_verified %}<div class="badge warn">address not verified</div>{% endif %}</td>
-  <td><ul class="chips">{% for s in m.scopes %}<li class="chip">{{ s }}</li>{% endfor %}</ul>{% if m.delegate %}<div class="small muted">{% if m.delegate.may_enrol and 'group.enrol' in m.scopes %}may enrol up to {{ m.delegate.max_members }} nodes{% endif %}{% if 'grant.issue' in m.scopes %}{% if m.delegate.may_enrol and 'group.enrol' in m.scopes %}; {% endif %}may grant {{ m.delegate.may_grant_roles|join(', ') or 'nothing' }} on {{ m.delegate.may_grant_nodes|length }} node(s){% endif %}</div>{% endif %}</td>
-  <td class="small"><code>{{ m.serial }}</code><div class="muted">{% if cert %}{{ 'root' if cert.body.issuer == 'root' else 'by ' ~ fp(cert.body.issuer) }} · {% endif %}expires {{ when(m.not_after) }}</div></td>
-  <td><span class="badge {{ 'ok' if m.status == 'active' else ('warn' if m.status in ('expiring', 'expired') else 'bad') }}">{{ m.status }}</span></td>
-  <td class="small">{% if m.last_seen_at %}{{ when(m.last_seen_at) }}{% else %}—{% endif %}{% if m.last_error %}<div class="error">{{ m.last_error }}</div>{% endif %}</td>
+  <td data-label="Node"><code class="fingerprint"><strong>{{ fp(m.node_id) }}</strong></code><div class="small">{{ m.name }}{% if m.node_id == me_id %} <span class="badge">this node</span>{% endif %}</div></td>
+  <td class="small" data-label="Address">{{ m.url }}{% if cert and not cert.body.member.url_verified %}<div class="badge warn">address not verified</div>{% endif %}</td>
+  <td data-label="Permissions"><ul class="chips">{% for s in m.scopes %}<li class="chip">{{ s }}</li>{% endfor %}</ul>{% if m.delegate %}<div class="small muted">{% if m.delegate.may_enrol and 'group.enrol' in m.scopes %}may enrol up to {{ m.delegate.max_members }} nodes{% endif %}{% if 'grant.issue' in m.scopes %}{% if m.delegate.may_enrol and 'group.enrol' in m.scopes %}; {% endif %}may grant {{ m.delegate.may_grant_roles|join(', ') or 'nothing' }} on {{ m.delegate.may_grant_nodes|length }} node(s){% endif %}</div>{% endif %}</td>
+  <td class="small" data-label="Certificate"><code>{{ m.serial }}</code><div class="muted">{% if cert %}{{ 'root' if cert.body.issuer == 'root' else 'by ' ~ fp(cert.body.issuer) }} · {% endif %}expires {{ when(m.not_after) }}</div></td>
+  <td data-label="Status"><span class="badge status {{ 'ok' if m.status == 'active' else ('warn' if m.status in ('expiring', 'expired') else 'bad') }}">{{ m.status }}</span></td>
+  <td class="small" data-label="Last seen">{% if m.last_seen_at %}{{ when(m.last_seen_at) }}{% else %}—{% endif %}{% if m.last_error %}<div class="error">{{ m.last_error }}</div>{% endif %}</td>
   <td>{% if m.node_id != me_id and m.status in ('active', 'expiring', 'expired', 'fork') %}
     <details><summary class="small">Revoke…</summary>
     <form method="post" action="/admin/group/members/{{ m.node_id }}/revoke">{{ csrf(p.csrf) }}

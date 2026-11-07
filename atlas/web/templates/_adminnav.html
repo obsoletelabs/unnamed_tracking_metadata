@@ -1,4 +1,17 @@
-<ul class="tabs" aria-label="Administration">
-  {% for href, label in [('/admin', 'Overview'), ('/admin/users', 'Users'), ('/import', 'Import'), ('/admin/integrations', 'Integrations'), ('/admin/settings', 'Settings'), ('/admin/schema', 'Fields'), ('/admin/pages', 'Pages'), ('/admin/outbox', 'Email'), ('/admin/peers', 'Peers'), ('/admin/group' if p.is_local_admin else '/admin/group/grants', 'Node group'), ('/admin/keys', 'Signing keys'), ('/admin/tokens', 'Tokens'), ('/admin/backup', 'Backups'), ('/admin/oidc', 'Sign-in sharing')] %}
-  <li><a href="{{ href }}"{% if p.request.url.path == href %} aria-current="page"{% endif %}>{{ label }}</a></li>{% endfor %}
+{# Administration tabs, grouped by job (U1). One list, so assistive technology and the tests still find one
+   "Administration" list; the group names are small labels between the tabs. On a phone the bar scrolls sideways
+   instead of wrapping into five rows. A tab is current on its own page and on the pages below it. #}
+{% set path = p.request.url.path %}
+{% set groups = [
+  ('Node', [('/admin', 'Overview'), ('/admin/users', 'Users'), ('/admin/settings', 'Settings'), ('/admin/schema', 'Fields'), ('/admin/pages', 'Pages'), ('/admin/outbox', 'Email')]),
+  ('Catalogue', [('/import', 'Import'), ('/admin/integrations', 'Integrations')]),
+  ('Federation', [('/admin/peers', 'Peers'), ('/admin/group' if p.is_local_admin else '/admin/group/grants', 'Node group'), ('/admin/keys', 'Signing keys'), ('/admin/tokens', 'Tokens'), ('/admin/oidc', 'Sign-in sharing')]),
+  ('Operations', [('/admin/backup', 'Backups')]),
+] %}
+<nav class="admin-nav" aria-label="Administration sections">
+<ul class="tabs" aria-label="Administration" data-scroll-current>
+  {% for group, tabs in groups %}<li class="tab-group" aria-hidden="true">{{ group }}</li>
+  {% for href, label in tabs %}<li><a href="{{ href }}"{% if path == href or (href != '/admin' and path.startswith(href ~ '/')) or (href == '/admin/group' and path.startswith('/admin/group')) %} aria-current="page"{% endif %}>{{ label }}</a></li>{% endfor %}
+  {% endfor %}
 </ul>
+</nav>

@@ -1,46 +1,63 @@
 {% extends "base.html" %}
 {% from "macros.html" import csrf %}
 {% block title %}Peers · {{ app_name }}{% endblock %}
+{% block body_class %}peers-page{% endblock %}
 {% block content %}
 <h1>Administration</h1>
 {% include "_adminnav.html" %}
 {% if error %}<div class="card {{ 'error' if 'fail' in error|lower or 'could not' in error|lower else '' }}" role="status">{{ error }}</div>{% endif %}
-<div class="card"><h3>This node</h3>
-  <dl class="facts"><dt>Node ID</dt><dd><code>{{ fp }}</code></dd><dt>Trust anchor public key</dt><dd><code>{{ own.trust_public_b64 }}</code></dd></dl>
-  <p class="small muted">Give these to the administrators of nodes that should replicate from this one. Compare the node ID out of band when they add you.</p></div>
-<section class="card" aria-labelledby="fed-protocol"><h3 id="fed-protocol">Federation protocol</h3>
-  <dl class="facts"><dt>This release speaks</dt><dd data-protocol="own">{{ protocol.own }}</dd>
-  <dt>Oldest follower served</dt><dd>{{ protocol.min }} <span class="small muted">(ATLAS_MIN_FOLLOWER_PROTOCOL)</span></dd>
-  <dt>This node's feed emits</dt><dd data-protocol="emit"><strong>{{ protocol.emit }}</strong></dd></dl>
-  <p class="small muted">Followers park entries newer than they understand, so features that need a newer protocol (for example platinum achievements in 1.2) stay off this node's feed until you raise the emit protocol. Raise it only after every follower is upgraded.</p>
-  {% if protocol.followers %}<div class="table-scroll"><table><thead><tr><th scope="col">Follower token</th><th scope="col">Protocol</th><th scope="col">Last seen</th></tr></thead><tbody>
-  {% for f in protocol.followers %}<tr data-follower-protocol="{{ f.protocol }}"><td>{{ f.name }}</td><td>{{ f.protocol }}{% if f.behind %} <span class="badge warn">below {{ protocol.emit }}</span>{% endif %}</td><td class="small">{{ when(f.seen) }}</td></tr>{% endfor %}
-  </tbody></table></div>
-  {% if protocol.followers|selectattr('behind')|list %}<p class="error">Some followers speak an older protocol than this node emits. They will park new entries until they upgrade.</p>{% endif %}
-  {% else %}<p class="small muted">No follower has synchronized from this node yet.</p>{% endif %}
-  {% if protocol.choices|length > 1 %}<form method="post" action="/admin/peers/protocol">{{ csrf(p.csrf) }}
-  <label for="emit-protocol">Emit protocol</label><select id="emit-protocol" name="emit_protocol">{% for c in protocol.choices %}<option value="{{ c }}"{% if c == protocol.emit %} selected{% endif %}>{{ c }}</option>{% endfor %}</select>
-  <label for="emit-password">Current password{% if not protocol.has_password %} (or a recent linked sign-in){% endif %}</label><input id="emit-password" name="password" type="password" autocomplete="current-password" maxlength="200" {{ 'required' if protocol.has_password }}>
-  <label><input type="checkbox" name="followers_upgraded"> Every follower runs a release that speaks the chosen protocol (required to raise it).</label>
-  <p><button class="secondary" type="submit" data-confirm="Change the protocol this node's feed emits? Older followers park entries they do not understand.">Change emit protocol</button></p>
-  </form>{% endif %}
-</section>
-{% if records %}<section class="card" aria-labelledby="fed-records" data-records-not-federated="{{ records.not_federated }}"><h3 id="fed-records">Records on this node's feed</h3>
-  <p>{{ records.live }} live record{{ '' if records.live == 1 else 's' }}; {{ records.introduced }} published on this node's feed{% if records.not_federated %}, <strong>{{ records.not_federated }} not federated</strong>{% endif %}.</p>
-  {% if records.missing %}<p class="error">{{ records.missing }} record{{ ' is' if records.missing == 1 else 's are' }} named by signed entries (artwork, achievements, locks…) but {{ 'was' if records.missing == 1 else 'were' }} never published, so followers cannot apply those entries yet.</p>{% endif %}
-  {% if records.not_federated %}{% if records.mode == 'legacy' %}<p class="small muted">Followers learn a record from its first observation. Records built only from provider fetches are published with a <code>record</code> entry, which needs emit protocol 1.5 (or the bridge for older followers, <code>ATLAS_FEDERATION_BRIDGE_RECORD_OBS</code>). Until then nothing can be published.</p>
-  {% elif records.pending %}<p class="small" role="status">Publishing is scheduled; the sync worker signs them in batches.</p>
-  {% else %}<form class="inline" method="post" action="/admin/peers/introduce">{{ csrf(p.csrf) }}<input type="hidden" name="scope" value="{{ 'missing' if records.missing else 'all' }}"><button class="secondary" type="submit" data-confirm="Sign a record entry for each of these records? Followers will learn their titles and store ids.">Publish {{ 'them' if records.missing else 'every record' }}</button></form>{% endif %}{% endif %}
+{% if probe %}
+<h2>Confirm this node and choose its feed</h2>
+<div class="card">
+  <p>The node at <strong>{{ probe.url }}</strong> identifies as:</p>
+  <dl class="facts"><dt>Name</dt><dd>{{ probe.name or '(none)' }}</dd><dt>Role</dt><dd>{{ probe.role }}</dd><dt>Kind</dt><dd><span class="node-badge {{ probe.kind }}">{{ probe.kind }}</span></dd><dt>Node ID</dt><dd><code>{{ probe.fp }}</code></dd><dt>Protocol</dt><dd>{{ probe.protocol }} {% if probe.protocol_ok %}✓ compatible{% else %}<span class="error">✗ not compatible with this release</span>{% endif %}</dd>
+  <dt>Records</dt><dd data-probe-records>{% if probe.records %}{{ probe.records.introduced }} of {{ probe.records.live }} published on its own feed{% if probe.records.not_federated %} ({{ probe.records.not_federated }} it does not publish){% endif %}{% else %}<span class="muted">not reported (an older release)</span>{% endif %}</dd></dl>
+  <p><strong>Check that the node ID of the feed you choose matches the one its administrator gave you.</strong> Atlas will only accept data signed by that key.</p>
+  {% if probe.can_sync == false %}<p class="error" data-probe="no-sync-scope">This token cannot read the change feed: it needs the <em>sync</em> scope. Create a token with the <em>read</em> and <em>sync</em> scopes on that node and look it up again.</p>
+  {% elif probe.can_sync is none %}<p class="small muted" data-probe="head-unknown">The change feed did not answer, so how many entries each feed holds is unknown.</p>{% endif %}
+  {% if not probe.https %}<p class="small error">This address is not <code>https</code>: without TLS the key that answered could be anyone's. Following any feed here asks you to confirm its fingerprint.</p>{% endif %}
+  {% if probe.token and not can_store %}<p class="error">Set <code>ATLAS_SECRET_KEY</code> (run <code>atlas secret-key</code>) to store the token here.</p>{% endif %}
+</div>
+{% for o in probe.options %}<form class="card choose-feed{{ ' recommended' if o.recommended }}" method="post" action="/admin/peers" data-feed-option="{{ o.follow }}" data-feed-node="{{ o.node_id }}" data-feed-trust="{{ o.trust }}" data-feed-warnings="{{ o.warnings|join(' ') }}">{{ csrf(p.csrf) }}
+  <h3>{{ o.label }}{% if o.recommended %} <span class="badge ok">recommended</span>{% endif %}{% if o.already %} <span class="badge warn">already a peer</span>{% endif %}</h3>
+  <dl class="facts"><dt>Signed by</dt><dd><code>{{ o.fp }}</code>{% if o.follow == 'relayed' %} <span class="small muted">(not {{ probe.name or 'the node above' }}: it only relays this feed)</span>{% endif %}</dd>
+  <dt>Holds</dt><dd>{% if o.head is none %}unknown{% elif o.empty %}<strong>nothing yet</strong>{% else %}{{ o.head }} signed entr{{ 'y' if o.head == 1 else 'ies' }}{% endif %}</dd></dl>
+  {% if o.trust == 'key_mismatch' %}<p class="small error">This feed's key differs from the one you already trust for <code>{{ o.fp }}</code>. Atlas does not re-pin it from here; compare the keys with its operator first.</p>{% endif %}
+  {% if o.empty %}<p class="small error">⚠ Empty: following this receives nothing{% if o.follow == 'own' and 'own_feed_empty_but_relayed_has_data' in o.warnings %}; the authority feed it relays holds the data{% endif %}.</p>{% endif %}
+  {% if 'smaller_than_own' in o.warnings %}<p class="small error">This copy holds fewer entries than {{ probe.name or 'the node' }}'s own catalogue.</p>{% endif %}
+  <input type="hidden" name="url" value="{{ probe.url }}"><input type="hidden" name="token" value="{{ probe.token }}">
+  <input type="hidden" name="node_id" value="{{ o.node_id }}"><input type="hidden" name="public_key" value="{{ o.public_key }}">
+  <input type="hidden" name="follow" value="{{ o.follow }}"><input type="hidden" name="via_node_id" value="{{ o.via or '' }}">
+  <input type="hidden" name="empty" value="{{ '1' if o.empty else '' }}">
+  <input type="hidden" name="probe_token" value="{{ o.probe_token }}">
+  <label for="pname-{{ loop.index }}">Name</label><input id="pname-{{ loop.index }}" type="text" name="name" value="{{ probe.name }}" maxlength="80">
+  {% if not o.disabled %}
+  {% if o.follow == 'relayed' or not probe.https %}<label><input type="checkbox" name="ack_relayed_fingerprint" required> I compared <strong><code>{{ o.fp }}</code></strong> with {{ 'that authority' if o.follow == 'relayed' else 'that node' }}'s operator</label>{% endif %}
+  {% if o.empty %}<label><input type="checkbox" name="ack_empty" required> Follow it anyway — it has no entries yet</label>{% endif %}
+  <p><button{% if not o.recommended %} class="secondary"{% endif %} type="submit"{% if probe.can_sync == false %} disabled{% endif %}>Follow {{ (probe.name or 'this node') ~ "'s own catalogue" if o.follow == 'own' else 'the copy signed by ' ~ o.fp }}{% if o.head is not none %} ({{ o.head }} entr{{ 'y' if o.head == 1 else 'ies' }}){% endif %}</button></p>
+  {% elif o.already %}<p class="small muted">Already followed.</p>{% endif %}
+</form>{% endfor %}
+{% endif %}
+{# Sync health (U1): one tile per peer status that occurs (the C13 labels), then waiting and failed entries. #}
+{% set counts = {} %}{% for r in rows %}{% set _ = counts.update({r.status: counts.get(r.status, 0) + 1}) %}{% endfor %}
+{% if rows or waiting.count or failures_open %}<section aria-labelledby="sync-health" data-sync-health>
+<h2 id="sync-health" class="flush-top">Sync health</h2>
+<ul class="stats">
+{% for code in ['caught_up', 'caught_up_waiting', 'catching_up', 'not_contacted', 'empty', 'paused', 'unreachable', 'needs_you'] %}{% if counts.get(code) %}{% set label = status_labels[code] %}
+<li class="stat tone-{{ label[1] }}" data-health-status="{{ code }}"><span class="stat-value">{{ counts[code] }}</span><span class="stat-label"><a href="#peer-list">{{ label[0] }}</a></span></li>{% endif %}{% endfor %}
+{% if waiting.count %}<li class="stat tone-warn" data-health="waiting"><span class="stat-value">{{ waiting.count }}</span><span class="stat-label"><a href="#waiting-entries">Entries waiting for their record</a></span></li>{% endif %}
+{% if failures_open %}<li class="stat tone-bad" data-health="failed"><span class="stat-value">{{ failures_open }}</span><span class="stat-label"><a href="#failed-entries">Entries that could not be applied</a></span></li>{% endif %}
+</ul>
 </section>{% endif %}
-<h2>Peers this node replicates from</h2>
+<div class="section-head"><h2 id="peer-list">Peers this node replicates from</h2>{% if rows and not probe %}<a class="btn secondary small" href="#add-peer">Add a peer</a>{% endif %}</div>
 {% if env_upstream %}<p class="small muted">The environment also configures an upstream: <code>{{ env_upstream }}</code> (ATLAS_UPSTREAM_URL).</p>{% endif %}
 {% set unconfirmed = rows|selectattr('peer.follow', 'none')|list %}
 {% if unconfirmed %}<div class="card" role="status" data-banner="confirm-follow"><p><strong>Confirm which feed {{ 'this peer follows' if unconfirmed|length == 1 else 'these peers follow' }}.</strong> {{ 'It was' if unconfirmed|length == 1 else 'They were' }} added before Atlas asked whether to follow a node's own feed or an authority feed it relays, so each sync still guesses. Confirm the choice below; nothing changes until you do.</p></div>{% endif %}
-{% if rows %}<div class="table-scroll"><table><thead><tr><th>Peer</th><th>Follows</th><th>Status</th><th>Last sync</th><th></th></tr></thead><tbody>
-{% for r in rows %}{% set h = r.heads %}<tr id="peer-{{ r.peer.id }}" data-peer-state="{{ h.state if h else 'unknown' }}" data-peer-status="{{ r.status }}"><td><strong>{{ r.peer.name }}</strong><div class="small muted">{{ r.peer.url }}{% if r.peer.remote_protocol %} · protocol {{ r.peer.remote_protocol }}{% endif %}</div><div class="small"><code>{{ r.fp }}</code></div></td>
-<td class="small">{% if r.peer.follow == 'own' %}its own feed{% elif r.peer.follow == 'relayed' %}an authority feed it relays{% if r.via_fp %}<div class="muted">relay <code>{{ r.via_fp }}</code></div>{% endif %}{% else %}<span class="badge warn">not confirmed</span>{% if r.inferred %}<div class="muted">last sync used {{ 'its own feed' if r.inferred.follow == 'own' else 'a relayed authority feed' }}</div>{% endif %}
+{% if rows %}<div class="table-scroll"><table class="peers"><thead><tr><th scope="col">Peer</th><th scope="col">Follows</th><th scope="col">Status</th><th scope="col">Last sync</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody>
+{% for r in rows %}{% set h = r.heads %}<tr id="peer-{{ r.peer.id }}" data-peer-state="{{ h.state if h else 'unknown' }}" data-peer-status="{{ r.status }}"><td data-label="Peer"><strong>{{ r.peer.name }}</strong><div class="small muted">{{ r.peer.url }}{% if r.peer.remote_protocol %} · protocol {{ r.peer.remote_protocol }}{% endif %}</div><div class="small"><code>{{ r.fp }}</code></div></td>
+<td class="small" data-label="Follows">{% if r.peer.follow == 'own' %}its own feed{% elif r.peer.follow == 'relayed' %}an authority feed it relays{% if r.via_fp %}<div class="muted">relay <code>{{ r.via_fp }}</code></div>{% endif %}{% else %}<span class="badge warn">not confirmed</span>{% if r.inferred %}<div class="muted">last sync used {{ 'its own feed' if r.inferred.follow == 'own' else 'a relayed authority feed' }}</div>{% endif %}
 <form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/follow">{{ csrf(p.csrf) }}<input type="hidden" name="follow" value="{{ r.inferred.follow if r.inferred else 'own' }}"><button class="secondary small" type="submit">Confirm {{ 'own feed' if not r.inferred or r.inferred.follow == 'own' else 'relayed feed' }}</button></form>{% endif %}</td>
-<td><span class="badge {{ r.badge.tone }}" data-peer-badge>{{ r.badge.label }}</span>{% if r.badge.detail %}<div class="small" data-peer-detail>{{ r.badge.detail }}</div>{% endif %}{% if h %}
+<td data-label="Status"><span class="badge status {{ r.badge.tone }}" data-peer-badge>{{ r.badge.label }}</span>{% if r.badge.detail %}<div class="small" data-peer-detail>{{ r.badge.detail }}</div>{% endif %}{% if h %}
 <div class="small muted" title="observed (claimed by the upstream, unsigned) / downloaded / verified (signed, relayable) / applied">applied {{ h.applied_head }} · verified {{ h.verified_head }} · seen {{ h.observed_head }}</div>
 {% if r.status == 'empty' %}<div class="small">This feed holds nothing yet.{% if r.peer.follow != 'relayed' %} If this node is a mirror, follow the authority feed it relays instead (remove this peer and look it up again).{% endif %}</div>{% endif %}
 {% if h.waiting.count %}<div class="small">{{ h.waiting.count }} entr{{ 'y waits' if h.waiting.count == 1 else 'ies wait' }} for {{ h.waiting.records }} record{{ '' if h.waiting.records == 1 else 's' }} the feed has not published yet (<a href="#waiting-entries">details</a>).</div>{% endif %}
@@ -50,10 +67,10 @@
 {% if h.quarantined.count %}<div class="small error">{{ h.quarantined.count }} entr{{ 'y' if h.quarantined.count == 1 else 'ies' }} could not be applied (<a href="#failed-entries">details</a>).</div>{% endif %}
 {% if h.refused %}<div class="small error">Refused: {{ h.refused.reason }}</div>{% endif %}
 {% if h.rewound %}<div class="small error">Rewound or forked: {{ h.rewound.reason }}</div>{% endif %}{% endif %}</td>
-<td class="small">{% if r.peer.last_ok_at %}{{ when(r.peer.last_ok_at) }}{% else %}never{% endif %}{% if r.peer.last_error %}<div class="error">{{ r.peer.last_error }}</div>{% endif %}</td>
-<td><form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/sync">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Sync now</button></form>
+<td class="small" data-label="Last sync">{% if r.peer.last_ok_at %}{{ when(r.peer.last_ok_at) }}{% else %}never{% endif %}{% if r.peer.last_error %}<div class="error">{{ r.peer.last_error }}</div>{% endif %}</td>
+<td><div class="peer-actions"><form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/sync">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Sync now</button></form>
 <form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/toggle">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">{{ 'Pause' if r.peer.enabled else 'Resume' }}</button></form>
-<form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/delete">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Stop replicating from this peer? Data already received stays." type="submit">Remove</button></form></td></tr>{% endfor %}
+<form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/delete">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Stop replicating from this peer? Data already received stays." type="submit">Remove</button></form></div></td></tr>{% endfor %}
 </tbody></table></div>{% else %}<p class="muted">No peers yet.</p>{% endif %}
 {% if waiting.count %}<section aria-labelledby="waiting-entries">
 <h2 id="waiting-entries">Entries waiting for their record</h2>
@@ -87,45 +104,44 @@
 {% else %}<p class="muted">No failed entries. Every mirrored entry has been applied.</p>{% endif %}
 </section>
 <p class="small muted">Adopting the upstream's media types and fields: <strong>{{ 'on' if inherit else 'off' }}</strong> (Settings → Federation).</p>
-
-{% if probe %}
-<h2>Confirm this node and choose its feed</h2>
-<div class="card">
-  <p>The node at <strong>{{ probe.url }}</strong> identifies as:</p>
-  <dl class="facts"><dt>Name</dt><dd>{{ probe.name or '(none)' }}</dd><dt>Role</dt><dd>{{ probe.role }}</dd><dt>Kind</dt><dd><span class="node-badge {{ probe.kind }}">{{ probe.kind }}</span></dd><dt>Node ID</dt><dd><code>{{ probe.fp }}</code></dd><dt>Protocol</dt><dd>{{ probe.protocol }} {% if probe.protocol_ok %}✓ compatible{% else %}<span class="error">✗ not compatible with this release</span>{% endif %}</dd>
-  <dt>Records</dt><dd data-probe-records>{% if probe.records %}{{ probe.records.introduced }} of {{ probe.records.live }} published on its own feed{% if probe.records.not_federated %} ({{ probe.records.not_federated }} it does not publish){% endif %}{% else %}<span class="muted">not reported (an older release)</span>{% endif %}</dd></dl>
-  <p><strong>Check that the node ID of the feed you choose matches the one its administrator gave you.</strong> Atlas will only accept data signed by that key.</p>
-  {% if probe.can_sync == false %}<p class="error" data-probe="no-sync-scope">This token cannot read the change feed: it needs the <em>sync</em> scope. Create a token with the <em>read</em> and <em>sync</em> scopes on that node and look it up again.</p>
-  {% elif probe.can_sync is none %}<p class="small muted" data-probe="head-unknown">The change feed did not answer, so how many entries each feed holds is unknown.</p>{% endif %}
-  {% if not probe.https %}<p class="small error">This address is not <code>https</code>: without TLS the key that answered could be anyone's. Following any feed here asks you to confirm its fingerprint.</p>{% endif %}
-  {% if probe.token and not can_store %}<p class="error">Set <code>ATLAS_SECRET_KEY</code> (run <code>atlas secret-key</code>) to store the token here.</p>{% endif %}
-</div>
-{% for o in probe.options %}<form class="card choose-feed{{ ' recommended' if o.recommended }}" method="post" action="/admin/peers" data-feed-option="{{ o.follow }}" data-feed-node="{{ o.node_id }}" data-feed-trust="{{ o.trust }}" data-feed-warnings="{{ o.warnings|join(' ') }}">{{ csrf(p.csrf) }}
-  <h3>{{ o.label }}{% if o.recommended %} <span class="badge ok">recommended</span>{% endif %}{% if o.already %} <span class="badge warn">already a peer</span>{% endif %}</h3>
-  <dl class="facts"><dt>Signed by</dt><dd><code>{{ o.fp }}</code>{% if o.follow == 'relayed' %} <span class="small muted">(not {{ probe.name or 'the node above' }}: it only relays this feed)</span>{% endif %}</dd>
-  <dt>Holds</dt><dd>{% if o.head is none %}unknown{% elif o.empty %}<strong>nothing yet</strong>{% else %}{{ o.head }} signed entr{{ 'y' if o.head == 1 else 'ies' }}{% endif %}</dd></dl>
-  {% if o.trust == 'key_mismatch' %}<p class="small error">This feed's key differs from the one you already trust for <code>{{ o.fp }}</code>. Atlas does not re-pin it from here; compare the keys with its operator first.</p>{% endif %}
-  {% if o.empty %}<p class="small error">⚠ Empty: following this receives nothing{% if o.follow == 'own' and 'own_feed_empty_but_relayed_has_data' in o.warnings %}; the authority feed it relays holds the data{% endif %}.</p>{% endif %}
-  {% if 'smaller_than_own' in o.warnings %}<p class="small error">This copy holds fewer entries than {{ probe.name or 'the node' }}'s own catalogue.</p>{% endif %}
-  <input type="hidden" name="url" value="{{ probe.url }}"><input type="hidden" name="token" value="{{ probe.token }}">
-  <input type="hidden" name="node_id" value="{{ o.node_id }}"><input type="hidden" name="public_key" value="{{ o.public_key }}">
-  <input type="hidden" name="follow" value="{{ o.follow }}"><input type="hidden" name="via_node_id" value="{{ o.via or '' }}">
-  <input type="hidden" name="empty" value="{{ '1' if o.empty else '' }}">
-  <input type="hidden" name="probe_token" value="{{ o.probe_token }}">
-  <label for="pname-{{ loop.index }}">Name</label><input id="pname-{{ loop.index }}" type="text" name="name" value="{{ probe.name }}" maxlength="80">
-  {% if not o.disabled %}
-  {% if o.follow == 'relayed' or not probe.https %}<label><input type="checkbox" name="ack_relayed_fingerprint" required> I compared <strong><code>{{ o.fp }}</code></strong> with {{ 'that authority' if o.follow == 'relayed' else 'that node' }}'s operator</label>{% endif %}
-  {% if o.empty %}<label><input type="checkbox" name="ack_empty" required> Follow it anyway — it has no entries yet</label>{% endif %}
-  <p><button{% if not o.recommended %} class="secondary"{% endif %} type="submit"{% if probe.can_sync == false %} disabled{% endif %}>Follow {{ (probe.name or 'this node') ~ "'s own catalogue" if o.follow == 'own' else 'the copy signed by ' ~ o.fp }}{% if o.head is not none %} ({{ o.head }} entr{{ 'y' if o.head == 1 else 'ies' }}){% endif %}</button></p>
-  {% elif o.already %}<p class="small muted">Already followed.</p>{% endif %}
-</form>{% endfor %}
-{% else %}
-<h2>Add a peer</h2>
+{% if not probe %}
+<h2 id="add-peer">Add a peer</h2>
 <form class="card" method="post" action="/admin/peers/probe">{{ csrf(p.csrf) }}
   <label for="url">Address</label><input id="url" type="url" name="url" required maxlength="300" placeholder="https://atlas.example.org">
   <label for="token">Token <span class="hint">created on that node with the <em>read</em> and <em>sync</em> scopes (Admin → Tokens){% if not can_store %}; storing it needs ATLAS_SECRET_KEY{% endif %}</span></label>
   <input id="token" type="password" name="token" maxlength="200" autocomplete="off">
   <label for="name">Name</label><input id="name" type="text" name="name" maxlength="80">
+  <p class="small muted">Atlas contacts the node, shows who answered and which feeds it offers, and adds nothing until you choose one.</p>
   <p><button type="submit">Look up node</button></p>
 </form>{% endif %}
+<h2 id="this-node">This node's own feed</h2>
+<div class="cols feed-node">
+<div class="card"><h3>This node</h3>
+  <dl class="facts"><dt>Node ID</dt><dd><code>{{ fp }}</code></dd><dt>Trust anchor public key</dt><dd><code>{{ own.trust_public_b64 }}</code></dd></dl>
+  <p class="small muted">Give these to the administrators of nodes that should replicate from this one. Compare the node ID out of band when they add you.</p></div>
+<section class="card" aria-labelledby="fed-protocol"><h3 id="fed-protocol">Federation protocol</h3>
+  <dl class="facts"><dt>This release speaks</dt><dd data-protocol="own">{{ protocol.own }}</dd>
+  <dt>Oldest follower served</dt><dd>{{ protocol.min }} <span class="small muted">(ATLAS_MIN_FOLLOWER_PROTOCOL)</span></dd>
+  <dt>This node's feed emits</dt><dd data-protocol="emit"><strong>{{ protocol.emit }}</strong></dd></dl>
+  <p class="small muted">Followers park entries newer than they understand, so features that need a newer protocol (for example platinum achievements in 1.2) stay off this node's feed until you raise the emit protocol. Raise it only after every follower is upgraded.</p>
+  {% if protocol.followers %}<div class="table-scroll"><table><thead><tr><th scope="col">Follower token</th><th scope="col">Protocol</th><th scope="col">Last seen</th></tr></thead><tbody>
+  {% for f in protocol.followers %}<tr data-follower-protocol="{{ f.protocol }}"><td>{{ f.name }}</td><td>{{ f.protocol }}{% if f.behind %} <span class="badge warn">below {{ protocol.emit }}</span>{% endif %}</td><td class="small">{{ when(f.seen) }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% if protocol.followers|selectattr('behind')|list %}<p class="error">Some followers speak an older protocol than this node emits. They will park new entries until they upgrade.</p>{% endif %}
+  {% else %}<p class="small muted">No follower has synchronized from this node yet.</p>{% endif %}
+  {% if protocol.choices|length > 1 %}<form method="post" action="/admin/peers/protocol">{{ csrf(p.csrf) }}
+  <label for="emit-protocol">Emit protocol</label><select id="emit-protocol" name="emit_protocol">{% for c in protocol.choices %}<option value="{{ c }}"{% if c == protocol.emit %} selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+  <label for="emit-password">Current password{% if not protocol.has_password %} (or a recent linked sign-in){% endif %}</label><input id="emit-password" name="password" type="password" autocomplete="current-password" maxlength="200" {{ 'required' if protocol.has_password }}>
+  <label><input type="checkbox" name="followers_upgraded"> Every follower runs a release that speaks the chosen protocol (required to raise it).</label>
+  <p><button class="secondary" type="submit" data-confirm="Change the protocol this node's feed emits? Older followers park entries they do not understand.">Change emit protocol</button></p>
+  </form>{% endif %}
+</section>
+</div>
+{% if records %}<section class="card" aria-labelledby="fed-records" data-records-not-federated="{{ records.not_federated }}"><h3 id="fed-records">Records on this node's feed</h3>
+  <p>{{ records.live }} live record{{ '' if records.live == 1 else 's' }}; {{ records.introduced }} published on this node's feed{% if records.not_federated %}, <strong>{{ records.not_federated }} not federated</strong>{% endif %}.</p>
+  {% if records.missing %}<p class="error">{{ records.missing }} record{{ ' is' if records.missing == 1 else 's are' }} named by signed entries (artwork, achievements, locks…) but {{ 'was' if records.missing == 1 else 'were' }} never published, so followers cannot apply those entries yet.</p>{% endif %}
+  {% if records.not_federated %}{% if records.mode == 'legacy' %}<p class="small muted">Followers learn a record from its first observation. Records built only from provider fetches are published with a <code>record</code> entry, which needs emit protocol 1.5 (or the bridge for older followers, <code>ATLAS_FEDERATION_BRIDGE_RECORD_OBS</code>). Until then nothing can be published.</p>
+  {% elif records.pending %}<p class="small" role="status">Publishing is scheduled; the sync worker signs them in batches.</p>
+  {% else %}<form class="inline" method="post" action="/admin/peers/introduce">{{ csrf(p.csrf) }}<input type="hidden" name="scope" value="{{ 'missing' if records.missing else 'all' }}"><button class="secondary" type="submit" data-confirm="Sign a record entry for each of these records? Followers will learn their titles and store ids.">Publish {{ 'them' if records.missing else 'every record' }}</button></form>{% endif %}{% endif %}
+</section>{% endif %}
 {% endblock %}

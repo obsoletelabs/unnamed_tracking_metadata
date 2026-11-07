@@ -3,11 +3,19 @@
 {% block title %}{{ v.get('title') }}{% if mtype_label and g.media_type != 'game' %} · {{ mtype_label }}{% endif %} · {{ app_name }}{% endblock %}
 {% block content %}
 {% if redirected_from %}<div class="flash">This record was merged; you were redirected from <code>{{ redirected_from }}</code>.</div>{% endif %}
+{% set up = (rel.parents or [])|first %}
+<nav class="crumbs" aria-label="Breadcrumb"><ol>
+  <li><a href="/">Home</a></li>
+  <li><a href="/search?type={{ g.media_type }}">{{ mtype_label or 'Catalogue' }}</a></li>
+  {% if up %}<li><a href="/game/{{ up.id }}">{{ up.title or up.id }}</a></li>{% endif %}
+  <li><span aria-current="page">{{ v.get('title') }}</span></li>
+</ol></nav>
 <div class="game-page">
-<div class="hero">
+<div class="hero" id="overview">
   <div class="cover">{% if key_art %}<img src="/media/{{ key_art }}" alt="Artwork for {{ v.get('title') }}">{% endif %}</div>
   <div>
     <h1>{{ v.get('title') }}{% if g.media_type != 'game' %} <span class="badge">{{ mtype_label }}</span>{% endif %}</h1>
+    {% if rel.parents %}<p class="part-of">{% for r in rel.parents %}{{ rel_labels[r.type][0] }} <a href="/game/{{ r.id }}">{{ r.title or r.id }}</a>{{ '; ' if not loop.last }}{% endfor %}</p>{% endif %}
     {{ chips(v.get('platforms')) }}
     <dl class="facts">
       {% set first = v.get('first_release') or ({'date': v.release_date, 'precision': 'day'} if v.get('release_date') else none) %}
@@ -31,7 +39,7 @@
     </dl>
     {% if v.get('releases') %}<h3>Release dates</h3>
     <table class="releases"><thead><tr><th>Date</th><th>Platform</th><th>Region</th><th>Edition</th><th>Type</th></tr></thead><tbody>
-    {% for r in v.releases %}<tr><td><time datetime="{{ r.date }}" data-precision="{{ r.precision }}">{{ release_text(r.date, r.precision, prefs) }}</time></td><td>{{ r.platform or '' }}</td><td>{{ region_name(r.region) }}</td><td>{{ r.edition or '' }}</td><td>{{ category_name(r.category) }}</td></tr>{% endfor %}
+    {% for r in v.releases %}<tr><td><time datetime="{{ r.date }}" data-precision="{{ r.precision }}">{{ release_text(r.date, r.precision, prefs) }}</time></td><td>{{ r.platform or '' }}</td><td>{{ region_name(r.region) }}</td><td>{% if r.edition and v.get('editions') %}<a href="#editions">{{ r.edition }}</a>{% else %}{{ r.edition or '' }}{% endif %}</td><td>{{ category_name(r.category) }}</td></tr>{% endfor %}
     </tbody></table>{% endif %}
     {% if v.get('description') %}<p>{{ v.description }}</p>{% endif %}
     <div class="actions-bar">
@@ -48,10 +56,21 @@
   </div>
 </div>
 
+{% set rel_total = rel.counts.parents + rel.counts.children + rel.counts.members_of + rel.counts.members %}
+<nav class="page-nav wide" aria-label="On this page"><ul>
+  <li><a href="#overview">Overview</a></li>
+  {% if rel_total %}<li><a href="#related">Related <span class="count">{{ rel_total }}</span></a></li>{% endif %}
+  {% if v.get('editions') %}<li><a href="#editions">Editions <span class="count">{{ v.editions|length }}</span></a></li>{% endif %}
+  <li><a href="#artwork">Artwork <span class="count">{{ art_total }}</span></a></li>
+  {% if g.media_type == 'game' %}<li><a href="#achievements">Achievements <span class="count">{{ achievements|length }}</span></a></li>{% endif %}
+  <li><a href="#sources">Sources</a></li>
+  {% if comments_on %}<li><a href="#discussion">Discussion</a></li>{% endif %}
+  {% if p.can_review %}<li><a href="#curation">Curation</a></li>{% endif %}
+</ul></nav>
 <div class="main-col">
 {% include "_relations.html" %}
 {% if p.can_review %}<p class="small"><a href="/game/{{ g.id }}/relations">Edit relations</a> (DLC, ports, remakes, series, collections)</p>{% endif %}
-<h2>Artwork</h2>
+<h2 id="artwork">Artwork</h2>
 {% for grp in gallery %}
 <section class="gallery-group" aria-labelledby="g-{{ grp.kind }}">
 <h3 id="g-{{ grp.kind }}">{{ grp.label }} <span class="muted small">{{ grp.images|length }}</span></h3>
@@ -102,16 +121,26 @@
 
 {% if g.media_type == 'game' %}<h2 id="achievements">Achievements</h2>
 {% if achievements %}
-<div class="table-scroll"><table class="achievements"><thead><tr><th></th><th>Name</th><th>Description</th><th>Points</th><th>Global %</th></tr></thead><tbody>
+{# U1 summary. Counts only: a hidden achievement's name and text never appear here. #}
+{% set plat = achievements|selectattr('tier', 'equalto', 'platinum')|list %}
+<ul class="stats ach-summary" data-ach-summary>
+  <li class="stat"><span class="stat-value">{{ achievements|length }}</span><span class="stat-label">achievement{{ '' if achievements|length == 1 else 's' }}</span></li>
+  {% set pts = achievements|selectattr('points')|map(attribute='points')|sum %}{% if pts %}<li class="stat"><span class="stat-value">{{ pts }}</span><span class="stat-label">points</span></li>{% endif %}
+  {% if plat %}<li class="stat tone-platinum" data-ach-platinum><span class="stat-value"><span class="badge tier-platinum">platinum</span></span><span class="stat-label">{% set pa = plat|first %}{% if pa.hidden and not pa.revealed %}Hidden achievement{% else %}{{ pa.name }}{% endif %}</span></li>{% endif %}
+  {% set hid = achievements|selectattr('hidden')|list|length %}{% if hid %}<li class="stat"><span class="stat-value">{{ hid }}</span><span class="stat-label">hidden (spoiler-free)</span></li>{% endif %}
+  {% set rare = achievements|selectattr('global_percent', 'ne', none)|selectattr('global_percent', 'lt', 5)|list|length %}{% if rare %}<li class="stat tone-bad"><span class="stat-value">{{ rare }}</span><span class="stat-label">ultra rare (under 5%)</span></li>{% endif %}
+</ul>
+<div class="table-scroll"><table class="achievements"><thead><tr><th><span class="visually-hidden">Icon</span></th><th>Name</th><th>Description</th><th>Points</th><th>Global %</th></tr></thead><tbody>
 {% set ns = namespace(set=None) %}
 {% for a in achievements %}{% set concealed = a.hidden and not a.revealed %}
 {% if ach_sets|length > 1 and a.set != ns.set %}{% set ns.set = a.set %}{% set s = ach_sets|selectattr('id', 'equalto', a.set)|first %}<tr class="ach-set"><th colspan="5" scope="rowgroup">{{ s.name or s.key }}{% if s.kind != 'base' %} <span class="badge">{{ s.kind }}</span>{% endif %}{% if s.platforms %} <span class="small muted">{{ s.platforms|join(', ') }}</span>{% endif %}</th></tr>{% endif %}
-<tr{% if a.status == 'unobtainable' %} class="muted"{% endif %}>
-<td class="ach-icon">{% if a.icon_url %}<img src="{{ a.icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="40" height="40" loading="lazy">{% else %}<span class="ach-ph" aria-hidden="true">{{ '?' if concealed else '★' }}</span>{% endif %}</td>
-<td>{% if concealed %}<span data-hidden-name>Hidden achievement</span> <span class="badge">hidden</span>{% else %}{{ a.name }}{% if a.hidden %} <span class="badge">hidden</span>{% endif %}{% endif %}{% if a.kind %} <span class="badge">{{ a.kind|replace('_', ' ') }}</span>{% endif %}{% if a.tier %} <span class="badge tier-{{ a.tier }}">{{ a.tier }}</span>{% endif %}</td>
-<td>{% if concealed %}{% if p.user %}<a class="btn ghost small" href="/game/{{ g.id }}/achievements/{{ a.id }}" data-reveal="/game/{{ g.id }}/achievements/{{ a.id }}?json=1" aria-label="Reveal this hidden achievement (may spoil the game)">Reveal (spoiler)</a>{% else %}<a class="small" href="/login?next=/game/{{ g.id }}/achievements/{{ a.id }}">Sign in to reveal</a>{% endif %}{% else %}{{ a.description }}{% endif %}</td>
-<td>{% if a.points is not none %}{{ a.points }}{% endif %}</td>
-<td>{% if a.global_percent is not none %}{{ '%.1f'|format(a.global_percent) }}% {% if a.global_percent < 5 %}<span class="badge bad">ultra rare</span>{% elif a.global_percent < 15 %}<span class="badge warn">rare</span>{% elif a.global_percent >= 50 %}<span class="badge ok">common</span>{% endif %}{% if a.rarity and a.rarity.stale %} <span class="small muted" title="Measured {{ a.rarity.as_of or 'at an unknown date' }}">(old)</span>{% endif %}{% endif %}{% if a.status == 'unobtainable' %} <span class="badge">unobtainable</span>{% endif %}</td></tr>{% endfor %}
+<tr class="{{ 'muted' if a.status == 'unobtainable' }}{{ ' ach-platinum' if a.tier == 'platinum' }}{{ ' ach-concealed' if concealed }}">
+<td class="ach-icon">{% if a.icon_url %}<img src="{{ a.icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="40" height="40" loading="lazy">{% else %}<span class="ach-ph{{ ' locked' if concealed }}" aria-hidden="true">{{ '?' if concealed else ('◆' if a.tier == 'platinum' else '★') }}</span>{% endif %}</td>
+<td>{% if concealed %}<span class="ach-name" data-hidden-name>Hidden achievement</span> <span class="badge">hidden</span>{% else %}<span class="ach-name">{{ a.name }}</span>{% if a.hidden %} <span class="badge">hidden</span>{% endif %}{% endif %}{% if a.kind %} <span class="badge">{{ a.kind|replace('_', ' ') }}</span>{% endif %}{% if a.tier %} <span class="badge tier-{{ a.tier }}">{{ a.tier }}</span>{% endif %}</td>
+<td class="ach-desc">{% if concealed %}<span class="redacted" aria-hidden="true"></span>{% if p.user %}<a class="btn ghost small" href="/game/{{ g.id }}/achievements/{{ a.id }}" data-reveal="/game/{{ g.id }}/achievements/{{ a.id }}?json=1" aria-label="Reveal this hidden achievement (may spoil the game)">Reveal (spoiler)</a>{% else %}<a class="small" href="/login?next=/game/{{ g.id }}/achievements/{{ a.id }}">Sign in to reveal</a>{% endif %}{% else %}{{ a.description }}{% endif %}</td>
+<td class="ach-points">{% if a.points is not none %}{{ a.points }}<span class="visually-hidden"> points</span>{% endif %}</td>
+<td class="ach-rarity">{% if a.global_percent is not none %}{% set pc = a.global_percent %}<div class="rarity"><div class="rarity-line">{{ '%.1f'|format(pc) }}% {% if pc < 5 %}<span class="badge bad">ultra rare</span>{% elif pc < 15 %}<span class="badge warn">rare</span>{% elif pc >= 50 %}<span class="badge ok">common</span>{% endif %}{% if a.rarity and a.rarity.stale %} <span class="small muted" title="Measured {{ a.rarity.as_of or 'at an unknown date' }}">(old)</span>{% endif %}</div>
+<svg class="rarity-bar {{ 'r-ultra' if pc < 5 else ('r-rare' if pc < 15 else ('r-common' if pc >= 50 else '')) }}" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true" focusable="false"><rect class="track" width="100" height="6"/><rect class="fill" width="{{ [[pc, 1.5]|max, 100]|min }}" height="6"/></svg></div>{% endif %}{% if a.status == 'unobtainable' %} <span class="badge">unobtainable</span>{% endif %}</td></tr>{% endfor %}
 </tbody></table></div>
 {% else %}<p class="muted">No achievements recorded.</p>{% endif %}
 {% if p.user %}<p><a class="btn secondary" href="/game/{{ g.id }}/achievements/edit">Edit achievements</a></p>{% else %}<p class="small"><a href="/login?next=/game/{{ g.id }}/achievements/edit">Sign in</a> to add or edit achievements.</p>{% endif %}
@@ -119,10 +148,10 @@
 
 </div>
 <aside class="side-col">
-<h2>Where this came from</h2>
-<table><thead><tr><th>Field</th><th>Chosen from</th><th>How</th></tr></thead><tbody>
+<h2 id="sources">Where this came from</h2>
+<div class="table-scroll"><table><thead><tr><th>Field</th><th>Chosen from</th><th>How</th></tr></thead><tbody>
 {% for field, e in explain.items() %}<tr><td>{{ field }}</td><td>{% if e.get('source') %}{{ e.source }}{% elif e.get('sources') %}{{ e.sources|join(', ') }}{% elif e.get('entries') %}{{ e.entries|map(attribute='source')|unique|join(', ') }}{% else %}curator lock{% endif %}</td><td>{{ e.strategy }}</td></tr>{% endfor %}
-</tbody></table>
+</tbody></table></div>
 
 {% if activity %}<h2>Recent changes</h2>
 <ul>{% for a in activity %}<li><strong>{{ a.user }}</strong> {{ a.kind|replace('_', ' ') }} <span class="muted small">{{ a.when }}</span>{% if a.note %} — {{ a.note }}{% endif %}</li>{% endfor %}</ul>{% endif %}
@@ -130,13 +159,13 @@
 </aside>
 <div class="wide">
 {% if comments_on %}
-<h2>Discussion</h2>
+<h2 id="discussion">Discussion</h2>
 {% set thread = comments %}{% set action = "/game/" ~ g.id ~ "/comments" %}{% set where = "/game/" ~ g.id %}{% set can_comment = can_comment|default(false) %}
 {% include "_comments.html" %}
 {% endif %}
 
 {% if p.can_review %}
-<h2>Curation</h2>
+<h2 id="curation">Curation</h2>
 <div class="cols">
 <form class="card" method="post" action="/game/{{ g.id }}/merge">{{ csrf(p.csrf) }}
   <h3>Merge into another record</h3>
