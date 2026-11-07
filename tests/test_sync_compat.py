@@ -386,17 +386,20 @@ def test_e_reserved_optional_achievement_key_applies(net):
         assert [a.name for a in session.scalars(select(Achievement))] == ["Keyed One"]
 
 
-def test_f_quarantine_does_not_block(net):
+def test_f_an_entry_for_an_unknown_record_does_not_block(net):
+    """An entry naming a record the feed never introduced waits for it (C13 §5.2; it was quarantined before A19)
+    and, like a quarantined entry, does not block the feed."""
     authority, mirror, _ = net
     authority.publish("First")
     bad = authority.emit("artwork", {"canonical_id": "atlas:" + "9" * 26, "source": "curator",
                                      "items": [{"kind": "key_art", "url": "https://example.test/a.png"}]})
     authority.publish("Last")
     pull(mirror, authority)
-    assert mirror.failures(authority) == [(bad, "artwork", "quarantined", "apply_error")]
+    assert mirror.failures(authority) == [(bad, "artwork", "wait", "waiting_for_record")]
     heads = mirror.heads(authority)
-    assert heads["applied_head"] == authority.head()  # quarantined entries count as passed (H6)
-    assert heads["quarantined"] == {"count": 1, "oldest_seq": bad} and heads["state"] == "degraded"
+    assert heads["applied_head"] == authority.head()  # waiting entries count as passed, as quarantined ones (H6)
+    assert heads["quarantined"] == {"count": 0, "oldest_seq": None} and heads["state"] == "waiting"
+    assert heads["waiting"]["count"] == 1 and heads["waiting"]["oldest_seq"] == bad
     assert {"First", "Last"} <= mirror.titles()
 
 
