@@ -1294,14 +1294,22 @@ def get_media(digest: str, st: St, session: Sess, _: Annotated[auth.Principal, D
 @router.get("/sync/media/{digest}", tags=["federation"])
 def sync_media(digest: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")], st: St, session: Sess,
                _: Annotated[auth.Principal, Depends(require("sync"))]):
-    """C13 §6.2: the cached bytes of an image this node federates, for the followers that received its row. Only a
-    blob that a redistributable, not-local-only artwork row references is served; anything else is 404, so this
-    never discloses provider-only or private media. Content addressed: the follower checks the hash."""
-    federable = session.scalar(select(func.count()).select_from(Artwork).where(
-        Artwork.blob_hash == digest, Artwork.redistributable.is_(True), Artwork.local_only.is_(False)))
-    if not federable:
-        raise HTTPException(404, "no such image")
-    return media_response(st, digest)
+    """C13 §6.2: the cached bytes of an image this node federates, for the followers that received its row. A blob is
+    served only when a row referencing it may federate (C12 §12.5.5 applied to bytes): redistributable, not local-only,
+    of a source whose policy federates, with the licence `cc0` or `owner_upload` (or `unknown` on a curated URL row
+    when `federation_media_unknown_licence` is on, H58). Anything else is 404, so this never discloses provider,
+    private or licence-withheld media. Content addressed: the follower checks the hash."""
+    settings = st.ctx.settings
+    rows = session.scalars(select(Artwork).where(
+        Artwork.blob_hash == digest, Artwork.redistributable.is_(True), Artwork.local_only.is_(False)).limit(20))
+    for row in rows:
+        pol = media_policy.policy(settings, row.source)
+        licence = row.licence or pol.licence or ("owner_upload" if media.is_upload(settings, row.url) else "unknown")
+        if pol.federate and (licence in facets.FEDERABLE_UPLOAD_LICENCES or (
+                licence == "unknown" and settings.federation_media_unknown_licence
+                and source_class(row.source) != "provider")):
+            return media_response(st, digest)
+    raise HTTPException(404, "no such image")
 
 
 # ---- federation ---------------------------------------------------------------------------------------

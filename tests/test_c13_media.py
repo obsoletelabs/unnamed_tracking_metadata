@@ -41,6 +41,7 @@ def pair(tmp_path):
                            redistributable=True)
         art = s.scalars(select(Artwork)).one()
         art.blob_hash, art.content_type = media.store(authority.st.ctx.settings, data, "png"), "image/png"
+        art.licence = "cc0"  # a licence that may federate as bytes (C12 §12.5.5)
         s.commit()
         digest = art.blob_hash
     pull(mirror, authority)
@@ -77,6 +78,21 @@ def test_the_peer_serves_only_federable_bytes(pair):
     assert authority.client.get(f"/api/v2/sync/media/{'0' * 64}", headers=auth).status_code == 404
 
 
+@pytest.mark.parametrize("licence", [None, "cc-by", "provider_terms"])
+def test_the_peer_serves_bytes_only_under_a_federable_licence(pair, licence):
+    """T-M1b (C12 §12.5.5, H58 off): bytes of a curated URL row with an unknown licence (none stated), or one that
+    keeps it out of the feed, are not handed to peers; with H58 on, the unknown-licence row is, the others never."""
+    authority, mirror, cid, digest, data = pair
+    auth = {"Authorization": f"Bearer {authority.token}"}
+    with authority.st.maker() as s:
+        s.scalars(select(Artwork)).one().licence = licence
+        s.commit()
+    assert authority.client.get(f"/api/v2/sync/media/{digest}", headers=auth).status_code == 404
+    authority.st.ctx.settings = authority.st.ctx.settings.model_copy(update={"federation_media_unknown_licence": True})
+    expected = 200 if licence is None else 404
+    assert authority.client.get(f"/api/v2/sync/media/{digest}", headers=auth).status_code == expected
+
+
 def test_a_follower_fetches_from_the_peer_first_and_checks_the_hash(pair):
     """T-M2: the row names its origin feed; discovery reads the digest from the peer's artwork list; the bytes come
     from the peer and must hash to that digest. The origin (which cannot resolve) is never asked."""
@@ -91,6 +107,19 @@ def test_a_follower_fetches_from_the_peer_first_and_checks_the_hash(pair):
     assert (art.fetched_from, art.peer_digest, art.digest_provenance) == (f"peer:{peer.id}", digest, "peer_api")
     assert art.sources_tried is None and art.last_error is None
     assert media.find_blob(mirror.st.ctx.settings, digest) is not None
+
+
+def test_digests_are_discovered_only_from_the_feed_signer(pair):
+    """T-M2b (C13 §6.3): a relay did not sign the rows, so its artwork list is never asked for a digest; the row
+    falls back to the origin."""
+    authority, mirror, cid, digest, data = pair
+    with mirror.st.maker() as s:
+        s.scalars(select(Peer)).one().follow = "relayed"
+        s.commit()
+    art = cache(mirror, authority)
+    assert art.blob_hash is None and art.peer_digest is None and art.digest_provenance is None
+    assert [(e["source"].split(":")[0], e["error"]) for e in art.sources_tried] == [("peer", "relay_unsigned"),
+                                                                                  ("origin", "dns_failed")]
 
 
 def test_failure_reasons_are_kept_per_source(pair):

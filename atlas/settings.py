@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     sync_wake_batch: int = Field(default=500, ge=1, le=5000)
     # C13 §6.3: ask the feed's own signer for an image digest before the third-party origin is tried.
     sync_media_prefer_peer: bool = True
+    # H58 (owner decision pending, safe default off): may `/api/v2/sync/media` hand a pinned peer the cached bytes of a
+    # curated URL row whose licence is `unknown`? Off: only `cc0` and `owner_upload` bytes are served (C12 §12.5.5).
+    federation_media_unknown_licence: bool = False
 
     # Resolution
     auto_match_threshold: float = Field(default=0.85, ge=0.5, le=1.0)
