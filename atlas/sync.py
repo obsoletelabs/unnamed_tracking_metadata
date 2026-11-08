@@ -190,7 +190,11 @@ def retry_failures(session: Session, ctx: Ctx, node_id: str | None = None, *, li
                    max_attempts: int | None = AUTO_RETRY_LIMIT) -> dict[str, int]:
     """Re-apply quarantined entries, oldest first. Application is idempotent, so a retry that succeeds
     converges without duplicating anything. Parked entries are never retried out of order: they are
-    re-classified in sequence by the pull and by `replay`."""
+    re-classified in sequence by the pull and by `replay`.
+
+    A retry runs after the entries behind it have applied, so it never regresses newer state: an entry that a
+    later applied entry of the same feed replaced is resolved as superseded without being applied, and custom
+    values are applied only for the keys no later applied entry set (`superseding`)."""
     query = select(SyncFailure).where(SyncFailure.resolved_at.is_(None), SyncFailure.disposition == QUARANTINE)
     if node_id is not None:
         query = query.where(SyncFailure.node_id == node_id)
@@ -202,9 +206,120 @@ def retry_failures(session: Session, ctx: Ctx, node_id: str | None = None, *, li
         entry = session.get(ReplicatedChange, (row.node_id, row.seq))
         if entry is None:
             _record_failure(session, row.node_id, row.seq, row.kind, KeyError("retained entry is missing"))
-        elif apply_entry(session, ctx, row.node_id, row.seq, entry.kind, entry.body, may_park=False) in (APPLY, NOOP):
+            continue
+        later, body = superseding(session, row.node_id, row.seq, entry.kind, entry.body)
+        if later is not None:
+            _resolve_superseded(row, later)
+            resolved += 1
+        elif apply_entry(session, ctx, row.node_id, row.seq, entry.kind, body, may_park=False) in (APPLY, NOOP):
             resolved += 1
     return {"retried": len(rows), "resolved": resolved, "still_failing": len(rows) - resolved}
+
+
+# ---- retry ordering: a late retry never overwrites a later entry ------------------------------------------
+
+#: The kinds that write each target. An entry of one of these kinds replaces its target's state (artwork and
+#: achievements per record and source, a lock per record and field, the whole upstream schema), except `custom`,
+#: which upserts or clears single keys of one record and source.
+_TARGET_KINDS = {"artwork": ("artwork",), "achievements": ("achievements",), "lock": ("lock", "unlock"),
+                 "unlock": ("lock", "unlock"), "schema": ("schema",), "custom": ("custom",)}
+
+
+def _target(kind: str, body: Any) -> tuple[Any, ...] | None:
+    """What an entry writes, comparable between entries of one feed; None for kinds that do not replace state
+    (an observation records its own supersession, merges and detaches have their own idempotency rules)."""
+    from .normalize import norm_namespace
+
+    if kind not in _TARGET_KINDS or not isinstance(body, dict):
+        return None
+    if kind == "schema":
+        return ("schema",)
+    cid = body.get("canonical_id")
+    if not isinstance(cid, str):
+        return None
+    if kind in ("lock", "unlock"):
+        return ("lock", cid, body.get("field")) if isinstance(body.get("field"), str) else None
+    source = body.get("source")
+    if not isinstance(source, str):
+        return None
+    if kind == "custom":
+        return ("custom", cid, source[:128])
+    return (kind, cid, norm_namespace(source))
+
+
+def _custom_keys(session: Session, body: dict[str, Any], media_type: str) -> set[str]:
+    """The keys a `custom` entry sets or clears, as `_apply` resolves them (renamed keys followed, empty values
+    dropped)."""
+    from . import custom
+    from .custom_compat import key_for
+
+    values = body.get("values") if isinstance(body.get("values"), dict) else {}
+    try:
+        keys = set(custom.clean_values(session, media_type, values, editable_only=False))
+    except (AtlasError, TypeError, ValueError):
+        keys = {key_for(session, media_type, str(k)) for k, v in values.items() if v not in (None, "")}
+    clear = body.get("clear") if isinstance(body.get("clear"), list) else []
+    return keys | {key_for(session, media_type, str(k)[:40]) for k in clear[:60]}
+
+
+def superseding(session: Session, node_id: str, seq: int, kind: str, body: Any) -> tuple[int | None, Any]:
+    """Before re-applying entry `seq` out of order: `(later_seq, None)` when a later entry of the same feed that
+    has applied (at or below the applied head, no open failure) replaced everything this entry writes, otherwise
+    `(None, body)` with the body to apply. For `custom` the body is reduced to the keys no later applied entry
+    set or cleared. A later entry that has not applied (quarantined, skipped, parked, waiting) does not count:
+    it is retried after this one, in feed order. Entries that do not classify as applicable are returned
+    unchanged so their failure stays visible."""
+    outcome = feed_schema.classify(kind, body)
+    target = _target(kind, outcome.body) if outcome.action == APPLY else None
+    if target is None:
+        return None, body
+    media_type = None
+    if target[0] == "custom":
+        game = session.get(Canonical, target[1])
+        if game is None:
+            return None, body
+        media_type = game.media_type
+        mine = _custom_keys(session, outcome.body, media_type)
+        if not mine:
+            return None, body
+    later_rows = session.scalars(select(ReplicatedChange).where(
+        ReplicatedChange.node_id == node_id, ReplicatedChange.seq > seq,
+        ReplicatedChange.seq <= applied_head(session, node_id),
+        ReplicatedChange.kind.in_(_TARGET_KINDS[kind])).order_by(ReplicatedChange.seq)
+        .execution_options(yield_per=500))
+    covered: set[str] = set()
+    last = None
+    for later in later_rows:
+        failure = session.get(SyncFailure, (node_id, later.seq))
+        if failure is not None and failure.resolved_at is None:
+            continue  # it has not applied
+        later_outcome = feed_schema.classify(later.kind, later.body)
+        if later_outcome.action != APPLY or _target(later.kind, later_outcome.body) != target:
+            continue
+        if media_type is None:
+            return later.seq, None
+        covered |= _custom_keys(session, later_outcome.body, media_type) & mine
+        last = later.seq
+        if covered == mine:
+            return last, None
+    if not covered:
+        return None, body
+    residual = dict(body)
+    values = body.get("values") if isinstance(body.get("values"), dict) else {}
+    from .custom_compat import key_for
+    residual["values"] = {k: v for k, v in values.items() if key_for(session, media_type, k) not in covered}
+    if isinstance(body.get("clear"), list):
+        residual["clear"] = [k for k in body["clear"] if key_for(session, media_type, str(k)[:40]) not in covered]
+    log.info("retrying feed entry %s (custom) from %s without keys %s that later entries set", seq, node_id,
+             sorted(covered))
+    return None, residual
+
+
+def _resolve_superseded(row: SyncFailure, later: int) -> None:
+    log.info("quarantined feed entry %s (%s) from %s is superseded by entry %s, which already applied; "
+             "not re-applying it", row.seq, row.kind, row.node_id, later)
+    row.resolved_at = row.last_attempt_at = datetime.now(UTC)
+    row.detail = {**(row.detail or {}), "superseded_by": later}
 
 
 def open_failures(session: Session, disposition: str | None = None) -> int:
