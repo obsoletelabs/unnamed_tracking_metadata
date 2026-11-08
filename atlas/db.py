@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -9,8 +10,15 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 _TX = "atlas_sqlite_tx"  # key in the pooled connection's `info`: the open transaction's lock state
-_WRITES = ("INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER")
-_READS = ("SELECT", "WITH")
+# First keyword of a statement (after comments). SELECT and WITH run as reads, but a WITH can carry an
+# INSERT/UPDATE/DELETE: `_reopen` therefore checks `total_changes` (which counts every DML row, CTE or not)
+# and never COMMITs a transaction that changed rows. Known DML/DDL takes the writer lock first, transaction
+# control is left alone, and anything else (PRAGMA, VACUUM, an unknown form) may write in ways
+# `total_changes` does not count, so the transaction is never re-opened after it.
+_READS = frozenset({"SELECT", "WITH"})
+_WRITES = frozenset({"INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER"})
+_CONTROL = frozenset({"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"})
+_COMMENT = re.compile(r"\s*(?:--[^\n]*(?:\n|$)|/\*.*?(?:\*/|$))", re.S)
 
 
 def make_engine(url: str) -> Engine:
@@ -38,7 +46,13 @@ def _sqlite_transactions(engine: Engine) -> None:
     Opening the outermost savepoint before anything was written also drops the old read snapshot (as the
     legacy mode's SAVEPOINT began a fresh transaction). Inside a savepoint nothing is re-opened; the
     transaction keeps its snapshot and upgrades in place.
-    `begin_snapshot()` pins one snapshot for consistent multi-table reads (backups, promotion)."""
+    `begin_snapshot()` pins one snapshot for consistent multi-table reads (backups, promotion).
+
+    Invariant: the COMMIT that ends a read-only part (`_reopen`) never commits a write. `_reopen` refuses to
+    COMMIT once the connection's `total_changes` moved since the transaction began (a CTE that ran DML), and
+    a statement that is neither a read, known DML/DDL nor transaction control (PRAGMA, VACUUM, an unknown
+    form) ends the read-only part for good. Either way the transaction is never re-opened again, upgrades in
+    place, and rolls back as a whole."""
 
     @event.listens_for(engine, "connect")
     def _connect(dbapi_conn, _):
@@ -52,7 +66,8 @@ def _sqlite_transactions(engine: Engine) -> None:
     @event.listens_for(engine, "begin")
     def _begin(conn):
         conn.exec_driver_sql("BEGIN")
-        conn.info[_TX] = {"mode": "deferred", "savepoints": 0, "read": False}
+        changes = conn.connection.dbapi_connection.total_changes  # rows changed so far on this connection
+        conn.info[_TX] = {"mode": "deferred", "savepoints": 0, "read": False, "changes": changes}
 
     @event.listens_for(engine, "commit")
     @event.listens_for(engine, "rollback")
@@ -68,8 +83,8 @@ def _sqlite_transactions(engine: Engine) -> None:
             # Nothing written yet: drop the snapshot of the earlier reads before the savepoint pins it, as
             # pysqlite's legacy mode did (its SAVEPOINT started a fresh transaction). Otherwise a write inside
             # the savepoint after another writer committed would fail at once with "database is locked".
-            _reopen(conn, "BEGIN")
-            state["read"] = False
+            if _reopen(conn, state, "BEGIN"):
+                state["read"] = False
         state["savepoints"] += 1
 
     @event.listens_for(engine, "release_savepoint")
@@ -84,28 +99,44 @@ def _sqlite_transactions(engine: Engine) -> None:
         state = conn.info.get(_TX)
         if state is None or state["mode"] != "deferred":
             return
-        head = statement.lstrip()[:8].upper()
-        if head.startswith(_WRITES):
+        kind = _first_keyword(statement)
+        if kind in _READS:
+            if not state["savepoints"]:
+                if state["read"]:  # nothing written yet: drop the old snapshot, as pysqlite's legacy mode did
+                    _reopen(conn, state, "BEGIN")
+                state["read"] = True
+        elif kind in _WRITES:
             _take_write_lock(conn, state)
-        elif head.startswith(_READS) and not state["savepoints"]:
-            if state["read"]:  # nothing written yet: drop the old snapshot, as pysqlite's legacy mode did
-                _reopen(conn, "BEGIN")
-            state["read"] = True
+        elif kind not in _CONTROL:
+            state["mode"] = "writing"  # may write: never re-open (COMMIT) this transaction again
 
 
-def _reopen(conn: Any, begin: str) -> None:
+def _first_keyword(statement: str) -> str:
+    pos, end = 0, len(statement)
+    while pos < end and (m := _COMMENT.match(statement, pos)) and m.end() > pos:
+        pos = m.end()
+    m = re.match(r"\s*([A-Za-z]+)", statement[pos:])
+    return m.group(1).upper() if m else ""
+
+
+def _reopen(conn: Any, state: dict[str, Any], begin: str) -> bool:
     """End the read-only transaction on the DBAPI connection and open a new one with `begin`. If `begin`
     fails (BEGIN IMMEDIATE past busy_timeout), a plain BEGIN is issued before re-raising, so the connection
-    still has a real transaction for SQLAlchemy to roll back and later writes are not autocommitted."""
+    still has a real transaction for SQLAlchemy to roll back and later writes are not autocommitted.
+    Returns False, doing nothing, when this transaction changed rows: the COMMIT would persist them."""
     dbapi_conn = conn.connection.dbapi_connection
+    if dbapi_conn.total_changes != state["changes"]:
+        state["mode"] = "writing"  # a write slipped past the classifier: keep it inside this transaction
+        return False
     if dbapi_conn.in_transaction:
-        dbapi_conn.execute("COMMIT")  # only reads so far: nothing to lose
+        dbapi_conn.execute("COMMIT")  # only reads so far (checked above): nothing to lose
     try:
         dbapi_conn.execute(begin)
     except BaseException:
         if not dbapi_conn.in_transaction:
             dbapi_conn.execute("BEGIN")
         raise
+    return True
 
 
 def _take_write_lock(conn: Any, state: dict[str, Any]) -> None:
@@ -113,9 +144,9 @@ def _take_write_lock(conn: Any, state: dict[str, Any]) -> None:
         # Re-opening would discard the savepoint; the write upgrades this transaction in place instead.
         state["mode"] = "writing"
         return
-    _reopen(conn, "BEGIN IMMEDIATE")
-    state["mode"] = "immediate"  # only once the writer lock is held; on failure the transaction stays deferred
-    state["read"] = False
+    if _reopen(conn, state, "BEGIN IMMEDIATE"):
+        state["mode"] = "immediate"  # only once the lock is held; on failure the transaction stays deferred
+        state["read"] = False
 
 
 def sqlite_write_lock(session: Session) -> None:
