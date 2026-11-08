@@ -8,7 +8,7 @@ reported resolved. These tests check the final follower state after the retry, n
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from atlas import custom, facets, sync
 from atlas.models import Achievement, Artwork, Canonical, Lock, ReplicatedChange, ReplicatedFeed, SyncFailure
@@ -310,3 +310,24 @@ def test_retried_merge_does_not_bring_back_a_relation_a_later_end_removed(sessio
     assert session.get(Canonical, SRC).merged_into == DST
     assert relations.active_between(session, other, DST, "remake_of") is None
     assert session.get(SyncFailure, (NODE, 2)).detail["replayed"] == [3]
+
+
+# ---- a retry on a record this feed merged later goes through the A18b late-merge path once -------------------
+
+def test_retried_achievements_on_a_record_merged_later_land_once_on_the_survivor(session, ctx, monkeypatch):
+    """The list ran on SRC before the authority merged SRC into DST. Retried after the merge applied, superseding()
+    finds no later list for SRC, and the entry lands through `_late_merge` where the merge put it: on DST, once,
+    with the survivor's own later list kept."""
+    _two_games(session)
+    _feed(session,
+          ("achievements", {"canonical_id": SRC, "source": "curator", "items": [{"name": "Carried"}]}),
+          ("merge", {"src": SRC, "dst": DST}),
+          ("achievements", {"canonical_id": DST, "source": "steam", "items": [{"name": "Survivor"}]}))
+    _fail_once(monkeypatch, facets, "set_achievements")
+    head, result = _pull_then_retry(session, ctx)
+    assert head == 3 and result["resolved"] == 1 and _open_failures(session) == []
+    rows = session.scalars(select(Achievement).order_by(Achievement.name)).all()
+    assert [(a.name, a.canonical_id) for a in rows] == [("Carried", DST), ("Survivor", DST)]
+    again = sync.retry_failures(session, ctx, NODE, max_attempts=None)
+    assert again["retried"] == 0
+    assert session.scalar(select(func.count()).select_from(Achievement)) == 2
