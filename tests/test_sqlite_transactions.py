@@ -168,7 +168,7 @@ def test_a_failed_write_lock_leaves_a_transaction_that_still_rolls_back(maker):
         service.write_lock(holder)
         holder.add(NodeState(key="holder", value="1"))
         holder.flush()  # holds SQLite's writer lock
-        session.connection().exec_driver_sql("PRAGMA busy_timeout=50")
+        session.connection().connection.dbapi_connection.execute("PRAGMA busy_timeout=50")  # connection setting
         with pytest.raises(sqlite3.OperationalError, match="locked"):
             service.write_lock(session)
         assert session.connection().connection.dbapi_connection.in_transaction
@@ -176,7 +176,7 @@ def test_a_failed_write_lock_leaves_a_transaction_that_still_rolls_back(maker):
         session.add(NodeState(key="probe", value="must not persist"))
         session.flush()  # takes the writer lock now (BEGIN IMMEDIATE), inside the session's transaction
         session.rollback()
-        session.connection().exec_driver_sql("PRAGMA busy_timeout=5000")  # back to make_engine's value
+        session.connection().connection.dbapi_connection.execute("PRAGMA busy_timeout=5000")  # make_engine's
     assert _value(maker, "probe") is None and _value(maker, "holder") is None
     with maker() as session:  # the connection is usable for a normal write afterwards
         service.write_lock(session)
@@ -222,3 +222,55 @@ def test_postgresql_engines_get_none_of_the_sqlite_hooks():
     assert _hooks(sqlite) != _hooks(plain_sqlite)  # the comparison does see the hooks when they are there
     for e in (engine, plain, sqlite, plain_sqlite):
         e.dispose()
+
+
+_WRITE_FORMS = {
+    # olie-ob's review of #108: a CTE can introduce DML, so a `WITH` statement is not a read
+    "cte-update": "WITH x AS (SELECT 'probe') UPDATE node_state SET value = 'leaked' WHERE key IN (SELECT * FROM x)",
+    "cte-insert": "WITH x AS (SELECT 'leak', 'leaked') INSERT INTO node_state (key, value) SELECT * FROM x",
+    "cte-delete": "WITH x AS (SELECT 'probe') DELETE FROM node_state WHERE key IN (SELECT * FROM x)",
+    # statements whose first word is hidden behind a comment are not classified either
+    "comment-update": "/* note */ UPDATE node_state SET value = 'leaked' WHERE key = 'probe'",
+    "line-comment-insert": "-- note\nINSERT INTO node_state (key, value) VALUES ('leak', 'leaked')",
+}
+
+
+@pytest.mark.parametrize("sql", _WRITE_FORMS.values(), ids=_WRITE_FORMS.keys())
+def test_no_statement_form_is_committed_by_a_later_read(maker, sql):
+    """The read-refresh path ends the read-only part of a transaction with COMMIT. A write the classifier
+    took for a read (or did not recognise) must never be in a transaction it commits: the later rollback
+    has to undo it. Reproduces the review's form: CTE UPDATE, then a SELECT, then rollback()."""
+    with maker() as session:
+        session.add(NodeState(key="probe", value="original"))
+        session.commit()
+    with maker() as session:
+        session.execute(text("SELECT * FROM node_state")).all()
+        session.execute(text(sql))
+        session.execute(text("SELECT * FROM node_state")).all()  # the refresh that used to COMMIT the write
+        session.rollback()
+    with maker() as session:
+        rows = {r.key: r.value for r in session.scalars(select(NodeState))}
+    assert rows == {"probe": "original"}
+
+
+def test_a_pragma_in_a_transaction_is_never_committed_by_a_later_read(maker):
+    """`total_changes` does not count PRAGMA writes (or DDL behind an unrecognised form), so an unclassified
+    statement ends the read-only part: no later read may COMMIT it."""
+    with maker() as session:
+        session.execute(text("SELECT 1"))
+        session.execute(text("PRAGMA user_version = 7"))
+        session.execute(text("SELECT 1"))
+        session.rollback()
+    with maker() as session:
+        assert session.execute(text("PRAGMA user_version")).scalar() == 0
+
+
+def test_a_read_only_cte_still_reads_and_the_transaction_can_write_after_it(maker):
+    """A read-only CTE behaves like a SELECT: it takes no writer lock and later writes still wait for one."""
+    with maker() as session, maker() as other:
+        assert session.execute(text("WITH x AS (SELECT 1 AS n) SELECT n FROM x")).scalar() == 1
+        other.add(NodeState(key="other", value="1"))
+        other.commit()
+        session.add(NodeState(key="mine", value="1"))
+        session.commit()
+    assert _value(maker, "other") == "1" and _value(maker, "mine") == "1"
