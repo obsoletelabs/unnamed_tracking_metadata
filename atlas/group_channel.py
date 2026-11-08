@@ -1506,16 +1506,29 @@ def _fetch(rx: Rx, member: dict, origin: str, epoch: str, scope: str, head: int,
             return
 
 
-def _snapshot_progress(row: NodeState) -> set[str]:
-    """The `account_uid node_id` pairs already recovered since the restore. Restore writes "1" (nothing yet)."""
+SNAPSHOT_REFUSALS = ("forbidden", "not_found")  # serve_snapshot's signed answers: that member holds nothing for us
+
+
+def _snapshot_progress(row: NodeState) -> tuple[set[str], set[str]]:
+    """The `account_uid node_id` pairs settled since the restore: recovered (snapshot installed) and refused (the
+    member answered, signed, that it serves no snapshot of that account to this node). Restore writes "1"
+    (nothing settled yet)."""
     import json
 
     try:
         value = json.loads(row.value) if row.value else {}
     except ValueError:
         value = {}
-    done = value.get("recovered") if isinstance(value, dict) else None
-    return {d for d in done if isinstance(d, str)} if isinstance(done, list) else set()
+    out = []
+    for key in ("recovered", "refused"):
+        done = value.get(key) if isinstance(value, dict) else None
+        out.append({d for d in done if isinstance(d, str)} if isinstance(done, list) else set())
+    return out[0], out[1]
+
+
+def _refused(exc: Exception) -> bool:
+    """A verified answer from the member refusing the snapshot (not a transport or signature failure)."""
+    return type(exc).__name__ == "CallError" and len(exc.args) == 1 and exc.args[0] in SNAPSHOT_REFUSALS
 
 
 def _snapshot_if_due(session: Session, settings: Any, identity: Any, group: OwnerGroup, http: Any, call: Any,
@@ -1523,42 +1536,41 @@ def _snapshot_if_due(session: Session, settings: Any, identity: Any, group: Owne
     """After a restore, fetch a snapshot of every linked account from each member: the restored node re-learns
     its lost effects (its own signed entries come back verified, §3.6).
 
-    Recovery is tracked per account and per holder: a snapshot is required from every current member that holds
-    the account (`group_account_node` linked). The marker stays (with the pairs recovered so far) until every
-    required snapshot has been installed, so a failed call for one account or one unavailable holder is retried on
-    a later round instead of being lost when another snapshot succeeds."""
+    Recovery is tracked per account and per member. Which members hold an account cannot be taken from the
+    restored database (a member may have linked it after the backup), so every current member is asked for every
+    locally linked account. A pair is settled when its snapshot was installed or the member answered (signed)
+    that it serves none; a failed or unanswered call leaves the pair open. The marker stays, with the settled
+    pairs, until every pair is settled, so one failed call or one unreachable member never ends recovery while
+    entries may still be missing."""
     import json
 
     due = _state(session, SNAPSHOT_DUE)
     if due is None:
         return
-    recovered = _snapshot_progress(due)
+    recovered, refused = _snapshot_progress(due)
     members = {node: cert for node, cert in tr.members().items() if node != identity.node_id}
     links = session.scalars(select(GroupAccountLink).where(GroupAccountLink.group_id == group.group_id)).all()
-    required: set[str] = set()
-    for link in links:
-        holders = session.scalars(select(GroupAccountNode.node_id).where(
-            GroupAccountNode.group_id == group.group_id, GroupAccountNode.account_uid == link.account_uid,
-            GroupAccountNode.status == "linked")).all()
-        required |= {f"{link.account_uid} {node}" for node in holders if node in members}
+    required = {f"{link.account_uid} {node}" for node in members for link in links}
     for node, cert in members.items():
         for link in links:
             pair = f"{link.account_uid} {node}"
-            if pair in recovered:
+            if pair in recovered or pair in refused:
                 continue
             accept = profile.accept(session, settings, link.user_id, group.group_id)
             try:
                 snap = call(session, settings, identity, group, cert["body"]["member"], "snapshot",
                             {"account_uid": link.account_uid, "accept": accept}, http)
-            except Exception:  # noqa: BLE001 - retried next round while the pair is required
+            except Exception as exc:  # noqa: BLE001 - an open pair is retried next round
+                if _refused(exc):
+                    refused.add(pair)
                 continue
             install_snapshot(Rx(session, settings, identity, group, tr, now, node), link.account_uid, snap,
                              set(accept))
             recovered.add(pair)
-    if required <= recovered:
+    if required <= recovered | refused:
         session.delete(due)
     else:
-        due.value = json.dumps({"recovered": sorted(recovered & required)})
+        due.value = json.dumps({"recovered": sorted(recovered & required), "refused": sorted(refused & required)})
 
 
 def fetch_snapshot(session: Session, settings: Any, identity: Any, group: OwnerGroup, member_node: str, uid: str,
