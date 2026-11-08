@@ -589,6 +589,69 @@ def test_restore_keeps_snapshot_recovery_pending_until_every_linked_account_is_r
         assert s.get(NodeState, group_channel.SNAPSHOT_DUE) is None
 
 
+def test_restore_keeps_snapshot_recovery_pending_when_the_holder_linked_after_the_backup_is_unreachable(
+        net, monkeypatch):
+    """The restored database does not know a holder that linked the account after the backup. While that member
+    is unreachable, recovery must stay pending (no known holder is not the same as nothing to recover)."""
+    from atlas.api import group_routes
+
+    a, b = group_of(net.node("a"), net.node("b"))
+    ua, ub = user(a, "alice"), user(b, "alicia")
+    mint(b, ub)
+    rounds(a, b)
+    archive = net.tmp / "b-backup.tar.gz"
+    engine = b.st.maker.kw["bind"]
+    backup.create(b.settings, engine, archive, include_media=False)
+    link(b, ub, a, ua)  # a becomes a holder only after the backup
+    rounds(a, b)
+    lost, _ = edit(b, ub, "theme", "light")
+    sync(a)
+    assert shown(a, ua, "theme") == "light"
+    engine.dispose()
+    backup.restore(b.settings, engine, archive, force=True, include_media=False)
+    with b.session() as s:  # the restored node has the local link but no holder for it
+        assert s.scalars(select(GroupAccountLink)).all()
+        assert s.get(GroupAccountNode, (gid(b), uid_of(b, ub), a.node_id)) is None
+    real_call = group_routes.call
+    down = {"on": True}
+
+    def unreachable(session, settings, identity, group, member, op, params, http):
+        if down["on"] and op != "state":
+            raise group_channel.ChannelError("peer unavailable")
+        return real_call(session, settings, identity, group, member, op, params, http)
+
+    monkeypatch.setattr(group_routes, "call", unreachable)
+    full_round(b)
+    with b.session() as s:
+        assert s.get(NodeState, group_channel.SNAPSHOT_DUE) is not None  # nothing recovered yet: still pending
+        assert s.get(ProfileVersion, (ub, "theme", lost)) is None
+    down["on"] = False  # the holder answers again
+    full_round(b)
+    full_round(b)
+    assert shown(b, ub, "theme") == "light"
+    with b.session() as s:
+        assert s.get(ProfileVersion, (ub, "theme", lost)) is not None
+        assert s.get(NodeState, group_channel.SNAPSHOT_DUE) is None
+
+
+def test_restore_snapshot_recovery_ends_when_members_refuse_an_account_they_do_not_hold(pair, net):
+    """A member's signed refusal settles that pair: an account no other member holds does not keep recovery
+    pending (and retrying) forever."""
+    a, b, ua, ub = pair
+    solo = user(b, "solo")
+    mint(b, solo)  # linked on b only: a holds nothing for it
+    rounds(a, b)
+    archive = net.tmp / "b-backup.tar.gz"
+    engine = b.st.maker.kw["bind"]
+    backup.create(b.settings, engine, archive, include_media=False)
+    engine.dispose()
+    backup.restore(b.settings, engine, archive, force=True, include_media=False)
+    full_round(b)
+    full_round(b)
+    with b.session() as s:
+        assert s.get(NodeState, group_channel.SNAPSHOT_DUE) is None
+
+
 # ---- u2: elision -----------------------------------------------------------------------------------------------
 
 def test_relay_that_elides_an_accepted_field_is_suspect(pair):
