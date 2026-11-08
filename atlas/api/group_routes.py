@@ -25,7 +25,9 @@ from .deps import AppState
 
 router = APIRouter(include_in_schema=False)
 CALL_CAP = 256 * 1024
-CALL_OPS = ("hello", "state", "rotations", "heads", "changes", "snapshot", "notify")  # A10 + A11 (§3.3)
+CALL_OPS = ("hello", "state", "rotations", "heads", "changes", "snapshot", "notify",  # A10 + A11 (§3.3)
+            "push", "member_update")  # P7 (#122): push signed state to a member; send this node's member update
+LEFT_OPS = ("hello", "state")  # a node that left keeps answering these, so members still learn its `left` CRL
 NOT_FOUND = {"detail": "Not Found"}
 
 
@@ -159,6 +161,11 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
     now = now if now is not None else time.time()
     with st.maker() as session:
         group = groups.active(session)
+        left = False
+        if group is None:
+            gone = groups.load(session)
+            if gone is not None and gone.status == "left":
+                group, left = gone, True
         if group is None:
             gc.dummy_open(body)
             return not_found()
@@ -204,7 +211,7 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
                 error = "replay"
         if error is None and inner["proto"].split(".")[0] != groups.GROUP_PROTOCOL.split(".")[0]:
             error = "protocol"
-        if error is None and inner["op"] not in CALL_OPS:
+        if error is None and (inner["op"] not in CALL_OPS or (left and inner["op"] not in LEFT_OPS)):
             error = "not_found"
         if error is None and throttled:
             error = "throttled"
@@ -255,6 +262,21 @@ def _op(session, st: AppState, group: OwnerGroup, identity: NodeIdentity, inner:
     if op == "notify":
         group_channel.WAKE.set()  # a hint only: the next round pulls (§3.8)
         return {"ok": True}
+    if op == "push":
+        # The same objects a `state` pull would fetch from this member, sent by it (a leave, a re-issued
+        # certificate). `ingest_state` verifies every object; nothing is trusted because of who pushed it.
+        try:
+            counts = groups.ingest_state(session, group, params.get("state"), identity.node_id,
+                                         settings=st.ctx.settings)
+        except groups.GroupError as exc:
+            raise _OpError(str(exc)[:200]) from None
+        return {"ok": True, "counts": counts}
+    if op == "member_update":
+        try:
+            return {"status": groups.hold_member_update(session, st.ctx.settings, group, identity.node_id,
+                                                        params.get("update"), inner["n"])}
+        except groups.GroupError as exc:
+            raise _OpError(str(exc)[:200]) from None
     return None
 
 
@@ -377,4 +399,39 @@ def pull(session, settings, identity: NodeIdentity, group: OwnerGroup, http: Any
         groups.audit(session, None, "group_resync_done", group.group_id, {"members": len(outcomes)})
     groups.make_view(session, group, identity, force=True) if group.self_serial else None
     session.flush()
+    return outcomes
+
+
+def push_state(session, settings, identity: NodeIdentity, group: OwnerGroup, http: Any,
+               only: set[str] | None = None) -> dict[str, str]:
+    """Send this node's signed group state to every in-force member (or `only` those), so a leave or a re-issued
+    certificate reaches them now instead of on their next pull. Returns node -> outcome; failures are not fatal
+    (members also pull, and a node that left keeps answering `state`)."""
+    state = groups.export_state(session, group, identity)
+    outcomes: dict[str, str] = {}
+    for node, cert in groups.trust(session, group, own_node=identity.node_id).members().items():
+        if node == identity.node_id or (only is not None and node not in only):
+            continue
+        try:
+            call(session, settings, identity, group, cert["body"]["member"], "push", {"state": state}, http)
+            outcomes[node] = "ok"
+        except CallError as exc:
+            outcomes[node] = str(exc)[:300]
+    return outcomes
+
+
+def send_member_update(session, settings, identity: NodeIdentity, group: OwnerGroup, update: dict,
+                       http: Any) -> dict[str, str]:
+    """Offer this node's signed member update to every member; only a root holder keeps it ('held' or 'known'),
+    the others answer `not_root`. Returns node -> outcome."""
+    outcomes: dict[str, str] = {}
+    for node, cert in groups.trust(session, group, own_node=identity.node_id).members().items():
+        if node == identity.node_id:
+            continue
+        try:
+            result = call(session, settings, identity, group, cert["body"]["member"], "member_update",
+                          {"update": update}, http)
+            outcomes[node] = str((result or {}).get("status") or "ok")
+        except CallError as exc:
+            outcomes[node] = str(exc)[:300]
     return outcomes

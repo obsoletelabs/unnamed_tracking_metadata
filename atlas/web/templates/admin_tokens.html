@@ -12,10 +12,11 @@
 <td>{% if not t.revoked_at and t.name != 'bootstrap-admin' %}<form class="inline" method="post" action="/admin/tokens/{{ t.id }}/revoke">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Revoke this token?" type="submit">Revoke</button></form>{% endif %}</td></tr>{% endfor %}
 </tbody></table>
 <h2>New service token</h2>
+<p class="small muted" data-token-flow>To let another node or the Tracking App follow this node, create a token with <strong>read</strong> and <strong>sync</strong> and give it, with this node's address, to whoever runs that node: they add it under Admin → Peers. {% if self_service %}Members can also create their own read-and-sync tokens from their profile (this is on in Settings).{% else %}To let members do that themselves, turn on "Members may create their own sync tokens" in <a href="/admin/settings">Settings</a>; their tokens stay read-only.{% endif %}</p>
 <form class="card" method="post" action="/admin/tokens">{{ csrf(p.csrf) }}
   <label for="name">Name</label><input id="name" type="text" name="name" required maxlength="128" placeholder="mirror-eu or tracking-app">
   <fieldset><legend>Scopes</legend>{% for sc in scopes %}<label><input type="checkbox" name="scopes" value="{{ sc }}" {{ 'checked' if sc == 'read' }}> <strong>{{ sc }}</strong>
-   <span class="muted small">{{ {'read': 'search and read records', 'contribute': 'submit observations', 'curate': 'merge, lock, write curated data', 'sync': 'read the change feed (mirrors)', 'admin': 'everything, including tokens'}[sc] }}</span></label>{% endfor %}</fieldset>
+   <span class="muted small">{{ {'read': 'search and read records', 'contribute': 'submit observations', 'curate': 'merge, lock, write curated data', 'sync': 'read the change feed (mirrors)', 'metrics': 'read /metrics', 'admin': 'everything, including tokens'}[sc] }}</span></label>{% endfor %}</fieldset>
   <label for="days">Expires in days <span class="hint">empty = never</span></label><input id="days" type="text" inputmode="numeric" name="days" maxlength="4">
   <p><button type="submit">Create token</button></p>
 </form>

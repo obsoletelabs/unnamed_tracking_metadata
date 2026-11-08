@@ -234,7 +234,8 @@ def _admission(session: Session, settings: Settings, group: OwnerGroup, member: 
         raise GroupError("a certificate with another root key exists for that node id", "conflict")
     held = [c for c in tr.node_certs(node) if tr.valid(c).ok]
     if held:
-        raise GroupError("that node is already a member", "conflict")
+        raise GroupError("that node is already a member here. If it left the group, this node has not seen that yet: "
+                         "use 'Sync with members now' on this node, then send a new code", "conflict")
     try:
         groups.clean_member_url(member["url"], settings.environment == "production")
     except GroupError:
@@ -444,6 +445,15 @@ def _post(http: Any, url: str, path: str, payload: dict) -> tuple[int, Any]:
     return resp.status_code, data
 
 
+def _detail(reply: Any) -> str:
+    """The inviter's reason (#122). It answers with one only after the code's MAC verified (§2.5), so showing it
+    reveals nothing to someone without the code; it is cut and stripped of control characters."""
+    detail = reply.get("detail") if isinstance(reply, dict) else None
+    if not isinstance(detail, str) or not detail.strip():
+        return ""
+    return ": " + "".join(c for c in detail if c.isprintable())[:200]
+
+
 def start_join(session: Session, settings: Settings, identity: NodeIdentity, url: str, code: str, http: Any, *,
                name: str | None = None, member_url: str | None = None, actor: str | None = None,
                now: datetime | None = None, cli: bool = False) -> tuple[GroupEnrolment, str, dict]:
@@ -476,7 +486,7 @@ def start_join(session: Session, settings: Settings, identity: NodeIdentity, url
     if status == 404:
         raise GroupError("the inviter does not know this code: it is mistyped, used, expired or burned", "not_found")
     if status != 200 or not isinstance(reply, dict):
-        raise GroupError(f"the inviter refused the hello ({status})", "conflict")
+        raise GroupError(f"the inviter refused the hello ({status}){_detail(reply)}", "conflict")
     inviter = _verify_reply(invite, t1, reply)
     eid = reply["enrolment_id"]
     reveal_mac = gc.enrol_mac(invite.k, "joiner-reveal", f"{reply['transcript_hash']}\n{eid}\n{gc.b64(nonce_j)}".encode())

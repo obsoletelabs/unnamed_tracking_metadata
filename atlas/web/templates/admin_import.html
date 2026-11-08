@@ -2,7 +2,7 @@
 {% from "macros.html" import csrf %}
 {% block title %}Import · {{ app_name }}{% endblock %}
 {% block content %}
-{% if p.is_admin %}<h1>Administration</h1>
+{% if in_admin %}<h1>Administration</h1>
 {% include "_adminnav.html" %}
 <h2 class="flush-top">Import from a provider</h2>{% else %}<h1>Import from a provider</h1>{% endif %}
 <p class="muted">Search a metadata provider and pull a game in with its facts, artwork and achievements. Provider data stays on this node's records as a source observation; nothing personal is sent.</p>
@@ -11,7 +11,7 @@
   ({{ done.method }}{% if done.review %}, needs review{% endif %}): {{ done.artwork }} artwork, {{ done.achievements }} achievements.</div>{% endif %}
 {% if not names %}<div class="card">No providers are configured on this node. Set an API key such as <code>ATLAS_RAWG_API_KEY</code> or enable Steam in the settings, then restart.</div>
 {% else %}
-<form class="card" method="get" action="/import">
+<form class="card" method="get" action="{{ base }}">
   <div class="row">
     <div><label for="provider">Provider</label><select id="provider" name="provider">{% for n in names %}<option value="{{ n }}" {{ 'selected' if n == provider }}>{{ n }}</option>{% endfor %}</select></div>
     <div class="grow"><label for="q">Game title</label><input id="q" type="search" name="q" value="{{ q }}" maxlength="200" required></div>
@@ -23,7 +23,7 @@
 {% if results %}
 <table><thead><tr><th>Title</th><th>Platform</th><th>Released</th><th>ID</th><th></th></tr></thead><tbody>
 {% for r in results %}<tr><td>{{ r.title }}</td><td>{{ r.platform or '' }}</td><td>{{ r.release_date or '' }}</td><td><code>{{ r.external_id }}</code></td>
-<td><form method="post" action="/import">{{ csrf(p.csrf) }}<input type="hidden" name="provider" value="{{ provider }}"><input type="hidden" name="external_id" value="{{ r.external_id }}"><input type="hidden" name="q" value="{{ q }}"><button class="small" type="submit">Import</button></form></td></tr>{% endfor %}
+<td><form method="post" action="{{ base }}">{{ csrf(p.csrf) }}<input type="hidden" name="provider" value="{{ provider }}"><input type="hidden" name="external_id" value="{{ r.external_id }}"><input type="hidden" name="q" value="{{ q }}"><button class="small" type="submit">Import</button></form></td></tr>{% endfor %}
 </tbody></table>
 {% else %}<p class="muted">No matches.</p>{% endif %}
 {% endif %}

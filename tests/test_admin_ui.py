@@ -11,7 +11,7 @@ from sqlalchemy import select
 from atlas import facets
 from atlas.models import Artwork, AuditEntry, ReplicatedChange, ReplicatedFeed, SyncFailure, User
 
-from .test_web import fresh, signup, token
+from .test_web import _FakeProvider, fresh, signup, token
 from .test_web import site as web_site  # noqa: F401  (the fixture, re-exported under another name)
 
 
@@ -29,10 +29,23 @@ def _uid(site, name):
 
 
 def test_import_page_keeps_the_admin_nav_for_admins_only(site):
+    """#65: the Administration tab "Import" stays inside administration (/admin/import), its search and import
+    forms post back there, and the top-navigation Import stays the plain curator page."""
+    site.st.providers.providers["fakeprov"] = _FakeProvider()
     signup(site, "alice")  # the first account is the administrator
-    page = site.get("/import").text
+    page = site.get("/admin/import").text
     assert 'aria-label="Administration"' in page and 'href="/admin/users"' in page
-    assert re.search(r'<a href="/import" aria-current="page">Import</a>', page)
+    assert re.search(r'<a href="/admin/import" aria-current="page">Import</a>', page)
+    assert re.search(r'<a href="/admin" aria-current="page">Admin</a>', page)  # the top bar says where you are
+    assert 'action="/admin/import"' in page and 'action="/import"' not in page
+    found = site.get("/admin/import?provider=fakeprov&q=celeste").text
+    assert 'aria-label="Administration"' in found and re.search(r'<form method="post" action="/admin/import">', found)
+    r = site.post("/admin/import", data={"csrf": token(site, "/admin/import"), "provider": "fakeprov",
+                                         "external_id": "77", "q": "celeste"})
+    assert r.status_code == 200 and "Imported" in r.text and 'aria-label="Administration"' in r.text
+    plain = site.get("/import").text  # the curator page for an administrator too: no admin tabs there
+    assert "Import from a provider" in plain and 'aria-label="Administration"' not in plain
+    assert 'action="/import"' in plain
     bob = fresh(site)
     signup(bob, "bob")
     with site.st.maker() as s:
@@ -40,6 +53,9 @@ def test_import_page_keeps_the_admin_nav_for_admins_only(site):
         s.commit()
     curator = bob.get("/import").text
     assert "Import from a provider" in curator and 'aria-label="Administration"' not in curator
+    assert bob.get("/admin/import").status_code == 403  # curators import from /import, not from administration
+    assert bob.post("/admin/import", data={"csrf": token(bob, "/import"), "provider": "fakeprov",
+                                           "external_id": "77"}).status_code == 403
 
 
 def test_users_page_filters_changes_roles_and_explains_a_refusal(site):
@@ -213,3 +229,75 @@ def test_raising_the_emit_protocol_needs_reauthentication_and_followers_upgraded
     bob = fresh(site)
     signup(bob, "bob")
     assert bob.post("/admin/peers/protocol", data={**form, "csrf": token(bob, "/me")}).status_code == 403
+
+
+def test_users_page_one_save_per_row_keeps_the_filter_and_sets_external_sign_in(site):
+    """#66: role, status and external sign-in are one form with one Save; Mark confirmed keeps the filter."""
+    signup(site, "alice")
+    bob = fresh(site)
+    signup(bob, "bob")
+    uid = _uid(site, "bob")
+    with site.st.maker() as s:
+        s.get(User, uid).email, s.get(User, uid).email_verified_at = "bob@example.invalid", None
+        s.commit()
+    page = site.get("/admin/users?q=bo").text
+    row = re.search(r'<tr data-user="bob">.*?</tr>', page, re.S).group(0)
+    assert row.count('action="/admin/users/') == 2  # the row form and Mark confirmed; no separate external form
+    assert 'name="oidc"' in row and "Save bob" in row and f'action="/admin/users/{uid}/oidc"' not in row
+    t = token(site, "/admin/users")
+    r = site.post(f"/admin/users/{uid}", data={"csrf": t, "role": "user", "status": "active", "has_oidc": "1",
+                                               "oidc": "on", "fq": "bo"})
+    assert r.status_code == 303 and r.headers["location"].startswith("/admin/users?q=bo")
+    with site.st.maker() as s:
+        assert s.get(User, uid).oidc_allowed is True
+    r = site.post(f"/admin/users/{uid}", data={"csrf": t, "role": "user", "status": "active", "has_oidc": "1"})
+    with site.st.maker() as s:
+        assert s.get(User, uid).oidc_allowed is False  # unticked in a full-row form means off
+    r = site.post(f"/admin/users/{uid}", data={"csrf": t, "role": "curator", "status": "active"})
+    with site.st.maker() as s:  # an older client that does not send the field leaves it alone
+        assert s.get(User, uid).oidc_allowed is False and s.get(User, uid).role == "curator"
+    r = site.post(f"/admin/users/{uid}/verify", data={"csrf": t, "fq": "bo", "frole": "curator"})
+    assert r.status_code == 303 and r.headers["location"].startswith("/admin/users?q=bo&role=curator")
+    assert "Group grants" not in site.get("/admin/users").text  # this node is in no group
+
+
+def test_users_page_shows_group_grants_read_only(tmp_path, monkeypatch):
+    """#66: rights given through the node group show next to the local role, and are not editable here."""
+    from fastapi.testclient import TestClient
+
+    from atlas import groups
+    from atlas.ids import ulid
+    from atlas.models import GroupAccountLink
+
+    from .group_harness import ROOT_PW, Dispatcher, create, fast_kdf, finish_creation, make_node
+    from .test_web import PW  # noqa: F401
+
+    fast_kdf(monkeypatch)
+    a = make_node(tmp_path, Dispatcher(), "a")
+    try:
+        browser = TestClient(a.app, base_url=a.settings.public_url, follow_redirects=False)
+        signup(browser, "alice")
+        other = TestClient(a.app, base_url=a.settings.public_url, follow_redirects=False)
+        signup(other, "bob")
+        create(a)
+        finish_creation(a)
+        account = ulid()
+        with a.session() as s:
+            bob_id = s.scalars(select(User).where(User.username == "bob")).one().id
+            group = groups.load(s)
+            s.add(GroupAccountLink(group_id=group.group_id, account_uid=account, user_id=bob_id, minted_here=True))
+            s.flush()
+            root = groups.unlock_root(s, a.settings, group, ROOT_PW)
+            groups.issue_grant(s, a.settings, group, a.identity, account_uid=account, role="curator",
+                               nodes=[a.node_id], days=30, root=root)
+            s.commit()
+        page = browser.get("/admin/users").text
+        cell = re.search(r'<td data-label="Group grants" data-user-grants="bob">(.*?)</td>', page, re.S).group(1)
+        assert '<span class="chip"' in cell and "curator" in cell
+        alice = re.search(r'<td data-label="Group grants" data-user-grants="alice">(.*?)</td>', page, re.S).group(1)
+        assert "none" in alice
+        assert 'href="/admin/group/grants"' in page
+        with a.session() as s:
+            assert s.get(User, bob_id).role == "user"  # a grant is shown, never turned into a local role
+    finally:
+        a.close()

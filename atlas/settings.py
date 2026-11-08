@@ -189,6 +189,10 @@ class Settings(BaseSettings):
     trusted_daily_proposals: int = Field(default=100, ge=1)  # cap for auto-applied edits per user per day
     community_art_cap: int = Field(default=50, ge=1, le=200)  # community artwork per game
     oidc_provider_enabled: bool = False  # this node lets other nodes sign its users in
+    # #84: members (not only administrators) may create personal tokens that can also read the change feed, so they
+    # can follow this node from their own node or app. Read-only either way; turning it off stops those tokens'
+    # sync access at once.
+    self_service_sync_tokens: bool = False
     comments_enabled: bool = True
     lists_enabled: bool = True
     comment_daily_limit: int = Field(default=30, ge=1)

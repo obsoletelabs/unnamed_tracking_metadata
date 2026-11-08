@@ -18,7 +18,7 @@
 {% if f.stored %}<label><input type="checkbox" name="clear_{{ f.key }}"> Remove the stored value (falls back to the environment)</label>{% endif %}
 {% endfor %}
 {% if r.toggle %}<label><input type="checkbox" name="{{ r.toggle.key }}"{{ ' checked' if r.toggle.on }}> {{ r.toggle.label }}</label>{% endif %}
-<p><button type="submit">Save {{ r.label }}</button>{% if r.importable %} <a class="btn secondary" href="/import?provider={{ r.name }}">Import</a>{% endif %}</p>
+<p><button type="submit">Save {{ r.label }}</button>{% if r.importable %} <a class="btn secondary" href="/admin/import?provider={{ r.name }}">Import</a>{% endif %}</p>
 <p class="small muted">Environment: {% for v in r.needs %}<code>{{ v }}</code>{{ ', ' if not loop.last }}{% endfor %}{% if r.optional %}; optional {{ r.optional|join(', ') }}{% endif %}. Access terms and limits: <a href="{{ docs }}/providers.md" rel="noopener">Metadata providers</a>.</p>
 </form>
 {% else %}

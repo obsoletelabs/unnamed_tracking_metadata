@@ -280,9 +280,69 @@ def cmd_revoke_grant(args) -> int:
 
 
 def cmd_leave(_args) -> int:
+    from .api import group_routes
+
     def run(session, settings, identity):
-        crl = groups.leave(session, settings, _group(session), identity, cli=True)
+        group = _group(session)
+        crl = groups.leave(session, settings, group, identity, cli=True)
         print("left the group" + (f"; other members learn it from {crl['id']}" if crl else ""))
+        for node, outcome in group_routes.push_state(session, settings, identity, group, _http()).items():
+            print(f"{groups.gc_fp(node)}  {'told' if outcome == 'ok' else outcome}")
+        return 0
+
+    return _run(run)
+
+
+def cmd_member_update(args) -> int:
+    """C10 §8.2 `member-update` (#122): sign this node's new url and/or name. A root holder applies it at once;
+    otherwise it goes to the root holder over the channel, or to a file for an offline root (`--out`)."""
+    from .api import group_routes
+
+    def run(session, settings, identity):
+        group = _group(session)
+        update = groups.member_update(session, settings, group, identity, url=args.url, name=args.name)
+        if args.out:
+            Path(args.out).write_text(json.dumps(update, indent=1), encoding="utf-8")
+            print(f"wrote the signed update (rev {update['member']['rev']}) to {args.out}")
+            return 0
+        if group.root_state == "holder" and group.root_sealed:
+            root = groups.unlock_root(session, settings, group, _ask("Root passphrase: "))
+            cert = groups.apply_member_update(session, settings, group, identity, update, root=root, cli=True)
+            print(f"re-issued as {cert['body']['serial']}")
+            outcomes = group_routes.push_state(session, settings, identity, group, _http())
+        else:
+            outcomes = group_routes.send_member_update(session, settings, identity, group, update, _http())
+        for node, outcome in outcomes.items():
+            print(f"{groups.gc_fp(node)}  {outcome}")
+        if group.root_state != "holder" and not any(v in ("held", "known") for v in outcomes.values()):
+            return _err("no member holding the group root accepted the update; use --out for an offline root")
+        return 0
+
+    return _run(run)
+
+
+def cmd_member_apply(args) -> int:
+    """Root holder: apply a held update (`--node`) or one from a file (`--file`), then push it to the members."""
+    from .api import group_routes
+
+    def run(session, settings, identity):
+        group = _group(session)
+        if args.file:
+            update = json.loads(Path(args.file).read_text(encoding="utf-8"))
+        else:
+            row = session.get(groups.NodeState, groups.MEMBER_UPDATE_PREFIX + args.node)
+            if row is None:
+                return _err(f"no update from {args.node} is waiting")
+            update = json.loads(row.value)
+        if not isinstance(update, dict) or not isinstance(update.get("member"), dict):
+            return _err("that is not a member update")
+        m = update["member"]
+        print(f"node {groups.gc_fp(str(m.get('node_id')))}: url {m.get('url')}, name {m.get('name')}, rev {m.get('rev')}")
+        root = groups.unlock_root(session, settings, group, _ask("Root passphrase: "))
+        cert = groups.apply_member_update(session, settings, group, identity, update, root=root, cli=True)
+        print(f"re-issued as {cert['body']['serial']}")
+        for node, outcome in group_routes.push_state(session, settings, identity, group, _http()).items():
+            print(f"{groups.gc_fp(node)}  {outcome}")
         return 0
 
     return _run(run)
@@ -490,6 +550,16 @@ def register(sub) -> None:
     rv.add_argument("--suspect-since")
     rv.set_defaults(fn=cmd_revoke)
     ga.add_parser("leave").set_defaults(fn=cmd_leave)
+    mu = ga.add_parser("member-update", help="sign a new address and/or name for this node (C10 §1.3)")
+    mu.add_argument("--url")
+    mu.add_argument("--name")
+    mu.add_argument("--out", help="write the signed update to this file instead of sending it")
+    mu.set_defaults(fn=cmd_member_update)
+    ma = ga.add_parser("member-apply", help="root: re-issue a member's certificate with its signed update")
+    src = ma.add_mutually_exclusive_group(required=True)
+    src.add_argument("--node", help="a held update sent by that member")
+    src.add_argument("--file", help="an update written with member-update --out")
+    ma.set_defaults(fn=cmd_member_apply)
     cr = ga.add_parser("crl")
     cr.add_argument("--json", action="store_true")
     cr.set_defaults(fn=cmd_crl)

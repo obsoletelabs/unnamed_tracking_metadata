@@ -960,7 +960,8 @@ def _me_ctx(p: Page, **extra: Any) -> dict[str, Any]:
     toks = [{"id": t.id, "name": t.name, "scopes": t.scopes, "last_used": when(t.last_used_at) or None}
             for t in s.scalars(select(Token).where(Token.user_id == p.me.id, Token.revoked_at.is_(None)))]
     st = p.st.ctx.settings
-    return {"mine": mine, "tokens": toks, "min_len": st.password_min_length,
+    return {"mine": mine, "tokens": toks, "min_len": st.password_min_length, "sync_refusal": sync_token_refusal(p),
+            "public_url": st.public_url.rstrip("/"),
             "has_password": p.me.password_hash != "!", "auto_threshold": st.auto_approve_reputation,
             "verification": st.verification_mode(), **extra}
 
@@ -970,18 +971,34 @@ def me(p: Annotated[Page, Depends(user_page)]):
     return render(p, "me.html", **_me_ctx(p))
 
 
+def sync_token_refusal(p: Page) -> str | None:
+    """Why this member may not create a personal sync token now (#84), or None. Read-only either way."""
+    from .. import mail
+
+    if not p.st.ctx.settings.self_service_sync_tokens:
+        return ("this node does not let members create sync tokens. An administrator can turn on \"Members may "
+                "create their own sync tokens\" (Admin → Settings) or create one for you under Admin → Tokens")
+    if not mail.is_verified(p.st.ctx.settings, p.me):
+        return "confirm your email address first: sync tokens are for verified accounts"
+    return None
+
+
 @router.post("/me/tokens", response_class=HTMLResponse)
 def token_create(p: Annotated[Page, Depends(user_form)], name: Annotated[str, Form(max_length=128)],
                  scope: Annotated[str, Form()] = "read"):
     scopes = ["read"]  # personal tokens are read-only; see auth.authenticate
+    if scope == "sync":
+        if (why := sync_token_refusal(p)):
+            return render(p, "me.html", status=403, **_me_ctx(p, token_error=f"No sync token: {why}."))
+        scopes = ["read", "sync"]
     active = p.session.scalar(select(func.count()).select_from(Token).where(
         Token.user_id == p.me.id, Token.revoked_at.is_(None)))
     if active >= 10:
         raise HTTPException(409, "You already have 10 active tokens; revoke one first.")
     row, secret = auth.create_token(p.session, name.strip() or "token", scopes)
     row.user_id = p.me.id
-    accounts.audit(p.session, p.me.id, "token_create", row.id)
-    return render(p, "me.html", **_me_ctx(p, new_token=secret))
+    accounts.audit(p.session, p.me.id, "token_create", row.id, {"scopes": scopes})
+    return render(p, "me.html", **_me_ctx(p, new_token=secret, new_token_sync=scope == "sync"))
 
 
 @router.post("/me/tokens/{tid}/revoke")
@@ -1344,7 +1361,35 @@ def _users_page(p: Page, *, q: str = "", role: str = "", status: str = "", error
     suspended = s.scalar(select(func.count()).select_from(User).where(User.status == "suspended")) or 0
     return render(p, "admin_users.html", status=http_status, users=users, total=total, limit=USER_LIMIT, uq=q,
                   role=role if role in USER_ROLES else "", filter_status=status if status in USER_STATUSES else "",
-                  roles=USER_ROLES, statuses=USER_STATUSES, counts=counts, suspended=suspended, error=error)
+                  roles=USER_ROLES, statuses=USER_STATUSES, counts=counts, suspended=suspended, error=error,
+                  group_grants=_group_grants_by_user(p), back=_users_back(q, role, status))
+
+
+def _users_back(q: str, role: str, status: str) -> str:
+    back = urlencode({k: v for k, v in (("q", q.strip()[:80]), ("role", role if role in USER_ROLES else ""),
+                                         ("status", status if status in USER_STATUSES else "")) if v})
+    return "/admin/users" + (f"?{back}" if back else "")
+
+
+def _group_grants_by_user(p: Page) -> dict[str, list[dict]] | None:
+    """#66: the rights a user holds here through the owner group (C10 §6), next to the local role, read only.
+    Grants are signed elsewhere (Node group, Grants); this page never creates one. None when not in a group."""
+    from .. import groups
+    from ..models import GroupAccountLink
+
+    group = groups.active(p.session)
+    if group is None:
+        return None
+    here = [g for g in groups.grant_rows(p.session, group, p.st.ctx.identity.node_id) if g["here"]]
+    if not here:
+        return {}
+    links = {link.account_uid: link.user_id for link in p.session.scalars(
+        select(GroupAccountLink).where(GroupAccountLink.group_id == group.group_id))}
+    out: dict[str, list[dict]] = {}
+    for g in here:
+        if (uid := links.get(g["account_uid"])) is not None:
+            out.setdefault(uid, []).append({"role": g["role"], "serial": g["serial"], "not_after": g["not_after"]})
+    return out
 
 
 @router.get("/admin/users", response_class=HTMLResponse)
@@ -1356,7 +1401,9 @@ def admin_users(p: Annotated[Page, Depends(admin_page)], q: Annotated[str, Query
 @router.post("/admin/users/{uid}", response_class=HTMLResponse)
 def admin_user(uid: str, p: Annotated[Page, Depends(admin_form)], role: Annotated[str, Form()],
                status: Annotated[str, Form()], fq: Annotated[str, Form(max_length=80)] = "",
-               frole: Annotated[str, Form(max_length=16)] = "", fstatus: Annotated[str, Form(max_length=16)] = ""):
+               frole: Annotated[str, Form(max_length=16)] = "", fstatus: Annotated[str, Form(max_length=16)] = "",
+               oidc_field: Annotated[str, Form(alias="has_oidc")] = "", oidc: Annotated[str, Form()] = ""):
+    """One save per row (#66): role, status and, when the row's form carries it, external sign-in."""
     target = p.session.get(User, uid)
     if target is None:
         raise HTTPException(404, "No such user.")
@@ -1365,14 +1412,18 @@ def admin_user(uid: str, p: Annotated[Page, Depends(admin_form)], role: Annotate
             accounts.set_role(p.session, p.me, target, role)
         if status != target.status:
             accounts.set_status(p.session, p.me, target, status)
+        if oidc_field and (oidc == "on") != bool(target.oidc_allowed):
+            if target.id == p.me.id:
+                raise AtlasError("you cannot change your own account here", "conflict")
+            target.oidc_allowed = oidc == "on"
+            accounts.audit(p.session, p.me.id, "oidc_allow", target.id, {"allowed": target.oidc_allowed})
     except AtlasError as exc:
         # Show the reason on the list itself, with the controls still there to try again. Nothing was changed:
         # the request's session is rolled back when the response is an error status.
         p.session.rollback()
         return _users_page(p, q=fq, role=frole, status=fstatus, error=f"Could not change {target.username}: {exc}",
                            http_status=409 if exc.code in ("conflict", "forbidden") else 400)
-    back = urlencode({k: v for k, v in (("q", fq), ("role", frole), ("status", fstatus)) if v})
-    return go("/admin/users" + (f"?{back}" if back else ""), "saved")
+    return go(_users_back(fq, frole, fstatus), "saved")
 
 
 def web_headers(response, path: str) -> None:

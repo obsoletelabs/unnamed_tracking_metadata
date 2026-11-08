@@ -54,6 +54,31 @@ attempts burn an invite, at most three invites are open at once, and enrolment e
 The inviting node tries to reach the new node at the address it claims. When it cannot (a laptop behind NAT),
 the member shows **address not verified**; that is informational.
 
+A member that neither holds the root nor has an enrol delegation cannot create invites. Its **Node group** page
+says so under **Add a node** and lists the members that can (the root holder and any delegates), with their
+addresses. If the inviting node refuses a join, the new node shows the inviter's reason; "already a member here"
+means the inviter has not yet seen that the node left: press **Sync with members now** on the inviter and send a
+new code.
+
+## Changing a node's address or name
+
+A member's address and name are part of its group certificate, signed by the member itself (`member_pop`, with a
+higher `rev` each time), so nobody else can change them. When `ATLAS_PUBLIC_URL` no longer matches the address in
+the certificate, the **Node group** page warns under **This node's address in the group**.
+
+- On the node that holds the root: enter the new address and/or name with the root passphrase. The certificate is
+  re-issued at once (same permissions, the old serial `superseded`) and pushed to every member.
+- On any other member: **Send to the root holder**. The update goes over the private channel to the members; only
+  a root holder keeps it, and only from the member it describes. Its administrator sees it under **Address and
+  name updates** and applies it with the root passphrase (or dismisses it). The new certificate is pushed to
+  every member, the moved one at its new address.
+- Command line: `atlas group member-update [--url URL] [--name NAME]` (applies at once on the root holder, sends
+  it otherwise), `--out FILE` to carry it by hand, and `atlas group member-apply --node NODE_ID | --file FILE` on
+  the root holder.
+- A node enrolled by a delegate is re-issued by that delegate; the root does not apply updates for it.
+- **Sync with members now** pulls from every member and then pushes this node's state to them, so a member that can
+  no longer reach this node at its old address still gets the new certificate.
+
 ## Members and permissions
 
 **Node group** lists every member with its fingerprint first, its address, its permissions (`profile.sync`,
@@ -194,7 +219,9 @@ another node, is audited with the group, the vouching node and the grant serial.
 
 ## Leaving, and losing the root
 
-- `atlas group leave` revokes this node's own certificate; the others learn it on their next pull.
+- **Leave group** (or `atlas group leave`) revokes this node's own certificate and pushes that to every member it
+  can reach. A node that left still answers members' `state` requests (and nothing else), so members that were
+  offline learn it on their next pull. Until a member has seen it, it cannot enrol that node again.
 - A node that holds the root cannot leave until a recovery file that holds the root has been exported and
   verified (`atlas group root export-recovery --out FILE`, then `verify-recovery`), so the root is never destroyed
   by accident.
@@ -211,7 +238,7 @@ another node, is audited with the group, the vouching node and the grant serial.
   `atlas group root succession-cancel --recovery-file FILE`, and objects signed by the old root are held. A
   cancellation signed only by the root is never honoured. With a 1-of-1 file a new recovery file holding the new
   root key is written to `DIR`.
-- Not in this release: offline root signing (`root sign`/`import`), `rekey-box` and `member-update`.
+- Not in this release: offline root signing (`root sign`/`import`) and `rekey-box`.
 
 ## What remains observable
 

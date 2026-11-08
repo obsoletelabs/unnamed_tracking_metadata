@@ -44,7 +44,7 @@
 
 <h2>From other sources</h2>
 {% if others %}
-<div class="table-scroll"><table class="achievements"><thead><tr><th>Name</th><th>Kind</th><th>Tier</th><th>Points</th><th>Sources</th></tr></thead><tbody>
+<div class="table-scroll"><table class="ach-sources"><caption class="sr">Achievements other sources provide</caption><thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Tier</th><th scope="col">Points</th><th scope="col">Sources</th></tr></thead><tbody>
 {% for m in others %}<tr><td>{{ m.name }}{% if m.hidden %} <span class="badge">hidden</span>{% endif %}</td><td>{{ (m.kind or '')|replace('_', ' ') }}</td><td>{{ m.tier or '' }}</td><td>{{ '' if m.points is none else m.points }}</td><td>{{ m.sources|join(', ') }}</td></tr>{% endfor %}
 </tbody></table></div>
 <p class="small muted">Read-only here. Hidden ones stay concealed; open them from the game page.</p>

@@ -68,11 +68,17 @@ Set **Email → Delivery** to `smtp` and fill host, port, user and from; put the
 
 ## Users
 
-**Admin → Overview → Users:** set a role (*user*, *curator*, *admin*) and status (*active*, *suspended*). Suspending signs the person out everywhere and revokes their tokens. You cannot demote or suspend yourself. The first administrator is `ATLAS_INITIAL_ADMIN` (or the first account). That name is a one-time bootstrap: once an administrator exists, or any account has been deleted, registering the name again creates an ordinary user; `atlas make-admin <username>` promotes someone from the command line.
+**Admin → Users:** filter by name, role or status, and per person set the role (*user*, *curator*, *admin*), the status (*active*, *suspended*) and whether they may sign in through a trusted provider, with one **Save** per row; the filter is kept. On a node in a node group a **Group grants** column shows rights that come from signed group grants (read only; they are managed under Node group → Grants and end with the grant). Suspending signs the person out everywhere and revokes their tokens. You cannot demote or suspend yourself. The first administrator is `ATLAS_INITIAL_ADMIN` (or the first account). That name is a one-time bootstrap: once an administrator exists, or any account has been deleted, registering the name again creates an ordinary user; `atlas make-admin <username>` promotes someone from the command line.
 
 ## Tokens
 
 **Admin → Tokens** creates **service tokens** (for apps, mirrors, scripts) with scopes and optional expiry, shows the secret once, lists last use, and revokes. Scopes: `read`, `contribute`, `curate`, `sync` (replication), `admin`. People's own personal tokens appear here too (read-only, with their owner).
+
+To let another node or the Tracking App follow this node, create a token with `read` and `sync` and give it, with
+this node's address, to whoever runs that node; they add it under Admin → Peers. With **Members may create their
+own sync tokens** on (Admin → Settings, off by default), members with a verified account create such a token
+themselves on their profile page. Those tokens can read and follow the change feed and nothing else; turning the
+setting off ends their sync access at once.
 
 ![Admin → Tokens](img/14-admin-tokens.png)
 

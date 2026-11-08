@@ -49,6 +49,7 @@ These can be changed live in **Admin → Settings** without restarting. Each cha
 | Setting | Type | Default | Notes |
 | --- | --- | --- | --- |
 | **Act as a sign-in provider (OIDC)** (`oidc_provider_enabled`) | on/off | `False` | Lets other nodes you register under Admin → Sign-in sharing let your users sign in with their account here. |
+| **Members may create their own sync tokens** (`self_service_sync_tokens`) | on/off | `False` | Lets signed-in members with a verified account create personal read-only tokens that can also follow this node's change feed (scope sync), for their own Atlas node or the Tracking App, without asking an administrator. Turning it off stops the sync access of those tokens at once. |
 | **Adopt the upstream media types and fields** (`inherit_schema`) | on/off | `True` | Mirrors and local nodes copy the authority's custom fields; yours always take precedence. |
 
 ## Security
