@@ -544,16 +544,19 @@ def match(session: Session, settings: Settings, facts: Facts, *, chain: str | No
                 for (ns, ext), _cid in sorted(ident.matched.items())][:8]
     matched_keys = [(ns, ext, cid) for (ns, ext), cid in ident.matched.items()]
     if live:
+        # Conflicts are decided on every live record the ids name, before any media-type filter: an id that
+        # names a record of another type is evidence against the others, never dropped (review on #105). A
+        # single named record of another type is a hard mismatch.
         typed = _typed(session, live, facts.media_type)
-        if not typed:
+        if len(live) == 1 and not typed:
             return _decide("type_mismatch", conflict=live, evidence=[*id_items, ev("type_mismatch", None, 0.0,
                                                                                     veto=True)][:MAX_EVIDENCE],
                            matched_keys=matched_keys)
         own_key = (facts.namespace, facts.external_id)
         own = ident.own_atlas if facts.namespace == ATLAS_NAMESPACE else ident.matched.get(own_key)
-        own = own if own in typed else None
-        if len(typed) == 1:
-            target = typed[0]
+        own = own if own in live else None
+        if len(live) == 1:
+            target = live[0]
             held = record_keys(session, target)
             bad = contradictions(held, keys)
             if not bad:
@@ -568,16 +571,20 @@ def match(session: Session, settings: Settings, facts: Facts, *, chain: str | No
             return _decide("conflict", canonical_id=own, score=0.9 if own else 0.0, evidence=items[:MAX_EVIDENCE],
                            review="id_conflict", own=own, conflict=typed if own != target else [],
                            blocked=set(bad), matched_keys=matched_keys, consistent=False)
-        parties = [record_keys(session, cid) for cid in typed] + [_facts_keys_map(keys)]
+        parties = [record_keys(session, cid) for cid in live] + [_facts_keys_map(keys)]
         ok = consistent(parties)
         # Several records: a bridge (§11.3) would join them when the evidence is consistent and corroborated.
         # Bridges ship with federated unmerge (C11-4 after C11-5, H33), so this release always asks a curator.
         items = [*id_items, ev("consistent", ok, 0.0), ev("bridge_blocked", ["not_available"], 0.0, veto=True)]
+        # Ingest keeps the observation on its own key's record only when that record has the observation's media
+        # type; otherwise it gets a new record of its own type. Either way the conflict goes to a curator, and an
+        # observation is never assigned to a record of another media type.
+        assign = own if own in typed else None
         blocked = set()
-        if own is not None:
-            blocked = set(contradictions(record_keys(session, own), keys))
-        return _decide("conflict", canonical_id=own, score=0.9 if own else 0.0, evidence=items[:MAX_EVIDENCE],
-                       review="id_conflict", own=own, conflict=typed, blocked=blocked, matched_keys=matched_keys,
+        if assign is not None:
+            blocked = set(contradictions(record_keys(session, assign), keys))
+        return _decide("conflict", canonical_id=assign, score=0.9 if own else 0.0, evidence=items[:MAX_EVIDENCE],
+                       review="id_conflict", own=own, conflict=live, blocked=blocked, matched_keys=matched_keys,
                        consistent=ok)
 
     from .resolve import is_placeholder_title
