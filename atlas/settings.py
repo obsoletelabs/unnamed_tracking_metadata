@@ -267,6 +267,11 @@ class Settings(BaseSettings):
         return self.source_trust.get(source, RECORD_TRUST if source == "atlas-record" else self.default_trust)
 
 
+#: The sources this node's own provider adapters write (`providers.registry.build_registry`, plus the Wikidata
+#: cross-reference source). They are always reserved for curator and system ingests, whatever ATLAS_SOURCE_TRUST
+#: lists: a contributor token must not write observations indistinguishable from the node's own provider imports.
+PROVIDER_SOURCES = frozenset({"steam", "rawg", "igdb", "tgdb", "openlibrary", "wikidata"})
+
 #: The trust of the `atlas-record` source (C13 §3.3), below every listed provider (`rawg` 50 is the lowest).
 RECORD_TRUST = 1
 

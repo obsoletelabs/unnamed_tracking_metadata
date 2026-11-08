@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base import ProviderError, ProviderResult, get_json, parse_release, release_ext, strip_html
+from .base import ProviderError, ProviderResult, get_json, parse_release, redact_urls, release_ext, strip_html
 
 API = "https://api.thegamesdb.net/v1"
 # TheGamesDB platform ids for the platforms Atlas names (https://api.thegamesdb.net/v1/Platforms)
@@ -37,7 +37,8 @@ class TheGamesDb:
     def _get(self, client, path: str, **params: Any) -> dict[str, Any]:
         data = get_json(client, "GET", f"{API}/{path}", params={"apikey": self.key, **params})
         if not isinstance(data, dict) or data.get("code") not in (200, None):
-            raise ProviderError(f"thegamesdb: {str((data or {}).get('status', 'bad response'))[:200]}")
+            status = data.get("status", "bad response") if isinstance(data, dict) else "bad response"
+            raise ProviderError(f"thegamesdb: {redact_urls(str(status))[:200]}")
         return data
 
     def search(self, client, query):

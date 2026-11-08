@@ -18,19 +18,23 @@ jobs:
     env:
       ATLAS_LIVE_PROVIDERS: "1"
       ATLAS_LIVE_REPORT: live-provider-shapes.json
-      ATLAS_STEAM_API_KEY: ${{ secrets.ATLAS_STEAM_API_KEY }}
-      ATLAS_RAWG_API_KEY: ${{ secrets.ATLAS_RAWG_API_KEY }}
-      ATLAS_IGDB_CLIENT_ID: ${{ secrets.ATLAS_IGDB_CLIENT_ID }}
-      ATLAS_IGDB_CLIENT_SECRET: ${{ secrets.ATLAS_IGDB_CLIENT_SECRET }}
-      ATLAS_TGDB_API_KEY: ${{ secrets.ATLAS_TGDB_API_KEY }}
+    # Actions are pinned by commit (this job handles provider secrets); the comment names the tag it was.
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
       - run: uv sync --frozen --extra dev
-      - run: uv run pytest -q -rs tests/live
+      - name: Live provider checks
+        run: uv run pytest -q -rs tests/live
+        env:  # the secrets reach only this step, not the install step or the upload
+          ATLAS_STEAM_API_KEY: ${{ secrets.ATLAS_STEAM_API_KEY }}
+          ATLAS_RAWG_API_KEY: ${{ secrets.ATLAS_RAWG_API_KEY }}
+          ATLAS_IGDB_CLIENT_ID: ${{ secrets.ATLAS_IGDB_CLIENT_ID }}
+          ATLAS_IGDB_CLIENT_SECRET: ${{ secrets.ATLAS_IGDB_CLIENT_SECRET }}
+          ATLAS_TGDB_API_KEY: ${{ secrets.ATLAS_TGDB_API_KEY }}
       - name: Response shapes (which fields each provider filled; no values)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: live-provider-shapes
           path: live-provider-shapes.json

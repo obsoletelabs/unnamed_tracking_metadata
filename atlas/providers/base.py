@@ -140,10 +140,22 @@ def strip_html(text: str | None) -> str | None:
     return re.sub(r"\s+", " ", text).strip() or None
 
 
+_QUERY = re.compile(r"(https?://[^\s'\"?#]*)[?#][^\s'\"]*")
+
+
+def redact_urls(text: str) -> str:
+    """`text` with every URL's query string and fragment removed. Keys travel as query parameters (RAWG `key`,
+    TheGamesDB `apikey`), and httpx puts the full request URL in its error text, which members see on the link
+    page and operators in logs."""
+    return _QUERY.sub(r"\1", text)
+
+
 def get_json(client: httpx.Client, method: str, url: str, **kw: Any) -> Any:
     try:
         resp = client.request(method, url, timeout=kw.pop("timeout", 10), **kw)
         resp.raise_for_status()
         return resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise ProviderError(f"{redact_urls(url)}: HTTP {exc.response.status_code}") from None
     except (httpx.HTTPError, ValueError) as exc:
-        raise ProviderError(f"{url}: {exc}") from exc
+        raise ProviderError(redact_urls(f"{url}: {type(exc).__name__}: {exc}")) from None

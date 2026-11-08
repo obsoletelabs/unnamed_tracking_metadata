@@ -357,3 +357,97 @@ def test_prices_fetch_cli_is_gated_and_runs_end_to_end(monkeypatch, capsys, tmp_
     finally:
         get_settings.cache_clear()
     assert price_sources.enabled(build_settings(price_sources="Steam, nope ,steam")) == ["steam"]
+
+
+# ---- review fixes: secrets, reserved sources, bad answers, cross-reference filtering --------------------
+
+SECRET = "sekret-key-0123456789"
+
+
+def test_provider_errors_never_carry_query_string_keys():
+    """An upstream 4xx/5xx or network failure must not put `apikey=`/`key=`/`client_secret=` in the error text."""
+    from atlas.providers.base import get_json, redact_urls
+    from atlas.providers.rawg import Rawg
+
+    denied = mock({"Games/ByGameID": httpx.Response(401, json={"code": 401}),
+                   "api.rawg.io": httpx.Response(500, text="boom")})
+    with pytest.raises(ProviderError) as err:
+        TheGamesDb(SECRET).fetch(denied, "1")
+    assert SECRET not in str(err.value) and "HTTP 401" in str(err.value) and err.value.__cause__ is None
+    with pytest.raises(ProviderError) as err:
+        Rawg(SECRET).fetch(denied, "1")
+    assert SECRET not in str(err.value)
+
+    def offline(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"cannot reach {request.url}", request=request)
+
+    down = httpx.Client(transport=httpx.MockTransport(offline))
+    with pytest.raises(ProviderError) as err:
+        get_json(down, "GET", "https://api.thegamesdb.net/v1/Games", params={"apikey": SECRET})
+    assert SECRET not in str(err.value) and "ConnectError" in str(err.value)
+    assert redact_urls("x 'https://a.example/p?key=1&b=2' y https://b.example/q#k=3") == \
+        "x 'https://a.example/p' y https://b.example/q"
+
+
+def test_link_search_error_does_not_show_the_key(site):
+    site.st.providers.providers["tgdb"] = TheGamesDb(SECRET)
+    site.st.providers.client = mock({"Games/ByGameName": httpx.Response(403, text="nope")})
+    signup(site, "alice")
+    page = site.get(f"/game/{site.gid}/links", params={"provider": "tgdb", "q": "Hades"}).text
+    assert "tgdb could not be searched" in page and SECRET not in page
+
+
+def test_tgdb_non_object_answer_is_a_provider_error():
+    with pytest.raises(ProviderError, match="bad response"):
+        TheGamesDb("k").fetch(mock({"Games/ByGameID": [1, 2]}), "1")
+
+
+@pytest.mark.parametrize("source", ["tgdb", "openlibrary", "wikidata", "steam"])
+def test_contributor_tokens_cannot_write_provider_sources(session, ctx, source):
+    """The node's own provider sources are reserved even when ATLAS_SOURCE_TRUST does not list them."""
+    from atlas.service import AtlasError, Ctx
+    from atlas.settings import PROVIDER_SOURCES
+
+    bare = Ctx(settings=build_settings(source_trust={"curator": 100}), identity=ctx.identity)
+    for c in (ctx, bare):
+        with pytest.raises(AtlasError, match="reserved"):
+            service.ingest(session, c, batch(source, [{"external_id": "1", "title": "Forged"}], kind="plugin"))
+    assert service.ingest(session, bare, batch(source, [{"external_id": "1", "title": "Mine"}]), system=True)
+    every = build_registry(build_settings(rawg_api_key="k", igdb_client_id="i", igdb_client_secret="s",
+                                          tgdb_api_key="k", openlibrary_enabled=True))
+    assert set(every) | {"wikidata"} <= PROVIDER_SOURCES
+
+
+def test_crossref_suggestions_follow_the_records_media_type(site, monkeypatch):
+    from atlas.providers.wikidata import TIMEOUT, media_type_of
+    from atlas.web import routes
+
+    assert media_type_of("openlibrary") == "book" and media_type_of("gog") == "game"
+    st = site.st
+    st.base = st.base.model_copy(update={"wikidata_enabled": True, "steam_enabled": False})
+    st.providers.rebuild(st.base)
+    asked: list[tuple[str, str]] = []
+
+    def crossref(session, ns, ident):
+        asked.append((ns, ident))
+        return {"openlibrary": ["OL45883W"], "epic": ["hades"]}
+
+    monkeypatch.setattr(st.providers, "crossref", crossref)
+    with st.maker() as s:
+        for src, ext in (("steam", "1145360"), ("gog", "hades")):
+            service.ingest(s, st.ctx, batch(src, [{"external_id": ext, "title": "Hades"}]), system=True,
+                           force_canonical=site.gid)
+        s.commit()
+    signup(site, "alice")
+    page = site.get(f"/game/{site.gid}/links").text
+    assert 'value="hades"' in page and "OL45883W" not in page  # a game is not offered a book id
+    assert len(asked) == 2
+    # a slow first lookup stops further ones, so a cold cache cannot hold the page for every linked id
+    asked.clear()
+    monkeypatch.setattr(routes, "CROSSREF_SLOW_SECONDS", -1.0)
+    site.get(f"/game/{site.gid}/links")
+    assert len(asked) == 1
+    # each Wikidata lookup has its own short timeout
+    calls: list[httpx.Request] = []
+    Wikidata().crossref(mock({"query.wikidata.org": fixture("wikidata-steam-292030.json")}, calls), "steam", "1")
+    assert calls[0].extensions["timeout"]["read"] == TIMEOUT

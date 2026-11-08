@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import re
+import time
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit
@@ -691,20 +692,27 @@ def propose_artwork(cid: str, p: Annotated[Page, Depends(user_form)], kind: Anno
 
 #: At most this many of a record's linked ids are looked up in the cross-reference source per suggestion request.
 CROSSREF_LOOKUPS = 2
+CROSSREF_SLOW_SECONDS = 2.0  # after a lookup this slow, skip the rest (worst case ~2 s + one 4 s timeout)
 
 
 def _crossref_suggestions(p: Page, g: Any, linked: dict[str, str]) -> list[dict[str, Any]]:
     """Store ids for this game from the ids it already has (Wikidata, issue #63). One candidate for a store is a
     likely match; several (the id is shared by a game and its edition) are offered without that mark."""
-    from ..providers.wikidata import PROPERTIES
+    from ..providers.wikidata import PROPERTIES, media_type_of
 
+    kind = getattr(g, "media_type", None) or "game"
     found: dict[str, list[tuple[str, str]]] = {}
     asked = 0
+    started = time.monotonic()
     for ns in sorted(linked):
-        if ns not in PROPERTIES or asked >= CROSSREF_LOOKUPS:
+        if ns not in PROPERTIES or media_type_of(ns) != kind or asked >= CROSSREF_LOOKUPS:
             continue
+        if asked and time.monotonic() - started > CROSSREF_SLOW_SECONDS:
+            break  # the first lookup was slow (uncached, Wikidata busy): do not make the page wait for another
         asked += 1
         for other, idents in p.st.providers.crossref(p.session, ns, str(linked[ns])).items():
+            if media_type_of(other) != kind:
+                continue  # a game is not offered a book id, nor a book a store id
             for ident in idents:
                 if other not in linked and all(i != ident for i, _ in found.get(other, [])):
                     found.setdefault(other, []).append((ident, ns))
