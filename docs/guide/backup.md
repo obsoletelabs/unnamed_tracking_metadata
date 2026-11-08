@@ -112,6 +112,12 @@ Restore into a **fresh, empty** database of the same Atlas version:
 3. Start Atlas. Your accounts, records, tokens, settings, pages and **node identity** are back. Mirrors that follow you carry on
    from the same feed position with the same key; nobody has to re-pin anything.
 
+With Docker, run the restore in a one-off container that mounts the folder holding the archive, for example
+`docker compose run --rm -v "$PWD/backups:/restore:ro" migrate atlas backup restore /restore/manual.tar.gz`. The image runs
+as uid 10001, and an archive copied out with `docker compose cp` keeps its private `0600` mode but now belongs to you. On
+Linux the container then gets *Permission denied*: make the file readable first (`chmod 0644`, in a folder only you can
+open) or `chown 10001` it.
+
 `restore` refuses a database that already has data. `--force` replaces it (it deletes everything first), so use it only when
 you mean it. It runs in one transaction: if anything fails the database is left as it was.
 
