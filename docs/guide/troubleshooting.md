@@ -43,6 +43,11 @@ plugin's server address and read token, and whether the plugin runtime and host
 can reach the node. The artwork API requires a read token; verified cached bytes
 are served from the node's public `/media/<sha256>` path.
 
+**Assigned images show as broken in my own client (#46).** Each artwork entry has `media_url`
+(`/api/v2/media/<sha256>`, needs the `read` token in an Authorization header) and `public_url`
+(`/media/<sha256>`, no token). An `<img src>` cannot send the header, so pointing it at `media_url` gives 401.
+Use `public_url`; it is `null` until the image is cached, and for sources whose media policy is not `proxy`.
+
 ## Replication problems
 
 Admin → Peers shows each peer's last error. Common ones: *not trusted* (the node id changed or was never pinned), *feed gap or rewind* (the upstream was restored from an older backup; re-pin after confirming with its administrator), *bad signature*, token missing the `sync` scope, unreachable upstream (the node keeps serving and retries).
