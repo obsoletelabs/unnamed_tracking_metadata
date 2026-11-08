@@ -1026,6 +1026,9 @@ def _art_out(settings: Any, a: Artwork, near: dict[str, str] | None = None) -> d
     out = {"id": a.id, "kind": a.kind, "url": a.url, "width": a.width, "height": a.height, "source": a.source,
            "preferred": a.preferred, "cached": a.blob_hash is not None,
            "media_url": f"/api/v2/media/{a.blob_hash}" if a.blob_hash else None,
+           # #46 (additive): the same bytes on the token-free path, for <img> tags and hosts that cannot send an
+           # Authorization header (`media_url` needs a `read` token). Only while this node serves them (`proxy`).
+           "public_url": f"/media/{a.blob_hash}" if a.blob_hash and fetch == "proxy" else None,
            # the cached bytes when we have them; a redirect only to the source's allow-listed hosts (H50)
            "image_url": f"/api/v2/artwork/{a.id}/image",
            # C12 §12.5 (additive): measured vs declared size, role fit, duplicates, variants, licence, state

@@ -56,6 +56,19 @@ A self-hosted authority may return a local canonical ID. The client must accept 
 
 Images are selected through role and aspect-ratio-aware presentation endpoints. The client should prefer the authority's content-addressed media URL and may cache it indefinitely because the URL contains the source SHA-256.
 
+Each artwork entry has two paths to the same cached bytes (issue #46):
+
+| Field | Path | Token | Use it for |
+|---|---|---|---|
+| `media_url` | `/api/v2/media/<sha256>` | `read` scope (Authorization header) | server-side downloads that already send the token |
+| `public_url` | `/media/<sha256>` | none | `<img>` tags, browsers and hosts that cannot send a header |
+
+`public_url` is `null` until the image is cached, and whenever the source's media policy is not `proxy` (a provider
+switched to `redirect` or `none` stops being served). An `<img src>` pointing at `media_url` fails with 401 because a
+browser sends no Authorization header; that was the "assigned images do not show" symptom in #46. Achievement
+`icon_url` / `locked_icon_url` use the `/api/v2/media/<sha256>` form; the same digest is served token-free at
+`/media/<sha256>` under the same rule.
+
 ## Tags
 
 Provider tags are observations. Canonical tags are reconciled identities. Client display should use canonical tags while retaining provider provenance where needed for debugging or future reconciliation.
