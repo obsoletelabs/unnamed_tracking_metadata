@@ -218,7 +218,10 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
             if kind == "obs" and isinstance(body.get("observation"), dict) \
                     and body["observation"].get("source") == feed_schema.RECORD_SOURCE:
                 trigger = "bridge"
-            wake_waiting(session, ctx, node_id, created, trigger=trigger)
+            # at or below the applied head the entry runs out of order, unless `replay --historical` re-runs the
+            # whole range in feed order (every later entry applies again after it)
+            late = not _IN_FEED_ORDER.get() and seq <= applied_head(session, node_id)
+            wake_waiting(session, ctx, node_id, created, trigger=trigger, late=late)
     return NOOP if result == NOOP else APPLY
 
 
@@ -291,12 +294,16 @@ def woken_counts(session: Session) -> dict[tuple[str, str], int]:
 
 
 def wake_waiting(session: Session, ctx: Ctx, node_id: str, cid: str, *, limit: int | None = None,
-                 trigger: str | None = None) -> int:
+                 trigger: str | None = None, late: bool = False) -> int:
     """Apply, in feed order, every entry of `node_id`'s feed that waits for `cid` (C13 §5.3), before the caller
     moves on to the next entry of that feed. Scoped to that feed: another feed's entries naming the same record
     wake only when that feed introduces it. Rows are taken `sync_wake_batch` at a time, each batch flushed before
     the next is read, so the order holds and no single query or flush grows without bound. A wake that applied at
-    least one entry counts once under `trigger` (the kind of entry that brought the record)."""
+    least one entry counts once under `trigger` (the kind of entry that brought the record).
+
+    `late`: the entry that brought the record was itself applied out of order (a retry, or a woken entry at or below
+    the applied head), so later entries of the feed may have applied; the woken entries then go through
+    `apply_late`. From `_apply_pending` the wake is in feed order and they are applied as they come."""
     if session.get(Canonical, cid) is None:
         return 0
     batch = limit or getattr(ctx.settings, "sync_wake_batch", 500)
@@ -311,6 +318,10 @@ def wake_waiting(session: Session, ctx: Ctx, node_id: str, cid: str, *, limit: i
             after = row.seq
             entry = session.get(ReplicatedChange, (row.node_id, row.seq))
             if entry is None:
+                continue
+            if late:
+                if apply_late(session, ctx, row, entry) in (APPLY, NOOP, SUPERSEDED):
+                    woken += 1
                 continue
             with entry_at(entry.created_at):
                 if apply_entry(session, ctx, row.node_id, row.seq, entry.kind, entry.body,
@@ -331,6 +342,10 @@ def wake_waiting(session: Session, ctx: Ctx, node_id: str, cid: str, *, limit: i
 #: The origin timestamp of the entry being applied (set by `entry_at`, read by `_apply_body`). A context
 #: variable keeps the signatures of `apply_entry` and `_apply`, which release-simulation tests replace, unchanged.
 _ENTRY_AT: ContextVar[datetime | None] = ContextVar("atlas_sync_entry_at", default=None)
+
+#: Set while `_replay_history` re-applies a retained range in feed order: entries at or below the applied head are
+#: then in order, and what they wake is applied as it comes rather than through `apply_late`.
+_IN_FEED_ORDER: ContextVar[bool] = ContextVar("atlas_sync_in_feed_order", default=False)
 
 
 @contextmanager
@@ -423,25 +438,32 @@ def retry_failures(session: Session, ctx: Ctx, node_id: str | None = None, *, li
         if entry is None:
             _record_failure(session, row.node_id, row.seq, row.kind, KeyError("retained entry is missing"))
             continue
-        if entry.kind == "merge":
-            with entry_at(entry.created_at):
-                result = retry_merge(session, ctx, row.node_id, row.seq, entry.body)
-            if result in (APPLY, NOOP):
-                resolved += 1
-            continue
-        later, body = superseding(session, row.node_id, row.seq, entry.kind, entry.body)
-        if later is not None:
-            _resolve_superseded(row, later)
-            resolved += 1
-            continue
-        with entry_at(entry.created_at):
-            result = apply_entry(session, ctx, row.node_id, row.seq, entry.kind, body, may_park=False)
-        if result in (APPLY, NOOP):
+        if apply_late(session, ctx, row, entry) in (APPLY, NOOP, SUPERSEDED):
             resolved += 1
     out = {"retried": len(rows), "resolved": resolved, "still_failing": len(rows) - resolved}
     if woken:
         out["woken"] = woken
     return out
+
+
+#: `apply_late`: a later applied entry of the same feed already replaced what this one writes (`superseding`).
+SUPERSEDED = "superseded"
+
+
+def apply_late(session: Session, ctx: Ctx, row: SyncFailure, entry: ReplicatedChange) -> str:
+    """Apply a failed or waiting entry out of feed order, after later entries of its feed may have applied: a retry,
+    the wake safety net (`_wake_ready`), or a wake that a late entry triggered. It never regresses newer state
+    (PR #102): a merge goes to `retry_merge`; any other entry is resolved as superseded when a later applied entry
+    replaced what it writes, and otherwise applied with only what is left of it (`superseding`). All of it runs at
+    the entry's own origin time (`entry_at`)."""
+    with entry_at(entry.created_at):
+        if entry.kind == "merge":
+            return retry_merge(session, ctx, row.node_id, row.seq, entry.body)
+        later, body = superseding(session, row.node_id, row.seq, entry.kind, entry.body)
+        if later is not None:
+            _resolve_superseded(row, later)
+            return SUPERSEDED
+        return apply_entry(session, ctx, row.node_id, row.seq, entry.kind, body, may_park=False)
 
 
 def _wake_ready(session: Session, ctx: Ctx, node_id: str | None, limit: int) -> int:
@@ -460,10 +482,9 @@ def _wake_ready(session: Session, ctx: Ctx, node_id: str | None, limit: int) -> 
             continue
         if not isinstance(row.waiting_for, str) or not introduced_by(session, row.node_id, row.waiting_for):
             continue
-        with entry_at(entry.created_at):
-            if apply_entry(session, ctx, row.node_id, row.seq, entry.kind, entry.body, may_park=False) in (APPLY,
-                                                                                                          NOOP):
-                woken += 1
+        # later entries of the feed may have applied since this one began to wait
+        if apply_late(session, ctx, row, entry) in (APPLY, NOOP, SUPERSEDED):
+            woken += 1
     return woken
 
 
@@ -540,9 +561,13 @@ def superseding(session: Session, node_id: str, seq: int, kind: str, body: Any) 
     `(None, body)` with the body to apply. For `custom` the body is reduced to the keys no later applied entry
     set or cleared. A later entry that has not applied (quarantined, skipped, parked, waiting) does not count:
     it is retried after this one, in feed order. Entries that do not classify as applicable are returned
-    unchanged so their failure stays visible."""
+    unchanged so their failure stays visible.
+
+    Targets are compared after `_follow_redirects`, for this entry and the later ones, so an entry on a record
+    merged here compares as its survivor, as `apply_entry` would apply it (C13 §5.2)."""
     outcome = feed_schema.classify(kind, body)
-    target = _target(kind, outcome.body) if outcome.action == APPLY else None
+    target = _target(kind, _follow_redirects(session, node_id, seq, kind, outcome.body)) \
+        if outcome.action == APPLY else None
     if target is None:
         return None, body
     media_type = None
@@ -566,7 +591,8 @@ def superseding(session: Session, node_id: str, seq: int, kind: str, body: Any) 
         if failure is not None and failure.resolved_at is None:
             continue  # it has not applied
         later_outcome = feed_schema.classify(later.kind, later.body)
-        if later_outcome.action != APPLY or _target(later.kind, later_outcome.body) != target:
+        if later_outcome.action != APPLY or _target(later.kind, _follow_redirects(
+                session, node_id, later.seq, later.kind, later_outcome.body)) != target:
             continue
         if media_type is None:
             return later.seq, None
@@ -650,8 +676,11 @@ def retry_merge(session: Session, ctx: Ctx, node_id: str, seq: int, body: Any) -
             for later in replay:
                 later_outcome = feed_schema.classify(later.kind, later.body)
                 if later_outcome.action == APPLY:
-                    with entry_at(later.created_at):  # each replayed entry keeps its own origin time (§12.1.6)
-                        _apply(session, ctx, node_id, later.seq, later.kind, later_outcome.body)
+                    # as in-order application: its own origin time (§12.1.6), the survivor of a record merged here
+                    # (§5.2), and `_apply`'s cause and late-merge rules
+                    with entry_at(later.created_at):
+                        _apply(session, ctx, node_id, later.seq, later.kind,
+                               _follow_redirects(session, node_id, later.seq, later.kind, later_outcome.body))
             row = session.get(SyncFailure, (node_id, seq))
             if row is not None:
                 row.detail = {**(row.detail or {}), "replayed": [later.seq for later in replay]}
@@ -666,7 +695,7 @@ def retry_merge(session: Session, ctx: Ctx, node_id: str, seq: int, body: Any) -
 
 
 def _resolve_superseded(row: SyncFailure, later: int) -> None:
-    log.info("quarantined feed entry %s (%s) from %s is superseded by entry %s, which already applied; "
+    log.info("failed or waiting feed entry %s (%s) from %s is superseded by entry %s, which already applied; "
              "not re-applying it", row.seq, row.kind, row.node_id, later)
     row.resolved_at = row.last_attempt_at = datetime.now(UTC)
     row.detail = {**(row.detail or {}), "superseded_by": later}
@@ -1886,6 +1915,15 @@ def _replay_history(session: Session, ctx: Ctx, node_id: str, first: int, last: 
     rows = session.scalars(select(ReplicatedChange).where(
         ReplicatedChange.node_id == node_id, ReplicatedChange.seq >= first, ReplicatedChange.seq <= last)
         .order_by(ReplicatedChange.seq).execution_options(yield_per=500))
+    token = _IN_FEED_ORDER.set(True)
+    try:
+        _replay_rows(session, ctx, node_id, rows, counts)
+    finally:
+        _IN_FEED_ORDER.reset(token)
+    return counts
+
+
+def _replay_rows(session: Session, ctx: Ctx, node_id: str, rows: Any, counts: dict[str, int]) -> None:
     for entry in rows:
         failure = session.get(SyncFailure, (node_id, entry.seq))
         if failure is not None and failure.resolved_at is None and failure.reason == "skipped":
@@ -1896,7 +1934,6 @@ def _replay_history(session: Session, ctx: Ctx, node_id: str, first: int, last: 
         counts["reapplied"] += 1
         if was_parked and result in (APPLY, NOOP):
             counts["recovered_parked"] += 1
-    return counts
 
 
 def replay(session: Session, ctx: Ctx, node_id: str | None = None, *, limit: int | None = None,
