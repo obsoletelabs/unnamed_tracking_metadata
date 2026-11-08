@@ -348,6 +348,29 @@ def cmd_media(args) -> int:
     return 0
 
 
+def cmd_check(args) -> int:
+    """`atlas check`: read-only consistency checks (#19). Exit 0 when clean, 1 when a check found something."""
+    from . import consistency
+
+    settings, maker = _maker()
+    unknown = sorted(set(args.only or []) - set(consistency.CHECKS))
+    if unknown:
+        print(f"check: unknown check {unknown[0]!r}; known: {', '.join(consistency.CHECKS)}", file=sys.stderr)
+        return 2
+    with maker() as session:
+        report = consistency.run(session, settings, sample=args.sample, only=args.only)
+        session.rollback()  # nothing was written; make that explicit
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        for name, r in report["checks"].items():
+            mark = "ok" if not r["count"] else ("note" if name in consistency.INFORMATIONAL else "FOUND")
+            print(f"{mark:5} {name}: {r['count']}" + (f"  e.g. {', '.join(r['examples'])}" if r["examples"] else ""))
+            if r.get("hint"):
+                print(f"      {r['hint']}")
+    return 0 if report["ok"] else 1
+
+
 def cmd_import_legacy(args) -> int:
     from .legacy_import import import_legacy
 
@@ -537,6 +560,12 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("username")
     a.set_defaults(fn=cmd_make_admin)
     sub.add_parser("cache-media").set_defaults(fn=cmd_cache_media)
+    ck = sub.add_parser("check", help="read-only consistency checks (crosswalks, merges, media files, sync failures)")
+    ck.add_argument("--sample", type=int, default=10, help="example ids per check (default 10, at most 100)",
+                    choices=range(0, 101), metavar="N")
+    ck.add_argument("--only", action="append", help="run only this check (repeatable)")
+    ck.add_argument("--json", action="store_true", help="machine-readable output")
+    ck.set_defaults(fn=cmd_check)
     md = sub.add_parser("media", help="cached artwork: measure images stored before 0035 (C12), or show counts")
     md.add_argument("action", choices=["backfill", "stats"])
     md.add_argument("--batch", type=int, default=200, help="images per transaction (default 200)")
