@@ -431,7 +431,8 @@ def retry_merge(session: Session, ctx: Ctx, node_id: str, seq: int, body: Any) -
             for later in replay:
                 later_outcome = feed_schema.classify(later.kind, later.body)
                 if later_outcome.action == APPLY:
-                    _apply(session, ctx, node_id, later.seq, later.kind, later_outcome.body)
+                    with entry_at(later.created_at):  # each replayed entry keeps its own origin time (§12.1.6)
+                        _apply(session, ctx, node_id, later.seq, later.kind, later_outcome.body)
             row = session.get(SyncFailure, (node_id, seq))
             if row is not None:
                 row.detail = {**(row.detail or {}), "replayed": [later.seq for later in replay]}
