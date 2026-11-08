@@ -1,0 +1,37 @@
+name: Live providers
+# Issue #26: check the provider adapters against the real APIs. Never on pull requests (forks get no secrets, and a
+# third-party outage must not block a merge). Keyless providers (Steam storefront, Open Library, Wikidata) always
+# run; each keyed provider runs only when its repository secret is set, otherwise its checks skip and say which
+# secret is missing. No secret is created by this workflow.
+on:
+  schedule:
+    - cron: "17 5 * * 1"  # Mondays 05:17 UTC
+  workflow_dispatch:
+permissions: { contents: read }
+concurrency:
+  group: live-providers
+  cancel-in-progress: false
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ATLAS_LIVE_PROVIDERS: "1"
+      ATLAS_LIVE_REPORT: live-provider-shapes.json
+      ATLAS_STEAM_API_KEY: ${{ secrets.ATLAS_STEAM_API_KEY }}
+      ATLAS_RAWG_API_KEY: ${{ secrets.ATLAS_RAWG_API_KEY }}
+      ATLAS_IGDB_CLIENT_ID: ${{ secrets.ATLAS_IGDB_CLIENT_ID }}
+      ATLAS_IGDB_CLIENT_SECRET: ${{ secrets.ATLAS_IGDB_CLIENT_SECRET }}
+      ATLAS_TGDB_API_KEY: ${{ secrets.ATLAS_TGDB_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --extra dev
+      - run: uv run pytest -q -rs tests/live
+      - name: Response shapes (which fields each provider filled; no values)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-provider-shapes
+          path: live-provider-shapes.json
+          if-no-files-found: ignore

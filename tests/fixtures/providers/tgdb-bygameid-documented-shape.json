@@ -1,0 +1,36 @@
+{
+ "code": 200,
+ "status": "Success",
+ "data": {
+  "count": 1,
+  "games": [
+   {
+    "id": 2259,
+    "game_title": "Portal 2",
+    "release_date": "2011-04-19",
+    "platform": 1,
+    "players": 2,
+    "overview": "Portal 2 draws from the award-winning formula of innovative <b>gameplay</b>.",
+    "coop": "Yes",
+    "rating": "E10+ - Everyone 10+",
+    "alternates": ["Portal II"],
+    "developers": [6593],
+    "genres": [5],
+    "publishers": [6593]
+   }
+  ]
+ },
+ "include": {
+  "boxart": {
+   "base_url": {"original": "https://cdn.thegamesdb.net/images/original/"},
+   "data": {
+    "2259": [
+     {"id": 1, "type": "boxart", "side": "front", "filename": "boxart/front/2259-1.jpg", "resolution": "1000x1400"},
+     {"id": 2, "type": "boxart", "side": "back", "filename": "boxart/back/2259-1.jpg", "resolution": "1000x1400"}
+    ]
+   }
+  }
+ },
+ "remaining_monthly_allowance": 2990,
+ "extra_allowance": 0
+}

@@ -8,7 +8,7 @@
 <p>Providers that Atlas can import from. Enter credentials here and they are stored <strong>encrypted in the database</strong>; values from the environment are the defaults. Saved values are never shown again, and leaving a box empty keeps the current value. See <a href="{{ docs }}/reference-env.md" rel="noopener">Environment variables</a> and <a href="{{ docs }}/administering.md" rel="noopener">Administering</a>.</p>
 {% if not can_store %}<p class="notice" role="note">Storing credentials here needs <code>ATLAS_SECRET_KEY</code> (generate one with <code>atlas secret-key</code>) so they can be encrypted. Until then use the environment variables shown for each provider.</p>{% endif %}
 {% for r in rows %}
-<article class="card"><h3>{{ r.label }} {% if r.active %}<span class="tag">Active</span>{% elif r.available %}<span class="tag">Not configured</span>{% else %}<span class="tag">No adapter yet</span>{% endif %}</h3>
+<article class="card"><h3>{{ r.label }} {% if r.active %}<span class="tag">Active</span>{% elif r.available %}<span class="tag">Not configured</span>{% else %}<span class="tag">No adapter</span>{% endif %}</h3>
 <p>{{ r.gives }}{% if r.failures %} <span class="muted">· {{ r.failures }} recent failure{{ '' if r.failures == 1 else 's' }}</span>{% endif %}</p>
 {% if r.editable %}
 <form method="post" action="/admin/integrations/{{ r.name }}">{{ csrf(p.csrf) }}
@@ -17,12 +17,12 @@
 <input id="{{ r.name }}-{{ f.key }}" name="{{ f.key }}" type="password" autocomplete="off" maxlength="300" placeholder="{{ 'Enter a new value to replace it' if (f.stored or f.env) else 'Not set' }}"{{ ' disabled' if not can_store }}>
 {% if f.stored %}<label><input type="checkbox" name="clear_{{ f.key }}"> Remove the stored value (falls back to the environment)</label>{% endif %}
 {% endfor %}
-{% if r.name == 'steam' %}<label><input type="checkbox" name="steam_enabled"{{ ' checked' if steam_on }}> Use Steam's public store API</label>{% endif %}
-<p><button type="submit">Save {{ r.label }}</button>{% if r.active %} <a class="btn secondary" href="/import?provider={{ r.name }}">Import a game</a>{% endif %}</p>
-<p class="small muted">Environment: {% for v in r.needs %}<code>{{ v }}</code>{{ ', ' if not loop.last }}{% endfor %}{% if r.optional %}; optional {{ r.optional|join(', ') }}{% endif %}</p>
+{% if r.toggle %}<label><input type="checkbox" name="{{ r.toggle.key }}"{{ ' checked' if r.toggle.on }}> {{ r.toggle.label }}</label>{% endif %}
+<p><button type="submit">Save {{ r.label }}</button>{% if r.importable %} <a class="btn secondary" href="/import?provider={{ r.name }}">Import</a>{% endif %}</p>
+<p class="small muted">Environment: {% for v in r.needs %}<code>{{ v }}</code>{{ ', ' if not loop.last }}{% endfor %}{% if r.optional %}; optional {{ r.optional|join(', ') }}{% endif %}. Access terms and limits: <a href="{{ docs }}/providers.md" rel="noopener">Metadata providers</a>.</p>
 </form>
 {% else %}
-<p>Link its ids on a game page or have a plugin submit them.</p>
+<p>Link its ids on a game page or have a plugin submit them. See <a href="{{ docs }}/providers.md" rel="noopener">Metadata providers</a> for what would allow an adapter.</p>
 {% endif %}
 </article>{% endfor %}</section>
 <section class="card"><h2>Artwork cache</h2>
@@ -35,5 +35,5 @@
 <section class="card"><h2>Linking stores</h2>
 <p>Store ids are linked to a game as <code>namespace:id</code> (for example when adding a game, or by a plugin). These namespaces get a link to the store page on the game page:</p>
 <ul>{% for ns, s in stores.items() %}<li><code>{{ ns }}</code> · {{ s[0] }}{% if not s[1] %} <span class="muted">(id only, no public link)</span>{% endif %}</li>{% endfor %}</ul>
-<p class="small muted">GOG, Epic and TheGamesDB have no import adapter yet: their ids are stored and shown, but Atlas does not fetch data from them.</p></section>
+<p class="small muted">GOG, Epic and itch.io have no import adapter: their ids are stored and shown, but Atlas does not fetch data from them. With Wikidata switched on, the <em>Link a store</em> page suggests their ids from the ids a game already has.</p></section>
 {% endblock %}

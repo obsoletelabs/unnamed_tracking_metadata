@@ -7,9 +7,9 @@
 {% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
 {% if suggestions is not none %}
 <section class="card"><h2>Suggested matches</h2>
-{% if suggestions %}<p class="small muted">Found by searching for “{{ v.get('title') }}” in the providers this node has configured. Likely matches come first.</p>
+{% if suggestions %}<p class="small muted">Found from the ids this game already has (Wikidata, when this node uses it) and by searching for “{{ v.get('title') }}” in the providers this node has configured. Likely matches come first; check each one before linking it.</p>
 <ul class="data-list">{% for s in suggestions %}<li><form method="post" action="/game/{{ g.id }}/links">{{ csrf(p.csrf) }}<input type="hidden" name="store" value="{{ s.provider }}"><input type="hidden" name="ident" value="{{ s.external_id }}">
-<strong>{{ s.title }}</strong> <span class="muted small">{{ s.label }} · {{ s.platform or '' }} {{ s.release_date or '' }} · <code>{{ s.external_id }}</code></span>{% if s.likely %} <span class="tag">Likely match</span>{% endif %} <button type="submit">Link this</button></form></li>{% endfor %}</ul>
+<strong>{{ s.title }}</strong> <span class="muted small">{{ s.label }} · {% if s.via %}{{ s.via }}{% else %}{{ s.platform or '' }} {{ s.release_date or '' }}{% endif %} · <code>{{ s.external_id }}</code>{% if s.link %} · <a href="{{ s.link }}" rel="noopener noreferrer" target="_blank">open the store page</a>{% endif %}</span>{% if s.likely %} <span class="tag">Likely match</span>{% endif %} <button type="submit">Link this</button></form></li>{% endfor %}</ul>
 {% else %}<p class="muted">No suggestions: this game is already linked to every searchable provider, or nothing matched its name. Search by hand below.</p>{% endif %}</section>
 {% endif %}
 {% if not names %}<div class="card">This node has no searchable providers configured (the administrator can set them up under Admin → Integrations). You can still <a href="/game/{{ g.id }}">enter a store id by hand</a> on the game page.</div>
@@ -20,7 +20,7 @@
     <div class="grow"><label for="q">Name</label><input id="q" type="search" name="q" value="{{ q }}" maxlength="200" required></div>
     <div class="align-end"><button type="submit">Search</button></div>
   </div>
-  <p class="small muted">GOG, Epic and TheGamesDB cannot be searched yet; for those, <a href="/game/{{ g.id }}">enter the id by hand</a>.</p>
+  <p class="small muted">GOG, Epic and itch.io cannot be searched by name (they publish no catalogue API Atlas may use); their ids are suggested above when Wikidata knows them, or <a href="/game/{{ g.id }}">enter the id by hand</a>.</p>
 </form>
 {% if results is not none %}
 <h2>Results</h2>
