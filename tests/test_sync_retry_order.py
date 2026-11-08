@@ -70,6 +70,7 @@ def test_retried_artwork_does_not_overwrite_the_newer_replacement(net, monkeypat
                                "items": [{"kind": "key_art", "url": "https://example.test/new.png"}]})
     _fail_once(monkeypatch, facets, "set_artwork")
     pull(mirror, authority)
+    pull(mirror, authority)  # C13 §5.4: an entry that failed during a pull is first retried by the next one
     assert mirror.failures() == []  # the old entry is resolved: a later entry superseded it
     heads = mirror.heads(authority)
     assert heads["applied_head"] == authority.head() and heads["in_sync"]
