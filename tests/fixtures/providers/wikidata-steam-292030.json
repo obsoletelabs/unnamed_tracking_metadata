@@ -1,0 +1,42 @@
+{
+  "head" : {
+    "vars" : [ "item", "steam", "gog", "epic", "tgdb", "itch", "openlibrary" ]
+  },
+  "results" : {
+    "bindings" : [ {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q4267401"
+      },
+      "steam" : {
+        "type" : "literal",
+        "value" : "292030"
+      },
+      "gog" : {
+        "type" : "literal",
+        "value" : "game/the_witcher_3_wild_hunt"
+      },
+      "epic" : {
+        "type" : "literal",
+        "value" : "the-witcher-3-wild-hunt"
+      }
+    }, {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q4267401"
+      },
+      "steam" : {
+        "type" : "literal",
+        "value" : "292030"
+      },
+      "gog" : {
+        "type" : "literal",
+        "value" : "game/the_witcher_3_wild_hunt_expansion_pass"
+      },
+      "epic" : {
+        "type" : "literal",
+        "value" : "the-witcher-3-wild-hunt"
+      }
+    } ]
+  }
+}

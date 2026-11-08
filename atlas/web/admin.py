@@ -196,8 +196,22 @@ CATALOGUE = (
      "needs": ["ATLAS_IGDB_CLIENT_ID", "ATLAS_IGDB_CLIENT_SECRET"], "optional": []},
     {"name": "rawg", "label": "RAWG", "gives": "Descriptions, genres, tags, scores",
      "needs": ["ATLAS_RAWG_API_KEY"], "optional": []},
-    {"name": "gog", "label": "GOG and other stores", "gives": "No built-in adapter yet; ids arrive from plugins "
-     "and curators", "needs": [], "optional": []},
+    {"name": "tgdb", "label": "TheGamesDB", "gives": "Overviews, alternate titles, player counts, box art "
+     "(official API; a key has a monthly allowance; data kept on this node only)",
+     "needs": ["ATLAS_TGDB_API_KEY"], "optional": []},
+    {"name": "openlibrary", "label": "Open Library", "gives": "Books: descriptions, authors, subjects, covers "
+     "(keyless, CC0; needs a `book` media type)", "needs": ["ATLAS_OPENLIBRARY_ENABLED"], "optional": []},
+    {"name": "wikidata", "label": "Wikidata", "gives": "Store link suggestions: GOG, Epic, itch.io, TheGamesDB and "
+     "Steam ids for a game from an id it already has (keyless, CC0)", "needs": ["ATLAS_WIKIDATA_ENABLED"],
+     "optional": []},
+    {"name": "gog", "label": "GOG", "gives": "No adapter: GOG publishes no API terms for its catalogue. Ids are "
+     "suggested through Wikidata, linked by members, or sent by plugins.", "needs": [], "optional": []},
+    {"name": "epic", "label": "Epic Games Store", "gives": "No adapter: Epic offers no public catalogue API and its "
+     "terms forbid scraping the store. Ids are suggested through Wikidata or linked by hand.", "needs": [],
+     "optional": []},
+    {"name": "itch", "label": "itch.io", "gives": "No adapter: the official API only covers a key holder's own "
+     "games and purchases, with no catalogue search. Ids (`creator/game`) are suggested through Wikidata or linked "
+     "by hand.", "needs": [], "optional": []},
 )
 
 
@@ -232,8 +246,12 @@ def integrations_page(p: Annotated[Ctx, Depends(admin_page)]):
     for item in CATALOGUE:
         spec = integrations.PROVIDERS.get(item["name"])
         fields = [{"key": f, "label": label, **_field_state(p, f)} for f, label in (spec[1] if spec else ())]
-        rows.append({**item, "active": item["name"] in active, "available": bool(item["needs"]), "fields": fields,
-                     "failures": failures.get(item["name"], 0), "editable": spec is not None})
+        toggle = integrations.TOGGLE_OF.get(item["name"])
+        is_active = item["name"] in active or (item["name"] == "wikidata" and p.st.providers.crossref_source is not None)
+        rows.append({**item, "active": is_active, "available": bool(item["needs"]), "fields": fields,
+                     "failures": failures.get(item["name"], 0), "editable": spec is not None,
+                     "toggle": {"key": toggle[0], "label": toggle[1], "on": bool(getattr(p.st.ctx.settings, toggle[0]))}
+                     if toggle else None, "importable": item["name"] in active})
     return render(p, "admin_integrations.html", rows=rows, art=media.stats(p.session),
                   caching=p.st.ctx.settings.media_cache_enabled, docs=DOCS, can_store=secrets_box.available(p.st.base),
                   stores=integrations.STORES,
@@ -268,16 +286,17 @@ async def integrations_save(name: str, request: Request, p: Annotated[Ctx, Depen
         else:
             row.value, row.updated_by = token, p.me.id
         changed.append(field)
-    if name == "steam":
-        key = integrations.PREFIX + "steam_enabled"
-        wanted = form.get("steam_enabled") == "on"
+    if name in integrations.TOGGLE_OF:
+        field = integrations.TOGGLE_OF[name][0]
+        key = integrations.PREFIX + field
+        wanted = form.get(field) == "on"
         row = p.session.get(Setting, key)
-        if (row.value if row is not None else p.st.base.steam_enabled) != wanted:
+        if (row.value if row is not None else getattr(p.st.base, field)) != wanted:
             if row is None:
                 p.session.add(Setting(key=key, value=wanted, updated_by=p.me.id))
             else:
                 row.value, row.updated_by = wanted, p.me.id
-            changed.append("steam_enabled")
+            changed.append(field)
     if changed:  # field names only, never values
         p.session.add(AuditEntry(actor_id=p.me.id, action="integration", target=name, detail={"fields": changed}))
     p.session.flush()

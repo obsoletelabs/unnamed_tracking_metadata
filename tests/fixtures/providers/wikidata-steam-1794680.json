@@ -1,0 +1,21 @@
+{
+  "head" : {
+    "vars" : [ "item", "steam", "gog", "epic", "tgdb", "itch", "openlibrary" ]
+  },
+  "results" : {
+    "bindings" : [ {
+      "item" : {
+        "type" : "uri",
+        "value" : "http://www.wikidata.org/entity/Q110726215"
+      },
+      "steam" : {
+        "type" : "literal",
+        "value" : "1794680"
+      },
+      "itch" : {
+        "type" : "uri",
+        "value" : "https://poncle.itch.io/vampire-survivors"
+      }
+    } ]
+  }
+}

@@ -144,6 +144,10 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "igdb_client_id": ("Providers", "Twitch client id; with the secret enables the IGDB provider. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value."),
     "igdb_client_secret": ("Providers", "Twitch client secret for IGDB. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value."),
     "steam_api_key": ("Providers", "Steam Web API key. Without it achievements have global percentages only (no names). Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value."),
+    "tgdb_api_key": ("Providers", "TheGamesDB API v1 key (requested from TheGamesDB; it has a monthly allowance); enables the TheGamesDB provider. Its data is kept on this node only. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value. See [Metadata providers](providers.md)."),
+    "openlibrary_enabled": ("Providers", "Use Open Library (keyless, CC0) to search and import books. Needs a `book` media type. Can also be switched in [Admin → Integrations](administering.md#integrations)."),
+    "wikidata_enabled": ("Providers", "Suggest store links (GOG, Epic, itch.io, TheGamesDB, Steam) from the ids a game already has, using Wikidata (keyless, CC0). Can also be switched in [Admin → Integrations](administering.md#integrations)."),
+    "price_sources": ("Providers", "Comma-separated price sources `atlas prices fetch` may query, e.g. `steam`. Empty: price fetching is off. Read the source's terms in [Prices](prices.md#fetching-prices-from-a-store) first."),
     "provider_ttl_seconds": ("Providers", "How long a provider answer is cached."),
     "provider_negative_ttl_seconds": ("Providers", "How long “not found” is cached."),
     "media_dir": ("Artwork", "Directory for cached images (content-addressed). Mount a volume here; it must be writable by the user Atlas runs as "

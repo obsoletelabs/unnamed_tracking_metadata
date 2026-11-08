@@ -96,6 +96,14 @@ class Settings(BaseSettings):
     rawg_api_key: str | None = None
     igdb_client_id: str | None = None
     igdb_client_secret: str | None = None
+    # TheGamesDB API v1 key (issue #54): keyed official API, requested from the TheGamesDB forum.
+    tgdb_api_key: str | None = None
+    # Open Library (books, issue #54): keyless, data CC0. Off by default: a node opts in to the outbound calls.
+    openlibrary_enabled: bool = False
+    # Wikidata cross-store ids (issue #63): keyless, CC0. Off by default for the same reason.
+    wikidata_enabled: bool = False
+    # Price sources `atlas prices fetch` may query (issue #38), comma-separated, e.g. "steam". Empty: off.
+    price_sources: str = Field(default="", max_length=200)
     provider_ttl_seconds: int = Field(default=7 * 86400, ge=60)
     provider_negative_ttl_seconds: int = Field(default=86400, ge=60)
 

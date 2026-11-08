@@ -28,6 +28,20 @@ The suite is expected to be fully green on Windows as well as Linux. These are t
 * **Open files cannot be deleted.** `tools/gen_docs.py` builds a throwaway app to read its OpenAPI document; it disposes of the database engine before the temporary directory is removed.
 * **Environment variable limit.** pytest copies a test id into an environment variable, and Windows caps one at 32767 characters. Parametrised tests with very large values must give them short ids.
 
+## Live provider checks
+
+`tests/live/` calls the real provider APIs (issue #26). It is opt-in: a plain `pytest` run collects the checks and skips them.
+
+```bash
+ATLAS_LIVE_PROVIDERS=1 ATLAS_LIVE_REPORT=shapes.json uv run pytest -q -rs tests/live
+```
+
+The keyless checks always run with the switch on: the Steam storefront (search, details, a full import through `importer.import_from_provider`, global achievement percentages and a price), Open Library and Wikidata. A keyed check needs the same variables a node reads (`ATLAS_RAWG_API_KEY`, `ATLAS_IGDB_CLIENT_ID` with `ATLAS_IGDB_CLIENT_SECRET`, `ATLAS_TGDB_API_KEY`, `ATLAS_STEAM_API_KEY`). Without them it skips and names what is missing.
+
+`ATLAS_LIVE_REPORT` writes which fields each provider filled, never the values. Compare two reports to see whether a provider's response shape has changed.
+
+In CI, `.github/workflows/live-providers.yml` runs every Monday and on demand, never on pull requests. It reads the keys from repository secrets with the same names, and uploads the shape report as an artifact. A repository administrator has to add the secrets; until then only the keyless checks run.
+
 ## Browser end-to-end tests
 
 The suite in `e2e/` uses [Playwright](https://playwright.dev) (pinned in `e2e/package.json` and `e2e/package-lock.json`) with Chromium only. It needs Node 20 or newer and `uv`.

@@ -20,9 +20,18 @@ PROVIDERS: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
     "steam": ("Steam", (("steam_api_key", "Steam Web API key (achievement names)"),)),
     "igdb": ("IGDB", (("igdb_client_id", "Twitch client ID"), ("igdb_client_secret", "Twitch client secret"))),
     "rawg": ("RAWG", (("rawg_api_key", "RAWG API key"),)),
+    "tgdb": ("TheGamesDB", (("tgdb_api_key", "TheGamesDB API key"),)),
+    "openlibrary": ("Open Library", ()),
+    "wikidata": ("Wikidata", ()),
 }
 SECRET_FIELDS = tuple(field for _label, fields in PROVIDERS.values() for field, _ in fields)
-TOGGLES = ("steam_enabled",)
+# provider -> its on/off setting, for keyless sources an administrator switches on or off
+TOGGLE_OF: dict[str, tuple[str, str]] = {
+    "steam": ("steam_enabled", "Use Steam's public store API"),
+    "openlibrary": ("openlibrary_enabled", "Use Open Library for books"),
+    "wikidata": ("wikidata_enabled", "Suggest store links from Wikidata"),
+}
+TOGGLES = tuple(field for field, _label in TOGGLE_OF.values())
 
 # Known stores for linking ids: namespace -> (name, url template or None)
 STORES: dict[str, tuple[str, str | None]] = {
@@ -30,17 +39,24 @@ STORES: dict[str, tuple[str, str | None]] = {
     "gog": ("GOG", "https://www.gog.com/game/{id}"),
     "epic": ("Epic Games Store", "https://store.epicgames.com/p/{id}"),
     "tgdb": ("TheGamesDB", "https://thegamesdb.net/game.php?id={id}"),
-    "itch": ("itch.io", None),
+    "itch": ("itch.io", "https://{user}.itch.io/{game}"),
     "igdb": ("IGDB", None),
     "rawg": ("RAWG", "https://rawg.io/games/{id}"),
+    "openlibrary": ("Open Library", "https://openlibrary.org/works/{id}"),
 }
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+_ITCH_ID = re.compile(r"^([a-z0-9][a-z0-9-]{0,62})/([a-z0-9][a-z0-9_-]{0,99})$")
 
 
 def store_link(namespace: str, ident: str) -> str | None:
     """A public store page for a linked id, only for known stores and plainly safe ids."""
     store = STORES.get(namespace)
-    if store is None or store[1] is None or not _SAFE_ID.match(str(ident)):
+    if store is None or store[1] is None:
+        return None
+    if namespace == "itch":  # an itch.io page lives on its creator's subdomain: the id is `user/game`
+        m = _ITCH_ID.match(str(ident))
+        return store[1].format(user=m[1], game=m[2]) if m else None
+    if not _SAFE_ID.match(str(ident)):
         return None
     return store[1].format(id=ident)
 

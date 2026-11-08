@@ -41,6 +41,7 @@ atlas = ["migrations/script.py.mako", "web/templates/*.html", "web/static/*", "d
 testpaths = ["tests"]
 markers = [
     "federation_lab: multi-node federation scenarios on real servers (opt-in: python -m tools.federation_lab)",
+    "live: calls real provider APIs (opt-in: ATLAS_LIVE_PROVIDERS=1; keyed providers also need their keys)",
 ]
 
 [tool.ruff]

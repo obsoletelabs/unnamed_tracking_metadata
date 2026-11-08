@@ -43,11 +43,17 @@ def import_from_provider(st: AppState, session: Session, provider: str, external
 
 def _import(st: AppState, session: Session, provider: str, external_id: str,
             force_canonical: str | None = None) -> Imported:
+    from .providers.registry import media_types
+
+    source = st.providers.providers.get(provider)
+    # a provider of another media type (Open Library: books) imports records of that type; the node must define it
+    kind = media_types(source)[0] if source is not None and media_types(source) else "game"
     results = st.providers.lookup(session, provider, external_id=external_id)
     batch = st.providers.as_batch(provider, results)
     if batch is None:
         raise service.AtlasError("provider has no such record", "not_found")
-    res = service.ingest(session, st.ctx, batch, system=True, force_canonical=force_canonical)[0]
+    res = service.ingest(session, st.ctx, batch, system=True, force_canonical=force_canonical,
+                         media_type=None if kind == "game" else kind)[0]
     row, _redirect = service.get_canonical(session, res.canonical_id)  # type: ignore[arg-type]
     art = ach = 0
     if row.id == res.canonical_id and not res.review:  # an uncertain match must not attach media to a guess

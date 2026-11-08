@@ -6,6 +6,7 @@ from .base import ProviderResult, get_json, parse_release, release_ext, strip_ht
 class Steam:
     name = "steam"
     redistributable = False
+    media_types = ("game",)
     requests_per_minute = 40  # appdetails is aggressively throttled by Valve
 
     def search(self, client, query):

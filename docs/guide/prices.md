@@ -4,8 +4,9 @@ Atlas can keep **price observations**: what an offer cost in one storefront regi
 stored apart from a record's metadata. They never change a record's view or version. This release never
 publishes them to followers.
 
-This release ships the model, the API, retention and the purge. **It does not fetch prices from any store.**
-Prices come in through `POST /api/v2/prices`, from a curator token or an import you run yourself.
+This release ships the model, the API, retention and the purge. Prices come in through `POST /api/v2/prices`,
+from a curator token or an import you run yourself, or through `atlas prices fetch` from a store the operator has
+switched on (see [Fetching prices from a store](#fetching-prices-from-a-store)). Nothing is fetched by default.
 
 ## What a price observation holds
 
@@ -102,6 +103,34 @@ Both endpoints need the `read` scope. They follow merge redirects (`redirected_f
 
 Rows whose licence does not allow redistribution (`license.redistributable: false`) are returned only to
 `curate` and `admin` tokens. A read-only token sees only redistributable prices.
+
+## Fetching prices from a store
+
+`atlas prices fetch --source steam --region gb` asks the store for the current price of every record linked to that
+store (up to `--limit`, default 500), and stores the answers as observations with `source_kind: provider`. Use
+`--dry-run` to ask without storing. The command answers with a JSON report: requests made, observations stored,
+duplicates, products skipped (no price shown), unavailable products, and failures. It exits 1 when it stopped
+early, and 2 when it refused to run.
+
+It is **off until you switch it on**: list the source in `ATLAS_PRICE_SOURCES` (for example `steam`) after reading
+its terms. Run it from a scheduler (cron, a Kubernetes CronJob) at the interval you want. Each run is
+deterministic. The same price seen at the same moment is stored once, and a re-run does not duplicate anything.
+
+| Source | Endpoint | Terms and storage | Limits |
+| --- | --- | --- | --- |
+| `steam` | The storefront's `appdetails` with `filters=price_overview`, 50 apps per request, `cc=<region>` | Public but undocumented. The Steam Web API terms do not grant redistribution, so prices are stored with `license.redistributable: false`, `terms: steam-storefront`. They are hidden from read-only tokens and could never enter the price channel. | 20 requests a minute (Valve throttles about 200 per 5 minutes per address). After 3 failed requests in a row the run stops and reports why. |
+
+What Steam's answer means:
+
+* With a `price_overview`, the app is `available`. `final` is the amount and `initial` the list price, both
+  already in minor units.
+* A free app has no `price_overview`. Atlas stores nothing, because that is not a price.
+* An app the store does not sell in that region answers `success: false`. Atlas counts it as `unavailable` but stores
+  nothing, because Steam does not name the region's currency.
+
+A new store is a `PriceSource` in `atlas/price_sources.py`: a `quotes(client, product_ids, region)` method,
+plus its terms, its redistribution flag, its request budget and its batch size. Document the store here before
+you add it to `SOURCES`.
 
 ## Retention and purge
 

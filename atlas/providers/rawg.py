@@ -9,6 +9,7 @@ _PLATFORM = {"pc": "pc", "playstation": "playstation", "xbox": "xbox", "nintendo
 class Rawg:
     name = "rawg"
     redistributable = False
+    media_types = ("game",)
     requests_per_minute = 60
 
     def __init__(self, api_key: str) -> None:
