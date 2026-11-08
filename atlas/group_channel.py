@@ -53,7 +53,7 @@ REJECT_BODY_KEEP = timedelta(days=30)
 HELLO_TTL = 3600.0
 FORKED = "group_forked_origins"  # NodeState: {origin: {"at": ..., "seq": ...}}
 EPOCH_DUE = "group_epoch_due"  # NodeState: reason for this node's next epoch ("restore")
-SNAPSHOT_DUE = "group_snapshot_due"  # NodeState: "1" after a restore: fetch snapshots for every linked account
+SNAPSHOT_DUE = "group_snapshot_due"  # NodeState: "1" after a restore, then {"recovered": [...]} until all are in
 AUTH_REJECTS = ("not_linked", "field_not_allowed", "no_consent")
 METRIC_REASONS = ("bad_signature", "origin_revoked", "origin_expired", "not_linked", "field_not_allowed", "no_consent",
                   "stale", "time_regression", "fork", "bad_elision", "key_superseded", "epoch_rate", "bad_base")
@@ -1506,30 +1506,59 @@ def _fetch(rx: Rx, member: dict, origin: str, epoch: str, scope: str, head: int,
             return
 
 
+def _snapshot_progress(row: NodeState) -> set[str]:
+    """The `account_uid node_id` pairs already recovered since the restore. Restore writes "1" (nothing yet)."""
+    import json
+
+    try:
+        value = json.loads(row.value) if row.value else {}
+    except ValueError:
+        value = {}
+    done = value.get("recovered") if isinstance(value, dict) else None
+    return {d for d in done if isinstance(d, str)} if isinstance(done, list) else set()
+
+
 def _snapshot_if_due(session: Session, settings: Any, identity: Any, group: OwnerGroup, http: Any, call: Any,
                      tr: groups.Trust, now: datetime) -> None:
     """After a restore, fetch a snapshot of every linked account from each member: the restored node re-learns
-    its lost effects (its own signed entries come back verified, §3.6)."""
+    its lost effects (its own signed entries come back verified, §3.6).
+
+    Recovery is tracked per account and per holder: a snapshot is required from every current member that holds
+    the account (`group_account_node` linked). The marker stays (with the pairs recovered so far) until every
+    required snapshot has been installed, so a failed call for one account or one unavailable holder is retried on
+    a later round instead of being lost when another snapshot succeeds."""
+    import json
+
     due = _state(session, SNAPSHOT_DUE)
     if due is None:
         return
-    done = not session.scalar(select(func.count()).select_from(GroupAccountLink).where(
-        GroupAccountLink.group_id == group.group_id))
-    for node, cert in tr.members().items():
-        if node == identity.node_id:
-            continue
-        for link in session.scalars(select(GroupAccountLink).where(GroupAccountLink.group_id == group.group_id)).all():
+    recovered = _snapshot_progress(due)
+    members = {node: cert for node, cert in tr.members().items() if node != identity.node_id}
+    links = session.scalars(select(GroupAccountLink).where(GroupAccountLink.group_id == group.group_id)).all()
+    required: set[str] = set()
+    for link in links:
+        holders = session.scalars(select(GroupAccountNode.node_id).where(
+            GroupAccountNode.group_id == group.group_id, GroupAccountNode.account_uid == link.account_uid,
+            GroupAccountNode.status == "linked")).all()
+        required |= {f"{link.account_uid} {node}" for node in holders if node in members}
+    for node, cert in members.items():
+        for link in links:
+            pair = f"{link.account_uid} {node}"
+            if pair in recovered:
+                continue
             accept = profile.accept(session, settings, link.user_id, group.group_id)
             try:
                 snap = call(session, settings, identity, group, cert["body"]["member"], "snapshot",
                             {"account_uid": link.account_uid, "accept": accept}, http)
-            except Exception:  # noqa: BLE001 - retried next round
+            except Exception:  # noqa: BLE001 - retried next round while the pair is required
                 continue
             install_snapshot(Rx(session, settings, identity, group, tr, now, node), link.account_uid, snap,
                              set(accept))
-            done = True
-    if done:
+            recovered.add(pair)
+    if required <= recovered:
         session.delete(due)
+    else:
+        due.value = json.dumps({"recovered": sorted(recovered & required)})
 
 
 def fetch_snapshot(session: Session, settings: Any, identity: Any, group: OwnerGroup, member_node: str, uid: str,
