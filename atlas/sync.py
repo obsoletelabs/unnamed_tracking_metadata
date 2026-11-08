@@ -223,10 +223,12 @@ def retry_failures(session: Session, ctx: Ctx, node_id: str | None = None, *, li
 # ---- retry ordering: a late retry never overwrites a later entry ------------------------------------------
 
 #: The kinds that write each target. An entry of one of these kinds replaces its target's state (artwork and
-#: achievements per record and source, a lock per record and field, the whole upstream schema), except `custom`,
-#: which upserts or clears single keys of one record and source.
+#: achievements per record and source, a lock per record and field, a relation per (from, to, type) whether it
+#: adds or ends it, the whole upstream schema), except `custom`, which upserts or clears single keys of one record
+#: and source.
 _TARGET_KINDS = {"artwork": ("artwork",), "achievements": ("achievements",), "lock": ("lock", "unlock"),
-                 "unlock": ("lock", "unlock"), "schema": ("schema",), "custom": ("custom",)}
+                 "unlock": ("lock", "unlock"), "schema": ("schema",), "custom": ("custom",),
+                 "relation": ("relation",)}
 
 
 def _target(kind: str, body: Any) -> tuple[Any, ...] | None:
@@ -239,6 +241,9 @@ def _target(kind: str, body: Any) -> tuple[Any, ...] | None:
         return None
     if kind == "schema":
         return ("schema",)
+    if kind == "relation":  # `add` and `end` of one (from, to, type) write the same relation
+        ends = (body.get("from"), body.get("to"), body.get("type"))
+        return ("relation", *ends) if all(isinstance(v, str) for v in ends) else None
     cid = body.get("canonical_id")
     if not isinstance(cid, str):
         return None
@@ -321,8 +326,15 @@ def superseding(session: Session, node_id: str, seq: int, kind: str, body: Any) 
 
 
 #: The kinds whose later entries a late merge re-applies on the merged records (they replace or upsert state that
-#: the merge moves: locks, artwork, achievements, custom values).
-_MERGE_REPLAY_KINDS = ("artwork", "achievements", "lock", "unlock", "custom")
+#: the merge moves: locks, artwork, achievements, custom values, relations).
+_MERGE_REPLAY_KINDS = ("artwork", "achievements", "lock", "unlock", "custom", "relation")
+
+
+def _names(body: Any, records: set[str]) -> bool:
+    """Whether a later entry writes state on one of `records` (a relation names two records)."""
+    if not isinstance(body, dict):
+        return False
+    return bool({body.get("canonical_id"), body.get("from"), body.get("to")} & records)
 
 
 def _later_applied(session: Session, node_id: str, seq: int, kinds: tuple[str, ...]) -> list[ReplicatedChange]:
@@ -367,7 +379,7 @@ def retry_merge(session: Session, ctx: Ctx, node_id: str, seq: int, body: Any) -
                 "leave different state than the authority", {"kind": "merge", "later": clashing})
         return QUARANTINE
     replay = [later for later in _later_applied(session, node_id, seq, _MERGE_REPLAY_KINDS)
-              if isinstance(later.body, dict) and later.body.get("canonical_id") in records]
+              if _names(later.body, records)]
     try:
         with session.begin_nested():
             result = apply_entry(session, ctx, node_id, seq, "merge", body, may_park=False)
