@@ -542,6 +542,53 @@ def test_restore_opens_a_new_epoch_and_snapshots_recover_lost_values(pair, net):
     assert audited(a, "group_stream_fork") == []
 
 
+def test_restore_keeps_snapshot_recovery_pending_until_every_linked_account_is_recovered(pair, net, monkeypatch):
+    """A failed snapshot for one linked account must not clear the restore marker because another account's
+    snapshot succeeded: the restored node's own entries lost after its backup only come back through snapshots."""
+    from atlas.api import group_routes
+
+    a, b, ua, ub = pair
+    ua2, ub2 = user(a, "bert"), user(b, "berta")
+    link(a, ua2, b, ub2)
+    rounds(a, b)
+    edit(b, ub, "theme", "dark")
+    edit(b, ub2, "theme", "dark")
+    rounds(a, b)
+    archive = net.tmp / "b-backup.tar.gz"
+    engine = b.st.maker.kw["bind"]
+    backup.create(b.settings, engine, archive, include_media=False)
+    lost1, _ = edit(b, ub, "theme", "light")  # both emitted after the backup
+    lost2, _ = edit(b, ub2, "theme", "light")
+    sync(a)
+    assert (shown(a, ua, "theme"), shown(a, ua2, "theme")) == ("light", "light")
+    engine.dispose()
+    backup.restore(b.settings, engine, archive, force=True, include_media=False)
+    second = uid_of(b, ub2)
+    real_call = group_routes.call
+    failing = {"on": True}
+
+    def flaky(session, settings, identity, group, member, op, params, http):
+        if failing["on"] and op == "snapshot" and params.get("account_uid") == second:
+            raise group_channel.ChannelError("peer unavailable")
+        return real_call(session, settings, identity, group, member, op, params, http)
+
+    monkeypatch.setattr(group_routes, "call", flaky)
+    full_round(b)
+    full_round(b)
+    assert shown(b, ub, "theme") == "light"  # partial success: the first account is recovered
+    assert shown(b, ub2, "theme") == "dark"
+    with b.session() as s:
+        assert s.get(ProfileVersion, (ub, "theme", lost1)) is not None
+        assert s.get(ProfileVersion, (ub2, "theme", lost2)) is None
+        assert s.get(NodeState, group_channel.SNAPSHOT_DUE) is not None  # still pending for the second account
+    failing["on"] = False  # the peer answers again
+    full_round(b)
+    assert shown(b, ub2, "theme") == "light"
+    with b.session() as s:
+        assert s.get(ProfileVersion, (ub2, "theme", lost2)) is not None
+        assert s.get(NodeState, group_channel.SNAPSHOT_DUE) is None
+
+
 # ---- u2: elision -----------------------------------------------------------------------------------------------
 
 def test_relay_that_elides_an_accepted_field_is_suspect(pair):
