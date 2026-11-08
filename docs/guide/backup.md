@@ -78,6 +78,22 @@ the archive holds a plaintext key:
 atlas backup verify manual.tar.gz --secret-check
 ```
 
+### Isolated restore drill
+
+`verify` proves the archive is intact; it does not prove it restores. `drill` restores the archive into a **throwaway
+SQLite database and media directory in a temporary folder** (never this node's database or `ATLAS_MEDIA_DIR`), checks
+that every table loaded the number of rows the manifest lists, deletes the temporary copy, and records the time:
+
+```sh
+atlas backup drill /var/backups/atlas/atlas-20260101-020000.tar.gz
+```
+
+It needs the same `ATLAS_SECRET_KEY` as the node that made the archive (like a real restore) and enough free space in
+the temporary directory for a copy of the database and artwork. With [metrics](observability.md) on,
+`atlas_backup_last_restore_drill_timestamp_seconds` shows the last passing drill and
+`atlas_backup_last_verified_timestamp_seconds` the last verified archive (scheduled backups are verified after they are
+written). A drill is still not the full rehearsal below: it does not start Atlas, sign anyone in or migrate forward.
+
 ## Restore
 
 Restore into a **fresh, empty** database of the same Atlas version:

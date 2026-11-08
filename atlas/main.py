@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from . import (
     __version__,
     auth,
+    background,
     backup,
     client_changes,
     custom,
@@ -34,9 +35,13 @@ from . import (
     relations,
     sync,
 )
+from . import (
+    metrics as telemetry,
+)
 from .api.deps import AppState, get_session, require
 from .api.group_routes import router as group_router
 from .api.routes import router
+from .db import instrument as instrument_engine
 from .db import make_engine, make_sessionmaker, upgrade
 from .observability import RequestTelemetry, Stats, configure_logging
 from .pages import seed_pages
@@ -127,39 +132,47 @@ def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event)
     last_decision_prune = 0.0
     while not stop.is_set():
         try:
-            ratelimit.purge(maker)
-            with maker() as s:
-                oidc.purge(s)
-                s.commit()
-            with maker() as s:  # daily retention of the local client change log (C3.2)
-                if client_changes.maybe_prune(s, ctx.settings.client_changes_retain_days) is not None:
+            with background.operation("housekeeping"):
+                ratelimit.purge(maker)
+                with maker() as s:
+                    oidc.purge(s)
                     s.commit()
+                with maker() as s:  # daily retention of the local client change log (C3.2)
+                    if client_changes.maybe_prune(s, ctx.settings.client_changes_retain_days) is not None:
+                        s.commit()
             if time.monotonic() - last_price_purge > 3600:  # hourly: price observations past retention (C8.2)
                 last_price_purge = time.monotonic()
-                with maker() as s:
+                with background.operation("price_purge"), maker() as s:
                     if purged := prices.purge(s):
                         log.info("purged %d expired price observations", purged)
                     s.commit()
             if time.monotonic() - last_decision_prune > 86400:  # daily: match decision retention (C11 §11.4)
                 last_decision_prune = time.monotonic()
-                with maker() as s:
+                with background.operation("decision_prune"), maker() as s:
                     if pruned := matching.prune_decisions(s, ctx.settings):
                         log.info("pruned %d old match decisions", pruned)
                     s.commit()
-                with maker() as s:  # daily: achievements retired longer than the retention (C12 §12.1.3)
+                # daily: achievements retired longer than the retention (C12 §12.1.3)
+                with background.operation("retired_purge"), maker() as s:
                     if purged := facets.purge_retired(s, ctx.settings):
                         log.info("purged %d retired achievement rows", purged)
                     s.commit()
         except Exception as exc:
             log.warning("housekeeping failed: %s", exc)
-        stop.wait(60)
+        if background.wait(stop, "housekeeping", 60):
+            break
 
 
 def _cache_media(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
     while not stop.is_set():
         settings = ctx.settings
         try:
-            cached = media.cache_pending(maker, settings) if settings.media_cache_enabled else 0
+            if settings.media_cache_enabled:
+                with background.operation("media_cache"):
+                    cached = media.cache_pending(maker, settings)
+            else:
+                background.skipped("media_cache")
+                cached = 0
         except media.MediaStorageError as exc:
             log.warning("artwork cache cannot store images: %s", exc)
             cached = 0
@@ -167,7 +180,8 @@ def _cache_media(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) 
             log.warning("artwork cache failed: %s", type(exc).__name__)
             cached = 0
         # Drain full successful batches, but avoid a busy loop on an empty or failing queue.
-        stop.wait(0 if cached >= settings.media_cache_batch else 5)
+        if background.wait(stop, "media_cache", 0 if cached >= settings.media_cache_batch else 5):
+            break
 
 
 def _backups(engine, ctx: Ctx, stop: threading.Event) -> None:
@@ -178,27 +192,49 @@ def _backups(engine, ctx: Ctx, stop: threading.Event) -> None:
             latest = backup.latest(ctx.settings)
             due = not latest or (datetime.now(UTC) - latest[0]["when"]).total_seconds() >= interval
             if due:
-                out = backup.scheduled(ctx.settings, engine)
-                backup.verify(out)
+                with background.operation("backup"):
+                    out = backup.scheduled(ctx.settings, engine)
+                    backup.verify(out)
+                backup.record(engine, backup.VERIFIED)
                 log.info("backup written and verified: %s", out)
+            else:
+                background.skipped("backup")
         except Exception as exc:
             log.error("scheduled backup failed: %s", exc)
-        stop.wait(min(interval, 900))
+        if background.wait(stop, "backup", min(interval, 900)):
+            break
 
 
 def _mailer(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
     last_purge = 0.0
     while not stop.is_set():
         try:
-            mail.deliver_pending(maker, ctx.settings)
+            if ctx.settings.mail_backend == "smtp" and ctx.settings.smtp_host:
+                with background.operation("mail_delivery"):
+                    mail.deliver_pending(maker, ctx.settings)
             if time.monotonic() - last_purge > 3600:
                 last_purge = time.monotonic()
-                with maker() as s:
+                with background.operation("mail_purge"), maker() as s:
                     mail.purge_old(s)
                     s.commit()
         except Exception as exc:
             log.warning("mail worker failed: %s", exc)
-        stop.wait(3)
+        if background.wait(stop, "mail", 3):
+            break
+
+
+def _flush_quietly(stats: Stats) -> None:
+    try:
+        stats.flush()
+    except OSError as exc:
+        log.warning("metrics snapshot not written: %s", type(exc).__name__)
+
+
+def _metrics_flush(stats: Stats, stop: threading.Event) -> None:
+    """Multi-worker metrics (ATLAS_METRICS_DIR): publish this worker's counters every few seconds, so a scrape
+    answered by another worker includes them, and a heartbeat that tells live workers from stopped ones."""
+    while not stop.wait(5):
+        _flush_quietly(stats)
 
 
 def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st: Any = None) -> None:
@@ -211,11 +247,13 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st
         while not stop.is_set():
             wait = delay
             try:  # C13 §4.2: an `introduce` scheduled when the emit protocol was raised into 1.5
-                feed.run_pending(maker, ctx)
+                with background.operation("scheduled_introduce"):
+                    feed.run_pending(maker, ctx)
             except Exception as exc:
                 log.warning("scheduled introduce failed: %s", exc)
             try:
-                results = sync.sync_peers(maker, ctx, client)
+                with background.operation("sync_round"):
+                    results = sync.sync_peers(maker, ctx, client)
                 if any(not v.startswith("ok") for v in results.values()):
                     wait = min(delay * 4, 900)
             except Exception as exc:  # keep serving local data through any upstream failure
@@ -226,7 +264,8 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st
                     enrich.run(maker, st)
                 except Exception as exc:
                     log.warning("enrichment from own providers failed: %s", exc)
-            stop.wait(wait)
+            if background.wait(stop, "sync", wait):
+                break
 
 
 def group_round(maker: sessionmaker[Session], ctx: Ctx, client) -> dict[str, str]:
@@ -271,7 +310,8 @@ def _group_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -
             if stop.is_set():
                 break
             try:
-                group_round(maker, ctx, client)
+                with background.operation("group_round"):
+                    group_round(maker, ctx, client)
             except Exception as exc:  # noqa: BLE001 - the next round retries; local service continues
                 log.warning("group sync failed", extra={"atlas_event": {"event": "group.sync_failed",
                                                                         "error_type": type(exc).__name__}})
@@ -330,8 +370,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             threading.Thread(target=_sync_loop, args=(maker, ctx, stop, app.state.atlas), daemon=True,
                              name="atlas-sync").start()
         threading.Thread(target=_group_loop, args=(maker, ctx, stop), daemon=True, name="atlas-group").start()
+        stats = getattr(app.state, "observability", None)
+        if stats is not None and settings.metrics_enabled and settings.metrics_dir:
+            threading.Thread(target=_metrics_flush, args=(stats, stop), daemon=True, name="atlas-metrics").start()
         yield
         stop.set()
+        if stats is not None and settings.metrics_enabled and settings.metrics_dir:
+            _flush_quietly(stats)  # the last counts of a stopping worker are kept (folded once it is stale)
         from .group_channel import WAKE
 
         WAKE.set()
@@ -343,7 +388,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(BodyLimit, limit=settings.max_body_bytes)
     if settings.json_logs or settings.metrics_enabled:
         stats = Stats()
+        stats.settings = settings
         app.state.observability = stats
+        if settings.metrics_enabled:
+            telemetry.enable()
+            instrument_engine(engine)
         if settings.json_logs:
             configure_logging()
         app.add_middleware(RequestTelemetry, state=app.state.atlas, stats=stats, json_logs=settings.json_logs)

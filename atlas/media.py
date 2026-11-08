@@ -519,14 +519,51 @@ def _from_peer(session: Session, settings: Settings, art: Artwork, client: httpx
     return data
 
 
-def cache_one(session: Session, settings: Settings, art: Artwork, client: httpx.Client) -> bool:
+def _fetch_measured(kind: str, fetch: Any, settings: Settings) -> tuple[bytes, tuple[str, str, int, int]]:
+    """Download and decode-verify one image, recording `atlas_media_operations_total{operation="fetch"}`."""
+    from . import instruments as m
+
+    started, outcome = time.monotonic(), "ok"
     try:
-        data = _from_peer(session, settings, art, client)
-        if data is None:
-            data = _request(client, art.url, settings)
-            art.fetched_from = "origin"
-        ext, ctype, w, h = validate_image(data, settings)
+        data, source = fetch()
+        m.media_bytes.inc(len(data), source=source)
+        return data, validate_image(data, settings)
+    except MediaError as exc:
+        outcome = "deferred" if exc.deferred else exc.code
+        raise
+    except Exception:
+        outcome = "error"
+        raise
+    finally:
+        m.media_operations.inc(kind=kind, operation="fetch", outcome=outcome)
+        m.media_duration.observe(time.monotonic() - started, kind=kind, operation="fetch")
+
+
+def _store_measured(kind: str, settings: Settings, data: bytes, ext: str) -> str:
+    from . import instruments as m
+
+    started, outcome = time.monotonic(), "storage_error"
+    try:
         digest = store(settings, data, ext)
+        outcome = "ok"
+        return digest
+    finally:
+        m.media_operations.inc(kind=kind, operation="store", outcome=outcome)
+        m.media_duration.observe(time.monotonic() - started, kind=kind, operation="store")
+
+
+def cache_one(session: Session, settings: Settings, art: Artwork, client: httpx.Client) -> bool:
+    def fetch() -> tuple[bytes, str]:
+        got = _from_peer(session, settings, art, client)
+        if got is not None:
+            return got, "peer"
+        got = _request(client, art.url, settings)
+        art.fetched_from = "origin"
+        return got, "origin"
+
+    try:
+        data, (ext, ctype, w, h) = _fetch_measured("artwork", fetch, settings)
+        digest = _store_measured("artwork", settings, data, ext)
         if art.fetched_from == "origin" and art.peer_digest and art.peer_digest != digest \
                 and art.digest_provenance != "signed":
             # C13 §6.2 step 3: a digest a peer reported (unsigned) is a hint only. The origin's bytes differ (the
@@ -589,8 +626,9 @@ def cache_achievement_icon(settings: Settings, ach: Achievement, which: str, cli
     """Fetch one achievement image ("icon" or "locked_icon") through the same SSRF-safe, validated store."""
     url = getattr(ach, f"{which}_url")
     try:
-        data = _request(client, url, settings)
-        digest = store(settings, data, validate_image(data, settings)[0])
+        data, (ext, _ctype, _w, _h) = _fetch_measured("achievement_icon",
+                                                      lambda: (_request(client, url, settings), "origin"), settings)
+        digest = _store_measured("achievement_icon", settings, data, ext)
     except MediaError as exc:
         if exc.deferred:
             setattr(ach, f"{which}_next_try_at", now() + timedelta(minutes=1))
@@ -728,6 +766,8 @@ def clear_cache(session: Session, settings: Settings) -> int:
             Achievement.icon_blob_hash.is_not(None) | Achievement.locked_icon_blob_hash.is_not(None))):
         keep.update(h for h in (ach.icon_blob_hash, ach.locked_icon_blob_hash) if h)
     cleared = 0
+    from . import instruments as m
+
     for art in cached:
         digest = art.blob_hash
         art.blob_hash = art.content_type = art.size_bytes = art.cached_at = None
@@ -739,7 +779,29 @@ def clear_cache(session: Session, settings: Settings) -> int:
             found = find_blob(settings, digest)
             if found is not None:
                 found[0].unlink(missing_ok=True)
+    m.media_evictions.inc(cleared, reason="manual")
     return cleared
+
+
+def storage_usage(settings: Settings, *, limit: int = 200_000) -> dict[str, Any]:
+    """Bytes and files under ATLAS_MEDIA_DIR as this process sees it (a per-node directory, or a shared volume when
+    several nodes mount the same one). Stops after `limit` files and says so instead of walking without bound."""
+    root = Path(settings.media_dir)
+    total = files = 0
+    truncated = False
+    if not root.is_dir():
+        return {"bytes": 0, "files": 0, "truncated": False, "present": False}
+    for path in root.rglob("*"):
+        if files >= limit:
+            truncated = True
+            break
+        try:
+            if path.is_file() and not path.name.endswith(".part"):
+                total += path.stat().st_size
+                files += 1
+        except OSError:
+            continue
+    return {"bytes": total, "files": files, "truncated": truncated, "present": True}
 
 
 def describe_state(settings: Settings, art: Any) -> str:

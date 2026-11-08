@@ -90,6 +90,8 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_MAX_BODY_BYTES` | `2000000` | Largest request body accepted. |
 | `ATLAS_JSON_LOGS` | `false` | Opt-in structured request/application logs; no query, body or credential logging. |
 | `ATLAS_METRICS_ENABLED` | `false` | Enable `/metrics`; a `metrics`-scoped bearer token is required. |
+| `ATLAS_METRICS_DIR` | — | Several worker processes on one host: a private directory they share (writable by Atlas only). Each worker writes its counters there and any worker's `/metrics` reports all of them. Empty: every process reports only itself. |
+| `ATLAS_METRICS_CACHE_SECONDS` | `300` | How long the expensive `/metrics` collectors (catalogue aggregates, the media directory walk) are cached in each process; 0 recomputes them on every scrape. |
 | `ATLAS_ACHIEVEMENT_PERCENT_MAX_AGE_DAYS` | `30` | Days after which an achievement's rarity is shown as stale and a fresher value from another source wins (C12 §12.1.6). |
 | `ATLAS_ACHIEVEMENT_RETIRED_RETENTION_DAYS` | `180` | Days a retired achievement row (one its source no longer lists) is kept, with its id and key, before it is deleted (C12 §12.1.3, H37). |
 

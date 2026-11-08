@@ -15,10 +15,10 @@ from datetime import timedelta
 from sqlalchemy import case, func, select
 from starlette.requests import ClientDisconnect
 
-from . import backup, feed, readiness
+from . import backup, feed, instruments, metrics, readiness
 from .models import NodeState, Outbox, Peer, SyncCursor
 
-BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)
+BUCKETS = metrics.LATENCY_BUCKETS
 # Cardinality budget for the `route` label: matched route templates are finite (code, not input), but a
 # dynamically mounted router must never be able to grow the series set without bound.
 MAX_ROUTE_LABELS = 512
@@ -28,7 +28,26 @@ ERROR_CLASSES = ("client_error", "server_error", "unhandled_exception", "client_
 # Status recorded when the client went away before any response was started (nginx convention). Without
 # it a cancelled request would be counted as a server 500 and trip the error-rate alert.
 STATUS_CLIENT_DISCONNECT = 499
-COLLECTORS = ("readiness", "feed", "outbox", "peers", "sync_upstreams", "providers", "backup")
+COLLECTORS = ("readiness", "feed", "outbox", "peers", "sync_upstreams", "providers", "backup", "database", "catalog",
+              "media_storage")
+#: Collectors whose result is cached for `ATLAS_METRICS_CACHE_SECONDS` (aggregate scans and a directory walk):
+#: a scrape never runs them more than once per period per process.
+CACHED = ("catalog", "media_storage")
+#: Response kinds for `atlas_http_response_bytes_total`, from the response content type.
+RESPONSE_KINDS = ("html", "json", "image", "text", "other")
+
+
+def response_kind(content_type: bytes) -> str:
+    value = content_type.split(b";", 1)[0].strip().lower()
+    if value == b"text/html":
+        return "html"
+    if value == b"application/json" or value.endswith(b"+json"):
+        return "json"
+    if value.startswith(b"image/"):
+        return "image"
+    if value.startswith(b"text/"):
+        return "text"
+    return "other"
 REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 
 
@@ -67,7 +86,11 @@ class Stats:
         self.buckets = Counter()
         self.routes: set[str] = set()
         self.errors = Counter()
+        self.bytes = Counter()
         self.in_flight = 0
+        self.settings = None  # set by the app: metrics_dir and metrics_cache_seconds
+        self._cache: dict[str, tuple[float, list[str]]] = {}
+        self._cache_locks = {name: threading.Lock() for name in CACHED}
 
     def begin(self):
         with self.lock:
@@ -77,13 +100,20 @@ class Stats:
         with self.lock:
             self.in_flight = max(0, self.in_flight - 1)
 
-    def observe(self, method, route, status, elapsed, error_class=None):
+    def _route(self, route):
+        if route not in self.routes:
+            if len(self.routes) >= MAX_ROUTE_LABELS:
+                return "other"
+            self.routes.add(route)
+        return route
+
+    def observe(self, method, route, status, elapsed, error_class=None, sent_bytes=0, kind="other"):
         status = status if isinstance(status, int) and 100 <= status <= 599 else 0
+        kind = kind if kind in RESPONSE_KINDS else "other"
         with self.lock:
-            if route not in self.routes:
-                if len(self.routes) >= MAX_ROUTE_LABELS:
-                    route = "other"
-                self.routes.add(route)
+            route = self._route(route)
+            if sent_bytes:
+                self.bytes[(route, kind)] += sent_bytes
             key = (method, route, str(status))
             self.counts[key] += 1
             self.sums[key] += elapsed
@@ -95,24 +125,51 @@ class Stats:
             if error_class:
                 self.errors[error_class] += 1
 
-    def _http(self):
-        lines = ["# TYPE atlas_http_requests_total counter", "# TYPE atlas_http_request_duration_seconds histogram"]
+    def families(self) -> dict:
+        """This process's HTTP series in the shared snapshot format (`atlas.metrics`), plus every registry family."""
+        labels = ["method", "route", "status"]
         with self.lock:
-            for (method, route, status), count in sorted(self.counts.items()):
-                labels = f'method={json.dumps(method)},route={json.dumps(route)},status={json.dumps(status)}'
-                lines.append(f"atlas_http_requests_total{{{labels}}} {count}")
-                for bound in BUCKETS:
-                    number = self.buckets[(method, route, status, str(bound))]
-                    lines.append(f'atlas_http_request_duration_seconds_bucket{{{labels},le="{bound}"}} {number}')
-                total = self.sums[(method, route, status)]
-                lines.extend([f'atlas_http_request_duration_seconds_bucket{{{labels},le="+Inf"}} {count}',
-                              f"atlas_http_request_duration_seconds_count{{{labels}}} {count}",
-                              f"atlas_http_request_duration_seconds_sum{{{labels}}} {total:.6f}"])
-            lines += ["# TYPE atlas_http_requests_in_flight gauge", f"atlas_http_requests_in_flight {self.in_flight}",
-                      "# TYPE atlas_http_request_errors_total counter"]
-            lines += [f'atlas_http_request_errors_total{{class="{name}"}} {self.errors[name]}'
-                      for name in ERROR_CLASSES]
-        return lines
+            requests = [[list(k), v] for k, v in self.counts.items()]
+            durations = [[list(k), [[self.buckets[(*k, str(b))] for b in BUCKETS], self.sums[k], n]]
+                         for k, n in self.counts.items()]
+            errors = [[[name], self.errors[name]] for name in ERROR_CLASSES]
+            sent = [[list(k), v] for k, v in self.bytes.items()]
+            in_flight = self.in_flight
+        out = metrics.REGISTRY.snapshot()
+        out.update({
+            "atlas_http_requests_total": {
+                "type": "counter", "labels": labels, "buckets": [], "merge": "sum", "live": False, "series": requests,
+                "help": "Requests by bounded method, matched route template and status (499: client left first)"},
+            "atlas_http_request_duration_seconds": {
+                "type": "histogram", "labels": labels, "buckets": list(BUCKETS), "merge": "sum", "live": False,
+                "series": durations, "help": "Request duration in seconds"},
+            "atlas_http_request_errors_total": {
+                "type": "counter", "labels": ["class"], "buckets": [], "merge": "sum", "live": False,
+                "series": errors, "help": "Requests that did not succeed, one class per request"},
+            "atlas_http_response_bytes_total": {
+                "type": "counter", "labels": ["route", "kind"], "buckets": [], "merge": "sum", "live": False,
+                "series": sent, "help": "Response body bytes sent, by route template and response kind"},
+            "atlas_http_requests_in_flight": {
+                "type": "gauge", "labels": [], "buckets": [], "merge": "sum", "live": True,
+                "series": [[[], in_flight]], "help": "Requests running now in this process (or live workers)"},
+        })
+        return out
+
+    def flush(self) -> None:
+        """Write this process's snapshot for the other workers (multi-worker mode only)."""
+        directory = getattr(self.settings, "metrics_dir", None)
+        if directory:
+            metrics.write_snapshot(directory, self.families())
+
+    def _process_lines(self) -> list[str]:
+        directory = getattr(self.settings, "metrics_dir", None)
+        if not directory:
+            return metrics.render(metrics.merge([(self.families(), True)]))
+        self.flush()
+        metrics.compact(directory)
+        lines = metrics.render(metrics.collect(directory))
+        return lines + ["# HELP atlas_metrics_workers Worker snapshots with a fresh heartbeat in ATLAS_METRICS_DIR",
+                        "# TYPE atlas_metrics_workers gauge", f"atlas_metrics_workers {metrics.workers(directory)}"]
 
     def _readiness(self, state, session):
         result = readiness.check(session, state.ctx.settings)
@@ -135,6 +192,14 @@ class Stats:
         counts = dict(session.execute(select(status, func.count()).select_from(Outbox).group_by(status)).all())
         for name in ("pending", "failed", "sent"):
             lines.append(f'atlas_outbox_messages{{state="{name}"}} {counts.get(name, 0)}')
+        # Absent when nothing is waiting (an empty queue has no age); failed rows still due for a retry count.
+        oldest = session.scalar(select(func.min(Outbox.created_at)).where(Outbox.sent_at.is_(None)))
+        if oldest is not None:
+            from datetime import UTC
+
+            when = (oldest if oldest.tzinfo else oldest.replace(tzinfo=UTC)).timestamp()
+            lines += ["# TYPE atlas_mail_oldest_pending_timestamp_seconds gauge",
+                      f"atlas_mail_oldest_pending_timestamp_seconds {when:.0f}"]
         return lines
 
     def _peers(self, state, session):
@@ -224,10 +289,50 @@ class Stats:
     def _backup(self, state, session):
         archives = backup.latest(state.ctx.settings)
         last_backup = max((row["when"].timestamp() for row in archives), default=0)
+        verified = backup.recorded(session, backup.VERIFIED)
+        drilled = backup.recorded(session, backup.DRILL)
         return ["# TYPE atlas_backup_last_success_timestamp_seconds gauge",
                 f"atlas_backup_last_success_timestamp_seconds {last_backup}",
                 "# TYPE atlas_backup_enabled gauge",
-                f"atlas_backup_enabled {int(bool(state.ctx.settings.backup_dir))}"]
+                f"atlas_backup_enabled {int(bool(state.ctx.settings.backup_dir))}",
+                # node_state evidence, shared by every worker; zero means never recorded
+                "# TYPE atlas_backup_last_verified_timestamp_seconds gauge",
+                f"atlas_backup_last_verified_timestamp_seconds {verified or 0:.0f}",
+                "# TYPE atlas_backup_last_restore_drill_timestamp_seconds gauge",
+                f"atlas_backup_last_restore_drill_timestamp_seconds {drilled or 0:.0f}"]
+
+    def _database(self, state, session):
+        """Connection pool occupancy (#74); absent where the pool has no such numbers."""
+        from . import db
+
+        pool = db.pool_status(session.get_bind())
+        if pool is None:
+            return []
+        lines = ["# TYPE atlas_database_pool_connections gauge"]
+        lines += [f'atlas_database_pool_connections{{state="{name}"}} {pool[name]}'
+                  for name in ("checked_out", "idle", "overflow")]
+        return lines + ["# TYPE atlas_database_pool_size gauge", f"atlas_database_pool_size {pool['size']}"]
+
+    def _catalog(self, state, session):
+        from . import catalog_metrics
+
+        return catalog_metrics.lines(session)
+
+    def _media_storage(self, state, session):
+        from . import media
+
+        usage = media.storage_usage(state.ctx.settings)
+        lines = ["# TYPE atlas_media_storage_present gauge", f"atlas_media_storage_present {int(usage['present'])}"]
+        if not usage["present"]:
+            return lines  # no directory: usage unknown, not zero
+        lines += ["# TYPE atlas_media_storage_bytes gauge", f"atlas_media_storage_bytes {usage['bytes']}",
+                  "# TYPE atlas_media_storage_files gauge", f"atlas_media_storage_files {usage['files']}",
+                  "# TYPE atlas_media_storage_scan_truncated gauge",
+                  f"atlas_media_storage_scan_truncated {int(usage['truncated'])}"]
+        stats = media.stats(session)
+        lines.append("# TYPE atlas_media_artwork gauge")
+        lines += [f'atlas_media_artwork{{state="{k}"}} {stats[k]}' for k in ("total", "cached", "failing")]
+        return lines
 
     def _group(self, state, session):
         """Owner-group health (CONTRACT-C10 §8.3). Only rendered while this node is in a group; it discloses the
@@ -320,19 +425,52 @@ class Stats:
             session.rollback()
             return COLLECTORS
 
+    def _run(self, name, state, session):
+        """One collector, through the cache for the expensive ones. Returns (lines, age_seconds or None)."""
+        ttl = getattr(self.settings, "metrics_cache_seconds", 300) if self.settings is not None else 300
+        if name not in CACHED:
+            return self._timed(name, state, session), None
+        cached = self._cache.get(name)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < ttl:
+            return cached[1], now - cached[0]
+        lock = self._cache_locks[name]
+        if not lock.acquire(blocking=False):  # another scrape is refreshing it: serve the previous result
+            if cached is not None:
+                return cached[1], now - cached[0]
+            raise RuntimeError("refresh in progress")
+        try:
+            lines = self._timed(name, state, session)
+            self._cache[name] = (time.monotonic(), lines)
+            return lines, 0.0
+        finally:
+            lock.release()
+
+    def _timed(self, name, state, session):
+        started, outcome = time.monotonic(), "error"
+        try:
+            lines = getattr(self, f"_{name}")(state, session)
+            outcome = "ok"
+            return lines
+        finally:
+            instruments.collector_refresh.observe(time.monotonic() - started, collector=name, outcome=outcome)
+
     def render(self, state, session):
         """One scrape. Each collector is isolated: a failure drops only that collector's series (never
         reported as zero) and shows as `atlas_collector_success{collector=...} 0`. Collector names are the
         fixed set in COLLECTORS; nothing from the failure (message, query, path) reaches the output."""
         lines = ["# TYPE atlas_uptime_seconds gauge", f"atlas_uptime_seconds {time.time() - self.started:.3f}"]
-        lines += self._http()
-        status, timing = {}, {}
+        status, timing, ages = {}, {}, {}
         collectors = self._collectors(session)
+        collected: list[str] = []
         for name in collectors:
             started = time.monotonic()
             try:
-                lines += getattr(self, f"_{name}")(state, session)
+                got, age = self._run(name, state, session)
+                collected += got
                 status[name] = 1
+                if age is not None:
+                    ages[name] = age
             except Exception as exc:
                 status[name] = 0
                 try:
@@ -342,10 +480,14 @@ class Stats:
                 logging.getLogger("atlas.metrics").warning("metrics collector failed", extra={"atlas_event": {
                     "event": "metrics.collector_failed", "collector": name, "error_type": type(exc).__name__}})
             timing[name] = time.monotonic() - started
+        lines += self._process_lines()  # after the collectors, so their refresh timings are in this scrape
+        lines += collected
         lines.append("# TYPE atlas_collector_success gauge")
         lines += [f'atlas_collector_success{{collector="{name}"}} {status[name]}' for name in collectors]
         lines.append("# TYPE atlas_collector_duration_seconds gauge")
         lines += [f'atlas_collector_duration_seconds{{collector="{name}"}} {timing[name]:.6f}' for name in collectors]
+        lines.append("# TYPE atlas_collector_cache_age_seconds gauge")
+        lines += [f'atlas_collector_cache_age_seconds{{collector="{name}"}} {age:.3f}' for name, age in ages.items()]
         return "\n".join(lines) + "\n"
 
 
@@ -368,6 +510,7 @@ class RequestTelemetry:
         started, status = time.monotonic(), 500
         started_response = completed = disconnected = False
         error_class = None
+        sent, kind = 0, "other"
 
         async def listen():
             nonlocal disconnected
@@ -377,13 +520,16 @@ class RequestTelemetry:
             return message
 
         async def respond(message):
-            nonlocal status, started_response, completed
+            nonlocal status, started_response, completed, sent, kind
             if message["type"] == "http.response.start":
                 status, started_response = message["status"], True
                 headers = [(k, v) for k, v in message.get("headers", []) if k.lower() != b"x-request-id"]
+                kind = response_kind(next((v for k, v in headers if k.lower() == b"content-type"), b""))
                 message = {**message, "headers": [*headers, (b"x-request-id", request_id.encode())]}
-            elif message["type"] == "http.response.body" and not message.get("more_body"):
-                completed = True
+            elif message["type"] == "http.response.body":
+                sent += len(message.get("body", b""))
+                if not message.get("more_body"):
+                    completed = True
             await send(message)
 
         self.stats.begin()
@@ -407,7 +553,7 @@ class RequestTelemetry:
             if error_class == "client_disconnect" and not started_response:
                 status = STATUS_CLIENT_DISCONNECT
             route = getattr(scope.get("route"), "path", "unmatched")
-            self.stats.observe(method, route, status, elapsed, error_class)
+            self.stats.observe(method, route, status, elapsed, error_class, sent, kind)
             if self.json_logs:
                 logging.getLogger("atlas.access").info("request", extra={"atlas_event": {
                     "event": "http.request", "request_id": request_id, "node_id": self.state.ctx.identity.node_id,

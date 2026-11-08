@@ -37,8 +37,19 @@ def import_from_provider(st: AppState, session: Session, provider: str, external
     Every version bump it causes is a `provider` client change: visible to this node's clients through
     `/changes?feed=local`, never signed into the feed (the data is not redistributable).
     """
-    with client_changes.cause(session, "provider"):
-        return _import(st, session, provider, external_id, force_canonical)
+    from . import instruments
+
+    outcome = "failed"
+    try:
+        with client_changes.cause(session, "provider"):
+            got = _import(st, session, provider, external_id, force_canonical)
+        outcome = "review" if got.review else "created" if got.method == "none" else "matched"
+        return got
+    except service.AtlasError as exc:
+        outcome = "not_found" if exc.code == "not_found" else "failed"
+        raise
+    finally:
+        instruments.enrichment.inc(operation="provider_import", outcome=outcome)
 
 
 def _import(st: AppState, session: Session, provider: str, external_id: str,

@@ -223,6 +223,25 @@ another node, is audited with the group, the vouching node and the grant serial.
   by closed reason, `atlas_profile_conflicts_open`, `atlas_group_change_rows`) and `atlas_group_signins{result="ok|refused"}`
   over the last 24 hours: never a field name, value or account.
 
+The `group` collector's series, all gauges read from the database at scrape time (the same on every worker, so
+aggregate with `max`, not `sum`). Node labels are capped at 32 members or views:
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `atlas_group_member` | `status` = `active expiring expired revoked left fork` | Members by status |
+| `atlas_group_cert_expiry_seconds` | `node` (member node id) | Seconds until that member's certificate expires (negative once expired) |
+| `atlas_group_crl_seq` | `issuer` = `root` | Highest revocation list sequence applied |
+| `atlas_group_last_sync_age_seconds` | `node` | Seconds since the member was last seen; absent before the first contact |
+| `atlas_group_view_age_seconds` | `issuer` (node id) | Age of the newest membership view from that issuer |
+| `atlas_group_enrolments` | `result` = `issued burned expired aborted` | Invitations this node issued in the last 30 days |
+| `atlas_group_signins` | `result` = `ok refused` | Sign-ins through the group in the last 24 hours |
+| `atlas_group_resyncing` | none | 1 while the node is rebuilding its group view |
+| `atlas_group_stream_lag` | `origin` (pinned member) | Entries between the origin's advertised head and what this node holds |
+| `atlas_group_entries` | `disposition` = `applied noop parked held elided rejected` | Channel entries received in the last 24 hours |
+| `atlas_group_rejected` | `reason` (fixed closed set) | Refused channel entries in the last 24 hours, stored or not |
+| `atlas_group_change_rows` | none | Channel rows this node stores for the group |
+| `atlas_profile_conflicts_open` | none | Open private-profile conflicts |
+
 ## Downgrading
 
 Migration `0028` adds the group tables. Downgrading below it is refused while this node is in a group or holds
