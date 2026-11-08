@@ -308,3 +308,46 @@ def test_conflict_own_is_the_items_own_atlas_id(atlas):  # noqa: F811
     # without an item-level Atlas id there is no `own`, whatever provider_ids.atlas says
     got = resolve(atlas, {"provider_ids": {"atlas": first, "steamsync": "379720"}})[0]
     assert got["reason"] == "conflict" and got["conflict"]["own"] is None and got["confidence"] == 0.0
+
+
+def _set_media_type(atlas, cid, media_type):  # noqa: F811
+    with atlas.state.maker() as session:
+        session.get(models.Canonical, cid).media_type = media_type
+        session.commit()
+
+
+def test_ids_pointing_at_records_of_different_types_are_a_conflict_not_a_crosswalk(atlas):  # noqa: F811
+    """Review on #105: filtering by `media_type` before the conflict check hid the contradicting id and assigned
+    the game with `reason: crosswalk`. Any supplied id that names a different record, of any type, is a conflict."""
+    game = observe(atlas, {"source": "steamsync", "external_id": "10", "title": "Crossed Wires"})["canonical_id"]
+    movie = observe(atlas, {"source": "imdb", "external_id": "20", "title": "Crossed Wires: The Film"})["canonical_id"]
+    assert game != movie
+    _set_media_type(atlas, movie, "movie")
+
+    got = resolve(atlas, {"namespace": "steamsync", "external_id": "10", "media_type": "game",
+                          "title": "Crossed Wires", "provider_ids": {"imdb": "20"}})[0]
+    assert got["reason"] == "conflict" and got["canonical_id"] is None and got["method"] == "none"
+    assert got["assigned"] is False and got["game"] is None
+    # the contradicting evidence is kept, not filtered out by type
+    assert sorted(got["conflict"]["canonical_ids"]) == sorted([game, movie])
+    assert got["conflict"]["own"] == game and got["confidence"] == 0.9
+    assert sorted((k["namespace"], k["external_id"], k["canonical_id"]) for k in got["matched_keys"]) == sorted([
+        ("steamsync", "10", game), ("imdb", "20", movie)])
+
+    # the same with no media_type, and with the type of the other record: still a conflict, never an assignment
+    for media_type in (None, "movie"):
+        item = {"namespace": "steamsync", "external_id": "10", "provider_ids": {"imdb": "20"}}
+        if media_type:
+            item["media_type"] = media_type
+        other = resolve(atlas, item)[0]
+        assert other["reason"] == "conflict" and other["canonical_id"] is None
+        assert sorted(other["conflict"]["canonical_ids"]) == sorted([game, movie])
+
+    # an Atlas id of the other type contradicts a provider id just the same
+    mixed = resolve(atlas, {"media_type": "game", "provider_ids": {"steamsync": "10", "atlas": movie}})[0]
+    assert mixed["reason"] == "conflict" and mixed["canonical_id"] is None and mixed["conflict"]["own"] is None
+
+    # one record of another type, no contradiction: still a type_mismatch with its key reported
+    only = resolve(atlas, {"namespace": "imdb", "external_id": "20", "media_type": "game"})[0]
+    assert only["reason"] == "type_mismatch" and only["canonical_id"] is None
+    assert [(k["namespace"], k["canonical_id"]) for k in only["matched_keys"]] == [("imdb", movie)]

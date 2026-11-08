@@ -245,7 +245,9 @@ def classify(session: Session, settings: Settings, *, namespace: str, external_i
 
     - Identity evidence (Atlas ids, followed through merges, and provider ids through the crosswalk) never depends
       on the title.
-    - Identity evidence that points at more than one record is a `conflict`: no canonical id is returned.
+    - Identity evidence that points at more than one record is a `conflict`: no canonical id is returned. This is
+      decided across media types, before `media_type` is applied; a single record of another type is
+      `type_mismatch`.
     - Title evidence alone assigns only when it is exact or a capped fuzzy match, clearly ahead, not a placeholder
       title, not contradicted by an id the client holds in the same namespace, and the client sent no Atlas id
       that fails to resolve to a live record here.
@@ -280,27 +282,28 @@ def classify(session: Session, settings: Settings, *, namespace: str, external_i
     matched_keys = [(ns, ext, cid) for (ns, ext), cid in matched.items()]
     distinct = sorted(set(matched.values()))
 
-    if distinct:
-        typed = _typed(session, distinct, media_type)
-        if not typed:
-            # a known identity of another media type is a hard mismatch, never title evidence
-            return Resolution("type_mismatch", matched_keys=matched_keys)
-        matched_keys = [k for k in matched_keys if k[2] in typed]
-        if len(typed) == 1:
-            live = typed[0]
-            asked = requested_atlas.get(live)
-            if asked is None:
-                return Resolution("crosswalk", live, 1.0, [(live, 1.0)], matched_keys)
-            if asked != live:
-                return Resolution("redirect", live, 1.0, [(live, 1.0)], matched_keys, redirected_from=asked)
-            return Resolution("id", live, 1.0, [(live, 1.0)], matched_keys)
+    if len(distinct) > 1:
+        # Ids that name more than one record are a conflict whatever the records' media types: the conflict is
+        # decided on every known id before any type filter, so an id naming a record of another type is kept as
+        # evidence against the others instead of being dropped (review on #105).
         if namespace == ATLAS_NAMESPACE:
             own = own_atlas
         else:
             own = matched.get((namespace, external_id))
-        own = own if own in typed else None
-        return Resolution("conflict", None, 0.9 if own else 0.0, [(c, 1.0) for c in typed], matched_keys,
-                          conflict=typed, own=own)
+        own = own if own in distinct else None
+        return Resolution("conflict", None, 0.9 if own else 0.0, [(c, 1.0) for c in distinct], matched_keys,
+                          conflict=distinct, own=own)
+    if distinct:
+        live = distinct[0]
+        if not _typed(session, distinct, media_type):
+            # a known identity of another media type is a hard mismatch, never title evidence
+            return Resolution("type_mismatch", matched_keys=matched_keys)
+        asked = requested_atlas.get(live)
+        if asked is None:
+            return Resolution("crosswalk", live, 1.0, [(live, 1.0)], matched_keys)
+        if asked != live:
+            return Resolution("redirect", live, 1.0, [(live, 1.0)], matched_keys, redirected_from=asked)
+        return Resolution("id", live, 1.0, [(live, 1.0)], matched_keys)
 
     if is_placeholder_title(title):
         return Resolution()
