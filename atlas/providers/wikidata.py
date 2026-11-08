@@ -21,11 +21,21 @@ SPARQL = "https://query.wikidata.org/sparql"
 # namespace are listed (IGDB and RAWG are not: Wikidata holds their slugs, Atlas their numeric ids).
 PROPERTIES: dict[str, str] = {"steam": "P1733", "gog": "P2725", "epic": "P6278", "tgdb": "P7622",
                               "itch": "P7294", "openlibrary": "P648"}
+# The media type each namespace's ids describe; every other listed namespace is a game store.
+_MEDIA: dict[str, str] = {"openlibrary": "book"}
+# Seconds one lookup may take. Suggestions are made while the Link a store page loads, so a slow Wikidata must
+# not hold the page for the general 10 s provider timeout.
+TIMEOUT = 4.0
 _STEAM = re.compile(r"^[1-9]\d{0,9}\Z")
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,99}\Z")
 _ITCH = re.compile(r"^https?://([a-z0-9][a-z0-9-]{0,62})\.itch\.io/([a-z0-9][a-z0-9_-]{0,99})/?\Z")
 _ITCH_ID = re.compile(r"^([a-z0-9][a-z0-9-]{0,62})/([a-z0-9][a-z0-9_-]{0,99})\Z")
 _OL_WORK = re.compile(r"^OL[1-9]\d{0,9}W\Z")
+
+
+def media_type_of(namespace: str) -> str:
+    """The media type a namespace's ids describe (`book` for Open Library, `game` for the stores)."""
+    return _MEDIA.get(namespace, "game")
 
 
 def to_wikidata(namespace: str, ident: str) -> str | None:
@@ -92,7 +102,7 @@ class Wikidata:
         sparql = self.query(namespace, ident)
         if sparql is None:
             return {}
-        data: Any = get_json(client, "GET", SPARQL, params={"query": sparql, "format": "json"},
+        data: Any = get_json(client, "GET", SPARQL, params={"query": sparql, "format": "json"}, timeout=TIMEOUT,
                              headers={"User-Agent": self.user_agent, "Accept": "application/sparql-results+json"})
         try:
             rows = data["results"]["bindings"]

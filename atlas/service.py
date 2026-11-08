@@ -19,7 +19,7 @@ from .merge import merge
 from .models import AuditEntry, Canonical, Crosswalk, Lock, Observation, ReviewItem, now
 from .normalize import norm_namespace, norm_title
 from .resolve import follow
-from .settings import Settings
+from .settings import PROVIDER_SOURCES, Settings
 from .signing import NodeIdentity, canonical_json
 
 
@@ -191,7 +191,7 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
     media_type = _valid_type(session, media_type)
     conn = batch.connection
     ns = norm_namespace(conn.source)
-    reserved = set(ctx.settings.source_trust) | ctx.settings.redistributable_sources
+    reserved = set(ctx.settings.source_trust) | ctx.settings.redistributable_sources | PROVIDER_SOURCES
     if ns in reserved and not trusted:
         raise AtlasError(f"source {ns!r} is reserved; it needs a token with the curate scope", "forbidden")
     if ns == feed_schema.RECORD_SOURCE:  # C13 §3.2: only a feed's own `record` entries write this source

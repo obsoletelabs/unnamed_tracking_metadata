@@ -3,8 +3,10 @@
 Access: no key. Open Library asks clients to send an identifying User-Agent and to stay around one request per
 second (more with an identified agent); bulk users should use the monthly data dumps instead. Atlas searches and
 fetches one work at a time and caches each answer. Licence: Open Library's catalogue data is released CC0, so
-observations are redistributable. Cover images come from covers.openlibrary.org, which limits lookups by cover
-id less strictly than by ISBN; Atlas only links cover ids.
+the licence allows redistribution. Atlas still keeps these observations on this node unless the operator adds
+`openlibrary` to ATLAS_REDISTRIBUTABLE_SOURCES (what reaches the change feed is decided by that setting, not by
+the `redistributable` attribute, which records the licence). Cover images come from covers.openlibrary.org,
+which limits lookups by cover id less strictly than by ISBN; Atlas only links cover ids.
 
 Results are works (`OL…W`), the edition-independent record of a book. They only fit nodes with a `book` media
 type (Admin → Media types), and are only offered for records of that type.
@@ -24,7 +26,7 @@ _SEARCH_FIELDS = "key,title,first_publish_year,author_name,cover_i,subject,langu
 
 class OpenLibrary:
     name = "openlibrary"
-    redistributable = True  # CC0
+    redistributable = True  # the licence (CC0); the feed follows ATLAS_REDISTRIBUTABLE_SOURCES
     requests_per_minute = 50
     media_types = ("book",)
 
