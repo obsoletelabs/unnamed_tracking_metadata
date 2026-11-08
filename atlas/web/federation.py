@@ -499,6 +499,7 @@ def _tokens_page(p: Ctx, new_token: str | None, status: int = 200, error: str | 
         owner = p.session.get(User, t.user_id) if t.user_id else None
         rows.append({"t": t, "owner": owner.username if owner else None})
     return render(p, "admin_tokens.html", status=status, rows=rows, new_token=new_token, scopes=auth.SCOPES,
+                  self_service=p.st.ctx.settings.self_service_sync_tokens,
                   when=when, error=error)
 
 

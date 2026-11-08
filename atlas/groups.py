@@ -2192,6 +2192,170 @@ def leave(session: Session, settings: Settings, group: OwnerGroup, identity: Nod
     return crl
 
 
+# ---- member updates: a new address or name (§1.3 `member_pop` with a higher `rev`; #122) ------------------------
+
+MEMBER_UPDATE_PREFIX = "group_member_update:"  # NodeState key on a root holder: a member-signed update to apply
+
+
+def root_holder_hint(session: Session, group: OwnerGroup) -> str | None:
+    """Which member most likely holds the group root: the target of the newest `root_moved`, otherwise the node of
+    the first root-issued certificate (the node that created the group). A hint for the admin, never a check."""
+    if group.root_moved:
+        return group.root_moved["body"].get("to_node")
+    for row in session.scalars(select(GroupCert).where(GroupCert.group_id == group.group_id)):
+        serial = parse_serial(row.serial)
+        if serial is not None and serial.issuer == "root" and serial.n == 1:
+            return row.node_id
+    return None
+
+
+def own_address(session: Session, settings: Settings, group: OwnerGroup, identity: NodeIdentity) -> dict | None:
+    """This node's address and name as the group knows them (its in-force certificate) against its configuration:
+    `{url, name, configured_url, changed}`. None when this node has no certificate in force."""
+    tr = trust(session, group, own_node=identity.node_id)
+    cert = tr.in_force(identity.node_id)
+    if cert is None:
+        return None
+    member = cert["body"]["member"]
+    configured = (settings.public_url or "").strip().rstrip("/")
+    return {"url": member["url"], "name": member["name"], "configured_url": configured,
+            "changed": bool(configured) and configured != member["url"].rstrip("/"),
+            "issuer": cert["body"]["issuer"]}
+
+
+def member_update(session: Session, settings: Settings, group: OwnerGroup, identity: NodeIdentity, *,
+                  url: str | None = None, name: str | None = None, now: datetime | None = None) -> dict:
+    """`atlas group member-update` (§1.3): this node's member object with a new url and/or name and `rev + 1`,
+    signed by this node (`member_pop`, current key). The box key and the root key never change here."""
+    now = now or utcnow()
+    tr = rebuild(session, group, identity.node_id, now)
+    cert = tr.in_force(identity.node_id)
+    if cert is None:
+        raise GroupError("this node has no certificate in force in the group", "conflict")
+    old = {k: v for k, v in cert["body"]["member"].items() if k != "url_verified"}
+    new_url = clean_member_url(url, settings.environment == "production") if url else old["url"]
+    new_name = (name or "").strip()[:80] or old["name"]
+    if new_url == old["url"] and new_name == old["name"]:
+        raise GroupError("the group already has this address and name for this node", "conflict")
+    member = {**old, "url": new_url, "name": new_name, "rev": old["rev"] + 1}
+    if not _member_ok(member):
+        raise GroupError("the new member object is malformed")
+    _member_unique(tr, member)
+    return {"member": member, "member_pop": gc.member_pop(identity.private, group.group_id, member, identity.key_id)}
+
+
+def _member_unique(tr: Trust, member: dict) -> None:
+    for node, cert in tr.members().items():
+        if node == member["node_id"]:
+            continue
+        other = cert["body"]["member"]
+        if normal_origin(other["url"]) == normal_origin(member["url"]):
+            raise GroupError(f"another member ({gc_fp(node)}) already uses that address", "conflict")
+        if other["name"].casefold() == member["name"].casefold():
+            raise GroupError(f"another member ({gc_fp(node)}) already uses that name", "conflict")
+
+
+def check_member_update(session: Session, settings: Settings, group: OwnerGroup, own_node: str, update: Any,
+                        sender: str | None = None, now: datetime | None = None) -> dict:
+    """Everything a root holder checks before it keeps or applies an update: the shape, that the sender (when it
+    came over the channel) is the member itself, the same root key, a higher `rev`, the member's own PoP under
+    its current key, a clean url and uniqueness. Returns the in-force certificate being replaced."""
+    now = now or utcnow()
+    try:
+        member, pop = update["member"], update["member_pop"]
+        if set(update) != {"member", "member_pop"} or not _member_ok(member) or "url_verified" in member:
+            raise GroupError("the member update is malformed")
+        node = member["node_id"]
+    except (KeyError, TypeError, AttributeError):
+        raise GroupError("the member update is malformed") from None
+    if sender is not None and sender != node:
+        raise GroupError("a member may only update its own address and name", "forbidden")
+    tr = trust(session, group, now, own_node=own_node)
+    cert = tr.in_force(node)
+    if cert is None or node in tr.banned:
+        raise GroupError("that node has no certificate in force", "conflict")
+    if cert["body"]["issuer"] != "root":
+        raise GroupError("that node was enrolled by a delegate: the delegate that enrolled it re-issues it", "conflict")
+    old = cert["body"]["member"]
+    if member["root_public_key"] != old["root_public_key"] or member["box_public_key"] != old["box_public_key"]:
+        raise GroupError("a member update keeps the root key and the box key", "conflict")
+    if member["rev"] <= old["rev"]:
+        raise GroupError("a member update raises member.rev", "conflict")
+    if not tr.member_pop_ok({"member": member, "member_pop": pop}, strict=True):
+        raise GroupError("the member update is not signed by the member (member_pop)", "conflict")
+    if clean_member_url(member["url"], settings.environment == "production") != member["url"]:
+        raise GroupError("the new address is not a plain http(s) address")
+    _member_unique(tr, member)
+    return cert
+
+
+def hold_member_update(session: Session, settings: Settings, group: OwnerGroup, own_node: str, update: Any,
+                       sender: str, now: datetime | None = None) -> str:
+    """A member sent its own signed update over the channel. Only a node holding the root keeps it, for its
+    administrator to apply with the root passphrase; nothing is signed here. Returns 'held' or 'known'."""
+    if not (group.root_state == "holder" and group.root_sealed):
+        raise GroupError("not_root", "conflict")
+    check_member_update(session, settings, group, own_node, update, sender=sender, now=now)
+    key = MEMBER_UPDATE_PREFIX + sender
+    row = session.get(NodeState, key)
+    held = json.loads(row.value) if row is not None else None
+    if held is not None and held["member"]["rev"] >= update["member"]["rev"]:
+        return "known"
+    session.merge(NodeState(key=key, value=json.dumps({"member": update["member"],
+                                                       "member_pop": update["member_pop"]})))
+    audit(session, None, "group_member_update_held", sender,
+          {"url": update["member"]["url"], "name": update["member"]["name"], "rev": update["member"]["rev"]})
+    notify_admins(session, f"group-member-update:{sender}:{update['member']['rev']}",
+                  f"Node {gc_fp(sender)} asks to change its group address to {update['member']['url'][:80]}")
+    session.flush()
+    return "held"
+
+
+def held_member_updates(session: Session, group: OwnerGroup, own_node: str) -> list[dict]:
+    """The updates waiting on this root holder, each with the address and name they replace."""
+    tr = trust(session, group, own_node=own_node)
+    out = []
+    for row in session.scalars(select(NodeState).where(NodeState.key.like(MEMBER_UPDATE_PREFIX + "%"))
+                               .order_by(NodeState.key)):
+        update = json.loads(row.value)
+        node = update["member"]["node_id"]
+        cert = tr.in_force(node)
+        out.append({"node_id": node, "url": update["member"]["url"], "name": update["member"]["name"],
+                    "rev": update["member"]["rev"], "old_url": cert["body"]["member"]["url"] if cert else None,
+                    "old_name": cert["body"]["member"]["name"] if cert else None})
+    return out
+
+
+def drop_member_update(session: Session, node_id: str, actor: str | None = None) -> None:
+    row = session.get(NodeState, MEMBER_UPDATE_PREFIX + node_id)
+    if row is not None:
+        session.delete(row)
+        audit(session, actor, "group_member_update_dropped", node_id)
+        session.flush()
+
+
+def apply_member_update(session: Session, settings: Settings, group: OwnerGroup, identity: NodeIdentity,
+                        update: dict, *, root: Ed25519PrivateKey, now: datetime | None = None,
+                        actor: str | None = None, cli: bool = False) -> dict:
+    """Root: re-issue the member's certificate with its signed new member object and supersede the old serial
+    (`renew` with `member_update`). The scopes, delegate and lifetime rules are those of a renewal."""
+    now = now or utcnow()
+    check_member_update(session, settings, group, identity.node_id, update, now=now)
+    node = update["member"]["node_id"]
+    issued = renew(session, settings, group, identity, [node], root=root, now=now, actor=actor, cli=cli,
+                   member_update=update)
+    if not issued:
+        raise GroupError("the certificate could not be re-issued", "conflict")
+    row = session.get(NodeState, MEMBER_UPDATE_PREFIX + node)
+    if row is not None:
+        session.delete(row)
+    audit(session, actor, "group_member_updated", node,
+          {"url": update["member"]["url"], "name": update["member"]["name"], "rev": update["member"]["rev"],
+           "serial": issued[0]["body"]["serial"]}, cli)
+    session.flush()
+    return issued[0]
+
+
 # ---- recovery: moving the root, root succession and its cancellation (§1.8, §1.9) ------------------------------
 
 def import_root(session: Session, settings: Settings, group: OwnerGroup, identity: NodeIdentity,

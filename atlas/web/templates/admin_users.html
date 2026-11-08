@@ -15,7 +15,9 @@
   <li><strong>curator</strong>: also reviews and approves other people's proposals and can import from providers.</li>
   <li><strong>admin</strong>: also manages this node: settings, peers, tokens, backups and these users.</li>
   <li><strong>suspended</strong>: cannot sign in; open sessions and API tokens end immediately. Their contributions stay.</li>
+  <li><strong>external sign-in</strong>: may also sign in through a trusted sign-in provider (Sign-in sharing).</li>
 </ul>
+<p class="small muted">The role set here is this node's own and lasts until you change it. {% if group_grants is not none %}Rights given through your node group are listed under "Group grants": they come from signed grants, end when the grant expires or is revoked, and are managed under <a href="/admin/group/grants">Node group → Grants</a>, never here.{% else %}If this node joins a node group, rights given through it are shown here too.{% endif %}</p>
 <p class="small muted">You cannot change your own role or status, so the last administrator can never lock themselves out.</p></details>
 <form class="card" method="get" action="/admin/users" role="search" aria-label="Filter users">
   <div class="row filter-row">
@@ -27,15 +29,17 @@
 </form>
 {% if users %}
 <div class="table-scroll">
-<table class="users"><caption class="sr">Users of this node</caption><thead><tr><th scope="col">User</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Email</th><th scope="col">Rep</th><th scope="col">Change</th></tr></thead><tbody>
+<table class="users"><caption class="sr">Users of this node</caption><thead><tr><th scope="col">User</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Email</th>{% if group_grants is not none %}<th scope="col">Group grants</th>{% endif %}<th scope="col">Rep</th><th scope="col">Change</th></tr></thead><tbody>
 {% for u in users %}<tr data-user="{{ u.username }}"><th scope="row" data-label="User">{{ u.username }}{% if u.id == p.user.id %} <span class="badge">you</span>{% endif %}</th><td data-label="Role">{{ u.role }}</td><td data-label="Status">{{ 'deleted' if u.deleted_at else u.status }}</td>
-<td data-label="Email">{% if u.email %}{{ 'confirmed' if u.email_verified_at else 'unconfirmed' }}{% else %}none{% endif %}{% if u.email and not u.email_verified_at %} <form class="inline" method="post" action="/admin/users/{{ u.id }}/verify">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Mark confirmed</button></form>{% endif %}</td><td data-label="Reputation">{{ u.reputation }}</td>
+<td data-label="Email">{% if u.email %}{{ 'confirmed' if u.email_verified_at else 'unconfirmed' }}{% else %}none{% endif %}{% if u.email and not u.email_verified_at %} <form class="inline" method="post" action="/admin/users/{{ u.id }}/verify">{{ csrf(p.csrf) }}<input type="hidden" name="fq" value="{{ uq }}"><input type="hidden" name="frole" value="{{ role }}"><input type="hidden" name="fstatus" value="{{ filter_status }}"><button class="secondary small" type="submit">Mark confirmed</button></form>{% endif %}</td>
+{% if group_grants is not none %}<td data-label="Group grants" data-user-grants="{{ u.username }}">{% for g in group_grants.get(u.id, []) %}<span class="chip" title="grant {{ g.serial }}, until {{ g.not_after }}">{{ g.role }}</span> {% else %}<span class="small muted">none</span>{% endfor %}</td>{% endif %}
+<td data-label="Reputation">{{ u.reputation }}</td>
 <td data-label="Change">{% if u.id != p.user.id and not u.deleted_at %}<form class="user-edit" method="post" action="/admin/users/{{ u.id }}">{{ csrf(p.csrf) }}
-  <input type="hidden" name="fq" value="{{ uq }}"><input type="hidden" name="frole" value="{{ role }}"><input type="hidden" name="fstatus" value="{{ filter_status }}">
-  <select name="role" aria-label="Role of {{ u.username }}">{% for r in roles %}<option {{ 'selected' if r == u.role }}>{{ r }}</option>{% endfor %}</select>
-  <select name="status" aria-label="Status of {{ u.username }}">{% for s in statuses %}<option {{ 'selected' if s == u.status }}>{{ s }}</option>{% endfor %}</select>
-  <button class="secondary small" type="submit">Apply</button></form>
-<form class="user-edit" method="post" action="/admin/users/{{ u.id }}/oidc">{{ csrf(p.csrf) }}<label class="small"><input type="checkbox" name="allowed" {{ 'checked' if u.oidc_allowed }}> external sign-in</label> <button class="secondary small" type="submit">Set</button></form>
+  <input type="hidden" name="fq" value="{{ uq }}"><input type="hidden" name="frole" value="{{ role }}"><input type="hidden" name="fstatus" value="{{ filter_status }}"><input type="hidden" name="has_oidc" value="1">
+  <label class="small" for="role-{{ u.id }}">Role</label><select id="role-{{ u.id }}" name="role" aria-label="Role of {{ u.username }}">{% for r in roles %}<option {{ 'selected' if r == u.role }}>{{ r }}</option>{% endfor %}</select>
+  <label class="small" for="status-{{ u.id }}">Status</label><select id="status-{{ u.id }}" name="status" aria-label="Status of {{ u.username }}">{% for s in statuses %}<option {{ 'selected' if s == u.status }}>{{ s }}</option>{% endfor %}</select>
+  <label class="small"><input type="checkbox" name="oidc" aria-label="External sign-in for {{ u.username }}" {{ 'checked' if u.oidc_allowed }}> external sign-in</label>
+  <button class="secondary small" type="submit">Save {{ u.username }}</button></form>
 {% elif u.id == p.user.id %}<span class="small muted">Your own role and status cannot be changed here.</span>{% endif %}</td></tr>{% endfor %}
 </tbody></table></div>
 <p class="small muted">Showing {{ users|length }} of {{ total }}{% if total > users|length %}. Narrow the filter to see the rest{% endif %}.</p>

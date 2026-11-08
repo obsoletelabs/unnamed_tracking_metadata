@@ -57,7 +57,10 @@ def _page(p: Page, error: str | None = None, status: int = 200, **extra):
             enrolments=list(p.session.scalars(select(GroupEnrolment).where(GroupEnrolment.group_id == group.group_id)
                                               .order_by(GroupEnrolment.created_at.desc()).limit(10))),
             pending=groups.pending_successions(group), can_invite=_can_invite(p, group),
-            policy=_policy_rows(settings), **_grants_ctx(p, group, tr))
+            policy=_policy_rows(settings), address=groups.own_address(p.session, settings, group, identity),
+            held_updates=groups.held_member_updates(p.session, group, identity.node_id)
+            if group.root_state == "holder" else [],
+            enrollers=_enrollers(p, group, tr, identity.node_id), **_grants_ctx(p, group, tr))
     else:
         ctx["joins"] = list(p.session.scalars(select(GroupEnrolment).where(GroupEnrolment.side == "joiner")
                                               .order_by(GroupEnrolment.created_at.desc()).limit(5)))
@@ -70,6 +73,20 @@ def _can_invite(p: Page, group) -> bool:
         return True
     except groups.GroupError:
         return False
+
+
+def _enrollers(p: Page, group, tr, own_node: str) -> list[dict]:
+    """Where a node can be added from when this node cannot enrol (#122): the member that most likely holds the
+    root, and every member with a `group.enrol` delegation. A hint for the administrator; enrolment itself checks."""
+    hint = groups.root_holder_hint(p.session, group)
+    out = []
+    for node, cert in tr.members().items():
+        b = cert["body"]
+        delegated = bool(b["delegate"]) and "group.enrol" in b["scopes"]
+        if node != own_node and (node == hint or delegated):
+            out.append({"node_id": node, "name": b["member"]["name"], "url": b["member"]["url"],
+                        "how": "group root" if node == hint else "enrol delegation"})
+    return out
 
 
 def _status(exc: groups.GroupError) -> int:
@@ -405,10 +422,85 @@ def leave(p: Annotated[Page, Depends(local_admin_form)], password: PW = ""):
     settings, identity = _ctx(p)
     if not accounts.reauthenticated(p.me, password, p.login):
         return _page(p, "Confirm your current password to leave the group.", 400)
+    group = groups.load(p.session)
     try:
-        groups.leave(p.session, settings, groups.load(p.session), identity, actor=p.me.id)
+        groups.leave(p.session, settings, group, identity, actor=p.me.id)
     except groups.GroupError as exc:
         return _page(p, str(exc), _status(exc))
+    # Tell the members now (#122): until they see the `left` CRL they still count this node as a member, and
+    # it could not be added back. Members that cannot be reached learn it on their next pull.
+    group_routes.push_state(p.session, settings, identity, group, p.st.http)
+    return go("/admin/group", "saved")
+
+
+@router.post("/admin/group/address", response_class=HTMLResponse)
+def address_update(p: Annotated[Page, Depends(local_admin_form)], url: Annotated[str, Form(max_length=300)] = "",
+                   name: Annotated[str, Form(max_length=80)] = "", root_passphrase: PW = "", password: PW = ""):
+    """This node's new address or name (#122, §1.3 member update). The node signs the new member object; a root
+    holder re-issues its own certificate at once and pushes it, any other member sends it to the root holder."""
+    settings, identity = _ctx(p)
+    group = groups.active(p.session)
+    if group is None:
+        return _page(p, "This node is not in an active group.", 409)
+    holder = group.root_state == "holder" and bool(group.root_sealed)
+    if (why := _root_gate(p, password, uses_root=holder)):
+        return _page(p, why, 400)
+    try:
+        update = groups.member_update(p.session, settings, group, identity, url=url.strip() or None,
+                                      name=name.strip() or None)
+        if holder:
+            root = groups.unlock_root(p.session, settings, group, root_passphrase)
+            groups.apply_member_update(p.session, settings, group, identity, update, root=root, actor=p.me.id)
+            del root
+            outcomes = group_routes.push_state(p.session, settings, identity, group, p.st.http)
+            return _page(p, _unreached(outcomes), 200, address_sent="applied")
+        groups.audit(p.session, p.me.id, "group_member_update_sent", identity.node_id,
+                     {"url": update["member"]["url"], "name": update["member"]["name"], "rev": update["member"]["rev"]})
+        outcomes = group_routes.send_member_update(p.session, settings, identity, group, update, p.st.http)
+    except groups.GroupError as exc:
+        return _page(p, str(exc), _status(exc))
+    if not any(v in ("held", "known") for v in outcomes.values()):
+        return _page(p, "No member holding the group root accepted the update. Ask the administrator of the node "
+                     "that holds the root to sync, then send it again. " + _unreached(outcomes, all_=True), 409)
+    return _page(p, None, 200, address_sent="sent")
+
+
+def _unreached(outcomes: dict[str, str], all_: bool = False) -> str | None:
+    failed = {groups.gc_fp(n): v for n, v in outcomes.items() if all_ or v not in ("ok", "held", "known")}
+    if not failed:
+        return None
+    lead = "Answers" if all_ else "Done here; these members were not reached now and learn it on their next sync"
+    return f"{lead}: " + "; ".join(f"{k}: {v}" for k, v in failed.items())
+
+
+@router.post("/admin/group/address/{node_id}/apply", response_class=HTMLResponse)
+def address_apply(node_id: str, p: Annotated[Page, Depends(local_admin_form)], root_passphrase: PW = "",
+                  password: PW = ""):
+    """Root holder: apply a member's held update (its own signature was checked when it arrived and is checked
+    again here), then push the new certificate to every member, the updated one at its new address."""
+    settings, identity = _ctx(p)
+    group = groups.active(p.session)
+    if group is None:
+        return _page(p, "This node is not in an active group.", 409)
+    if (why := _root_gate(p, password, uses_root=True)):
+        return _page(p, why, 400)
+    row = p.session.get(groups.NodeState, groups.MEMBER_UPDATE_PREFIX + node_id[:16])
+    if row is None:
+        return _page(p, "No update from that node is waiting.", 404)
+    try:
+        root = groups.unlock_root(p.session, settings, group, root_passphrase)
+        groups.apply_member_update(p.session, settings, group, identity, json.loads(row.value), root=root,
+                                   actor=p.me.id)
+        del root
+    except groups.GroupError as exc:
+        return _page(p, str(exc), _status(exc))
+    outcomes = group_routes.push_state(p.session, settings, identity, group, p.st.http)
+    return _page(p, _unreached(outcomes), 200, address_sent="applied")
+
+
+@router.post("/admin/group/address/{node_id}/dismiss")
+def address_dismiss(node_id: str, p: Annotated[Page, Depends(local_admin_form)]):
+    groups.drop_member_update(p.session, node_id[:16], p.me.id)
     return go("/admin/group", "saved")
 
 
@@ -420,6 +512,11 @@ def sync_now(p: Annotated[Page, Depends(local_admin_form)]):
     if group is None:
         return _page(p, "This node is not in an active group.", 409)
     outcomes = group_routes.pull(p.session, settings, identity, group, p.st.http)
+    # Then send this node's state the other way (#122): a member that cannot reach this node at the address it
+    # has on file (this node moved) gets the re-issued certificate here.
+    for node, outcome in group_routes.push_state(p.session, settings, identity, group, p.st.http).items():
+        if outcome not in ("ok", "not_found") and outcomes.get(node) == "ok":  # not_found: an older member
+            outcomes[node] = f"pulled, but the push failed: {outcome}"
     failed = {groups.gc_fp(n): v for n, v in outcomes.items() if v != "ok"}
     return _page(p, "Some members could not be reached: " + "; ".join(f"{k}: {v}" for k, v in failed.items())
                  if failed else None, 200, synced=True)

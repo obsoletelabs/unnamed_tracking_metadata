@@ -160,10 +160,13 @@ def outbox(p: Annotated[Ctx, Depends(admin_page)]):
 
 
 @router.post("/admin/users/{uid}/verify")
-def admin_verify(uid: str, p: Annotated[Ctx, Depends(admin_form)]):
+def admin_verify(uid: str, p: Annotated[Ctx, Depends(admin_form)], fq: Annotated[str, Form(max_length=80)] = "",
+                 frole: Annotated[str, Form(max_length=16)] = "", fstatus: Annotated[str, Form(max_length=16)] = ""):
+    from .routes import _users_back
+
     u = p.session.get(User, uid)
     if u is None:
         raise HTTPException(404, "No such user.")
     u.email_verified_at = now()
     accounts.audit(p.session, p.me.id, "verify_email", u.id)
-    return go("/admin/users", "saved")
+    return go(_users_back(fq, frole, fstatus), "saved")  # back to the same filtered list (#66)

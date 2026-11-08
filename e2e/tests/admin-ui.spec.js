@@ -9,7 +9,7 @@ test.describe('administration navigation (#65)', () => {
     await page.goto('/admin');
     const tabs = page.getByRole('list', { name: 'Administration' });
     await tabs.getByRole('link', { name: 'Import' }).click();
-    await expect(page).toHaveURL(/\/import$/);
+    await expect(page).toHaveURL(/\/admin\/import$/); // it stays inside administration
     // The tab bar is still there, Import is the current tab, and the page has an administration heading.
     await expect(page.getByRole('heading', { level: 1, name: 'Administration' })).toBeVisible();
     await expect(tabs).toBeVisible();
@@ -41,7 +41,7 @@ test.describe('user management (#66)', () => {
     const current = (await bob.locator('td').first().innerText()).trim();
     const wanted = current === 'curator' ? 'user' : 'curator';
     await bob.getByLabel('Role of bob').selectOption(wanted);
-    await bob.getByRole('button', { name: 'Apply' }).click();
+    await bob.getByRole('button', { name: 'Save' }).click();
     await expect(page.getByRole('status')).toHaveText('Saved.');
     await expect(page).toHaveURL(/q=bob/); // the filter survives the save
     await expect(page.locator('tr[data-user=bob] td').first()).toHaveText(wanted);
@@ -61,14 +61,14 @@ test.describe('user management (#66)', () => {
       el.value = 'wizard';
     });
     const rejected = page.waitForResponse((r) => r.request().method() === 'POST' && r.url().includes('/admin/users/'));
-    await row.getByRole('button', { name: 'Apply' }).click();
+    await row.getByRole('button', { name: 'Save' }).click();
     expect((await rejected).status()).toBe(400);
     await expect(page.getByRole('alert')).toContainText('Could not change bob: unknown role');
     await expect(page.locator('tr[data-user=bob] td').first()).toHaveText(wanted); // unchanged
     // Retry with a valid value from the same page.
     const retryRow = page.locator('tr[data-user=bob]');
     await retryRow.getByLabel('Role of bob').selectOption('user');
-    await retryRow.getByRole('button', { name: 'Apply' }).click();
+    await retryRow.getByRole('button', { name: 'Save' }).click();
     await expect(page.getByRole('status')).toHaveText('Saved.');
     await expect(page.locator('tr[data-user=bob] td').first()).toHaveText('user');
   });
@@ -127,6 +127,27 @@ test.describe('achievement editor (#97)', () => {
   });
 });
 
+test.describe('achievement editor, other sources (#97)', () => {
+  test('the read-only list of other sources stays a plain table at every width', async ({ page, request }) => {
+    const ids = seed();
+    const gid = ids['Starlight Harbor'];
+    const put = await request.put(`/api/v2/games/${enc(gid)}/achievements`, {
+      headers: { Authorization: `Bearer ${process.env.E2E_BOOTSTRAP_TOKEN || 'e2e-synthetic-bootstrap-token-0123456789abcdef'}` },
+      data: { items: [{ name: 'Lighthouse Keeper of the Northern Shore', description: 'x', tier: 'bronze' }] } });
+    expect(put.status()).toBe(200);
+    await page.goto(`/game/${enc(gid)}/achievements/edit`);
+    const table = page.locator('table.ach-sources');
+    await expect(table).toBeVisible();
+    const cell = table.locator('tbody tr').first().locator('td').first();
+    // The game page's phone card layout (a three-column grid for icon, name and points) is not applied here.
+    expect(await cell.evaluate((el) => getComputedStyle(el).display)).toBe('table-cell');
+    expect(await table.locator('tbody tr').first().evaluate((el) => getComputedStyle(el).display)).toBe('table-row');
+    const rows = await page.locator('#ach-rows').boundingBox();
+    const box = await table.boundingBox();
+    expect(Math.abs(box.width - rows.width), 'the table fills the editor width').toBeLessThan(2);
+  });
+});
+
 test.describe('failed mirror entries (#90)', () => {
   test('are listed with their reason, retrying works and what still fails stays visible', async ({ page }) => {
     await page.goto('/admin/peers');
@@ -174,7 +195,7 @@ test.describe('assigned but uncached artwork (#53)', () => {
 });
 
 test.describe('content security policy (admin /backup)', () => {
-  for (const path of ['/admin/backup', '/admin/users', '/admin/peers', '/import', '/admin']) {
+  for (const path of ['/admin/backup', '/admin/users', '/admin/peers', '/import', '/admin/import', '/admin']) {
     test(`${path} has no inline style and raises no policy violation`, async ({ page }) => {
       await page.addInitScript(() => {
         window.__violations = [];

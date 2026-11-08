@@ -75,7 +75,7 @@ test('evidence: the achievement editor with an existing community list (#97, #79
     const note = await page.locator('#ach-note').boundingBox();
     const rows = await page.locator('#ach-rows').boundingBox();
     expect(Math.abs(note.width - rows.width), 'the note spans the same width as the rows').toBeLessThan(2);
-    const table = await page.locator('table.achievements').boundingBox();
+    const table = await page.locator('table.ach-sources').boundingBox();
     expect(Math.abs(table.width - rows.width), 'the other-sources table fills the width').toBeLessThan(2);
   }
   await shoot(page, 'achievement-editor', info);

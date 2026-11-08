@@ -27,14 +27,16 @@
 
 <h2>API tokens</h2>
 <p class="muted small">Personal tokens let your own tools read Atlas. They are read-only; suggest changes on the site so they can be reviewed.</p>
-{% if new_token %}<div class="flash"><strong>{{ new_token }}</strong><br><span class="small">Copy it now; it will not be shown again.</span></div>{% endif %}
+<p class="muted small" data-sync-help>To follow this node from your own Atlas node or the Tracking App, create a token with <strong>Read and follow changes</strong>{% if sync_refusal %} (not available now: {{ sync_refusal }}){% endif %}. On your node, open Admin → Peers → Add a peer, and paste this node's address <code>{{ public_url }}</code> and the token.</p>
+{% if token_error %}<div class="card error" role="alert">{{ token_error }}</div>{% endif %}
+{% if new_token %}<div class="flash"><strong>{{ new_token }}</strong><br><span class="small">Copy it now; it will not be shown again.{% if new_token_sync %} Use it with the address <code>{{ public_url }}</code> on the node or app that follows this one.{% endif %}</span></div>{% endif %}
 {% if tokens %}<table><thead><tr><th>Name</th><th>Scopes</th><th>Last used</th><th></th></tr></thead><tbody>
 {% for t in tokens %}<tr><td>{{ t.name }}</td><td>{{ t.scopes|join(', ') }}</td><td class="small">{{ t.last_used or 'never' }}</td>
 <td><form class="inline" method="post" action="/me/tokens/{{ t.id }}/revoke">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Revoke this token?" type="submit">Revoke</button></form></td></tr>{% endfor %}
 </tbody></table>{% endif %}
 <form class="card" method="post" action="/me/tokens">{{ csrf(p.csrf) }}
   <label for="tname">Name</label><input id="tname" type="text" name="name" required maxlength="128" placeholder="Tracking app">
-  <label for="tscope">Access</label><select id="tscope" name="scope"><option value="read">Read only</option></select>
+  <label for="tscope">Access</label><select id="tscope" name="scope"><option value="read">Read only</option>{% if not sync_refusal %}<option value="sync">Read and follow changes (sync)</option>{% endif %}</select>
   <p><button type="submit">Create token</button></p>
 </form>
 
