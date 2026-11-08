@@ -1,0 +1,3 @@
+state cached media_url /api/v2/media/41d535fcc9663ba118cd808a9637547c3458869a52f0b541a211b60113c86faa public_url /media/41d535fcc9663ba118cd808a9637547c3458869a52f0b541a211b60113c86faa
+media_url no token -> HTTP Error 401: Unauthorized
+public_url no token -> 200 image/jpeg 44683
