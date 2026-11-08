@@ -181,7 +181,12 @@ def run(image: str) -> dict:
 
             stack.run("exec", "-T", "atlas", "atlas", "backup", "create", "/data/drill.tar.gz")
             stack.run("exec", "-T", "atlas", "atlas", "backup", "verify", "/data/drill.tar.gz", "--secret-check")
-            stack.run("cp", "atlas:/data/drill.tar.gz", str(folder / "backups" / "drill.tar.gz"))
+            archive = folder / "backups" / "drill.tar.gz"
+            stack.run("cp", "atlas:/data/drill.tar.gz", str(archive))
+            # `compose cp` keeps the archive's 0600 mode but gives it to the host user, so on Linux the container's
+            # uid 10001 could not read it back through the bind mount (Permission denied). Same step an operator
+            # takes (docs/guide/backup.md); the drill's temporary folder itself is private (0700).
+            os.chmod(archive, 0o644)
             stack.run("exec", "-T", "backup", "pg_dump", "-Fc", "-f", "/backups/drill.dump")
             if not (folder / "backups" / "drill.dump").stat().st_size:
                 raise DrillError("pg_dump wrote an empty file")
