@@ -100,6 +100,9 @@ MULTIPLAYER_FIELDS = (
      "Leave it empty when nobody has said; a single-player game shows 'single-player' by itself."),
 )
 _MULTIPLAYER_SEEDED = "defaults.multiplayer_fields"
+#: Set once a schema snapshot (which carries the seeded multiplayer fields) entered the signed feed (#78).
+_MULTIPLAYER_PUBLISHED = "defaults.multiplayer_fields_published"
+MULTIPLAYER_KEYS = frozenset(key for key, *_ in MULTIPLAYER_FIELDS)
 
 
 def seed_multiplayer(session: Session, ctx: Ctx) -> None:
@@ -110,8 +113,9 @@ def seed_multiplayer(session: Session, ctx: Ctx) -> None:
     for position, (key, label, kind, choices, help_text) in enumerate(MULTIPLAYER_FIELDS):
         exists = session.scalars(select(FieldDef.id).where(FieldDef.media_type == "game", FieldDef.key == key)).first()
         if exists is None:
-            # Written directly, not through save_field: seeding must not append to the change feed. Followers
-            # carry identical definitions of their own, and the next schema change publishes them with the rest.
+            # Written directly, not through save_field: seeding must not append to the change feed. Local nodes
+            # carry identical definitions of their own; mirrors do not, so an authority publishes the schema
+            # before its first signed multiplayer value (`publish_seeded_fields`, #78).
             c = check_field("game", key, label, kind, choices, help_text, True, True, 50 + position)
             session.add(FieldDef(media_type="game", origin="local", key=c["key"], label=c["label"], kind=c["kind"],
                                  choices=c["choices"], help=c["help"], public=True, editable=True, position=c["position"]))
@@ -134,6 +138,19 @@ def publish(session: Session, ctx: Ctx) -> None:
     """Replicate the current schema to mirrors (authority only)."""
     if ctx.settings.role == "authority":
         feed.emit(session, ctx, "schema", snapshot(session))
+        if session.get(Setting, _MULTIPLAYER_PUBLISHED) is None:
+            session.add(Setting(key=_MULTIPLAYER_PUBLISHED, value=True))
+            session.flush()
+
+
+def publish_seeded_fields(session: Session, ctx: Ctx, keys: set[str]) -> None:
+    """Issue #78: `seed_multiplayer` writes the multiplayer definitions without a feed entry, and mirrors do not
+    seed their own, so an authority's first signed multiplayer value reached mirrors as `unknown field
+    'players_min'` (quarantined) until some unrelated schema change was published. Publish the schema once, just
+    before the first signed value that uses a seeded field; a mirror then retries what it quarantined."""
+    if not keys & MULTIPLAYER_KEYS or session.get(Setting, _MULTIPLAYER_PUBLISHED) is not None:
+        return
+    publish(session, ctx)
 
 
 def apply_snapshot(session: Session, snap: dict[str, Any], node_id: str | None = None) -> None:
@@ -464,6 +481,7 @@ def set_values(session: Session, ctx: Ctx, cid: str, source: str, values: dict[s
     signed = log and redistributable and ctx.settings.role == "authority"
     touch_version(session, cid, cause="feed" if signed else "local")
     if signed:
+        publish_seeded_fields(session, ctx, {*values, *clear})
         feed.emit(session, ctx, "custom", {"canonical_id": cid, "source": source, "values": values,
                                                       "clear": list(clear)})
 
