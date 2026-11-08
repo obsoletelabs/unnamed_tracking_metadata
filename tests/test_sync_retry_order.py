@@ -160,3 +160,98 @@ def test_retry_with_no_later_entry_for_the_target_still_applies(session, ctx, mo
     assert head == 3 and result["resolved"] == 1 and _open_failures(session) == []
     assert sorted(a.url for a in session.scalars(select(Artwork).where(Artwork.canonical_id == CID))) == [
         "https://example.test/a.png", "https://example.test/c.png"]
+
+
+# ---- a retried merge (second review pass) --------------------------------------------------------------------
+#
+# A merge moves the source record's locks, artwork, achievements and custom values onto the survivor. Run late,
+# after later entries for the survivor applied, it would overwrite them. The retry applies the merge and then
+# re-applies, in feed order, the later applied entries that write the two records.
+
+SRC, DST = "atlas:" + "A" * 26, "atlas:" + "B" * 26
+
+
+def _two_games(session):
+    session.add_all([Canonical(id=SRC, view={}, explain={}), Canonical(id=DST, view={}, explain={})])
+    session.flush()
+
+
+def _merge_fails_once(monkeypatch):
+    from atlas import service
+
+    return _fail_once(monkeypatch, service, "merge_canonicals")
+
+
+def test_retried_merge_does_not_bring_back_a_lock_a_later_unlock_removed(session, ctx, monkeypatch):
+    _two_games(session)
+    _feed(session,
+          ("lock", {"canonical_id": SRC, "field": "title", "value": "Pinned"}),
+          ("merge", {"src": SRC, "dst": DST}),
+          ("unlock", {"canonical_id": DST, "field": "title"}))
+    _merge_fails_once(monkeypatch)
+    head, result = _pull_then_retry(session, ctx)
+    assert head == 3 and result == {"retried": 1, "resolved": 1, "still_failing": 0}
+    assert _open_failures(session) == []
+    assert session.get(Canonical, SRC).merged_into == DST
+    assert session.get(Lock, (DST, "title")) is None and session.get(Lock, (SRC, "title")) is None
+    assert session.get(SyncFailure, (NODE, 2)).detail["replayed"] == [3]
+
+
+def test_retried_merge_does_not_keep_artwork_a_later_entry_replaced(session, ctx, monkeypatch):
+    _two_games(session)
+    _feed(session,
+          ("artwork", {"canonical_id": SRC, "source": "curator",
+                       "items": [{"kind": "key_art", "url": "https://example.test/old.png"}]}),
+          ("merge", {"src": SRC, "dst": DST}),
+          ("artwork", {"canonical_id": DST, "source": "curator",
+                       "items": [{"kind": "key_art", "url": "https://example.test/new.png"}]}))
+    _merge_fails_once(monkeypatch)
+    head, result = _pull_then_retry(session, ctx)
+    assert head == 3 and result["resolved"] == 1 and _open_failures(session) == []
+    assert session.get(Canonical, SRC).merged_into == DST
+    assert [a.url for a in session.scalars(select(Artwork))] == ["https://example.test/new.png"]
+
+
+def test_retried_merge_keeps_later_custom_values_and_moves_the_rest(session, ctx, monkeypatch):
+    custom.seed(session)
+    custom.save_field(session, ctx, "game", "site", "Website", "url")
+    custom.save_field(session, ctx, "game", "forum", "Forum", "url")
+    _two_games(session)
+    _feed(session,
+          ("custom", {"canonical_id": SRC, "source": "curator",
+                      "values": {"site": "https://old.example", "forum": "https://forum.example"}}),
+          ("merge", {"src": SRC, "dst": DST}),
+          ("custom", {"canonical_id": DST, "source": "curator", "values": {"site": "https://new.example"}}))
+    _merge_fails_once(monkeypatch)
+    head, result = _pull_then_retry(session, ctx)
+    assert head == 3 and result["resolved"] == 1 and _open_failures(session) == []
+    assert custom.merged(session, ctx, DST) == {"site": "https://new.example", "forum": "https://forum.example"}
+
+
+def test_retried_merge_with_a_later_merge_of_the_same_records_stays_quarantined(session, ctx, monkeypatch):
+    """Two merges into one survivor move state in an order-dependent way; a late one is not auto-resolved."""
+    _two_games(session)
+    third = "atlas:" + "C" * 26
+    session.add(Canonical(id=third, view={}, explain={}))
+    _feed(session,
+          ("merge", {"src": SRC, "dst": DST}),
+          ("merge", {"src": third, "dst": DST}))
+    _merge_fails_once(monkeypatch)
+    head, result = _pull_then_retry(session, ctx)
+    assert head == 2 and result == {"retried": 1, "resolved": 0, "still_failing": 1}
+    row = session.get(SyncFailure, (NODE, 1))
+    assert row.resolved_at is None and row.reason == "out_of_order" and row.detail["later"] == [2]
+    assert session.get(Canonical, SRC).merged_into is None  # nothing half-applied
+
+
+def test_retried_merge_with_no_later_entries_for_its_records_still_applies(session, ctx, monkeypatch):
+    _two_games(session)
+    _game(session)
+    _feed(session,
+          ("lock", {"canonical_id": SRC, "field": "title", "value": "Pinned"}),
+          ("merge", {"src": SRC, "dst": DST}),
+          ("unlock", {"canonical_id": CID, "field": "title"}))
+    _merge_fails_once(monkeypatch)
+    head, result = _pull_then_retry(session, ctx)
+    assert head == 3 and result["resolved"] == 1 and _open_failures(session) == []
+    assert session.get(Lock, (DST, "title")).value == "Pinned"

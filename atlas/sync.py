@@ -207,6 +207,10 @@ def retry_failures(session: Session, ctx: Ctx, node_id: str | None = None, *, li
         if entry is None:
             _record_failure(session, row.node_id, row.seq, row.kind, KeyError("retained entry is missing"))
             continue
+        if entry.kind == "merge":
+            if retry_merge(session, ctx, row.node_id, row.seq, entry.body) in (APPLY, NOOP):
+                resolved += 1
+            continue
         later, body = superseding(session, row.node_id, row.seq, entry.kind, entry.body)
         if later is not None:
             _resolve_superseded(row, later)
@@ -227,7 +231,8 @@ _TARGET_KINDS = {"artwork": ("artwork",), "achievements": ("achievements",), "lo
 
 def _target(kind: str, body: Any) -> tuple[Any, ...] | None:
     """What an entry writes, comparable between entries of one feed; None for kinds that do not replace state
-    (an observation records its own supersession, merges and detaches have their own idempotency rules)."""
+    (an observation records its own supersession, merges are retried by `retry_merge`, detaches have their own
+    idempotency rules)."""
     from .normalize import norm_namespace
 
     if kind not in _TARGET_KINDS or not isinstance(body, dict):
@@ -313,6 +318,76 @@ def superseding(session: Session, node_id: str, seq: int, kind: str, body: Any) 
     log.info("retrying feed entry %s (custom) from %s without keys %s that later entries set", seq, node_id,
              sorted(covered))
     return None, residual
+
+
+#: The kinds whose later entries a late merge re-applies on the merged records (they replace or upsert state that
+#: the merge moves: locks, artwork, achievements, custom values).
+_MERGE_REPLAY_KINDS = ("artwork", "achievements", "lock", "unlock", "custom")
+
+
+def _later_applied(session: Session, node_id: str, seq: int, kinds: tuple[str, ...]) -> list[ReplicatedChange]:
+    """Later entries of the feed, of `kinds`, that have applied: at or below the applied head, no open failure."""
+    rows = session.scalars(select(ReplicatedChange).where(
+        ReplicatedChange.node_id == node_id, ReplicatedChange.seq > seq,
+        ReplicatedChange.seq <= applied_head(session, node_id),
+        ReplicatedChange.kind.in_(kinds)).order_by(ReplicatedChange.seq)).all()
+    out = []
+    for later in rows:
+        failure = session.get(SyncFailure, (node_id, later.seq))
+        if failure is None or failure.resolved_at is not None:
+            out.append(later)
+    return out
+
+
+def retry_merge(session: Session, ctx: Ctx, node_id: str, seq: int, body: Any) -> str:
+    """Retry a quarantined merge out of order without regressing newer state.
+
+    A merge moves the source record's locks, artwork, achievements and custom values onto the survivor. Run after
+    later entries already applied to either record, it would overwrite what they set. So the merge is applied and
+    then those later entries (`_MERGE_REPLAY_KINDS` on src or dst) are re-applied in feed order, all in one
+    savepoint: the result is what in-order application gives. When a later applied merge involves either record,
+    the order of the two merges decides what survives, so the entry is kept quarantined (`out_of_order`) for an
+    administrator rather than reported resolved. If a replayed entry fails, everything is rolled back and the merge
+    stays quarantined."""
+    outcome = feed_schema.classify("merge", body)
+    if outcome.action != APPLY or not isinstance(outcome.body, dict):
+        return apply_entry(session, ctx, node_id, seq, "merge", body, may_park=False)
+    src, dst = outcome.body.get("src"), outcome.body.get("dst")
+    records = {r for r in (src, dst) if isinstance(r, str)}
+    for record in (src, dst):
+        if isinstance(record, str) and session.get(Canonical, record) is not None:
+            records.add(service.follow(session, record))
+    clashing = [later.seq for later in _later_applied(session, node_id, seq, ("merge",))
+                if isinstance(later.body, dict) and {later.body.get("src"), later.body.get("dst")} & records]
+    if clashing:
+        log.warning("quarantined merge %s from %s stays quarantined: later merges %s of the same records already "
+                    "applied, and merges are order dependent", seq, node_id, clashing)
+        _record(session, node_id, seq, "merge", QUARANTINE, "out_of_order",
+                f"later merges {clashing} of the same records already applied; re-applying this merge now could "
+                "leave different state than the authority", {"kind": "merge", "later": clashing})
+        return QUARANTINE
+    replay = [later for later in _later_applied(session, node_id, seq, _MERGE_REPLAY_KINDS)
+              if isinstance(later.body, dict) and later.body.get("canonical_id") in records]
+    try:
+        with session.begin_nested():
+            result = apply_entry(session, ctx, node_id, seq, "merge", body, may_park=False)
+            if result != APPLY or not replay:
+                return result
+            for later in replay:
+                later_outcome = feed_schema.classify(later.kind, later.body)
+                if later_outcome.action == APPLY:
+                    _apply(session, ctx, node_id, later.seq, later.kind, later_outcome.body)
+            row = session.get(SyncFailure, (node_id, seq))
+            if row is not None:
+                row.detail = {**(row.detail or {}), "replayed": [later.seq for later in replay]}
+    except (AtlasError, KeyError, TypeError, ValueError, AttributeError) as exc:
+        log.warning("quarantined merge %s from %s stays quarantined: re-applying later entry failed: %s",
+                    seq, node_id, exc)
+        _record(session, node_id, seq, "merge", QUARANTINE, "apply_error",
+                f"re-applying later entries after the merge failed: {type(exc).__name__}: {exc}", {"kind": "merge"})
+        return QUARANTINE
+    log.info("retried merge %s from %s and re-applied later entries %s", seq, node_id, [r.seq for r in replay])
+    return APPLY
 
 
 def _resolve_superseded(row: SyncFailure, later: int) -> None:
