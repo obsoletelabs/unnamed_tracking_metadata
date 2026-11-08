@@ -43,8 +43,8 @@ The app combines Atlas with its other providers. The user's provider order sets 
 | `id` | `id` | the record | yes | an Atlas id you sent (`namespace: "atlas"` or `provider_ids.atlas`) names a live record |
 | `redirect` | `id` | the live record | yes, and replace your stored id | that Atlas id was merged; `redirected_from` is the id you sent |
 | `crosswalk` | `id` | the record | yes | your provider ids point at exactly one record |
-| `conflict` | `id` | `null` | **no** | your ids point at more than one record. `conflict` lists them, `conflict.own` is the record your item's own `namespace`/`external_id` points at, `conflict.review_id` the open curator review if there is one |
-| `type_mismatch` | `id` | `null` | **no** | your ids only point at records of another media type |
+| `conflict` | `id` | `null` | **no** | your ids point at more than one record, of any media type. `conflict` lists them, `conflict.own` is the record your item's own `namespace`/`external_id` points at, `conflict.review_id` the open curator review if there is one |
+| `type_mismatch` | `id` | `null` | **no** | your ids all point at one record, and it is of another media type |
 | `exact` | `strong` | the record | yes | no id matched; the normalized title is equal, the year agrees enough to reach the auto-match threshold, and the next candidate is 0.1 behind |
 | `fuzzy` | `strong` | the record | only if you opt in | as `exact` with a near-equal title. Capped at 0.8, so it only appears when an administrator lowers the threshold |
 | `ambiguous` | `weak` | `null` | **no** | title candidates exist but cannot be assigned: too weak, too close to each other, or contradicted by an id you hold, or you sent an Atlas id Atlas does not know (see below) |
