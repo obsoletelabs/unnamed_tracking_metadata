@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextvars
 import html
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -150,12 +152,60 @@ def redact_urls(text: str) -> str:
     return _QUERY.sub(r"\1", text)
 
 
+#: The provider an adapter call belongs to, set by the Fetcher; labels upstream-request metrics (#71).
+CURRENT_PROVIDER: contextvars.ContextVar[str] = contextvars.ContextVar("atlas_provider", default="other")
+
+
+def _record_quota(provider: str, headers: Any) -> None:
+    """Record quota headers only when the provider sent them; nothing is invented for providers that do not."""
+    from ..instruments import provider_quota_remaining, provider_quota_reset
+
+    remaining = headers.get("x-ratelimit-remaining") or headers.get("ratelimit-remaining")
+    if remaining is not None and remaining.strip().isdigit():
+        provider_quota_remaining.set(int(remaining.strip()), provider=provider)
+    reset = headers.get("x-ratelimit-reset") or headers.get("ratelimit-reset")
+    after = headers.get("retry-after")
+    try:
+        if reset is not None and reset.strip().isdigit():
+            value = int(reset.strip())
+            # RateLimit-Reset (IETF draft) is seconds from now; X-RateLimit-Reset is usually a Unix time
+            provider_quota_reset.set(value if value > 1_000_000_000 else time.time() + value, provider=provider)
+        elif after is not None and after.strip().isdigit():
+            provider_quota_reset.set(time.time() + int(after.strip()), provider=provider)
+    except ValueError:
+        pass
+
+
+def _outcome(exc: BaseException | None, status: int | None) -> str:
+    if exc is None:
+        return "ok"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.HTTPStatusError) and status is not None:
+        return "http_429" if status == 429 else "http_5xx" if status >= 500 else "http_4xx"
+    if isinstance(exc, ValueError):
+        return "invalid_payload"
+    return "transport"
+
+
 def get_json(client: httpx.Client, method: str, url: str, **kw: Any) -> Any:
+    from ..instruments import provider_request_duration, provider_requests
+
+    provider = CURRENT_PROVIDER.get()
+    started, status, failure = time.monotonic(), None, None
     try:
         resp = client.request(method, url, timeout=kw.pop("timeout", 10), **kw)
+        status = resp.status_code
+        _record_quota(provider, resp.headers)
         resp.raise_for_status()
         return resp.json()
     except httpx.HTTPStatusError as exc:
+        failure = exc
         raise ProviderError(f"{redact_urls(url)}: HTTP {exc.response.status_code}") from None
     except (httpx.HTTPError, ValueError) as exc:
+        failure = exc
         raise ProviderError(redact_urls(f"{url}: {type(exc).__name__}: {exc}")) from None
+    finally:
+        outcome = _outcome(failure, status)
+        provider_requests.inc(provider=provider, outcome=outcome)
+        provider_request_duration.observe(time.monotonic() - started, provider=provider, outcome=outcome)

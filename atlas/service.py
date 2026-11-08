@@ -675,6 +675,29 @@ SORTS = ("relevance", "title", "release", "-release")
 def search(session: Session, q: str, limit: int = 25, offset: int = 0,
            media_type: str | None = None, *, released_from: str | None = None, released_to: str | None = None,
            sort: str = "relevance") -> list[Canonical]:
+    """`_search`, timed by mode (`title`, `filter`, `browse`) and outcome; never labelled by the query (#74)."""
+    import time
+
+    from . import instruments
+
+    mode = "title" if norm_title(q or "") else "filter" if (released_from or released_to) else "browse"
+    started, outcome = time.monotonic(), "error"
+    try:
+        rows = _search(session, q, limit, offset, media_type, released_from=released_from,
+                       released_to=released_to, sort=sort)
+        outcome = "ok"
+        instruments.search_results.observe(len(rows), mode=mode)
+        return rows
+    except AtlasError:
+        outcome = "invalid"
+        raise
+    finally:
+        instruments.search_duration.observe(time.monotonic() - started, mode=mode, outcome=outcome)
+
+
+def _search(session: Session, q: str, limit: int = 25, offset: int = 0,
+            media_type: str | None = None, *, released_from: str | None = None, released_to: str | None = None,
+            sort: str = "relevance") -> list[Canonical]:
     """Records by title. `released_from`/`released_to` are PartialDates ("2011" = the whole year): a record
     matches when its first release lies entirely inside the range, so a year-only "2011" matches 2011..2011
     but not April 2011 (it might be any month). `sort=release` orders by the start of the first release, then

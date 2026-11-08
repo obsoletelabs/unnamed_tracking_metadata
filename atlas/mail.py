@@ -128,6 +128,23 @@ def _send_smtp(settings: Settings, row: Outbox) -> None:
         server.send_message(msg)
 
 
+def failure_class(exc: BaseException) -> str:
+    """Bounded delivery failure class for `atlas_mail_deliveries_total` (never the reply text or address)."""
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return "auth"
+    if isinstance(exc, smtplib.SMTPResponseException):
+        return "transient" if 400 <= exc.smtp_code < 500 else "permanent"
+    if isinstance(exc, smtplib.SMTPRecipientsRefused | smtplib.SMTPSenderRefused):
+        return "permanent"
+    if isinstance(exc, smtplib.SMTPServerDisconnected):
+        return "connection"
+    if isinstance(exc, smtplib.SMTPException):  # a subclass of OSError, so tested before it
+        return "protocol"
+    if isinstance(exc, OSError):
+        return "connection"
+    return "invalid"
+
+
 def deliver_pending(maker: sessionmaker[Session], settings: Settings, limit: int = 20) -> int:
     """Send queued messages (smtp backend). A failure is recorded and retried with backoff."""
     if settings.mail_backend != "smtp" or not settings.smtp_host:
@@ -145,14 +162,18 @@ def deliver_pending(maker: sessionmaker[Session], settings: Settings, limit: int
             if not claimed.rowcount:
                 continue
             session.refresh(row)
+            from . import instruments
+
             try:
                 _send_smtp(settings, row)
             except (OSError, ValueError, smtplib.SMTPException) as exc:
                 row.error = f"{type(exc).__name__}: {exc}"[:300]
                 row.next_attempt_at = now() + timedelta(minutes=min(60, 2 ** row.attempts))
+                instruments.mail_deliveries.inc(outcome="failed", **{"class": failure_class(exc)})
             else:
                 row.sent_at, row.error, row.body = now(), None, None  # nothing sensitive is kept once delivered
                 sent += 1
+                instruments.mail_deliveries.inc(outcome="sent", **{"class": "none"})
             session.commit()
     return sent
 

@@ -31,7 +31,7 @@ from .. import (
     vocab,
 )
 from .. import media as images
-from ..api.routes import _guard_upstream, media_response
+from ..api.routes import _guard_upstream, served_media
 from ..merge import LOCK_FIELDS, UNION_FIELDS
 from ..models import (
     Artwork,
@@ -346,9 +346,7 @@ def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length
 
 @router.get("/media/{digest}")
 def media(digest: str, p: Annotated[Page, Depends(page)]):
-    if not images.servable(p.session, p.st.ctx.settings, digest):  # C12 §12.5.5: redirect/none sources
-        raise HTTPException(404, "No such image.")
-    return media_response(p.st, digest)
+    return served_media(p.session, p.st, digest, "No such image.")  # C12 §12.5.5: redirect/none sources
 
 
 @router.get("/robots.txt", response_class=HTMLResponse)
@@ -446,12 +444,19 @@ def login_form(p: Annotated[Page, Depends(page)], next: str = "/"):
 @router.post("/login")
 def login(p: Annotated[Page, Depends(csrf_form)], username: Annotated[str, Form(max_length=64)],
           password: Annotated[str, Form(max_length=256)], next: Annotated[str, Form()] = "/"):
+    from .. import instruments
+
     ip, name = client_ip(p.request), username.strip().lower()[:40]
-    throttle(p, f"login:ip:{ip}", 30, 300, "Too many sign-in attempts")
-    # keyed by address too, so a stranger cannot lock a real user out by guessing their name
-    throttle(p, f"login:pair:{ip}:{name}", 10, 900, "Too many sign-in attempts for this account")
-    throttle(p, f"login:user:{name}", 100, 3600, "This account is receiving too many sign-in attempts")
+    try:
+        throttle(p, f"login:ip:{ip}", 30, 300, "Too many sign-in attempts")
+        # keyed by address too, so a stranger cannot lock a real user out by guessing their name
+        throttle(p, f"login:pair:{ip}:{name}", 10, 900, "Too many sign-in attempts for this account")
+        throttle(p, f"login:user:{name}", 100, 3600, "This account is receiving too many sign-in attempts")
+    except HTTPException:
+        instruments.identity_flows.inc(flow="password", outcome="rate_limited")
+        raise
     user = accounts.authenticate(p.session, username, password)
+    instruments.identity_flows.inc(flow="password", outcome="bad_credentials" if user is None else "ok")
     if user is None:
         return render(p, "login.html", status=400, anon_csrf=True, next=safe_next(next),
                       error="Wrong username or password.")

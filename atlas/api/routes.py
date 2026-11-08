@@ -1273,26 +1273,36 @@ def get_artwork_image(art_id: str, st: St, session: Sess, _: Annotated[auth.Prin
       image (those are only ever served from this node's cache)."""
     from fastapi.responses import RedirectResponse
 
-    art = session.get(Artwork, art_id)
-    if art is None:
-        raise HTTPException(404, "no such image")
-    settings = st.ctx.settings
-    fetch = media.fetch_policy(settings, art.source, art.url)
-    if fetch == "none":
-        raise HTTPException(404, "image is not served here")
-    if fetch == "proxy" and art.blob_hash and media.find_blob(settings, art.blob_hash):
-        return media_response(st, art.blob_hash, etag=True)
-    if source_class(art.source) != "provider" or media.is_upload(settings, art.url):
-        raise HTTPException(404, "image is not available yet")
+    from .. import instruments
+
+    result = "miss"
     try:
-        _scheme, host, _port, _ip = media.check_url(art.url, settings)  # public https addresses only
-    except media.MediaError:
-        raise HTTPException(404, "image is not available") from None
-    allowed = set(media_policy.policy(settings, art.source).redirect_hosts)
-    allowed |= {h.lower() for h in (settings.media_allowed_hosts or ())}
-    if host.lower() not in allowed:
-        raise HTTPException(404, "image is not available")
-    return RedirectResponse(art.url, status_code=307, headers={"Cache-Control": "private, max-age=300"})
+        art = session.get(Artwork, art_id)
+        if art is None:
+            raise HTTPException(404, "no such image")
+        settings = st.ctx.settings
+        fetch = media.fetch_policy(settings, art.source, art.url)
+        if fetch == "none":
+            result = "refused"
+            raise HTTPException(404, "image is not served here")
+        if fetch == "proxy" and art.blob_hash and media.find_blob(settings, art.blob_hash):
+            result = "hit"
+            return media_response(st, art.blob_hash, etag=True)
+        if source_class(art.source) != "provider" or media.is_upload(settings, art.url):
+            raise HTTPException(404, "image is not available yet")
+        result = "refused"
+        try:
+            _scheme, host, _port, _ip = media.check_url(art.url, settings)  # public https addresses only
+        except media.MediaError:
+            raise HTTPException(404, "image is not available") from None
+        allowed = set(media_policy.policy(settings, art.source).redirect_hosts)
+        allowed |= {h.lower() for h in (settings.media_allowed_hosts or ())}
+        if host.lower() not in allowed:
+            raise HTTPException(404, "image is not available")
+        result = "redirect"
+        return RedirectResponse(art.url, status_code=307, headers={"Cache-Control": "private, max-age=300"})
+    finally:
+        instruments.media_cache.inc(route="image", result=result)
 
 
 def media_response(st: AppState, digest: str, *, etag: bool = False):
@@ -1313,9 +1323,23 @@ def media_response(st: AppState, digest: str, *, etag: bool = False):
 
 @router.get("/media/{digest}", tags=["read"])
 def get_media(digest: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+    return served_media(session, st, digest, "no such image")
+
+
+def served_media(session: Session, st: AppState, digest: str, missing: str):
+    """`/media/<sha256>` (API and site): cached bytes still servable under the source's policy (§12.5.5)."""
+    from .. import instruments
+
     if not media.servable(session, st.ctx.settings, digest):  # a provider switched to redirect/none (§12.5.5)
-        raise HTTPException(404, "no such image")
-    return media_response(st, digest)
+        instruments.media_cache.inc(route="media", result="refused")
+        raise HTTPException(404, missing)
+    try:
+        response = media_response(st, digest)
+    except HTTPException:
+        instruments.media_cache.inc(route="media", result="miss")
+        raise
+    instruments.media_cache.inc(route="media", result="hit")
+    return response
 
 
 @router.get("/sync/media/{digest}", tags=["federation"])

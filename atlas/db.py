@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import re
+import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -262,3 +263,89 @@ def downgrade(url: str, revision: str, settings: Any = None) -> None:
     from alembic import command
 
     command.downgrade(alembic_config(url, settings), revision)
+
+
+# ---- metrics (#74) -----------------------------------------------------------------------------------------
+
+_STARTS = "atlas_query_starts"
+_INSTRUMENTED: weakref.WeakSet[Engine] = weakref.WeakSet()
+_OPERATIONS = {"select": "select", "with": "select", "insert": "insert", "update": "update", "delete": "delete"}
+
+
+def _operation(statement: str) -> str:
+    """Statement class from its first keyword only; the SQL text itself is never exported."""
+    head = statement.lstrip()[:7].split(None, 1)
+    return _OPERATIONS.get(head[0].lower(), "other") if head else "other"
+
+
+def error_class(exc: BaseException) -> str:
+    """Bounded class of a database error for `atlas_database_errors_total`."""
+    from sqlalchemy import exc as sa_exc
+
+    orig = getattr(exc, "orig", exc)
+    code = str(getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None) or "")
+    text = str(orig).lower()
+    if code == "40P01" or "deadlock" in text:
+        return "deadlock"
+    if code == "40001" or "could not serialize" in text:
+        return "serialization"
+    if code in ("55P03", "57014") or "database is locked" in text or "lock timeout" in text:
+        return "lock_timeout"
+    if isinstance(exc, sa_exc.IntegrityError):
+        return "integrity"
+    if isinstance(exc, sa_exc.InterfaceError | sa_exc.DisconnectionError) or (
+            isinstance(exc, sa_exc.OperationalError) and code.startswith("08")):
+        return "connection"
+    return "other"
+
+
+def instrument(engine: Engine) -> None:
+    """Statement timing, transaction outcomes and error classes on this engine (only when metrics are enabled).
+    Costs two `perf_counter` calls and a dictionary update per statement."""
+    import time
+
+    from . import instruments
+
+    if engine in _INSTRUMENTED:
+        return
+    _INSTRUMENTED.add(engine)
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _start(conn, cursor, statement, parameters, context, executemany):
+        conn.info.setdefault(_STARTS, []).append(time.perf_counter())
+
+    @event.listens_for(engine, "after_cursor_execute")
+    def _done(conn, cursor, statement, parameters, context, executemany):
+        starts = conn.info.get(_STARTS)
+        if starts:
+            instruments.db_query.observe(time.perf_counter() - starts.pop(), operation=_operation(statement),
+                                         outcome="ok")
+
+    @event.listens_for(engine, "handle_error")
+    def _error(context):
+        conn = context.connection
+        starts = conn.info.get(_STARTS) if conn is not None else None
+        if starts:
+            instruments.db_query.observe(time.perf_counter() - starts.pop(),
+                                         operation=_operation(context.statement or ""), outcome="error")
+        instruments.db_errors.inc(**{"class": error_class(context.sqlalchemy_exception or context.original_exception)})
+
+    @event.listens_for(engine, "commit")
+    def _commit(conn):
+        instruments.db_transactions.inc(outcome="commit")
+
+    @event.listens_for(engine, "rollback")
+    def _rollback(conn):
+        instruments.db_transactions.inc(outcome="rollback")
+
+
+def pool_status(engine: Engine) -> dict[str, int] | None:
+    """Connection pool occupancy for a queue pool (PostgreSQL); None where the dialect's pool has no such numbers."""
+    pool = engine.pool
+    if not all(hasattr(pool, name) for name in ("checkedout", "checkedin", "overflow", "size")):
+        return None
+    try:
+        return {"checked_out": int(pool.checkedout()), "idle": int(pool.checkedin()),
+                "overflow": max(0, int(pool.overflow())), "size": int(pool.size())}
+    except Exception:  # noqa: BLE001 - a pool implementation without these numbers: unavailable, not zero
+        return None
