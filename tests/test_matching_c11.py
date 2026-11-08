@@ -541,3 +541,32 @@ def test_an_upstream_configured_as_a_peer_is_an_authority_origin(session, ctx):
     row = service.rebuild(session, ctx, mine.canonical_id)
     session.commit()
     assert row.view["developer"] == "Upstream Curator" and row.explain["developer"]["class"] == "curator"
+
+
+def test_ids_naming_records_of_different_types_are_an_id_conflict_at_ingest(session, ctx):
+    """Review on #105, carried into the C11 matcher: the conflict is decided on every record the ids name, before
+    the media-type filter, so the id naming a record of another type is never dropped and the item is never
+    assigned by crosswalk. Ingest keeps the item on its own key's record only when that record has the item's
+    type; an item is never assigned to a record of another media type."""
+    [game] = ingest(session, ctx, "steam", [{"external_id": "1", "title": "Crossed Wires"}])
+    [movie] = ingest(session, ctx, "imdb", [{"external_id": "2", "title": "Crossed Wires: The Film"}])
+    session.get(Canonical, movie.canonical_id).media_type = "movie"
+    session.commit()
+
+    def typed_ingest(source, item):
+        [out] = service.ingest(session, ctx, batch(source, [item]), curator=True, media_type="game")
+        session.commit()
+        return out
+
+    both = typed_ingest("igdb", {"external_id": "3", "title": "Crossed Wires", "provider_ids": {"steam": "1", "imdb": "2"}})
+    assert both.reason == "conflict" and both.canonical_id not in (game.canonical_id, movie.canonical_id)
+    assert session.get(Canonical, both.canonical_id).media_type == "game"
+
+    own_game = typed_ingest("steam", {"external_id": "1", "title": "Crossed Wires", "provider_ids": {"imdb": "2"}})
+    assert own_game.reason == "conflict" and own_game.canonical_id == game.canonical_id
+
+    own_movie = typed_ingest("imdb", {"external_id": "2", "title": "Crossed Wires", "provider_ids": {"steam": "1"}})
+    assert own_movie.reason == "conflict" and own_movie.canonical_id != movie.canonical_id
+    assert session.get(Canonical, own_movie.canonical_id).media_type == "game"
+    kinds = {i.kind for i in session.scalars(select(ReviewItem).where(ReviewItem.status == "open"))}
+    assert "id_conflict" in kinds
