@@ -255,3 +255,58 @@ def test_retried_merge_with_no_later_entries_for_its_records_still_applies(sessi
     head, result = _pull_then_retry(session, ctx)
     assert head == 3 and result["resolved"] == 1 and _open_failures(session) == []
     assert session.get(Lock, (DST, "title")).value == "Pinned"
+
+
+# ---- relations (C6): `add` and `end` of one relation are one target -------------------------------------------
+
+def _relation(op, src, dst, **extra):
+    return {"op": op, "from": src, "to": dst, "type": "remake_of", **extra}
+
+
+def test_retried_relation_add_does_not_recreate_a_relation_a_later_end_removed(session, ctx, monkeypatch):
+    from atlas import relations
+    from atlas.models import Relation
+
+    _two_games(session)
+    _feed(session,
+          ("relation", _relation("add", SRC, DST, source="curator")),
+          ("relation", _relation("end", SRC, DST)))
+    _fail_once(monkeypatch, relations, "add")
+    head, result = _pull_then_retry(session, ctx)
+    assert head == 2 and result["resolved"] == 1 and _open_failures(session) == []
+    assert session.get(SyncFailure, (NODE, 1)).detail["superseded_by"] == 2
+    assert relations.active_between(session, SRC, DST, "remake_of") is None
+    assert session.scalars(select(Relation).where(Relation.origin_node == NODE, Relation.origin_seq == 1)).first() is None
+
+
+def test_retried_relation_add_applies_when_no_later_entry_names_it(session, ctx, monkeypatch):
+    from atlas import relations
+
+    _two_games(session)
+    _feed(session,
+          ("relation", _relation("add", SRC, DST, source="curator")),
+          ("relation", _relation("end", DST, SRC)))  # another relation: it does not supersede
+    _fail_once(monkeypatch, relations, "add")
+    head, result = _pull_then_retry(session, ctx)
+    assert head == 2 and result["resolved"] == 1 and _open_failures(session) == []
+    assert relations.active_between(session, SRC, DST, "remake_of") is not None
+
+
+def test_retried_merge_does_not_bring_back_a_relation_a_later_end_removed(session, ctx, monkeypatch):
+    """The merge moves relations onto the survivor (C6.3), so a later `end` on the survivor is replayed after it."""
+    from atlas import relations
+
+    other = "atlas:" + "C" * 26
+    _two_games(session)
+    session.add(Canonical(id=other, view={}, explain={}))
+    session.flush()
+    _feed(session,
+          ("relation", _relation("add", other, SRC, source="curator")),
+          ("merge", {"src": SRC, "dst": DST}),
+          ("relation", _relation("end", other, DST)))
+    _merge_fails_once(monkeypatch)
+    head, result = _pull_then_retry(session, ctx)
+    assert head == 3 and result == {"retried": 1, "resolved": 1, "still_failing": 0}
+    assert session.get(Canonical, SRC).merged_into == DST
+    assert relations.active_between(session, other, DST, "remake_of") is None
+    assert session.get(SyncFailure, (NODE, 2)).detail["replayed"] == [3]
