@@ -229,6 +229,31 @@ def test_hit_amount_counts_bytes_in_one_row(tmp_path):
             ratelimit.hit(maker, "k", 1, 60, clock=clock, amount=bad)
 
 
+def test_refused_amounts_cannot_overflow_the_counter(tmp_path):
+    """Review fix: the stored total is capped at `limit + 1`, so an hour of refused byte requests stays inside the
+    int32 `count` column on PostgreSQL (a 429, never 'integer out of range')."""
+    maker = _maker(tmp_path)
+    clock = lambda: 1_700_000_000.0  # noqa: E731
+    budget = 512 * 1024 * 1024
+    for _ in range(10):  # 10 x 1 GiB refused: 10 GiB would overflow an int32 many times over
+        assert not ratelimit.hit(maker, "assist-bytes:y", budget, 3600, clock=clock, amount=1024 * 1024 * 1024)[0]
+    assert not ratelimit.hit(maker, "assist-bytes:y", budget, 3600, clock=clock, amount=1)[0]
+    with maker() as s:
+        assert s.get(RateCounter, ("assist-bytes:y", 1_700_002_800)).count == budget + 1
+    huge = 2**40  # a limit past int32 behaves as the largest storable one and still never overflows
+    assert ratelimit.hit(maker, "h", huge, 60, clock=clock, amount=2**31 - 2)[0]
+    assert ratelimit.hit(maker, "h", huge, 60, clock=clock, amount=2**31 - 1)[0] is False
+    with maker() as s:
+        assert max(r.count for r in s.scalars(select(RateCounter).where(RateCounter.key == "h"))) == 2**31 - 1
+
+
+def test_key_documents_are_not_cached_by_shared_caches(tmp_path):
+    """Review fix: discovery (signing_key_id, rotation history) and jwks must revalidate after a rotation."""
+    with World(tmp_path) as w:
+        for path in ("/.well-known/openid-configuration", "/oidc/jwks"):
+            assert w.provider.get(path).headers["cache-control"] == "no-cache"
+
+
 def test_retry_after_is_the_rest_of_the_window(tmp_path):
     maker = _maker(tmp_path)
     ratelimit.hit(maker, "r", 1, 600, clock=lambda: 1_700_000_100.0)
