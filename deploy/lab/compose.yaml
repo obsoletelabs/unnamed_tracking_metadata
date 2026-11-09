@@ -20,6 +20,7 @@ services:
       ATLAS_PUBLIC_URL: http://authority.lab.localhost:8001
       ATLAS_DATABASE_URL: sqlite:////data/atlas.db
       ATLAS_MEDIA_DIR: /data/media
+      ATLAS_GROUP_JOURNAL_DIR: /data/group-journal   # node groups: outside media and backups (C10 R1-3)
       ATLAS_INITIAL_ADMIN: alice
       ATLAS_BOOTSTRAP_ADMIN_TOKEN: lab-bootstrap-token-0123456789abcdef0123456789
       ATLAS_EMAIL_VERIFICATION: "off"     # a real authority requires confirmed email
@@ -37,6 +38,7 @@ services:
       ATLAS_PUBLIC_URL: http://localhost:8002
       ATLAS_DATABASE_URL: sqlite:////data/atlas.db
       ATLAS_MEDIA_DIR: /data/media
+      ATLAS_GROUP_JOURNAL_DIR: /data/group-journal   # node groups: outside media and backups (C10 R1-3)
       ATLAS_INITIAL_ADMIN: bob
       ATLAS_BOOTSTRAP_ADMIN_TOKEN: lab-local-token-0123456789abcdef0123456789abcd
       ATLAS_SECRET_KEY: lab-secret-key-not-for-production-0123456789

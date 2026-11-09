@@ -31,11 +31,14 @@ random 14-character passphrase resists that; a human-chosen phrase may not. Owne
 the secret key should use the offline-root mode. This release does not offer the offline-root mode yet: until it
 does, keep backups apart from `ATLAS_SECRET_KEY` and use a random root passphrase.
 
-Someone who obtains a recovery file can guess its passphrase offline in the same way. A 1-of-1 file holds both the
-recovery key and the root key, so a stolen and cracked file allows a full takeover; a succession issued with it is
-pending for 24 hours, shown on every member, and cancellable with your own copy (the two then conflict, which means
-creating a new group). Store recovery files offline, use a different passphrase for them, or use `--recovery
-2-of-3`. Downloading the recovery file is audited (`group_root_exported`).
+Someone who obtains a recovery file can guess its passphrase offline in the same way. A 1-of-1 file holds the
+recovery key and the root key; since this release (recovery file **v2**) the root key inside it is wrapped again
+under the **root passphrase**, so cracking the file passphrase alone yields only the recovery key. With it a thief
+can only start a root succession, which is pending for 24 hours, shown on every member, and cancellable with your
+own copy (the two then conflict, which means creating a new group). Older v1 files (root key unprotected inside)
+still open; `verify-recovery` warns about them, so re-export them with `atlas group root export-recovery`. Store
+recovery files offline, use a different passphrase for them, or use `--recovery 2-of-3`. Downloading the recovery
+file is audited (`group_root_exported`).
 
 Every root operation in the admin UI (issuing a certificate, revoking, renewing) asks for your current account
 password and the root passphrase, and is limited to 5 attempts per hour per administrator.
@@ -96,14 +99,35 @@ for the administrators.
 
 A member that could be withholding revocations is caught by the others: each member signs a short **view** of
 the revocation lists it holds, and delegated or privileged actions wait until a view from a third member is
-newer than `ATLAS_GROUP_VIEW_MAX_AGE_HOURS` (24 h by default). In a group of two the rule cannot apply and is
-waived. Members pull each other's state every `ATLAS_GROUP_SYNC_INTERVAL` seconds (60) and on **Sync with
+newer than `ATLAS_GROUP_VIEW_MAX_AGE_HOURS` (24 h by default).
+
+The exact guarantee: an action that depends on node N happens only if a member other than this node and N signed,
+within that age, a view whose revocation-list heads (sequence **and** content hash) this node already holds. A view
+that announces a list with the same number but different content, or a newer one, makes this node pull first. A
+member whose view announces a list its own state does not serve is ignored until it sends a view that is backed
+(audited `group_view_unbacked`), so one compromised member cannot block the group. In a group of two (or when no
+third member is left) the rule cannot apply and is waived; the waiver is audited once per kind of action
+(`group_freshness_waived`). While a root succession names a revocation list this node does not hold yet, every
+privileged action waits until it is pulled. Members pull each other's state every `ATLAS_GROUP_SYNC_INTERVAL` seconds (60) and on **Sync with
 members now** (`atlas group sync`). Member-to-member calls are encrypted to the receiving node and signed, so
 proxies and logs see only `POST /api/v2/group/call`. A request is at most 256 KiB; the calling node reads
 an answer by streaming and refuses one over 8 MiB (1 MiB for the planned `assist.*` ops) as "answer too large".
 
 After a **restore from backup** a node is `resyncing`: it pulls every member's state before any root or
 delegated action. `atlas group resync --skip` (or the button, with your password) skips that and is audited.
+
+**The revocation journal.** Every revocation list, succession and cancellation a node accepts is also appended to
+`ATLAS_GROUP_JOURNAL_DIR` (default `./group-journal`, one `<group_id>.jsonl` file of signed objects, `fsync`ed).
+The directory must lie outside the database, `ATLAS_MEDIA_DIR` and `ATLAS_BACKUP_DIR` (the node refuses to start
+otherwise), so a restore cannot roll revocations back: `atlas restore` and every start replay the journal before
+anything else, and `resyncing` ends only after that replay. Put it on a persistent volume (the compose files mount
+one). The objects verify themselves, so a tampered line is simply refused; the file holds nothing secret. A member
+that was revoked does not count as an answer when ending `resyncing`; with no other member left after the replay,
+the journal alone completes it.
+
+`resync --skip` starts a new **trust epoch**: the two-member waiver is off, and every privileged action needs a
+fresh view of a third member, until a full pull succeeds. In a group of two whose journal is empty only the owner
+can end it: `atlas group resync --confirm-root` (asks for the root passphrase).
 
 ## Linked accounts and synced preferences
 
@@ -148,6 +172,16 @@ renewal. A node that sends two different histories (a cloned VM) is stopped unti
 history (`atlas group new-epoch` on the real node, after the clone is shut down); the disputed history is not
 continued. After a restore
 from backup a node starts a new history and fetches what it lost from the others.
+
+**Link evidence (review #1).** An identity node appends a signed witness (`account.assert_issued`) to the
+account's stream for every link assertion it signs, and for a sign-in assertion when the target node does not
+already hold the account. Other members accept a link only with that witness: a stolen or rotated-out key can sign
+a back-dated assertion, but it cannot place the witness in the identity node's current stream. A link whose
+witness does not arrive within `ATLAS_GROUP_HOLD_TIMEOUT_DAYS` (7) becomes **suspect** with a review entry; links
+already established keep their status. A group account id is bound to the node that minted it (a hash of a nonce
+only the minter knows), so another member cannot claim to have minted it; two unbound claims from before this
+release both become suspect for review. Entries a node sent after its certificate expired, inside the 72 hour grace,
+are held (not applied) until the certificate is renewed; after the grace they are refused, with one notice.
 
 ## Signing in through another node
 
@@ -228,7 +262,10 @@ another node, is audited with the group, the vouching node and the grant serial.
   by accident.
 - **The root node is lost, the root key is not compromised:** on another member run
   `atlas group root import --recovery-file FILE --old-root decommissioned` (or `running` if the old root node still
-  runs). It needs a 1-of-1 file (the only kind that holds the root key) and sets a new root passphrase. The node
+  runs). It needs a 1-of-1 or export-recovery file (the kinds that hold the root key). A v2 file asks for the root
+  passphrase it was wrapped under, which stays the root passphrase on this node; `--new-root-passphrase
+  --recovery-out FILE` sets another one and writes a re-exported recovery file first, so the file in the drawer
+  never needs a passphrase you no longer use. A v1 file always sets a new one and writes a v2 re-export. The node
   signs a `root_moved` notice; a still-running old root node disables its own root when it sees it. The new holder
   is `resyncing` until it has pulled every member (`atlas group sync`, or `atlas group resync --skip` when the old
   node is gone for good).
@@ -236,9 +273,19 @@ another node, is audited with the group, the vouching node and the grant serial.
   [--exclude-node NODE_ID] --recovery-out DIR` signs a **root succession** with a recovery quorum and a new root
   key held on this node. It carries every current member except the excluded ones (revoke the breached node too).
   It activates after 24 hours; in that window any recovery quorum can cancel it with
-  `atlas group root succession-cancel --recovery-file FILE`, and objects signed by the old root are held. A
-  cancellation signed only by the root is never honoured. With a 1-of-1 file a new recovery file holding the new
-  root key is written to `DIR`.
+  `atlas group root succession-cancel --recovery-file FILE`, and objects signed by the old root (revocation lists
+  included) are held. A cancellation signed only by the root is never honoured. A member activates a due succession
+  only after another member (not the one that delivered it) confirms, with a view signed after the delay, that it
+  was not cancelled; with no such member the rule is waived. With a 1-of-1 file a new recovery file holding the new
+  root key (wrapped under the new root passphrase) is written to `DIR`.
+- The succession names the **last revocation list of the old root** that this node received before the theft
+  (`--suspect-since`, or pick one). From activation on, that list is exactly the old root's revocation state:
+  revocations and bans that only later lists of the stolen key made are withdrawn (audited
+  `group_revocation_retired_by_succession`, with a notice to administrators). `key_compromise` revocations by the
+  old root are listed and must be confirmed one by one.
+- A ban made by a delegate (a node that enrols others) is never stored as permanent: it holds while that delegate
+  is the only issuer of the node, and the root can always enrol the node again without `readmit`. Only a root
+  `key_compromise` ban is permanent.
 - Not in this release: offline root signing (`root sign`/`import`) and `rekey-box`.
 
 ## What remains observable
@@ -282,3 +329,9 @@ and the account links are lost.
 
 Migration `0030` adds the grant table and the session provenance columns. Downgrading to `0029` first ends every
 session opened through another node, then drops them; grants come back with the next sync after an upgrade.
+
+The review #1 hardening adds no migration. It adds a channel kind (`account.assert_issued`, the witness an
+identity node appends for every assertion it signs) and a field (`mint_nonce` on a minted `account.link`); an
+older node parks them, which stops only that account's stream from that node, so upgrade every member together.
+An older node accepts the new view fields. Recovery files written now are v2, which an older release cannot open:
+keep a v1 file until every node runs this release if you may need to downgrade.

@@ -118,6 +118,12 @@ as uid 10001, and an archive copied out with `docker compose cp` keeps its priva
 Linux the container then gets *Permission denied*: make the file readable first (`chmod 0644`, in a folder only you can
 open) or `chown 10001` it.
 
+**Node groups.** The group revocation journal (`ATLAS_GROUP_JOURNAL_DIR`, default `./group-journal`) is deliberately
+**not** in the archive and must not live inside `ATLAS_MEDIA_DIR` or `ATLAS_BACKUP_DIR`. Keep it on the node (a persistent
+volume) and do not restore it from an old copy: `restore` replays it into the restored database, so revocations, root
+successions and cancellations newer than the backup are back at once, and the node stays `resyncing` until the replay and a
+pull from the other members are done. `atlas backup drill` never replays it.
+
 `restore` refuses a database that already has data. `--force` replaces it (it deletes everything first), so use it only when
 you mean it. It runs in one transaction: if anything fails the database is left as it was.
 

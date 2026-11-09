@@ -148,6 +148,10 @@ class Settings(BaseSettings):
     group_profile_sync: bool = True
     group_profile_fields: str = ""
     group_hold_timeout_days: int = Field(default=7, ge=1, le=90)
+    # The revocation journal (C10 §C10.17 R1-3): every accepted CRL, succession and cancel, as signed objects, in a
+    # directory outside the database, media_dir and backup_dir, so a restore cannot roll revocations back. Put it on
+    # a persistent volume. Empty turns it off (a restore is then protected only by the resync pull).
+    group_journal_dir: str | None = "./group-journal"
     # Delegation and federated sign-in (C10 §5.5, §6.3); the defaults are H15 and H27. Only a local admin
     # changes them (the /admin/group policy form); a delegated admin never can.
     group_max_delegated_role: Literal["none", "moderator", "curator", "admin"] = "none"
@@ -248,6 +252,9 @@ class Settings(BaseSettings):
         from .providers.media_policy import check_overrides
 
         check_overrides(self.media_policy)
+        from .group_journal import check_location
+
+        check_location(self)
         if self.upstream_url and not self.trusted_keys:
             raise ValueError("ATLAS_TRUSTED_KEYS must list the upstream's key when ATLAS_UPSTREAM_URL is set")
         if self.environment == "production":

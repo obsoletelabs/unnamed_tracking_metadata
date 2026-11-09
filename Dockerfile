@@ -17,7 +17,8 @@ FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
-RUN useradd --system --uid 10001 --home /data atlas && mkdir -p /data /media && chown atlas /data /media
+RUN useradd --system --uid 10001 --home /data atlas && mkdir -p /data /media /group-journal \
+    && chown atlas /data /media /group-journal
 # same path as the build stage: venv scripts embed absolute interpreter paths
 COPY --from=build /src/.venv /src/.venv
 ENV PATH=/src/.venv/bin:$PATH PYTHONUNBUFFERED=1 ATLAS_DATABASE_URL=sqlite:////data/atlas.db

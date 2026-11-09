@@ -528,6 +528,5 @@ def resync_skip(p: Annotated[Page, Depends(local_admin_form)], password: PW = ""
         return _page(p, "Confirm your current password to skip the resync.", 400)
     group = groups.load(p.session)
     if group is not None and group.status == "resyncing":
-        group.status = "active"
-        groups.audit(p.session, p.me.id, "group_resync_skipped", group.group_id)
+        groups.skip_resync(p.session, group, p.me.id)  # a new trust epoch (C10 R1-3)
     return go("/admin/group", "saved")

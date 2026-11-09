@@ -490,10 +490,10 @@ def test_evidence_check_negative_cases(pair):
 def test_signin_assertion_is_link_evidence_for_auto_provision(pair):
     """A12 (CONTRACT-AMENDMENTS): an auto-provisioned account at b links with the sign-in assertion as evidence."""
     a, b, ua, ub = pair
-    good = assertion(a, user(a, "cleo"), b)
-    uid = good["body"]["account_uid"]
+    # C10 R1-6: signed by the issuer as a sign-in assertion, so its witness exists (a re-signed copy has none)
+    signin = assertion(a, user(a, "cleo"), b, purpose="signin")
+    uid = signin["body"]["account_uid"]
     rounds(a, b)
-    signin = resign(a, dict(good, body=dict(good["body"], purpose="signin")))
     ok = deliver(a, [sign_into(b, uid, "account.link", link_body(b, uid, evidence=signin))], served_by=b.node_id)
     assert ok[0][1] == "applied"
     with a.session() as s:

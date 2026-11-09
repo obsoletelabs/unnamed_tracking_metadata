@@ -13,6 +13,7 @@ contiguous `seq`; the receiver keeps a high-water mark (`hwm`) and every outcome
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import secrets
 import threading
@@ -59,6 +60,12 @@ METRIC_REASONS = ("bad_signature", "origin_revoked", "origin_expired", "not_link
                   "stale", "time_regression", "fork", "bad_elision", "key_superseded", "epoch_rate", "bad_base")
 ASSERTION_TTL = timedelta(seconds=120)
 MINT_WINDOW = timedelta(minutes=10)
+# C10 §C10.17 R1-6/R1-7: evidence issued, and account uids minted, from this instant on follow the review #1 rules
+# (an assertion needs its issuer's `account.assert_issued` witness; a minted uid is bound to its minter by
+# `mint_nonce`). Older evidence without a witness is `suspect` (never rejected); an older uid may stay unbound.
+R1_SINCE = datetime(2026, 11, 9, tzinfo=UTC)
+WITNESS_WAIT_PREFIX = "group_witness_wait:"  # NodeState + sha256(link entry ref)[:40]: when it first waited
+MINT_DOMAIN = b"atlas-grp-uid-v1\n"
 
 
 class ChannelError(Exception):
@@ -338,15 +345,24 @@ def _record_node(session: Session, group_id: str, uid: str, node: str, status: s
 
 
 def emit_link(session: Session, group: OwnerGroup, identity: Any, uid: str, *, minted: bool,
-              evidence: dict | None = None, now: datetime | None = None) -> str:
+              evidence: dict | None = None, now: datetime | None = None, mint_nonce: str | None = None) -> str:
     now = now or utcnow()
     body = {"_v": 1, "account_uid": uid, "node_id": identity.node_id, "minted": True if minted else None,
             "evidence": None if minted else evidence, "issued_at": gc.stamp(now)}
+    info = {"minted": minted, "evidence": evidence, "linked_at": gc.stamp(now)}
+    if minted and mint_nonce is not None:
+        body["mint_nonce"] = info["mint_nonce"] = mint_nonce
     entry = _append(session, group, identity, ensure_epoch(session, group, identity, now), uid, "account.link", body,
                     now)
-    _record_node(session, group.group_id, uid, identity.node_id, "linked",
-                 {"minted": minted, "evidence": evidence, "linked_at": gc.stamp(now)}, entry, now)
+    _record_node(session, group.group_id, uid, identity.node_id, "linked", info, entry, now)
     return entry
+
+
+def bound_uid(group_id: str, node_id: str, nonce: str, time_ms: int) -> str:
+    """R1-7: the account uid a node mints is a ULID whose 80 random bits are a hash of (group, minter, nonce), so
+    only the minter can later show a nonce that binds the uid to itself."""
+    digest = hashlib.sha256(MINT_DOMAIN + f"{group_id}\n{node_id}\n{nonce}".encode()).digest()[:10]
+    return ids.ulid_bound(time_ms, digest)
 
 
 def emit_unlink(session: Session, group: OwnerGroup, identity: Any, uid: str, reason: str,
@@ -371,11 +387,13 @@ def mint_account(session: Session, settings: Any, group: OwnerGroup, identity: A
     if link is not None:
         return link
     now = now or utcnow()
-    link = GroupAccountLink(group_id=group.group_id, account_uid=ids.ulid(), user_id=user.id, minted_here=True,
+    nonce = secrets.token_hex(16)
+    uid = bound_uid(group.group_id, identity.node_id, nonce, int(now.timestamp() * 1000))
+    link = GroupAccountLink(group_id=group.group_id, account_uid=uid, user_id=user.id, minted_here=True,
                             linked_at=now)
     session.add(link)
     session.flush()
-    emit_link(session, group, identity, link.account_uid, minted=True, now=now)
+    emit_link(session, group, identity, link.account_uid, minted=True, now=now, mint_nonce=nonce)
     emit_pending(session, settings, identity, user, now=now)
     groups.audit(session, user.id, "account_linked", user.id, {"minted": True})
     return link
@@ -547,9 +565,15 @@ def serve_snapshot(session: Session, group: OwnerGroup, own: str, requester: str
     for name in profile_schema.REGISTRY:
         if name in accept:
             refs += [h.entry_ref for h in profile.heads(session, link.user_id, name) if h.entry_ref]
-    links = [r.entry_ref for r in session.scalars(select(GroupAccountNode).where(
+    held = list(session.scalars(select(GroupAccountNode).where(
         GroupAccountNode.group_id == group.group_id, GroupAccountNode.account_uid == uid,
-        GroupAccountNode.status == "linked")) if r.entry_ref and r.entry_ref != "-"]
+        GroupAccountNode.status == "linked")))
+    links = [r.entry_ref for r in held if r.entry_ref and r.entry_ref != "-"]
+    for r in held:  # R1-6: the issuer's witness of each link's evidence, so the receiver can check it
+        ev = (r.evidence or {}).get("evidence")
+        w = witness_of(session, group.group_id, uid, ev) if isinstance(ev, dict) else None
+        if w is not None:
+            links.append(ref(w.origin, w.epoch, w.scope, w.seq))
     entries, epochs = [], {}
     for item in links + refs:
         origin, epoch, scope, seq = item.split("/")
@@ -659,15 +683,17 @@ def key_bound(session: Session, group_id: str, origin: str, epoch: str, scope: s
     return None
 
 
-def origin_authority(rx: Rx, origin: str, issued: datetime, stream: GroupStream, seq: int) -> str:
+def origin_authority(rx: Rx, origin: str, issued: datetime, stream: GroupStream, seq: int,
+                     release: bool = False) -> str:
     """§3.4 step 2: the origin's certificate was valid at `issued_at` with `profile.sync`, and it is not revoked
-    or banned now; after expiry only announced data inside the 72 h grace (§1.5)."""
+    or banned now. After expiry, announced data inside the 72 h grace is `held_expired` (C10 R1-4): stored, not
+    applied, until the origin is in force again (`release`: applied then) or the grace ends (rejected)."""
     tr = rx.tr
     cert = tr.in_force(origin)
     if cert is not None:
         if "profile.sync" not in cert["body"]["scopes"]:
             return "origin_scope"
-        if issued < _t(cert["body"]["not_before"]) - groups.SKEW:
+        if issued < _t(cert["body"]["not_before"]) - groups.SKEW and not release:
             return "origin_expired"
         return "ok"
     status = tr.status_of(origin)
@@ -683,13 +709,14 @@ def origin_authority(rx: Rx, origin: str, issued: datetime, stream: GroupStream,
         if ("profile.sync" in latest["body"]["scopes"] and issued <= end and rx.now <= end + GRACE
                 and _aware(stream.opened_at) < end and stream.advertised_head is not None  # type: ignore[operator]
                 and adv_at is not None and adv_at < end and seq <= stream.advertised_head):
-            return "ok"
+            return "held_expired"
         return "origin_expired"
     return "origin_scope"
 
 
-def receive(rx: Rx, e: Any, accept: set[str]) -> Outcome:
-    """Verify and apply one entry served for `(origin, epoch, scope)`; the order of checks is normative (§3.4)."""
+def receive(rx: Rx, e: Any, accept: set[str], *, release: bool = False) -> Outcome:
+    """Verify and apply one entry served for `(origin, epoch, scope)`; the order of checks is normative (§3.4).
+    `release`: an entry held inside the expiry grace, re-evaluated now that its origin is in force again."""
     s = rx.session
     if not shape_ok(e):
         _suspect_peer(rx, "bad_signature")
@@ -717,6 +744,8 @@ def receive(rx: Rx, e: Any, accept: set[str]) -> Outcome:
                 _suspect_peer(rx, "bad_signature")
                 return Outcome(None, "bad_signature", stop=True)
             return _fork(rx, e, existing)
+        if existing.disposition == "held" and existing.reason == "origin_expired":
+            return Outcome(None, "held_expired", stop=True)  # R1-4: waits for a renewal or the end of the grace
         if stream is not None and seq == stream.hwm + 1:
             _advance(stream, seq, _aware(existing.issued_at))
         return Outcome("noop", "repeat")
@@ -775,7 +804,12 @@ def receive(rx: Rx, e: Any, accept: set[str]) -> Outcome:
         _store(rx, e, "rejected", "invalid")
         _advance(stream, seq, None)
         return Outcome("rejected", "invalid")
-    auth = origin_authority(rx, origin, issued, stream, seq)
+    auth = origin_authority(rx, origin, issued, stream, seq, release=release)
+    if auth == "held_expired":
+        # R1-4: held without advancing the hwm, which blocks only this stream (like a parked entry)
+        _store(rx, e, "held", "origin_expired", issued=issued)
+        stream.blocked_seq, stream.blocked_reason = seq, "origin_expired"
+        return Outcome("held", "origin_expired", stop=True)
     if auth != "ok":
         _store(rx, e, "rejected", auth, issued=issued)
         _advance(stream, seq, issued)
@@ -972,6 +1006,10 @@ def _apply(rx: Rx, e: dict, body: dict, issued: datetime, accept: set[str]) -> O
         return Outcome(disposition)
     if kind == "account.link":
         return _apply_link(rx, e, body, issued)
+    if kind == "account.assert_issued":
+        # R1-6: the issuer's witness of an assertion; no effect of its own, `evidence_check` looks it up
+        _store(rx, e, "applied", None, issued=issued)
+        return Outcome("applied")
     if kind == "account.unlink":
         if body["node_id"] != e["origin"]:
             _store(rx, e, "rejected", "bad_link", issued=issued)
@@ -1013,12 +1051,101 @@ def _apply(rx: Rx, e: dict, body: dict, issued: datetime, accept: set[str]) -> O
     return Outcome("rejected", "invalid")
 
 
-def _ulid_time(uid: str) -> datetime:
+def _ulid_ms(uid: str) -> int:
     alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
     ms = 0
     for ch in uid[:10]:
         ms = ms * 32 + alphabet.index(ch)
-    return datetime.fromtimestamp(ms / 1000, UTC)
+    return ms
+
+
+def _ulid_time(uid: str) -> datetime:
+    return datetime.fromtimestamp(_ulid_ms(uid) / 1000, UTC)
+
+
+def _mint_proved(rx: Rx, uid: str, node: str, nonce: Any) -> bool:
+    return isinstance(nonce, str) and bound_uid(rx.gid, node, nonce, _ulid_ms(uid)) == uid
+
+
+def _mint_claim(rx: Rx, uid: str, origin: str, body: dict, issued: datetime) -> str:
+    """R1-7: linked | suspect | not_minter for an `account.link {minted: true}` from `origin`."""
+    s = rx.session
+    start = _ulid_time(uid)
+    if not (start - groups.SKEW <= issued <= start + MINT_WINDOW):
+        return "not_minter"
+    others = [r for r in s.scalars(select(GroupAccountNode).where(
+        GroupAccountNode.group_id == rx.gid, GroupAccountNode.account_uid == uid,
+        GroupAccountNode.node_id != origin)) if (r.evidence or {}).get("minted")]
+    own = rx.identity.node_id if rx.identity is not None else None
+    nonce = body.get("mint_nonce")
+    if nonce is not None:
+        if not _mint_proved(rx, uid, origin, nonce):
+            return "not_minter"
+        # the uid is bound to `origin`: no honest node can hold another minting claim for it
+        for r in others:
+            if r.node_id != own and r.status != "suspect":
+                r.status = "suspect"
+                _suspect_link_review(rx, uid, r.node_id, "mint_conflict")
+        if others:
+            groups.audit(s, None, "account_mint_conflict", uid, {"bound_to": origin,
+                                                                  "others": sorted(r.node_id for r in others)})
+        return "linked"
+    if start >= R1_SINCE:
+        return "not_minter"  # a uid minted under the review #1 rules always carries its mint nonce
+    if any(r.node_id == own or _mint_proved(rx, uid, r.node_id, (r.evidence or {}).get("mint_nonce"))
+           for r in others):
+        return "not_minter"  # this node minted it, or another claim is proved
+    if others:
+        # two unproved (legacy) minting claims: neither can be trusted, so both are inert until the user decides
+        for r in others:
+            if r.status != "suspect":
+                r.status = "suspect"
+                _suspect_link_review(rx, uid, r.node_id, "mint_conflict")
+        groups.audit(s, None, "account_mint_conflict", uid, {"legacy": True,
+                                                              "nodes": sorted([origin, *(r.node_id for r in others)])})
+        return "suspect"
+    return "linked"
+
+
+def witness_of(session: Session, group_id: str, uid: str, a: dict) -> GroupChange | None:
+    """R1-6: the issuer's applied `account.assert_issued` entry for assertion `a` (same jti, audience, hash)."""
+    try:
+        b, digest = a["body"], a["body_hash"]
+        iss, jti, aud, purpose = b["iss_node"], b["jti"], b["aud_node"], b["purpose"]
+    except (KeyError, TypeError):
+        return None
+    for row in session.scalars(select(GroupChange).where(
+            GroupChange.group_id == group_id, GroupChange.origin == iss, GroupChange.scope == uid,
+            GroupChange.kind == "account.assert_issued", GroupChange.disposition == "applied")):
+        w = row.body or {}
+        if (w.get("jti"), w.get("aud_node"), w.get("assertion_hash"), w.get("purpose")) == (jti, aud, digest, purpose):
+            return row
+    return None
+
+
+def _witness_wait(rx: Rx, e: dict, a: dict) -> str:
+    """R1-6: evidence without its witness waits (retry) up to `group_hold_timeout_days`, then turns `suspect` with a
+    review. Evidence issued before the review #1 rules could not have a witness: `suspect` at once."""
+    if _t(a["body"]["issued_at"]) < R1_SINCE:
+        return "suspect"
+    key = WITNESS_WAIT_PREFIX + hashlib.sha256(ref(e["origin"], e["epoch"], e["scope"], e["seq"]).encode()) \
+        .hexdigest()[:40]
+    row = rx.session.get(NodeState, key)
+    if row is None:
+        rx.session.add(NodeState(key=key, value=gc.stamp(rx.now)))
+        rx.session.flush()
+        return "retry"
+    timeout = timedelta(days=getattr(rx.settings, "group_hold_timeout_days", 7))
+    try:
+        since = _t(row.value)
+    except gc.GroupCryptoError:
+        since = rx.now
+    if rx.now - since < timeout:
+        return "retry"
+    rx.session.delete(row)
+    groups.audit(rx.session, None, "account_link_witness_missing", e["scope"], {"node": e["origin"],
+                                                                               "jti": a["body"]["jti"]})
+    return "suspect"
 
 
 def _apply_link(rx: Rx, e: dict, body: dict, issued: datetime) -> Outcome:
@@ -1030,18 +1157,21 @@ def _apply_link(rx: Rx, e: dict, body: dict, issued: datetime) -> Outcome:
         _store(rx, e, "rejected", "bad_link", issued=issued)
         return Outcome("rejected", "bad_link")
     status = "linked"
+    evidenced_by = None
     if body.get("minted"):
-        others = [r for r in s.scalars(select(GroupAccountNode).where(
-            GroupAccountNode.group_id == rx.gid, GroupAccountNode.account_uid == uid,
-            GroupAccountNode.node_id != origin)) if (r.evidence or {}).get("minted")]
-        start = _ulid_time(uid)
-        if others or not (start - groups.SKEW <= issued <= start + MINT_WINDOW):
+        status = _mint_claim(rx, uid, origin, body, issued)
+        if status == "not_minter":
             _store(rx, e, "rejected", "not_minter", issued=issued)
             groups.audit(s, None, "account_link_suspect", uid, {"node": origin, "reason": "not_minter"})
             return Outcome("rejected", "not_minter")
         info = {"minted": True, "evidence": None, "linked_at": body["issued_at"]}
+        if body.get("mint_nonce") is not None:
+            info["mint_nonce"] = body["mint_nonce"]
+        evidenced_by = "mint_conflict"
     else:
         verdict = evidence_check(rx, uid, origin, body["evidence"], issued)
+        if verdict == "no_witness":
+            verdict = _witness_wait(rx, e, body["evidence"])
         if verdict == "retry":
             return Outcome(None, "evidence_pending", stop=True)
         if verdict == "suspect":
@@ -1051,9 +1181,10 @@ def _apply_link(rx: Rx, e: dict, body: dict, issued: datetime) -> Outcome:
             groups.audit(s, None, "account_link_suspect", uid, {"node": origin, "reason": verdict})
             return Outcome("rejected", verdict)
         info = {"minted": False, "evidence": body["evidence"], "linked_at": body["issued_at"]}
+        evidenced_by = body["evidence"]["body"]["iss_node"]
     _record_node(s, rx.gid, uid, origin, status, info, entry, issued)
     if status == "suspect":
-        _suspect_link_review(rx, uid, origin, body["evidence"]["body"]["iss_node"])
+        _suspect_link_review(rx, uid, origin, evidenced_by or "-")
     _store(rx, e, "applied", status if status != "linked" else None, issued=issued)
     return Outcome("applied")
 
@@ -1141,7 +1272,8 @@ def evidence_check(rx: Rx, uid: str, origin: str, a: Any, link_issued: datetime)
     linked_at = (held.evidence or {}).get("linked_at")
     if not isinstance(linked_at, str) or _t(linked_at) >= ia:
         return "issuer_not_holder"
-    fresh = groups.freshness(s, rx.group, rx.identity.node_id, iss, rx.settings.group_view_max_age_hours, rx.now)
+    fresh = groups.freshness(s, rx.group, rx.identity.node_id, iss, rx.settings.group_view_max_age_hours, rx.now,
+                             action="link_evidence")
     if not fresh.ok:
         return "retry"
     for r in s.scalars(select(GroupRevoked).where(GroupRevoked.group_id == rx.gid, GroupRevoked.node_id == iss,
@@ -1149,6 +1281,10 @@ def evidence_check(rx: Rx, uid: str, origin: str, a: Any, link_issued: datetime)
         since = _aware(r.suspect_since)
         if since is not None and ia >= since:
             return "suspect"
+    if witness_of(s, rx.gid, uid, a) is None:
+        # R1-6: a stolen or rotated-out key can sign a back-dated assertion, but only the issuer's current
+        # stream (bound by its epochs and `previous.heads`) carries the witness of one it really issued
+        return "no_witness"
     return "ok"
 
 
@@ -1254,10 +1390,16 @@ def verified_snapshot(rx: Rx, uid: str, snap: Any) -> tuple[list[tuple[dict, dic
             refused += 1
             continue
         out.append((e, cls.body or {}, issued))
-    # minted links first: the evidence check of the other links needs the minter's link
-    out.sort(key=lambda x: (x[0]["kind"] != "account.link", not x[1].get("minted"), x[0]["origin"], x[0]["epoch"],
-                            x[0]["seq"]))
+    # minted links first (the evidence check of the other links needs the minter's link), then the issuers'
+    # witnesses (R1-6), then the other links, then values
+    out.sort(key=lambda x: (_snapshot_rank(x[0]["kind"], x[1]), x[0]["origin"], x[0]["epoch"], x[0]["seq"]))
     return out, refused
+
+
+def _snapshot_rank(kind: str, body: dict) -> int:
+    if kind == "account.link":
+        return 0 if body.get("minted") else 2
+    return 1 if kind == "account.assert_issued" else 3
 
 
 def _snapshot_epoch_ok(rx: Rx, ep: dict) -> bool:
@@ -1330,6 +1472,9 @@ def install_snapshot(rx: Rx, uid: str, snap: Any, accept: set[str], skip_fields:
             result = _apply_link(rx, {**e}, body, issued)
             out["links" if result.disposition == "applied" else "refused"] += 1
             continue
+        if e["kind"] == "account.assert_issued":
+            _mark_snapshot(s, rx, e)
+            continue
         if e["kind"] not in ("profile.field.set", "profile.field.clear"):
             continue
         name = body["field"]
@@ -1396,6 +1541,7 @@ def sync(session: Session, settings: Any, identity: Any, group: OwnerGroup, http
     tr = groups.trust(session, group, now, own_node=identity.node_id)
     review_revocations(session, settings, group, now)
     lift_forks_of_revoked(session, tr)
+    release_expired_held(session, settings, identity, group, tr, now)
     if session.scalar(select(func.count()).select_from(GroupAccountLink).where(
             GroupAccountLink.group_id == group.group_id)) and may_emit(session, group, identity, tr):
         ensure_epoch(session, group, identity, now)
@@ -1447,6 +1593,51 @@ def sync(session: Session, settings: Any, identity: Any, group: OwnerGroup, http
             emit_pending(session, settings, identity, user, now=now)
     session.flush()
     return outcomes
+
+
+def release_expired_held(session: Session, settings: Any, identity: Any, group: OwnerGroup, tr: groups.Trust,
+                         now: datetime) -> dict[str, int]:
+    """R1-4: entries held inside an origin's expiry grace are applied, in stream order, once the origin is in force
+    again; when the grace has ended (or the origin was revoked) they are rejected, with one notice per origin."""
+    out = {"applied": 0, "dropped": 0}
+    dropped: dict[str, int] = {}
+    for stream in session.scalars(select(GroupStream).where(GroupStream.group_id == group.group_id,
+                                                            GroupStream.blocked_reason == "origin_expired")).all():
+        seq = stream.blocked_seq
+        row = session.get(GroupChange, (group.group_id, stream.origin, stream.epoch, stream.scope, seq)) \
+            if seq is not None else None
+        if row is None or row.disposition != "held":
+            stream.blocked_seq = stream.blocked_reason = None
+            continue
+        origin = stream.origin
+        if tr.in_force(origin) is not None:
+            e, served_by = row_entry(row), row.received_from
+            session.delete(row)
+            stream.blocked_seq = stream.blocked_reason = None
+            session.flush()
+            rx = Rx(session, settings, identity, group, tr, now, served_by)
+            result = receive(rx, e, set(accept_for_scope(session, settings, group.group_id, stream.scope)),
+                             release=True)
+            if result.disposition == "applied":
+                out["applied"] += 1
+            continue
+        certs = [c for c in tr.node_certs(origin) if tr.genuine(c) and c["body"]["serial"] not in tr.revoked]
+        gone = origin in tr.banned or tr.status_of(origin) in ("revoked", "left") or not certs
+        if gone or now > max(_t(c["body"]["not_after"]) for c in certs) + GRACE:
+            row.disposition, row.reason = "rejected", "origin_revoked" if gone else "origin_expired"
+            stream.blocked_seq = stream.blocked_reason = None
+            _advance(stream, row.seq, None)
+            dropped[origin] = dropped.get(origin, 0) + 1
+            out["dropped"] += 1
+    for origin, n in dropped.items():
+        member = session.get(groups.GroupMember, (group.group_id, origin))
+        name = member.name if member is not None else origin
+        groups.notify_admins(session, f"group-expired-held:{origin}",
+                             f"{n} entries from {name} arrived after its certificate expired and were not applied")
+        groups.audit(session, None, "group_expired_held_dropped", origin, {"entries": n})
+    if dropped or out["applied"]:
+        session.flush()
+    return out
 
 
 def _pull_member(rx: Rx, member: dict, heads: Any, call: Any, http: Any) -> None:
@@ -1603,7 +1794,10 @@ def fetch_snapshot(session: Session, settings: Any, identity: Any, group: OwnerG
 
 def sign_assertion(session: Session, group: OwnerGroup, identity: Any, *, aud_node: str, uid: str, nonce: str,
                    state_hash: str, auth_time: datetime, amr: list[str], username_hint: str,
-                   now: datetime | None = None, purpose: str = "link") -> dict:
+                   now: datetime | None = None, purpose: str = "link", witness: bool = True) -> dict:
+    """A signed assertion for `aud_node`. R1-6: in the same transaction this node appends the witness
+    `account.assert_issued` to the account's stream, which other members require before the assertion counts as
+    link evidence. A sign-in at a node that already holds a live link needs no evidence, so it is not witnessed."""
     if purpose not in ("link", "signin"):
         raise ChannelError("unknown assertion purpose")
     now = now or utcnow()
@@ -1615,6 +1809,13 @@ def sign_assertion(session: Session, group: OwnerGroup, identity: Any, *, aud_no
     a = {"t": "group.assertion", "_v": 1, "group_id": group.group_id, "id": f"assert:{jti}", "body": body,
          "signer": {"kind": "node", "id": identity.node_id, "key_id": identity.key_id}, "body_hash": body_hash(body)}
     a["sig"] = sign_message(identity.private, gc.DOMAINS["group.assertion"], gc.object_parts(a))
+    if witness and may_emit(session, group, identity):
+        held = session.get(GroupAccountNode, (group.group_id, uid, aud_node))
+        if purpose == "link" or held is None or held.status != "linked":
+            w = {"_v": 1, "account_uid": uid, "aud_node": aud_node, "jti": jti, "assertion_hash": a["body_hash"],
+                 "purpose": purpose, "issued_at": gc.stamp(now)}
+            _append(session, group, identity, ensure_epoch(session, group, identity, now), uid,
+                    "account.assert_issued", w, now)
     return a
 
 
