@@ -376,9 +376,14 @@ def cmd_sync(_args) -> int:
 def cmd_resync(args) -> int:
     def run(session, settings, identity):
         group = _group(session)
-        if args.confirm_root:  # R1-3: the owner ends a skipped trust epoch with the root passphrase
-            groups.confirm_trust_epoch(session, settings, group, _ask("Root passphrase: "), cli=True)
-            print("skipped resync confirmed with the root passphrase (audited)")
+        if args.confirm_root:  # R1-3: the owner ends a skipped trust epoch (root passphrase, or recovery files)
+            if args.recovery_file:
+                groups.confirm_trust_epoch(session, settings, group, None, cli=True,
+                                           recovery_files=_open_files(args.recovery_file))
+                print("skipped resync confirmed with the recovery file(s) (audited)")
+            else:
+                groups.confirm_trust_epoch(session, settings, group, _ask("Root passphrase: "), cli=True)
+                print("skipped resync confirmed with the root passphrase (audited)")
             return 0
         if group.status != "resyncing":
             print(f"the group is {group.status}; nothing to do")
@@ -386,9 +391,11 @@ def cmd_resync(args) -> int:
         if not args.skip:
             raise groups.GroupError("pull every member with `atlas group sync`; or --skip (audited)")
         groups.skip_resync(session, group, cli=True)
+        how = "`atlas group resync --confirm-root`" if group.root_state == "holder" else \
+            "`atlas group resync --confirm-root --recovery-file FILE` (the group root is not on this node)"
         print("resync skipped (audited): a new trust epoch starts. Privileged group actions need a fresh view from "
-              "a third member until a full `atlas group sync` succeeds; in a two-member group, until the other "
-              "member answers, or `atlas group resync --confirm-root`")
+              "a third member until a full `atlas group sync` succeeds. In a two-member group that sync ends it only "
+              f"when the revocation journal holds this group's lists; otherwise run {how}")
         return 0
 
     return _run(run)
@@ -410,6 +417,28 @@ def cmd_new_epoch(_args) -> int:
         return 0
 
     return _run(run)
+
+
+def _crl_ref(text: str) -> dict:
+    seq, sep, digest = text.partition(":")
+    if not sep or not seq.isdigit() or not digest:
+        raise groups.GroupError("--last-crl is SEQ:HASH (see `atlas group root succession --show`)")
+    return {"crl_seq": int(seq), "body_hash": digest}
+
+
+def _print_crl_choice(last, entries: list[dict], confirmed: frozenset[str]) -> None:
+    """R1-1 step 4: the owner sees the old root's last revocation list the succession will name, with reasons."""
+    if last is None:
+        print("old root's last revocation list: none (the succession names no list; every old-root list is retired)")
+        return
+    print(f"old root's last revocation list: crl_seq {last.crl_seq}  {last.body_hash}  received "
+          f"{gc.stamp(groups.aware(last.received_at))}  {len(entries)} entries")
+    for e in entries:
+        mark = ""
+        if e.get("reason") == "key_compromise":
+            mark = "  (confirmed)" if e.get("serial") in confirmed else "  (needs --confirm-compromise)"
+        print(f"  {e.get('serial')}  {e.get('reason')}  node {e.get('node_id') or '-'}  revoked {e.get('revoked_at')}"
+              + (f"  suspect since {e['suspect_since']}" if e.get("suspect_since") else "") + mark)
 
 
 def _open_files(paths: list[str]) -> list[gc.RecoveryKeys]:
@@ -489,6 +518,29 @@ def cmd_root(args) -> int:
                   "node is gone for good) before any root operation")
             return 0
         if args.root_cmd == "succession":
+            suspect = gc.parse_time(args.suspect_since) if args.suspect_since else None
+            named = _crl_ref(args.last_crl) if args.last_crl else None
+            confirmed = frozenset(args.confirm_compromise or [])
+            last, entries = groups.succession_crl_choice(session, group, suspect, named)
+            _print_crl_choice(last, entries, confirmed)
+            if args.show:
+                print("revocation lists of the current root key on this node:")
+                for c in groups.succession_crl_candidates(session, group):
+                    print(f"  crl_seq {c['crl_seq']}  {c['body_hash']}  received {c['received_at']}  "
+                          f"issued_at {c['issued_at']} (signer-chosen)  {len(c['entries'])} entries"
+                          + ("  FORKED" if c["forked"] else ""))
+                print("nothing issued (--show)")
+                return 0
+            if args.reason == "compromised" and suspect is None and named is None and \
+                    groups.succession_crl_candidates(session, group):
+                raise groups.GroupError("a compromised root may have signed revocation lists you did not: give "
+                                        "--suspect-since TIME (the newest list received before it is named), or "
+                                        "--last-crl SEQ:HASH; see them with --show")
+            unconfirmed = sorted(e["serial"] for e in entries
+                                 if e.get("reason") == "key_compromise" and e["serial"] not in confirmed)
+            if unconfirmed:  # §1.2: a key_compromise entry bans a node identity for ever; the owner types each one
+                raise groups.GroupError("the chosen list bans these as key_compromise: " + ", ".join(unconfirmed)
+                                        + "; confirm each with --confirm-compromise SERIAL, or choose another list")
             out = Path(args.recovery_out) if args.recovery_out else None
             files = _open_files(args.recovery_file)
             one_of_one = group.recovery["threshold"] == 1 and len(group.recovery["keys"]) == 1
@@ -501,7 +553,8 @@ def cmd_root(args) -> int:
             obj, new_files = groups.issue_succession(session, settings, group, identity, files, root_phrase,
                                                      exclude_nodes=exclude, reason=args.reason,
                                                      delay_hours=args.delay_hours, new_recovery_passphrase=rec_phrase,
-                                                     cli=True)
+                                                     cli=True, suspect_since=suspect, last_crl=named,
+                                                     confirm_compromise=confirmed)
             body = obj["body"]
             print(f"succession {body['index']}: new root {groups.gc_fp(body['new_root_key_id'])}, "
                   f"{len(body['carry'])} members carried, activates in {body['activation_delay_hours']} h")
@@ -598,7 +651,9 @@ def register(sub) -> None:
     rs = ga.add_parser("resync")
     rs.add_argument("--skip", action="store_true")
     rs.add_argument("--confirm-root", action="store_true",
-                    help="end a skipped resync's trust epoch with the root passphrase (C10 R1-3)")
+                    help="end a skipped resync's trust epoch with the root passphrase, or with --recovery-file on "
+                         "a member that does not hold the root (C10 R1-3)")
+    rs.add_argument("--recovery-file", action="append", help="with --confirm-root; repeat for a 2-of-3 quorum")
     rs.set_defaults(fn=cmd_resync)
     ne = ga.add_parser("new-epoch", help="open a new epoch of this node's change streams (after a clone fork)")
     ne.set_defaults(fn=cmd_new_epoch)
@@ -625,6 +680,13 @@ def register(sub) -> None:
     sc.add_argument("--reason", choices=("compromised", "lost"), default="compromised")
     sc.add_argument("--delay-hours", type=int, help="activation delay (at least the genesis policy, 24 by default)")
     sc.add_argument("--recovery-out", help="directory for the new recovery file (1-of-1)")
+    sc.add_argument("--suspect-since", metavar="TIME",
+                    help="when the root key may have been taken (ISO time): the old root's last list is the newest "
+                         "one this node received before it (needed for --reason compromised)")
+    sc.add_argument("--last-crl", metavar="SEQ:HASH", help="name the old root's last honest revocation list")
+    sc.add_argument("--confirm-compromise", action="append", metavar="SERIAL",
+                    help="confirm one key_compromise entry of that list (repeat for each)")
+    sc.add_argument("--show", action="store_true", help="show the lists and the chosen one; issue nothing")
     sc.set_defaults(fn=cmd_root)
     cc = roa.add_parser("succession-cancel", help="cancel a pending root succession with a recovery quorum")
     cc.add_argument("--recovery-file", action="append", required=True)

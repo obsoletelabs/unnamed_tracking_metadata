@@ -127,7 +127,10 @@ the journal alone completes it.
 
 `resync --skip` starts a new **trust epoch**: the two-member waiver is off, and every privileged action needs a
 fresh view of a third member, until a full pull succeeds. In a group of two whose journal is empty only the owner
-can end it: `atlas group resync --confirm-root` (asks for the root passphrase).
+can end it: `atlas group resync --confirm-root` on the root holder (asks for the root passphrase), or
+`atlas group resync --confirm-root --recovery-file FILE` on the other member (a recovery quorum; audited
+`group_resync_confirmed`). With the journal turned off (`ATLAS_GROUP_JOURNAL_DIR` empty) a restore does not wait
+for a replay: the resync pull alone ends `resyncing`.
 
 ## Linked accounts and synced preferences
 
@@ -278,11 +281,17 @@ another node, is audited with the group, the vouching node and the grant serial.
   only after another member (not the one that delivered it) confirms, with a view signed after the delay, that it
   was not cancelled; with no such member the rule is waived. With a 1-of-1 file a new recovery file holding the new
   root key (wrapped under the new root passphrase) is written to `DIR`.
-- The succession names the **last revocation list of the old root** that this node received before the theft
-  (`--suspect-since`, or pick one). From activation on, that list is exactly the old root's revocation state:
-  revocations and bans that only later lists of the stolen key made are withdrawn (audited
-  `group_revocation_retired_by_succession`, with a notice to administrators). `key_compromise` revocations by the
-  old root are listed and must be confirmed one by one.
+- The succession names the **last revocation list of the old root**. With `--suspect-since TIME` (when the key
+  may have been taken) it is the newest list this node *received* before that time and whose number is not forked;
+  `--last-crl SEQ:HASH` names one directly. For `--reason compromised` one of the two is required whenever the old
+  root signed any list, because the newest list can be the thief's. `--show` prints every list of the current root
+  key (number, hash, when received, the signer-chosen date, forks) and the chosen one with its entries and reasons,
+  and issues nothing. Each `key_compromise` entry of the chosen list must be confirmed by typing its serial:
+  `--confirm-compromise SERIAL` (repeat per entry). From activation on, that list is exactly the old root's
+  revocation state: revocations and bans that only later lists of the stolen key made are withdrawn (audited
+  `group_revocation_retired_by_succession`, with a notice to administrators). If this node does not hold a named
+  list yet, privileged actions wait until it arrives, separately for each succession. There is no web page for a
+  succession; it is a CLI step.
 - A ban made by a delegate (a node that enrols others) is never stored as permanent: it holds while that delegate
   is the only issuer of the node, and the root can always enrol the node again without `readmit`. Only a root
   `key_compromise` ban is permanent.

@@ -357,8 +357,12 @@ def restore(settings: Settings, engine: Engine, path: Path, *, force: bool = Fal
                 node_state = tables["node_state"]
                 # R1-3: the revocation journal (outside the database and the backups) is replayed before the
                 # resync may finish, so revocations newer than the backup are back at once
-                for key, value in (("group_epoch_due", "restore"), ("group_snapshot_due", "1"),
-                                   ("group_journal_replay_due", "1")):
+                from . import group_journal
+
+                marks = [("group_epoch_due", "restore"), ("group_snapshot_due", "1")]
+                if group_journal.directory(settings) is not None:  # no journal: the resync pull alone protects
+                    marks.append(("group_journal_replay_due", "1"))
+                for key, value in marks:
                     conn.execute(delete(node_state).where(node_state.c.key == key))
                     conn.execute(node_state.insert().values(key=key, value=value))
     if include_media and manifest.get("media_included"):

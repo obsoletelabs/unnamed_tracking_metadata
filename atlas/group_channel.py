@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import logging
 import secrets
 import threading
@@ -64,6 +65,7 @@ MINT_WINDOW = timedelta(minutes=10)
 # (an assertion needs its issuer's `account.assert_issued` witness; a minted uid is bound to its minter by
 # `mint_nonce`). Older evidence without a witness is `suspect` (never rejected); an older uid may stay unbound.
 R1_SINCE = datetime(2026, 11, 9, tzinfo=UTC)
+GRACE_RUN_PREFIX = "group_grace_run:"  # NodeState + sha256(stream)[:40]: {"head", "end"} of a held grace run (R1-4)
 WITNESS_WAIT_PREFIX = "group_witness_wait:"  # NodeState + sha256(link entry ref)[:40]: when it first waited
 MINT_DOMAIN = b"atlas-grp-uid-v1\n"
 
@@ -683,6 +685,34 @@ def key_bound(session: Session, group_id: str, origin: str, epoch: str, scope: s
     return None
 
 
+def _grace_key(stream: GroupStream) -> str:
+    raw = f"{stream.group_id}|{stream.origin}|{stream.epoch}|{stream.scope}".encode()
+    return GRACE_RUN_PREFIX + hashlib.sha256(raw).hexdigest()[:40]
+
+
+def _grace_run(session: Session, stream: GroupStream) -> dict | None:
+    row = session.get(NodeState, _grace_key(stream))
+    if row is None:
+        return None
+    try:
+        run = json.loads(row.value)
+        return {"head": int(run["head"]), "end": _t(run["end"])}
+    except (ValueError, KeyError, TypeError, gc.GroupCryptoError):
+        return None
+
+
+def _mark_grace_run(session: Session, stream: GroupStream, head: int, end: datetime) -> None:
+    """R1-4: the run an expired origin announced before its certificate ended (up to `head`, issued by `end`). Once
+    the origin is in force again, the whole run applies in order, not only its first entry."""
+    value = json.dumps({"head": head, "end": gc.stamp(end),
+                        "stream": [stream.origin, stream.epoch, stream.scope]})
+    row = session.get(NodeState, _grace_key(stream))
+    if row is None:
+        session.add(NodeState(key=_grace_key(stream), value=value))
+    else:
+        row.value = value
+
+
 def origin_authority(rx: Rx, origin: str, issued: datetime, stream: GroupStream, seq: int,
                      release: bool = False) -> str:
     """§3.4 step 2: the origin's certificate was valid at `issued_at` with `profile.sync`, and it is not revoked
@@ -694,7 +724,9 @@ def origin_authority(rx: Rx, origin: str, issued: datetime, stream: GroupStream,
         if "profile.sync" not in cert["body"]["scopes"]:
             return "origin_scope"
         if issued < _t(cert["body"]["not_before"]) - groups.SKEW and not release:
-            return "origin_expired"
+            run = _grace_run(rx.session, stream)
+            if run is None or seq > run["head"] or issued > run["end"]:
+                return "origin_expired"
         return "ok"
     status = tr.status_of(origin)
     if origin in tr.banned or status in ("revoked", "left"):
@@ -806,9 +838,12 @@ def receive(rx: Rx, e: Any, accept: set[str], *, release: bool = False) -> Outco
         return Outcome("rejected", "invalid")
     auth = origin_authority(rx, origin, issued, stream, seq, release=release)
     if auth == "held_expired":
-        # R1-4: held without advancing the hwm, which blocks only this stream (like a parked entry)
+        # R1-4: held without advancing the hwm, which blocks only this stream (like a parked entry); the rest of
+        # the announced run follows it once the origin is in force again
         _store(rx, e, "held", "origin_expired", issued=issued)
         stream.blocked_seq, stream.blocked_reason = seq, "origin_expired"
+        ends = [_t(c["body"]["not_after"]) for c in rx.tr.node_certs(origin) if rx.tr.genuine(c)]
+        _mark_grace_run(s, stream, int(stream.advertised_head or seq), max(ends) if ends else issued)
         return Outcome("held", "origin_expired", stop=True)
     if auth != "ok":
         _store(rx, e, "rejected", auth, issued=issued)
@@ -1601,6 +1636,17 @@ def release_expired_held(session: Session, settings: Any, identity: Any, group: 
     again; when the grace has ended (or the origin was revoked) they are rejected, with one notice per origin."""
     out = {"applied": 0, "dropped": 0}
     dropped: dict[str, int] = {}
+    for mark in session.scalars(select(NodeState).where(NodeState.key.like(GRACE_RUN_PREFIX + "%"))).all():
+        try:
+            origin, epoch, scope = json.loads(mark.value)["stream"]
+            stream = session.get(GroupStream, (group.group_id, origin, epoch, scope))
+        except (ValueError, KeyError, TypeError):
+            stream = None
+        run = _grace_run(session, stream) if stream is not None else None
+        # a run is done once the stream passed its head, or it is no longer held and its origin is not in force
+        if run is None or stream.hwm >= run["head"] or (
+                stream.blocked_reason != "origin_expired" and tr.in_force(stream.origin) is None):
+            session.delete(mark)
     for stream in session.scalars(select(GroupStream).where(GroupStream.group_id == group.group_id,
                                                             GroupStream.blocked_reason == "origin_expired")).all():
         seq = stream.blocked_seq

@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 log = logging.getLogger("atlas.groups")
@@ -29,6 +30,7 @@ log = logging.getLogger("atlas.groups")
 KINDS = ("crl", "succession", "cancel", "activation")
 REPLAY_DUE = "group_journal_replay_due"  # NodeState, set by a restore: replay before the resync may finish
 REPLAYED = "group_journal_replayed"  # NodeState: when the journal was last replayed
+SETTLED = "group_journal_settled"  # NodeState: {"n": lines, "last": key of line n} this database has replayed
 _LOCK = threading.Lock()
 # Windows byte-range locks are mandatory: the lock byte lies far past any real journal, so readers are never blocked
 _LOCK_AT = 2 ** 31 - 2
@@ -178,8 +180,53 @@ def record(session: Session, group_id: str, kind: str, obj: dict, **extra: Any) 
                     extra={"atlas_event": {"event": "group.journal_failed", "error_type": type(exc).__name__}})
 
 
+def _settled(session: Session, lines: list[dict]) -> int:
+    """How many leading journal lines this database has already replayed (0 when the marker does not match the
+    file: another file, or a database older than the marker's lines)."""
+    from .models import NodeState
+
+    row = session.get(NodeState, SETTLED)
+    if row is None:
+        return 0
+    try:
+        mark = json.loads(row.value)
+        n = int(mark["n"])
+    except (ValueError, KeyError, TypeError):
+        return 0
+    if not 0 < n <= len(lines) or _line_key(lines[n - 1]) != mark.get("last"):
+        return 0
+    return n
+
+
+def _settle(session: Session, lines: list[dict]) -> None:
+    from .models import NodeState
+
+    if lines:
+        session.merge(NodeState(key=SETTLED, value=json.dumps({"n": len(lines), "last": _line_key(lines[-1])})))
+
+
+def _crl_accounted(session: Session, group: Any, obj: dict, tr: Any) -> bool:
+    """A journal CRL the database rightly does not store: compacted into a newer CRL of the same issuer and key
+    (a node issuer's cumulative CRLs), or no longer valid here (an old-root CRL a succession excluded)."""
+    from . import groups
+    from .models import GroupCrl
+
+    if not groups.crl_signature_ok(tr, obj):
+        return True
+    body = obj["body"]
+    if body["issuer"] == "root":
+        return False
+    key = obj["signer"].get("key_id")
+    return any(row.crl_seq > body["crl_seq"] and row.body["signer"].get("key_id") == key
+               and groups._covers(row.body, obj)
+               for row in session.scalars(select(GroupCrl).where(GroupCrl.group_id == group.group_id,
+                                                                 GroupCrl.issuer == body["issuer"])))
+
+
 def missing(session: Session, group: Any, lines: list[dict]) -> list[dict]:
-    """The journal lines whose object this database does not hold."""
+    """The journal lines whose object this database does not hold, and should. Lines up to the last replay's
+    mark are settled; a CRL compacted away or excluded by a succession is accounted for, so neither makes every
+    later pull and start replay the journal again."""
     from . import groups
     from .models import GroupCrl, NodeState
 
@@ -187,7 +234,8 @@ def missing(session: Session, group: Any, lines: list[dict]) -> list[dict]:
     pending = {p["body"]["body_hash"] for p in group.succession_pending or []}
     cancels = {c["body_hash"] for c in group.succession_cancels or []}
     out = []
-    for line in lines:
+    tr = None
+    for line in lines[_settled(session, lines):]:
         obj, kind = line["obj"], line["kind"]
         digest = obj.get("body_hash")
         if kind == "crl":
@@ -196,7 +244,13 @@ def missing(session: Session, group: Any, lines: list[dict]) -> list[dict]:
                 if isinstance(body.get("issuer"), str) and isinstance(body.get("crl_seq"), int) else None
             held = session.get(NodeState, groups.CRL_HELD_PREFIX + str(digest)[:40])
             if stored is None and held is None:
-                out.append(line)
+                tr = tr or groups.trust(session, group)
+                try:
+                    accounted = _crl_accounted(session, group, obj, tr)
+                except (KeyError, TypeError, AttributeError):
+                    accounted = True  # malformed: the replay would refuse it anyway
+                if not accounted:
+                    out.append(line)
         elif kind == "succession" and digest not in have and digest not in pending:
             out.append(line)
         elif kind == "activation" and digest not in have:
@@ -235,7 +289,8 @@ def replay(session: Session, group: Any, own_node: str | None, now: datetime | N
                 received = gc.parse_time(line.get("received_at")) if line.get("received_at") else now
             except gc.GroupCryptoError:
                 received = now
-            outcome = groups.ingest_succession(session, group, obj, received)
+            outcome = groups.ingest_succession(session, group, obj, received,
+                                               delivered_by=line.get("delivered_by"))  # R1-5 survives a restore
             bump(f"succession:{outcome}")
             when = activated.get(obj.get("body_hash"))
             if outcome in ("pending", "known") and when:
@@ -265,6 +320,7 @@ def replay(session: Session, group: Any, own_node: str | None, now: datetime | N
     if due is not None:
         session.delete(due)
     session.merge(NodeState(key=REPLAYED, value=gc.stamp(now)))
+    _settle(session, lines)
     groups.audit(session, None, "group_journal_replayed", group.group_id, {"lines": len(lines), "outcomes": counts})
     session.flush()
     return counts
@@ -277,6 +333,10 @@ def replay_if_needed(session: Session, group: Any, own_node: str | None, setting
 
     settings = settings or session.info.get("atlas_settings")
     if directory(settings) is None:
+        due = session.get(NodeState, REPLAY_DUE)
+        if due is not None:  # a restore marked a replay, but this node runs without a journal: nothing to wait for
+            session.delete(due)
+            session.flush()
         return None
     lines = read(settings, group.group_id)
     if session.get(NodeState, REPLAY_DUE) is None and not missing(session, group, lines):
