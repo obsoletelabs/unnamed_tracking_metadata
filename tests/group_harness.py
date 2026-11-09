@@ -6,6 +6,7 @@ Every key is generated at runtime; passphrases and secrets here are synthetic te
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from urllib.parse import urlsplit
@@ -44,6 +45,12 @@ class Dispatcher:
         if content is not None:
             return client.post(path, content=content, headers=headers or {})
         return client.post(path, json=json)
+
+    @contextmanager
+    def stream(self, method: str, url: str, content=None, headers=None, timeout=None):
+        """`httpx.Client.stream`-shaped, through `post` (so tests that wrap `post` still see every call)."""
+        assert method == "POST"
+        yield self.post(url, content=content, headers=headers, timeout=timeout)
 
     def get(self, url: str, params=None, timeout=None):
         client, path = self._client(url)
