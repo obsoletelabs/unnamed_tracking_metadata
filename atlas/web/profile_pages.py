@@ -17,7 +17,7 @@ from .. import accounts, group_channel, groups, profile, profile_schema
 from ..models import GroupAccountNode, ProfileConflict
 from .deps import Page as Ctx
 from .deps import form_dict, go, throttle, user_form, user_page
-from .routes import render, when
+from .routes import render
 
 router = APIRouter()
 
@@ -143,7 +143,7 @@ def conflict_cards(p: Ctx) -> list[dict]:
                 v = profile.version(s, me.id, row.field, hlc)
                 if v is not None:
                     card["options"].append({"choice": choice, "value": describe(None if v.cleared else v.value),
-                                            "where": where(v.origin_node), "at": when(profile.hlc_time(v.hlc)),
+                                            "where": where(v.origin_node), "at": profile.hlc_time(v.hlc),
                                             "shown": choice == "winner"})
         elif row.kind == "privacy_widen":
             card["note"] = (f"{where((row.detail or {}).get('origin'))} set your profile to public. This node keeps "
@@ -166,7 +166,7 @@ def conflicts_page(p: Annotated[Ctx, Depends(user_page)]):
         ProfileConflict.user_id == p.me.id, ProfileConflict.status != "open")
         .order_by(ProfileConflict.resolved_at.desc()).limit(10)))
     return render(p, "me_conflicts.html", cards=conflict_cards(p), resolved=resolved, titles=KIND_TITLES,
-                  labels={n: f.label for n, f in profile_schema.REGISTRY.items()}, when=when)
+                  labels={n: f.label for n, f in profile_schema.REGISTRY.items()})
 
 
 @router.post("/me/conflicts/{cid}")
@@ -197,7 +197,7 @@ def linked_context(p: Ctx, error: str | None = None) -> dict:
     s, me, settings = p.session, p.me, p.st.ctx.settings
     own = p.st.ctx.identity.node_id
     group = groups.active(s)
-    ctx: dict[str, Any] = {"group": group, "error": error, "fp": groups.gc_fp, "when": when}
+    ctx: dict[str, Any] = {"group": group, "error": error, "fp": groups.gc_fp}
     if group is None:
         return ctx
     tr = groups.trust(s, group, own_node=own)

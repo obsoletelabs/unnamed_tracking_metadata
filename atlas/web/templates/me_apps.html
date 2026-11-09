@@ -6,7 +6,7 @@
 <p class="muted">These applications currently hold a sign-in granted by your {{ app_name }} account. Ending one signs you out of it; you will be asked again next time. They can only see your username, display name and email address (if you allowed it), never your password.</p>
 {% if apps %}
 <table><thead><tr><th>App</th><th>Active sign-ins</th><th>Valid until</th><th></th></tr></thead><tbody>
-{% for a in apps %}<tr><td>{{ a.name }}</td><td>{{ a.sessions }}</td><td class="small muted">{{ a.until.strftime('%Y-%m-%d %H:%M') }} UTC</td>
+{% for a in apps %}<tr><td>{{ a.name }}</td><td>{{ a.sessions }}</td><td class="small muted">{{ when(a.until) }}</td>
 <td><form method="post" action="/me/apps/{{ a.id }}/revoke">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Sign out of {{ a.name }}?" type="submit">Sign out</button></form></td></tr>{% endfor %}
 </tbody></table>
 {% else %}<p class="muted">No app is signed in with this account right now.</p>{% endif %}

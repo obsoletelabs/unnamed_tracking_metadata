@@ -69,10 +69,13 @@ test('evidence: node group admin pages', async ({ page, baseURL }, info) => {
   const shown = (await page.locator('[data-sas]').innerText()).trim();
   if (shown !== j.sas) throw new Error(`SAS mismatch: page ${shown}, joiner ${j.sas}`);
   await shoot(page, 'group-sas', info);
-  await page.getByLabel('The numbers match on both screens.').check();
+  await page.getByLabel('The numbers match on both screens').check();
   await page.fill('#e-root', ROOT_PW);
   await page.fill('#e-acct', PASSWORD);
   await page.getByRole('button', { name: 'Issue certificate' }).click();
+  // U3: the inviter lands on the enrolment's done step, then the members table lists the new node
+  await page.locator('[data-enrol-step="done"]').waitFor();
+  await page.goto('/admin/group');
   await page.locator(`[data-member="${j.node_id}"]`).waitFor();
   await shoot(page, 'group-members', info);
 });

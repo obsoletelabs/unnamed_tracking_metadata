@@ -45,11 +45,34 @@ password and the root passphrase, and is limited to 5 attempts per hour per admi
 
 ## Add a node
 
-1. On a node that holds the root (or was delegated `group.enrol`): **Add a node → Create invite**, or
-   `atlas group invite`. You get the address of this node and a one-time code `AG1-…`, valid for 10 minutes.
-2. On the new node: **Node group → Join an existing group**, or `atlas group join --url URL --code CODE`.
+1. On a node that holds the root (or was delegated `group.enrol`): **Add a node**, choose how much this node
+   should trust the new one (below), then **Create invite**, or `atlas group invite`. You get a **QR code**, the
+   address of this node and a one-time code `AG1-…`, valid for 10 minutes. The QR code is drawn on the server as
+   inline SVG and holds only the address and the code (*Show what the QR code contains*); Copy buttons copy each.
+2. On the new node: **Node group → Join an existing group**, or `atlas group join --url URL --code CODE`. The
+   address field also takes the whole invite as text (what a phone's scanner app shows): pasting it fills both
+   fields.
 3. Both screens show a **12-digit number** and the other node's fingerprint. Compare them over a channel you
-   trust. Tick "The numbers match" on the inviting node (with the root passphrase) and then on the new node.
+   trust. Tick "The numbers match on both screens" on the inviting node (with the root passphrase) and then on
+   the new node. The last step links to **Link my account on both nodes** (`/me/linked-nodes`).
+
+### How much the nodes trust each other
+
+Both the invite and the join form ask the same question, and each node applies its own answer to its **own**
+local policy, only when the join completes (a cancelled or expired join changes nothing):
+
+| | Cautious (this release's defaults) | **Same owner, full trust** (preselected) | + administrator checkbox |
+|---|---|---|---|
+| Create an account on first group sign-in (`group_auto_provision`) | off | **on** (only while registration is open) | on |
+| Accept the other node's two-factor step (`group_trust_remote_mfa`) | off | **on** | on |
+| Group administrators (`group_federated_privilege`) | deny | deny | **local_mfa** |
+| Highest delegated role (`group_max_delegated_role`) | none | none | **admin** |
+
+*Custom* leaves the policy as it is and shows the old delegation fields. The administrator checkbox needs the
+typed confirmation and never changes the invite's permissions: an administrator grant is still issued on the
+grants form by the root holder. The SAS step lists exactly what will change; **Policy** on the group page names
+the preset the current settings match and can apply one at any time. Catalogue sync between members is not set
+by the preset: follow the other node under **Peers**.
 
 If the numbers differ, cancel: someone who saw the code tried to join in place of your node. Five wrong
 attempts burn an invite, at most three invites are open at once, and enrolment endpoints are rate limited per IP.

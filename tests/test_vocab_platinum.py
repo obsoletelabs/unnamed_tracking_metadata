@@ -357,14 +357,14 @@ def test_editor_on_a_gated_authority_disables_platinum_and_refuses_it(authority_
     signup(site, "alice")
     url = f"/game/{site.gid}/achievements/edit"
     page = site.get(url).text
-    assert '<option value="platinum"  disabled>Platinum (needs federation protocol 1.2)</option>' in page
+    assert '<option value="platinum"  disabled>Platinum (needs every follower upgraded)</option>' in page
     assert "Platinum is not available on this node yet" in page
     t = token(site, url)
     refused = site.post(url, data=_ach_form(t, {"a": {"name": "Everything", "tier": "platinum"}},
                                                         action="submit"))
     text = unescape(refused.text)
     assert refused.status_code == 400 and "Platinum cannot be published by this node yet" in text
-    assert '<option value="platinum" selected>Platinum (needs federation protocol 1.2)</option>' in text  # kept
+    assert '<option value="platinum" selected>Platinum (needs every follower upgraded)</option>' in text  # kept
     with site.st.maker() as s:
         assert s.scalars(select(Achievement)).first() is None and s.scalars(select(Proposal)).first() is None
 

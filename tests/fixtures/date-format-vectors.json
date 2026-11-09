@@ -1,0 +1,246 @@
+[
+ {
+  "kind": "day",
+  "style": "dmy",
+  "value": "2020-09-17",
+  "precision": "day",
+  "shown": "17/09/2020"
+ },
+ {
+  "kind": "day",
+  "style": "dmy",
+  "value": "2020-09",
+  "precision": "month",
+  "shown": "September 2020"
+ },
+ {
+  "kind": "day",
+  "style": "dmy",
+  "value": "2020",
+  "precision": "year",
+  "shown": "2020"
+ },
+ {
+  "kind": "day",
+  "style": "dmy",
+  "value": "2001-01-05",
+  "precision": "day",
+  "shown": "05/01/2001"
+ },
+ {
+  "kind": "instant",
+  "style": "dmy",
+  "time": null,
+  "value": "2020-09-17T14:05:00+00:00",
+  "shown": "17/09/2020 14:05 UTC"
+ },
+ {
+  "kind": "instant",
+  "style": "dmy",
+  "time": "24h",
+  "value": "2020-09-17T09:30:00+00:00",
+  "shown": "17/09/2020 09:30 UTC"
+ },
+ {
+  "kind": "instant",
+  "style": "dmy",
+  "time": "12h",
+  "value": "2020-09-17T00:01:00+00:00",
+  "shown": "17/09/2020 12:01 AM UTC"
+ },
+ {
+  "kind": "placeholder",
+  "style": "dmy",
+  "partial": true,
+  "shown": "dd/mm/yyyy, mm/yyyy or yyyy"
+ },
+ {
+  "kind": "placeholder",
+  "style": "dmy",
+  "partial": false,
+  "shown": "dd/mm/yyyy"
+ },
+ {
+  "kind": "day",
+  "style": "long",
+  "value": "2020-09-17",
+  "precision": "day",
+  "shown": "17 September 2020"
+ },
+ {
+  "kind": "day",
+  "style": "long",
+  "value": "2020-09",
+  "precision": "month",
+  "shown": "September 2020"
+ },
+ {
+  "kind": "day",
+  "style": "long",
+  "value": "2020",
+  "precision": "year",
+  "shown": "2020"
+ },
+ {
+  "kind": "day",
+  "style": "long",
+  "value": "2001-01-05",
+  "precision": "day",
+  "shown": "5 January 2001"
+ },
+ {
+  "kind": "instant",
+  "style": "long",
+  "time": null,
+  "value": "2020-09-17T14:05:00+00:00",
+  "shown": "17 September 2020, 14:05 UTC"
+ },
+ {
+  "kind": "instant",
+  "style": "long",
+  "time": "24h",
+  "value": "2020-09-17T09:30:00+00:00",
+  "shown": "17 September 2020, 09:30 UTC"
+ },
+ {
+  "kind": "instant",
+  "style": "long",
+  "time": "12h",
+  "value": "2020-09-17T00:01:00+00:00",
+  "shown": "17 September 2020, 12:01 AM UTC"
+ },
+ {
+  "kind": "placeholder",
+  "style": "long",
+  "partial": true,
+  "shown": "17 September 2020, September 2020 or 2020"
+ },
+ {
+  "kind": "placeholder",
+  "style": "long",
+  "partial": false,
+  "shown": "17 September 2020"
+ },
+ {
+  "kind": "day",
+  "style": "mdy",
+  "value": "2020-09-17",
+  "precision": "day",
+  "shown": "09/17/2020"
+ },
+ {
+  "kind": "day",
+  "style": "mdy",
+  "value": "2020-09",
+  "precision": "month",
+  "shown": "September 2020"
+ },
+ {
+  "kind": "day",
+  "style": "mdy",
+  "value": "2020",
+  "precision": "year",
+  "shown": "2020"
+ },
+ {
+  "kind": "day",
+  "style": "mdy",
+  "value": "2001-01-05",
+  "precision": "day",
+  "shown": "01/05/2001"
+ },
+ {
+  "kind": "instant",
+  "style": "mdy",
+  "time": null,
+  "value": "2020-09-17T14:05:00+00:00",
+  "shown": "09/17/2020 2:05 PM UTC"
+ },
+ {
+  "kind": "instant",
+  "style": "mdy",
+  "time": "24h",
+  "value": "2020-09-17T09:30:00+00:00",
+  "shown": "09/17/2020 09:30 UTC"
+ },
+ {
+  "kind": "instant",
+  "style": "mdy",
+  "time": "12h",
+  "value": "2020-09-17T00:01:00+00:00",
+  "shown": "09/17/2020 12:01 AM UTC"
+ },
+ {
+  "kind": "placeholder",
+  "style": "mdy",
+  "partial": true,
+  "shown": "mm/dd/yyyy, mm/yyyy or yyyy"
+ },
+ {
+  "kind": "placeholder",
+  "style": "mdy",
+  "partial": false,
+  "shown": "mm/dd/yyyy"
+ },
+ {
+  "kind": "day",
+  "style": "iso",
+  "value": "2020-09-17",
+  "precision": "day",
+  "shown": "2020-09-17"
+ },
+ {
+  "kind": "day",
+  "style": "iso",
+  "value": "2020-09",
+  "precision": "month",
+  "shown": "2020-09"
+ },
+ {
+  "kind": "day",
+  "style": "iso",
+  "value": "2020",
+  "precision": "year",
+  "shown": "2020"
+ },
+ {
+  "kind": "day",
+  "style": "iso",
+  "value": "2001-01-05",
+  "precision": "day",
+  "shown": "2001-01-05"
+ },
+ {
+  "kind": "instant",
+  "style": "iso",
+  "time": null,
+  "value": "2020-09-17T14:05:00+00:00",
+  "shown": "2020-09-17 14:05 UTC"
+ },
+ {
+  "kind": "instant",
+  "style": "iso",
+  "time": "24h",
+  "value": "2020-09-17T09:30:00+00:00",
+  "shown": "2020-09-17 09:30 UTC"
+ },
+ {
+  "kind": "instant",
+  "style": "iso",
+  "time": "12h",
+  "value": "2020-09-17T00:01:00+00:00",
+  "shown": "2020-09-17 12:01 AM UTC"
+ },
+ {
+  "kind": "placeholder",
+  "style": "iso",
+  "partial": true,
+  "shown": "yyyy-mm-dd, yyyy-mm or yyyy"
+ },
+ {
+  "kind": "placeholder",
+  "style": "iso",
+  "partial": false,
+  "shown": "yyyy-mm-dd"
+ }
+]

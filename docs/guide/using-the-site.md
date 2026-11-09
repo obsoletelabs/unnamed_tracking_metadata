@@ -10,6 +10,20 @@ The home page keeps search at the center of the experience. Its horizontal media
 
 A phone-sized screen works the same way; the site follows your system's light or dark setting.
 
+### Dates
+
+Every date on the site goes through one formatter, so it looks the same on every page. The default is
+**day/month/year** (`17/09/2020`). In **Settings → Preferences** you can choose `17 September 2020`,
+`09/17/2020` (month/day/year) or `2020-09-17` (ISO); times follow the same choice (month/day/year uses a
+12-hour clock unless you pick 24 hours). Recent events also say how long ago they were ("5 min ago"), and
+hovering a date shows it in full. Without an account the choice is kept in a cookie (`atlas_date`) and becomes
+your account's preference the first time you sign in, unless the account already has one.
+
+A browser that reports US English **and** a US time zone is asked once whether it wants month/day/year. Choosing
+either answer stores it; the × closes the question in that browser only. Nothing is shown without JavaScript.
+
+A date that is known only to the month or the year is never shown as a day: `September 2020` or `2020`.
+
 ### Release dates
 
 A record shows only as much of its first release as is known: a year (`2011`), a month (`April 2011`) or a
@@ -22,8 +36,11 @@ and a record matches only when its whole release is inside the range, so a game 
 appears for 2011 but not for April 2011. **Oldest release first** puts a year-only date before the months
 and days of that year; records without a date come last.
 
-When you edit a record, the release date field takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD` (enter only what is
-known), and five rows take the per-platform dates. Empty rows are ignored; an invalid row (an impossible
+When you edit a record, the release date field takes the date in your format (the placeholder shows it, for
+example `dd/mm/yyyy, mm/yyyy or yyyy`), ISO (`2020-09-17`, `2020-09`, `2020`) or a month name (`17 Sep 2020`,
+`September 2020`); enter only what is known. When a numeric date such as `03/04/2021` can be read two ways and
+you have not chosen a format, the form asks which one you meant before anything is saved. Five rows take the
+per-platform dates. Empty rows are ignored; an invalid row (an impossible
 day such as 2023-02-29, an unknown region, two rows for the same platform, region, edition and type) is
 reported and your input is kept. A less precise date never replaces a more precise one it agrees with:
 "2011" next to a source's "2011-04-19" leaves the day.

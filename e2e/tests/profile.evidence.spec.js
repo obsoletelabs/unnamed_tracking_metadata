@@ -51,10 +51,12 @@ async function ensureGroup(page, baseURL) {
   const j = py('e2e/group_joiner.py', baseURL, code, 'Laptop');
   await page.goto(`/admin/group/enrolment/${j.enrolment_id}`);
   await page.locator('[data-sas]').waitFor();
-  await page.getByLabel('The numbers match on both screens.').check();
+  await page.getByLabel('The numbers match on both screens').check();
   await page.fill('#e-root', ROOT_PW);
   await page.fill('#e-acct', PASSWORD);
   await page.getByRole('button', { name: 'Issue certificate' }).click();
+  await page.locator('[data-enrol-step="done"]').waitFor();  // U3: the inviter's done step
+  await page.goto('/admin/group');
   await page.locator(`[data-member="${j.node_id}"]`).waitFor();
 }
 

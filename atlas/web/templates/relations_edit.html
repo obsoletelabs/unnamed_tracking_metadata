@@ -5,7 +5,7 @@
 <h1>Relations of <a href="/game/{{ g.id }}">{{ v.get('title') or g.id }}</a></h1>
 <p class="muted">Say what this record is: a DLC, expansion, port, remake or mod of another record, or a member of a series or collection. A relation points from this record to its parent. Editions are not relations: they belong to the record itself.</p>
 {% if error %}<div class="card error" role="alert" data-relation-error>{{ error }}</div>{% endif %}
-{% if gated %}<div class="card" data-relation-gated><strong>Stays on this node for now.</strong> {{ gate_message }} Relations you add are stored here and shown on this site; they are not published to followers, and they are not sent later when the protocol is raised.</div>{% endif %}
+{% if gated %}<div class="card" data-relation-gated><strong>Stays on this node for now.</strong> Publishing relations needs every follower on this Atlas release (Admin → Peers → Compatibility). Relations you add are stored here and shown on this site; they are not published to followers, and they are not sent later when that changes.</div>{% endif %}
 {% if local %}<p class="small muted">This node is not an authority: relations you add here are local to it. Relations from the upstream authority are marked and can only be changed there.</p>{% endif %}
 
 <section class="card" aria-labelledby="own-h">
@@ -52,7 +52,7 @@
 
 {% if history %}
 <details class="card"><summary>Ended relations</summary>
-<ul>{% for r in history %}<li>{{ history_titles[r.from_id] }} → {{ rel_labels[r.type][0]|lower }} {{ history_titles[r.to_id] }} <span class="small muted">· {{ r.end_reason }} · {{ r.ended_at.strftime('%Y-%m-%d') }}</span></li>{% endfor %}</ul>
+<ul>{% for r in history %}<li>{{ history_titles[r.from_id] }} → {{ rel_labels[r.type][0]|lower }} {{ history_titles[r.to_id] }} <span class="small muted">· {{ r.end_reason }} · {{ day(r.ended_at) }}</span></li>{% endfor %}</ul>
 </details>
 {% endif %}
 <p><a class="btn ghost" href="/game/{{ g.id }}">Back to the record</a></p>

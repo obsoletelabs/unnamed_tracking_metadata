@@ -28,7 +28,7 @@ test.describe.configure({ mode: 'serial' });
 test('evidence: tier choices in the achievement editor (C7.1)', async ({ page }, info) => {
   await page.goto(`/game/${enc(seed()['Starlight Harbor'])}/achievements/edit`);
   await page.getByRole('button', { name: '+ Add a row' }).click();
-  const row = page.locator('fieldset[data-row]').last();
+  const row = page.locator('[data-row]').last();
   await row.locator('input[name^="name."]').fill(`Lantern Keeper ${info.project.name}`);
   const tier = row.locator('select[name^="tier."]');
   const offered = await tier.locator('option').allTextContents();

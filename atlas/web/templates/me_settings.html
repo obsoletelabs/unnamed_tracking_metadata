@@ -22,7 +22,7 @@
       {% if r.conflict %}<a class="badge warn" href="/me/conflicts">{% if r.competing %}also "{{ r.competing }}" on another node{% else %}needs a decision{% endif %}</a>{% endif %}
     </div>
     {% if f.kind == 'bool' %}<input type="hidden" name="present.{{ r.name }}" value="1"><label class="inline"><input id="f-{{ loop.index }}" type="checkbox" name="f.{{ r.name }}" {{ 'checked' if r.value }}> On</label>
-    {% elif f.kind == 'choice' %}<select id="f-{{ loop.index }}" name="f.{{ r.name }}"><option value="">Default</option>{% for c in f.choices %}<option value="{{ c }}" {{ 'selected' if r.value == c and r.stored }}>{{ c }}</option>{% endfor %}</select>
+    {% elif f.kind == 'choice' %}<select id="f-{{ loop.index }}" name="f.{{ r.name }}"><option value="">Default</option>{% for c in f.choices %}<option value="{{ c }}" {{ 'selected' if r.value == c and r.stored }}>{{ f.label_of(c) }}</option>{% endfor %}</select>
     {% elif f.kind == 'number' %}<input id="f-{{ loop.index }}" type="number" name="f.{{ r.name }}" min="0.8" max="2" step="0.05" value="{{ r.value if r.stored else '' }}" placeholder="1.0">
     {% elif f.kind == 'color' %}<input id="f-{{ loop.index }}" type="text" name="f.{{ r.name }}" maxlength="7" pattern="#[0-9a-fA-F]{6}" value="{{ r.value if r.stored else '' }}" placeholder="#3366ff">
     {% else %}<input id="f-{{ loop.index }}" type="text" name="f.{{ r.name }}" maxlength="64" value="{{ r.value if r.stored else '' }}">{% endif %}

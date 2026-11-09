@@ -18,7 +18,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from . import group_crypto as gc
-from . import groups, key_rotation
+from . import group_presets, groups, key_rotation
 from .groups import GroupError, aware, utcnow
 from .models import GroupEnrolment, OwnerGroup, ulid
 from .settings import Settings
@@ -376,6 +376,7 @@ def complete(session: Session, settings: Settings, identity: NodeIdentity, body:
     if row.state == "issued":
         row.state = "active"
         groups.audit(session, None, "group_enrol_delivered", row.id, {"serial": row.cert_serial})
+        group_presets.apply_on_activation(session, settings, row, row.created_by)  # U3: the inviter's own choice
     session.flush()
     return 200, sealed
 
@@ -638,5 +639,6 @@ def _activate(session: Session, settings: Settings, identity: NodeIdentity, row:
     row.state, row.cert_serial = "active", cert["body"]["serial"]
     groups.audit(session, actor, "group_joined", group.group_id,
                  {"serial": cert["body"]["serial"], "inviter": row.peer_node_id}, cli)
+    group_presets.apply_on_activation(session, settings, row, actor)  # U3: the joiner's own choice, on activation
     session.flush()
     return group

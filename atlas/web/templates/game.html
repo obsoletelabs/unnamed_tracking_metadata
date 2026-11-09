@@ -62,7 +62,7 @@
   {% if rel_total %}<li><a href="#related">Related <span class="count">{{ rel_total }}</span></a></li>{% endif %}
   {% if v.get('editions') %}<li><a href="#editions">Editions <span class="count">{{ v.editions|length }}</span></a></li>{% endif %}
   <li><a href="#artwork">Artwork <span class="count">{{ art_total }}</span></a></li>
-  {% if g.media_type == 'game' %}<li><a href="#achievements">Achievements <span class="count">{{ achievements|length }}</span></a></li>{% endif %}
+  {% if g.media_type == 'game' %}<li><a href="#achievements">Achievements <span class="count">{{ (ach_all or achievements)|length }}</span></a></li>{% endif %}
   <li><a href="#sources">Sources</a></li>
   {% if comments_on %}<li><a href="#discussion">Discussion</a></li>{% endif %}
   {% if p.can_review %}<li><a href="#curation">Curation</a></li>{% endif %}
@@ -120,28 +120,34 @@
 {% endif %}
 
 {% if g.media_type == 'game' %}<h2 id="achievements">Achievements</h2>
-{% if achievements %}
-{# U1 summary. Counts only: a hidden achievement's name and text never appear here. #}
-{% set plat = achievements|selectattr('tier', 'equalto', 'platinum')|list %}
+{% set ach_all = ach_all if ach_all is defined else achievements %}
+{% if ach_all %}
+{# U1 summary. Counts only: a hidden achievement's name and text never appear here. §8.2: each count is a filter link. #}
+{% macro ach_link(key, inner) %}<a href="/game/{{ g.id }}?ach={{ key|urlencode }}#achievements" data-ach-filter-link="{{ key }}"{% if ach == key %} aria-current="true"{% endif %}>{{ inner }}</a>{% endmacro %}
+{% set plat = ach_all|selectattr('tier', 'equalto', 'platinum')|list %}
 <ul class="stats ach-summary" data-ach-summary>
-  <li class="stat"><span class="stat-value">{{ achievements|length }}</span><span class="stat-label">achievement{{ '' if achievements|length == 1 else 's' }}</span></li>
-  {% set pts = achievements|selectattr('points')|map(attribute='points')|sum %}{% if pts %}<li class="stat"><span class="stat-value">{{ pts }}</span><span class="stat-label">points</span></li>{% endif %}
-  {% if plat %}<li class="stat tone-platinum" data-ach-platinum><span class="stat-value"><span class="badge tier-platinum">platinum</span></span><span class="stat-label">{% set pa = plat|first %}{% if pa.hidden and not pa.revealed %}Hidden achievement{% else %}{{ pa.name }}{% endif %}</span></li>{% endif %}
-  {% set hid = achievements|selectattr('hidden')|list|length %}{% if hid %}<li class="stat"><span class="stat-value">{{ hid }}</span><span class="stat-label">hidden (spoiler-free)</span></li>{% endif %}
-  {% set rare = achievements|selectattr('global_percent', 'ne', none)|selectattr('global_percent', 'lt', 5)|list|length %}{% if rare %}<li class="stat tone-bad"><span class="stat-value">{{ rare }}</span><span class="stat-label">ultra rare (under 5%)</span></li>{% endif %}
+  <li class="stat{{ ' current' if ach == 'all' }}">{% set inner %}<span class="stat-value">{{ ach_all|length }}</span><span class="stat-label">achievement{{ '' if ach_all|length == 1 else 's' }}</span>{% endset %}{{ ach_link('all', inner) }}</li>
+  {% set pts = ach_all|selectattr('points')|map(attribute='points')|sum %}{% if pts %}<li class="stat"><span class="stat-value">{{ pts }}</span><span class="stat-label">points</span></li>{% endif %}
+  {% if plat %}<li class="stat tone-platinum{{ ' current' if ach == 'platinum' }}" data-ach-platinum>{% set inner %}<span class="stat-value"><span class="badge tier-platinum">platinum</span></span><span class="stat-label">{% set pa = plat|first %}{% if pa.hidden and not pa.revealed %}Hidden achievement{% else %}{{ pa.name }}{% endif %}</span>{% endset %}{{ ach_link('platinum', inner) }}</li>{% endif %}
+  {% set hid = ach_all|selectattr('hidden')|list|length %}{% if hid %}<li class="stat{{ ' current' if ach == 'hidden' }}">{% set inner %}<span class="stat-value">{{ hid }}</span><span class="stat-label">hidden (spoiler-free)</span>{% endset %}{{ ach_link('hidden', inner) }}</li>{% endif %}
+  {% set rare = ach_all|selectattr('global_percent', 'ne', none)|selectattr('global_percent', 'lt', 15)|list|length %}{% if rare %}<li class="stat tone-bad{{ ' current' if ach == 'rare' }}">{% set inner %}<span class="stat-value">{{ rare }}</span><span class="stat-label">rare (under 15%)</span>{% endset %}{{ ach_link('rare', inner) }}</li>{% endif %}
+  {% set gone = ach_all|selectattr('status', 'equalto', 'unobtainable')|list|length %}{% if gone %}<li class="stat{{ ' current' if ach == 'unobtainable' }}">{% set inner %}<span class="stat-value">{{ gone }}</span><span class="stat-label">unobtainable</span>{% endset %}{{ ach_link('unobtainable', inner) }}</li>{% endif %}
 </ul>
-<div class="table-scroll"><table class="achievements"><thead><tr><th><span class="visually-hidden">Icon</span></th><th>Name</th><th>Description</th><th>Points</th><th>Global %</th></tr></thead><tbody>
+{% if ach_sets|length > 1 %}<ul class="chips section-chips" aria-label="Achievement sets" data-ach-sets>{% for s in ach_sets %}<li class="chip">{{ ach_link('set:' ~ s.key, s.name or s.key) }}</li>{% endfor %}</ul>{% endif %}
+{% if ach != 'all' %}<p class="small" data-ach-filtered>Showing {{ achievements|length }} of {{ ach_all|length }}. <a href="/game/{{ g.id }}#achievements">Show all</a></p>{% endif %}
+{% if achievements %}<div class="table-scroll"><table class="achievements data-cards"><thead><tr><th><span class="visually-hidden">Icon</span></th><th>Name</th><th>Description</th><th>Points</th><th>Global %</th></tr></thead><tbody>
 {% set ns = namespace(set=None) %}
 {% for a in achievements %}{% set concealed = a.hidden and not a.revealed %}
 {% if ach_sets|length > 1 and a.set != ns.set %}{% set ns.set = a.set %}{% set s = ach_sets|selectattr('id', 'equalto', a.set)|first %}<tr class="ach-set"><th colspan="5" scope="rowgroup">{{ s.name or s.key }}{% if s.kind != 'base' %} <span class="badge">{{ s.kind }}</span>{% endif %}{% if s.platforms %} <span class="small muted">{{ s.platforms|join(', ') }}</span>{% endif %}</th></tr>{% endif %}
 <tr class="{{ 'muted' if a.status == 'unobtainable' }}{{ ' ach-platinum' if a.tier == 'platinum' }}{{ ' ach-concealed' if concealed }}">
 <td class="ach-icon">{% if a.icon_url %}<img src="{{ a.icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="40" height="40" loading="lazy">{% else %}<span class="ach-ph{{ ' locked' if concealed }}" aria-hidden="true">{{ '?' if concealed else ('◆' if a.tier == 'platinum' else '★') }}</span>{% endif %}</td>
 <td>{% if concealed %}<span class="ach-name" data-hidden-name>Hidden achievement</span> <span class="badge">hidden</span>{% else %}<span class="ach-name">{{ a.name }}</span>{% if a.hidden %} <span class="badge">hidden</span>{% endif %}{% endif %}{% if a.kind %} <span class="badge">{{ a.kind|replace('_', ' ') }}</span>{% endif %}{% if a.tier %} <span class="badge tier-{{ a.tier }}">{{ a.tier }}</span>{% endif %}</td>
-<td class="ach-desc">{% if concealed %}<span class="redacted" aria-hidden="true"></span>{% if p.user %}<a class="btn ghost small" href="/game/{{ g.id }}/achievements/{{ a.id }}" data-reveal="/game/{{ g.id }}/achievements/{{ a.id }}?json=1" aria-label="Reveal this hidden achievement (may spoil the game)">Reveal (spoiler)</a>{% else %}<a class="small" href="/login?next=/game/{{ g.id }}/achievements/{{ a.id }}">Sign in to reveal</a>{% endif %}{% else %}{{ a.description }}{% endif %}</td>
-<td class="ach-points">{% if a.points is not none %}{{ a.points }}<span class="visually-hidden"> points</span>{% endif %}</td>
-<td class="ach-rarity">{% if a.global_percent is not none %}{% set pc = a.global_percent %}<div class="rarity"><div class="rarity-line">{{ '%.1f'|format(pc) }}% {% if pc < 5 %}<span class="badge bad">ultra rare</span>{% elif pc < 15 %}<span class="badge warn">rare</span>{% elif pc >= 50 %}<span class="badge ok">common</span>{% endif %}{% if a.rarity and a.rarity.stale %} <span class="small muted" title="Measured {{ a.rarity.as_of or 'at an unknown date' }}">(old)</span>{% endif %}</div>
+<td class="ach-desc{{ ' concealed' if concealed }}">{% if concealed %}<span class="redacted" aria-hidden="true"></span>{% if p.user %}<a class="btn ghost small" href="/game/{{ g.id }}/achievements/{{ a.id }}" data-reveal="/game/{{ g.id }}/achievements/{{ a.id }}?json=1" aria-label="Reveal this hidden achievement (may spoil the game)">Reveal (spoiler)</a>{% else %}<a class="small" href="/login?next=/game/{{ g.id }}/achievements/{{ a.id }}">Sign in to reveal</a>{% endif %}{% else %}{{ a.description }}{% endif %}</td>
+<td class="ach-points" data-label="Points">{% if a.points is not none %}{{ a.points }}<span class="visually-hidden"> points</span>{% endif %}</td>
+<td class="ach-rarity" data-label="Players">{% if a.global_percent is not none %}{% set pc = a.global_percent %}<div class="rarity"><div class="rarity-line">{{ '%.1f'|format(pc) }}% {% if pc < 5 %}<span class="badge bad">ultra rare</span>{% elif pc < 15 %}<span class="badge warn">rare</span>{% elif pc >= 50 %}<span class="badge ok">common</span>{% endif %}{% if a.rarity and a.rarity.stale %} <span class="small muted" title="Measured {{ day_text(a.rarity.as_of) or 'at an unknown date' }}">(old)</span>{% endif %}</div>
 <svg class="rarity-bar {{ 'r-ultra' if pc < 5 else ('r-rare' if pc < 15 else ('r-common' if pc >= 50 else '')) }}" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true" focusable="false"><rect class="track" width="100" height="6"/><rect class="fill" width="{{ [[pc, 1.5]|max, 100]|min }}" height="6"/></svg></div>{% endif %}{% if a.status == 'unobtainable' %} <span class="badge">unobtainable</span>{% endif %}</td></tr>{% endfor %}
 </tbody></table></div>
+{% else %}<p class="muted" data-ach-empty>None match this filter.</p>{% endif %}
 {% else %}<p class="muted">No achievements recorded.</p>{% endif %}
 {% if p.user %}<p><a class="btn secondary" href="/game/{{ g.id }}/achievements/edit">Edit achievements</a></p>{% else %}<p class="small"><a href="/login?next=/game/{{ g.id }}/achievements/edit">Sign in</a> to add or edit achievements.</p>{% endif %}
 {% endif %}
@@ -154,7 +160,7 @@
 </tbody></table></div>
 
 {% if activity %}<h2>Recent changes</h2>
-<ul>{% for a in activity %}<li><strong>{{ a.user }}</strong> {{ a.kind|replace('_', ' ') }} <span class="muted small">{{ a.when }}</span>{% if a.note %} — {{ a.note }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+<ul>{% for a in activity %}<li><strong>{{ a.user }}</strong> {{ a.kind|replace('_', ' ') }} <span class="muted small">{{ when(a.when) }}</span>{% if a.note %} — {{ a.note }}{% endif %}</li>{% endfor %}</ul>{% endif %}
 
 </aside>
 <div class="wide">
@@ -186,10 +192,10 @@
 </div></div>
 <h3>Source records</h3>
 <table><thead><tr><th>Source</th><th>ID</th><th>Seen</th><th></th></tr></thead><tbody>
-{% for o in observations %}<tr><td>{{ o.source }}{% if not o.is_current %} <span class="badge">superseded</span>{% endif %}</td><td>{{ o.external_id }}</td><td class="small muted">{{ o.observed_at.strftime('%Y-%m-%d') }}</td>
+{% for o in observations %}<tr><td>{{ o.source }}{% if not o.is_current %} <span class="badge">superseded</span>{% endif %}</td><td>{{ o.external_id }}</td><td class="small muted">{{ day(o.observed_at) }}</td>
   <td>{% if o.is_current and can_split %}<form class="inline" method="post" action="/observation/{{ o.id }}/detach">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Split this source record into its own record?" type="submit">Split off</button></form>{% endif %}</td></tr>{% endfor %}
 </tbody></table>
-{% if revertable %}<h3>Revert a change</h3><ul>{% for r in revertable %}<li>{{ r.user }} · {{ r.kind }} · {{ r.when }}
+{% if revertable %}<h3>Revert a change</h3><ul>{% for r in revertable %}<li>{{ r.user }} · {{ r.kind }} · {{ when(r.when) }}
 <form class="inline" method="post" action="/review/{{ r.id }}/revert">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Revert this change?" type="submit">Revert</button></form></li>{% endfor %}</ul>{% endif %}
 {% endif %}
 </div>

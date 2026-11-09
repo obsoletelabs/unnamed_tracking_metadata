@@ -13,7 +13,7 @@ from .. import integrations, media, pages, runtime, secrets_box
 from ..models import AuditEntry, Page, Setting
 from .deps import Page as Ctx
 from .deps import admin_form, admin_page, go, page
-from .routes import render, when
+from .routes import render
 
 router = APIRouter()
 LOGO_MAX = 512 * 1024
@@ -141,7 +141,7 @@ def _set(p: Ctx, key: str, value: Any) -> None:
 @router.get("/admin/pages", response_class=HTMLResponse)
 def pages_list(p: Annotated[Ctx, Depends(admin_page)]):
     rows = p.session.scalars(select(Page).order_by(Page.position, Page.slug)).all()
-    return render(p, "admin_pages.html", rows=rows, when=when)
+    return render(p, "admin_pages.html", rows=rows)
 
 
 @router.get("/admin/pages/new", response_class=HTMLResponse)

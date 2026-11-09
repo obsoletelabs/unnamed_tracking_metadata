@@ -13,7 +13,7 @@ from .. import accounts, mfa, secrets_box
 from ..models import UserMfa, UserSession, now
 from ..service import AtlasError
 from .deps import SESSION_COOKIE, Page, client_ip, go, secure_cookies, throttle, user_form, user_page
-from .routes import render, when
+from .routes import render
 
 router = APIRouter()
 
@@ -53,8 +53,7 @@ def _security(p: Page, *, codes: list[str] | None = None, error: str | None = No
     return render(p, "security.html", status=status, factor=factor, setup_secret=secret, codes=codes,
                   error=error, required=mfa.required(p.st.ctx.settings, p.me),
                   available=secrets_box.available(p.st.ctx.settings), has_password=p.me.password_hash != "!",
-                  linked=linked, activity=group_signin.activity(p.session, p.me) if group is not None else [],
-                  when=when)
+                  linked=linked, activity=group_signin.activity(p.session, p.me) if group is not None else [])
 
 
 @router.get("/me/security", response_class=HTMLResponse)
