@@ -155,6 +155,22 @@ signing-key insertion before the fix. Comment-anchor regression tests likewise f
 failure reproduction. Ruff, generated-reference checking, strict MkDocs and a non-root container
 build/liveness/readiness smoke check passed.
 
+## Container base image
+
+The `Dockerfile` names `python:3.12-slim` by its multi-arch index digest in both stages, so a
+rebuild of the same commit starts from the same bytes. Dependabot's `docker` ecosystem proposes
+a new digest when Docker publishes one; review it like any dependency bump. The runtime stage
+also runs `apt-get upgrade`, because Debian publishes security fixes before the official image
+is rebuilt: on 8 November 2026 the newest `python:3.12-slim` still carried zlib1g
+`1:1.3.dfsg+really1.3.1-1+b1` (CVE-2026-76844, CVE-2026-85091, HIGH), which the publish job's
+Trivy scan rejects, while trixie-security already had `+deb13u1`. To check an image locally:
+
+```sh
+docker build -t atlas:check .
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.67.2 \
+  image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 atlas:check
+```
+
 ## 21 October 2026 security-update verification
 
 Source commit `56f3bc2fdf33aa4812a1cb95d437d3a63791e381` passed **425 tests** locally
