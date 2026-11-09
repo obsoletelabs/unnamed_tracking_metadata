@@ -14,7 +14,7 @@ Atlas can be an **OpenID Connect provider**: people who have an account on an At
 | Scopes | `openid` (required), `profile`, `email` |
 | Client authentication | `client_secret_basic` or `client_secret_post` |
 | PKCE | `S256`; required by default, can be waived per confidential client |
-| ID token signature | **RS256** (default, works with almost everything) or **EdDSA** (for other Atlas nodes); both keys are in the JWKS. The JWKS lists only the **current** Ed25519 key, under `kid` = its key id (the node id until the first rotation); discovery's `atlas_node` member carries the node's root key and signed key-rotation history |
+| ID token signature | **RS256** (default, works with almost everything) or **EdDSA** (for other Atlas nodes); both keys are in the JWKS. The JWKS lists only the **current** Ed25519 key, under `kid` = its key id (the node id until the first rotation); discovery's `atlas_node` member carries the node's root key and signed key-rotation history. Discovery and the JWKS are sent with `Cache-Control: no-cache`, so a cache in front of the provider must revalidate them and relying parties see a rotation at once |
 | Lifetimes | authorization code 5 min (single use), ID token 10 min, access token 1 h |
 | Claims | `sub` (stable account id), `preferred_username`, `email`, `email_verified`, `atlas_reputation` |
 

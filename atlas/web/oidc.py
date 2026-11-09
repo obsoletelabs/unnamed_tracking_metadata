@@ -45,20 +45,25 @@ def _provider_on(p: Ctx) -> None:
         raise HTTPException(404, "This server is not an OpenID provider.")
 
 
+# Discovery carries the current signing key id and rotation history (atlas_node) and jwks lists the current key
+# only, so a shared cache must revalidate: a pre-rotation copy would make relying parties refuse the new kid.
+_KEY_DOC_CACHE = {"Cache-Control": "no-cache"}
+
+
 # ---- provider -----------------------------------------------------------------------------------------
 
 @router.get("/.well-known/openid-configuration")
 def discovery(st: St, session: Sess):
     if not st.ctx.settings.oidc_provider_enabled:
         raise HTTPException(404, "This server is not an OpenID provider.")
-    return JSONResponse(oidc.discovery(st.ctx, session), headers={"Cache-Control": "public, max-age=300"})
+    return JSONResponse(oidc.discovery(st.ctx, session), headers=_KEY_DOC_CACHE)
 
 
 @router.get("/oidc/jwks")
 def jwks(st: St, session: Sess):
     if not st.ctx.settings.oidc_provider_enabled:
         raise HTTPException(404, "This server is not an OpenID provider.")
-    return JSONResponse(oidc.jwks(session, st.ctx), headers={"Cache-Control": "public, max-age=300"})
+    return JSONResponse(oidc.jwks(session, st.ctx), headers=_KEY_DOC_CACHE)
 
 
 AUTH_KEYS = ("response_type", "client_id", "redirect_uri", "scope", "state", "nonce", "code_challenge",
