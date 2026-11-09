@@ -9,10 +9,11 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY atlas ./atlas
 RUN uv sync --frozen --no-dev --no-editable
 
-FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS runtime
 # Apply Debian security updates published after the base image was built. The newest python:3.12-slim
 # (checked 2026-11-08) still ships zlib1g 1:1.3.dfsg+really1.3.1-1+b1 (CVE-2026-76844,
-# CVE-2026-85091, HIGH); trixie-security has 1:1.3.dfsg+really1.3.1-1+deb13u1.
+# CVE-2026-85091, HIGH); trixie-security has 1:1.3.dfsg+really1.3.1-1+deb13u1. The publish workflow
+# builds this stage with no-cache-filters, so every rebuild re-runs the upgrade instead of reusing a cached layer.
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
