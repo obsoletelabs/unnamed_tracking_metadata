@@ -273,10 +273,11 @@ def _op(session, st: AppState, group: OwnerGroup, identity: NodeIdentity, inner:
         return {"ok": True}
     if op == "push":
         # The same objects a `state` pull would fetch from this member, sent by it (a leave, a re-issued
-        # certificate). `ingest_state` verifies every object; nothing is trusted because of who pushed it.
+        # certificate). `ingest_state` verifies every object; nothing is trusted because of who pushed it, but a
+        # succession that first arrives here is attributed to the pusher, whose view never confirms it (R1-5).
         try:
             counts = groups.ingest_state(session, group, params.get("state"), identity.node_id,
-                                         settings=st.ctx.settings)
+                                         settings=st.ctx.settings, served_by=inner["n"])
         except groups.GroupError as exc:
             raise _OpError(str(exc)[:200]) from None
         return {"ok": True, "counts": counts}

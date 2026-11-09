@@ -77,8 +77,8 @@ SUCCESSION_ROOT = "group_succession_root"  # NodeState key: {index, key_id, seal
 # Outside review #1 (C10 §C10.17). Markers are NodeState keys, so no schema change is needed (0028-0030 stay as
 # deployed): the review's fixes fit the existing tables.
 CRL_HELD_PREFIX = "group_crl_held:"  # + body_hash[:40]: an old-root CRL received while a succession is pending (R1-1)
-SUCCESSION_CRL_MISSING = "group_succession_crl_missing"  # index of an active succession whose old_root_last_crl
-#                                                          this node does not hold yet (R1-1): freshness fails
+SUCCESSION_CRL_MISSING = "group_succession_crl_missing"  # indices (JSON list) of active successions whose
+#                                     old_root_last_crl this node does not hold yet (R1-1): freshness fails
 SUCCESSION_CONFIRM_PREFIX = "group_succession_confirm:"  # + index: a post-delay view from another member (R1-5)
 R1_RETIRE_DONE = "group_r1_retire_done"  # the highest succession index whose old-root revocations were retired
 R1_BANS_DONE = "group_r1_bans_done"  # delegate-only bans stored before R1-13 were re-derived once
@@ -1233,15 +1233,38 @@ def ingest_crl(session: Session, group: OwnerGroup, crl: Any, now: datetime, tr:
         session.delete(old)
     session.flush()
     _journal(session, group, "crl", crl, received_at=gc.stamp(now))
-    missing = session.get(NodeState, SUCCESSION_CRL_MISSING)
-    if missing is not None and crl["signer"]["kind"] == "root":
-        index = int(missing.value)
-        succ = (group.succession or [])[index - 1]["body"] if 1 <= index <= len(group.succession or []) else None
-        if succ is not None and succ["old_root_last_crl"] == {"crl_seq": seq, "body_hash": crl["body_hash"]}:
-            session.delete(missing)  # the exact old_root_last_crl arrived: retire now (R1-1)
-            session.flush()
-            _retire_old_root_revocations(session, group, index, now)
+    if crl["signer"]["kind"] == "root":
+        for index in crl_missing_indices(session):
+            succ = (group.succession or [])[index - 1]["body"] if 1 <= index <= len(group.succession or []) else None
+            if succ is not None and succ["old_root_last_crl"] == {"crl_seq": seq, "body_hash": crl["body_hash"]}:
+                _set_crl_missing(session, [i for i in crl_missing_indices(session) if i != index])
+                _retire_old_root_revocations(session, group, index, now)  # the exact CRL arrived: retire (R1-1)
     return "stored"
+
+
+def crl_missing_indices(session: Session) -> list[int]:
+    """The successions whose `old_root_last_crl` this node still lacks (R1-1). An older marker held one index."""
+    row = session.get(NodeState, SUCCESSION_CRL_MISSING)
+    if row is None:
+        return []
+    try:
+        value = json.loads(row.value)
+    except ValueError:
+        return []
+    items = value if isinstance(value, list) else [value]
+    return sorted({int(i) for i in items if isinstance(i, int) and not isinstance(i, bool)})
+
+
+def _set_crl_missing(session: Session, indices: list[int]) -> None:
+    row = session.get(NodeState, SUCCESSION_CRL_MISSING)
+    if indices:
+        if row is None:
+            session.add(NodeState(key=SUCCESSION_CRL_MISSING, value=json.dumps(sorted(set(indices)))))
+        else:
+            row.value = json.dumps(sorted(set(indices)))
+    elif row is not None:
+        session.delete(row)
+    session.flush()
 
 
 def _covers(new: dict, old: dict) -> bool:
@@ -1364,7 +1387,7 @@ def ingest_succession(session: Session, group: OwnerGroup, obj: Any, now: dateti
         entry["delivered_by"] = delivered_by  # R1-5: its view never confirms the activation
     pending.append(entry)
     group.succession_pending = pending
-    _journal(session, group, "succession", obj, received_at=entry["received_at"])
+    _journal(session, group, "succession", obj, received_at=entry["received_at"], delivered_by=delivered_by)
     audit(session, None, "group_succession_pending", group.group_id,
           {"index": index, "new_root_key_id": obj["body"]["new_root_key_id"], "activation_delay_hours": delay})
     notify_admins(session, f"group-succession:{index}",
@@ -1538,7 +1561,7 @@ def _retire_old_root_revocations(session: Session, group: OwnerGroup, index: int
     old_rows = [r for r in rows if r.body["signer"].get("key_id") == old_key]
     exact = [r for r in old_rows if r.crl_seq == last["crl_seq"] and r.body_hash == last["body_hash"]]
     if last["crl_seq"] > 0 and not exact:
-        session.merge(NodeState(key=SUCCESSION_CRL_MISSING, value=str(index)))
+        _set_crl_missing(session, [*crl_missing_indices(session), index])  # each succession waits on its own CRL
         if _audit_once(session, "group_succession_crl_missing", str(index), {"old_root_last_crl": last}):
             notify_admins(session, f"group-succession-crl:{index}",
                           "This node lacks the revocation list a root succession names; privileged group actions "
@@ -1777,10 +1800,10 @@ def _review1_heal(session: Session, group: OwnerGroup, now: datetime) -> None:
     successions already active (R1-1), and re-derive node bans that only a non-root signer justified (R1-13)."""
     done = session.get(NodeState, R1_RETIRE_DONE)
     upto = int(done.value) if done is not None else 0
+    waiting = crl_missing_indices(session)
     for index in range(upto + 1, len(group.succession or []) + 1):
-        if session.get(NodeState, SUCCESSION_CRL_MISSING) is not None:
-            break
-        _retire_old_root_revocations(session, group, index, now)
+        if index not in waiting:  # a waiting one retires when its CRL arrives (`ingest_crl`)
+            _retire_old_root_revocations(session, group, index, now)
     if session.get(NodeState, R1_BANS_DONE) is not None:
         return
     tr = trust(session, group, now)
@@ -2245,14 +2268,25 @@ def skip_resync(session: Session, group: OwnerGroup, actor: str | None = None, c
     session.flush()
 
 
-def confirm_trust_epoch(session: Session, settings: Settings, group: OwnerGroup, passphrase: str,
-                        actor: str | None = None, cli: bool = False) -> None:
-    """`resync --confirm-root`: the owner ends a skipped trust epoch with the root passphrase (R1-3)."""
+def confirm_trust_epoch(session: Session, settings: Settings, group: OwnerGroup, passphrase: str | None,
+                        actor: str | None = None, cli: bool = False,
+                        recovery_files: list[gc.RecoveryKeys] | None = None) -> None:
+    """`resync --confirm-root`: the owner ends a skipped trust epoch (R1-3). On the root holder the root passphrase
+    proves it; on any other member (the only way out for a non-holder in a two-member group whose journal is
+    empty) a recovery quorum of the pinned set does."""
     if session.get(NodeState, TRUST_EPOCH) is None:
         raise GroupError("no skipped resync to confirm", "conflict")
-    unlock_root(session, settings, group, passphrase)
+    if recovery_files:
+        _quorum_keys(group, recovery_files)
+        by = "recovery"
+    elif group.root_state == "holder" and passphrase:
+        unlock_root(session, settings, group, passphrase)
+        by = "root"
+    else:
+        raise GroupError("the group root is not on this node: confirm with the recovery file(s) instead",
+                         "forbidden")
     session.delete(session.get(NodeState, TRUST_EPOCH))
-    audit(session, actor, "group_resync_confirmed", group.group_id, {}, cli)
+    audit(session, actor, "group_resync_confirmed", group.group_id, {"by": by}, cli)
     session.flush()
 
 
@@ -2936,6 +2970,20 @@ def _signed_by_quorum(group: OwnerGroup, t_: str, oid: str, body: dict, keys: li
     return obj
 
 
+def succession_crl_candidates(session: Session, group: OwnerGroup) -> list[dict]:
+    """Every stored CRL of the current root key, for the owner choosing a succession's `old_root_last_crl`: seq,
+    hash, when this node received it, the signer-chosen issued_at, whether its seq is forked, and its entries."""
+    rows = [r for r in session.scalars(select(GroupCrl).where(GroupCrl.group_id == group.group_id,
+                                                              GroupCrl.issuer == "root").order_by(GroupCrl.crl_seq))
+            if r.body["signer"].get("key_id") == group.root_key_id]
+    seqs: dict[int, int] = {}
+    for r in rows:
+        seqs[r.crl_seq] = seqs.get(r.crl_seq, 0) + 1
+    return [{"crl_seq": r.crl_seq, "body_hash": r.body_hash, "received_at": gc.stamp(aware(r.received_at)),
+             "issued_at": r.body["body"]["issued_at"], "forked": seqs[r.crl_seq] > 1,
+             "entries": list(r.body["body"]["entries"])} for r in rows]
+
+
 def succession_crl_choice(session: Session, group: OwnerGroup, suspect_since: datetime | None = None,
                           chosen: dict | None = None) -> tuple[GroupCrl | None, list[dict]]:
     """The old-root CRL a succession names as `old_root_last_crl`, and its entries (R1-1).
@@ -3004,6 +3052,12 @@ def issue_succession(session: Session, settings: Settings, group: OwnerGroup, id
         raise GroupError("only an active member can hold the new root", "forbidden")
     carry = [{"serial": c["body"]["serial"], "body_hash": c["body_hash"]}
              for node, c in sorted(tr.members().items()) if node not in exclude_nodes and c["signer"]["kind"] == "root"]
+    if reason == "compromised" and suspect_since is None and last_crl is None and \
+            succession_crl_candidates(session, group):
+        # the newest CRL can be the thief's (it chose issued_at and signed after taking G): the owner says from
+        # when the root is suspect, or names the last honest list (R1-1 step 4)
+        raise GroupError("a compromised root may have signed revocation lists you did not: give the time from which "
+                         "the root is suspect (--suspect-since), or name its last honest list (--last-crl SEQ:HASH)")
     last, last_entries = succession_crl_choice(session, group, suspect_since, last_crl)
     unconfirmed = sorted(e["serial"] for e in last_entries
                          if e.get("reason") == "key_compromise" and e["serial"] not in confirm_compromise)

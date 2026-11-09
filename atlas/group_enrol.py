@@ -628,7 +628,8 @@ def _activate(session: Session, settings: Settings, identity: NodeIdentity, row:
                        box_sealed=box_sealed, root_state="none", status="active", joined_at=now, updated_at=now)
     session.add(group)
     session.flush()
-    groups.ingest_state(session, group, state, identity.node_id, now, settings)
+    groups.ingest_state(session, group, state, identity.node_id, now, settings,
+                        served_by=row.peer_node_id)  # R1-5: the inviter's view never confirms what it delivered
     tr = groups.trust(session, group, now, own_node=identity.node_id)
     own = tr.in_force(identity.node_id)
     if own is None or own["body"]["serial"] != cert["body"]["serial"]:
