@@ -14,7 +14,7 @@ Atlas can be an **OpenID Connect provider**: people who have an account on an At
 | Scopes | `openid` (required), `profile`, `email` |
 | Client authentication | `client_secret_basic` or `client_secret_post` |
 | PKCE | `S256`; required by default, can be waived per confidential client |
-| ID token signature | **RS256** (default, works with almost everything) or **EdDSA** (for other Atlas nodes); both keys are in the JWKS |
+| ID token signature | **RS256** (default, works with almost everything) or **EdDSA** (for other Atlas nodes); both keys are in the JWKS. The JWKS lists only the **current** Ed25519 key, under `kid` = its key id (the node id until the first rotation); discovery's `atlas_node` member carries the node's root key and signed key-rotation history |
 | Lifetimes | authorization code 5 min (single use), ID token 10 min, access token 1 h |
 | Claims | `sub` (stable account id), `preferred_username`, `email`, `email_verified`, `atlas_reputation` |
 
@@ -89,7 +89,7 @@ other self-hosted apps accept exactly these fields under a heading such as *Open
 
 On the node that should *accept* sign-ins (for example a household node signing in with the central one):
 
-1. On your node: **Admin → Sign-in sharing → Accept sign-ins from another node → Look up provider.** Atlas fetches its discovery and keys and shows the provider's **node id fingerprint**. **Compare it with what the provider's administrator gave you.** Atlas pins that key and will only accept ID tokens signed by it (the algorithm is never negotiated). The page also shows the exact **redirect address** to register.
+1. On your node: **Admin → Sign-in sharing → Accept sign-ins from another node → Look up provider.** Atlas fetches its discovery and keys and shows the provider's **node id fingerprint**. **Compare it with what the provider's administrator gave you.** Atlas pins that node's root key and will only accept ID tokens signed by it, or by a successor key that a signed rotation history starting at that root vouches for (the algorithm is never negotiated). When the provider rotates its signing key nothing needs to be re-pinned. The page also shows the exact **redirect address** to register.
 2. On the **provider** node, register an application as above with that redirect address and signature **EdDSA**; copy the client id and secret.
 3. Back on your node, enter the client id and secret (stored encrypted; needs `ATLAS_SECRET_KEY`) and choose:
    * **Every user here may link and use it** (otherwise you enable it per user in the user list),
@@ -123,5 +123,5 @@ How accounts are connected:
 * A person must **consent** each time. The consent screen names the application and what it receives.
 * Only a validated consent request permits the selected application's callback origin in the form policy. Other registered applications, rejected requests and ordinary pages keep the default policy. Consent pages and their return redirects are not cached and send no referrer.
 * Codes are single use and are burned by any attempt; replaying one revokes the tokens it produced.
-* ID tokens from other Atlas nodes are verified against the key you pinned, with issuer, audience, nonce, expiry and issued-at checks; `alg: none` and algorithm-confusion attempts are rejected (all tested).
+* ID tokens from other Atlas nodes are verified against the key you pinned (or its current successor after a key rotation, validated from the pinned root and remembered, so a superseded key is refused and the history cannot be rewound), with issuer, audience, nonce, expiry and issued-at checks; `alg: none` and algorithm-confusion attempts are rejected (all tested).
 * Rotating the RSA signing key is not yet a one-click action.

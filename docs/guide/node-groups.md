@@ -99,7 +99,8 @@ the revocation lists it holds, and delegated or privileged actions wait until a 
 newer than `ATLAS_GROUP_VIEW_MAX_AGE_HOURS` (24 h by default). In a group of two the rule cannot apply and is
 waived. Members pull each other's state every `ATLAS_GROUP_SYNC_INTERVAL` seconds (60) and on **Sync with
 members now** (`atlas group sync`). Member-to-member calls are encrypted to the receiving node and signed, so
-proxies and logs see only `POST /api/v2/group/call`.
+proxies and logs see only `POST /api/v2/group/call`. A request is at most 256 KiB; the calling node reads
+an answer by streaming and refuses one over 8 MiB (1 MiB for the planned `assist.*` ops) as "answer too large".
 
 After a **restore from backup** a node is `resyncing`: it pulls every member's state before any root or
 delegated action. `atlas group resync --skip` (or the button, with your password) skips that and is audited.

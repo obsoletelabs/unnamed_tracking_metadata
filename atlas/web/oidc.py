@@ -48,10 +48,10 @@ def _provider_on(p: Ctx) -> None:
 # ---- provider -----------------------------------------------------------------------------------------
 
 @router.get("/.well-known/openid-configuration")
-def discovery(st: St):
+def discovery(st: St, session: Sess):
     if not st.ctx.settings.oidc_provider_enabled:
         raise HTTPException(404, "This server is not an OpenID provider.")
-    return JSONResponse(oidc.discovery(st.ctx), headers={"Cache-Control": "public, max-age=300"})
+    return JSONResponse(oidc.discovery(st.ctx, session), headers={"Cache-Control": "public, max-age=300"})
 
 
 @router.get("/oidc/jwks")
