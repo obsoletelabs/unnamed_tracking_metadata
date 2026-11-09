@@ -58,6 +58,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Re-run the runtime stage (apt-get upgrade) on every build so Debian security fixes land without a
+          # Dockerfile change; the build stage (dependency install) still comes from the cache.
+          no-cache-filters: runtime
           provenance: mode=max
           sbom: true
       - name: Attest build provenance (public repositories)
