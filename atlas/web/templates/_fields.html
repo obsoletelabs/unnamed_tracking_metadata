@@ -1,13 +1,16 @@
-{# Shared edit/new form fields. `v` holds current values; `new` adds the title/provider-id inputs. #}
+{# Shared edit/new form fields. `v` holds current values; `new` adds the title/provider-id inputs. Dates are typed in
+   the viewer's format (or ISO); a numeric date with two readings comes back with a "Did you mean" question. #}
+{% macro read_as(name) %}{% if ambiguous and ambiguous.get(name) %}<fieldset class="date-read" data-date-ambiguous="{{ name }}"><legend class="small">Did you mean</legend>{% for o in ambiguous[name] %}<label class="inline"><input type="radio" name="{{ name }}.read" value="{{ o.value }}"{{ ' checked' if loop.first }}> {{ o.text }}</label>{% endfor %}</fieldset>{% endif %}{% endmacro %}
 <label for="title">Title{% if not new %} <span class="hint">(leave unchanged if correct)</span>{% endif %}</label>
 <input id="title" type="text" name="title" value="{{ v.get('title', '') }}" maxlength="500" {% if new %}required{% endif %}>
-<label for="release_date">{{ lbl.release_date }} <span class="hint">first release: YYYY, YYYY-MM or YYYY-MM-DD; enter only what is known</span></label>
-<input id="release_date" type="text" name="release_date" value="{{ v.get('release_date', '') }}" pattern="\d{4}(-\d{2}(-\d{2})?)?" maxlength="10" placeholder="2020-09-17, 2020-09 or 2020" aria-describedby="release-help">
+<label for="release_date">{{ lbl.release_date }} <span class="hint">first release; enter only what is known</span></label>
+<input id="release_date" type="text" name="release_date" value="{{ v.get('release_date', '') }}" maxlength="20" inputmode="text" placeholder="{{ date_placeholder() }}" aria-describedby="release-help" data-date-entry>
+{{ read_as('release_date') }}
 <fieldset class="releases-edit"><legend>Release dates <span class="hint">up to {{ max_releases }}, one per platform, region, edition and type</span></legend>
-<p id="release-help" class="small muted">A year (2027) or a month (2027-06) is kept as it is and never shown as a day. Leave a row empty to skip it.{% if dates_gated %} This node keeps partial and regional dates but does not publish them to its followers while its federation emit protocol is below 1.3, and dates saved before it is raised are not published later: they reach followers only when a source or an edit sends them again.{% endif %}</p>
+<p id="release-help" class="small muted">Type a date as {{ date_placeholder() }} (ISO, 2027-06-17, always works). A year or a month is kept as it is and never shown as a day. Leave a row empty to skip it.{% if dates_gated %} This node keeps partial and regional dates but does not publish them to its followers until every follower runs this Atlas release (Admin → Peers → Compatibility), and dates saved before then are not published later: they reach followers only when a source or an edit sends them again.{% endif %}</p>
 <datalist id="release-regions">{% for r in region_groups %}<option value="{{ r }}">{{ region_name(r) }}</option>{% endfor %}<option value="us">United States</option><option value="gb">United Kingdom</option><option value="jp">Japan</option><option value="au">Australia</option><option value="de">Germany</option><option value="fr">France</option></datalist>
 {% for r in rel_rows %}<div class="release-row" data-release-row="{{ loop.index0 }}">
-<div><label for="rel_date.{{ loop.index0 }}">Date</label><input id="rel_date.{{ loop.index0 }}" type="text" name="rel_date.{{ loop.index0 }}" value="{{ r.date }}" pattern="\d{4}(-\d{2}(-\d{2})?)?" maxlength="10" placeholder="YYYY[-MM[-DD]]"></div>
+<div><label for="rel_date.{{ loop.index0 }}">Date</label><input id="rel_date.{{ loop.index0 }}" type="text" name="rel_date.{{ loop.index0 }}" value="{{ r.date }}" maxlength="20" inputmode="text" placeholder="{{ date_placeholder() }}" data-date-entry>{{ read_as('rel_date.' ~ loop.index0) }}</div>
 <div><label for="rel_platform.{{ loop.index0 }}">Platform</label><input id="rel_platform.{{ loop.index0 }}" type="text" name="rel_platform.{{ loop.index0 }}" value="{{ r.platform }}" maxlength="50" placeholder="pc, ps5…"></div>
 <div><label for="rel_region.{{ loop.index0 }}">Region</label><input id="rel_region.{{ loop.index0 }}" type="text" name="rel_region.{{ loop.index0 }}" value="{{ r.region }}" maxlength="5" list="release-regions" pattern="ww|eu|na|asia|oce|latam|[a-z]{2}" placeholder="ww, eu, jp…"></div>
 <div><label for="rel_edition.{{ loop.index0 }}">Edition</label><input id="rel_edition.{{ loop.index0 }}" type="text" name="rel_edition.{{ loop.index0 }}" value="{{ r.edition }}" maxlength="100"></div>
@@ -50,6 +53,6 @@
 {% elif fd.kind == 'bool' %}<select id="cf_{{ fd.key }}" name="cf_{{ fd.key }}"><option value=""></option><option value="yes" {{ 'selected' if c.value == 'yes' }}>Yes</option><option value="no" {{ 'selected' if c.value == 'no' }}>No</option></select>
 {% elif fd.kind == 'url' %}<input id="cf_{{ fd.key }}" type="url" name="cf_{{ fd.key }}" value="{{ c.value }}" maxlength="1000" placeholder="https://">
 {% elif fd.kind == 'number' %}<input id="cf_{{ fd.key }}" type="text" inputmode="decimal" name="cf_{{ fd.key }}" value="{{ c.value }}">
-{% elif fd.kind == 'date' %}<input id="cf_{{ fd.key }}" type="text" name="cf_{{ fd.key }}" value="{{ c.value }}" pattern="\d{4}-\d{2}-\d{2}" placeholder="2020-09-17">
+{% elif fd.kind == 'date' %}<input id="cf_{{ fd.key }}" type="text" name="cf_{{ fd.key }}" value="{{ c.value }}" maxlength="20" inputmode="text" placeholder="{{ date_placeholder(false) }}" data-date-entry>{{ read_as('cf_' ~ fd.key) }}
 {% else %}<input id="cf_{{ fd.key }}" type="text" name="cf_{{ fd.key }}" value="{{ c.value }}" maxlength="500">{% endif %}
 {% endfor %}

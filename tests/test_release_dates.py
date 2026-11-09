@@ -119,7 +119,7 @@ def test_precision_must_match_and_year_must_be_in_range():
             dates.parse_first(partial)
     with pytest.raises(dates.DateError):
         dates.parse("0000-01-01", any_year=True)
-    assert dates.display("0999-03-04", "day", {"date_format": "dmy"}) == "04.03.0999"
+    assert dates.display("0999-03-04", "day", {"date_format": "dmy"}) == "04/03/0999"
 
 
 def test_agreement_and_sort_key():
@@ -134,10 +134,16 @@ def test_agreement_and_sort_key():
     ("2011", "year", None, "2011"),
     ("2011", "year", {"date_format": "dmy"}, "2011"),
     ("2011-04", "month", None, "April 2011"),
-    ("2011-04", "month", {"date_format": "dmy"}, "04.2011"),
-    ("2011-04", "month", {"date_format": "mdy"}, "04/2011"),
-    ("2011-04-19", "day", None, "2011-04-19"),
-    ("2011-04-19", "day", {"date_format": "dmy"}, "19.04.2011"),
+    # SPEC-UI-POLISH-PASS §6.2: a month is never shown as numbers that could pass for a day
+    ("2011-04", "month", {"date_format": "dmy"}, "April 2011"),
+    ("2011-04", "month", {"date_format": "mdy"}, "April 2011"),
+    ("2011-04", "month", {"date_format": "iso"}, "2011-04"),
+    ("2011-04-19", "day", None, "19/04/2011"),
+    ("2011-04-19", "day", {"date_format": "dmy"}, "19/04/2011"),
+    ("2011-04-19", "day", {"date_format": "long"}, "19 April 2011"),
+    ("2011-04-19", "day", {"date_format": "iso"}, "2011-04-19"),
+    ("2011-04-19", "day", {"date_format": "locale"}, "19/04/2011"),  # legacy value maps to the default
+    ("2011-04-19", "day", {"date_format": "ymd"}, "2011-04-19"),
     ("2011-04-19", "day", {"date_format": "mdy"}, "04/19/2011"),
     ("soon", None, None, "soon"),  # invalid stays as it is (an old lock value), never a guess
     (None, None, None, ""),
@@ -913,7 +919,7 @@ def test_editor_saves_a_partial_date_and_release_rows(local_site):
     ([{"date": "", "platform": "pc", "category": "full"}], "", "a release date is"),
     ([{"date": "2011", "platform": "pc", "category": "full"}, {"date": "2012", "platform": "PC", "category": "full"}],
      "", "repeats platform"),
-    ([], "2011-4", "release_date: a release date is YYYY, YYYY-MM or YYYY-MM-DD"),
+    ([], "2011-13", "2011-13 has no month 13"),  # §7.2: "2011-4" is now read as April 2011
 ])
 def test_editor_reports_invalid_rows_and_keeps_the_input(local_site, rows, release_date, message):
     site = local_site
@@ -934,8 +940,9 @@ def test_editor_on_a_gated_authority_says_dates_stay_local(gated_site):
     site = gated_site
     signup(site, "alice")
     page = site.get(f"/game/{site.gid}/edit").text
-    assert "does not publish them to its followers while its federation emit protocol is below 1.3" in page
-    assert "dates saved before it is raised are not published later" in page
+    # SPEC-UI-POLISH-PASS §3.6 (D5): the gate is unchanged; the copy names the release, not a protocol number
+    assert "does not publish them to its followers until every follower runs this Atlas release" in page
+    assert "dates saved before then are not published later" in page
 
 
 def test_lock_form_accepts_release_lines(local_site):
@@ -965,8 +972,10 @@ def test_search_page_filters_and_sorts(local_site):
     assert 'name="released_from" value="2011"' in page and 'value="release" selected' in page
     month = unescape(site.get("/search", params={"released_from": "2011-04", "released_to": "2011-04"}).text)
     assert "Beta Month" in month and "Lighthouse" in month and "Alpha Year" not in month
-    bad = site.get("/search", params={"released_from": "2011-4"})
-    assert bad.status_code == 400 and "released_from: a release date is" in unescape(bad.text)
+    loose = unescape(site.get("/search", params={"released_from": "2011-4", "released_to": "2011-4"}).text)
+    assert "Beta Month" in loose and "Alpha Year" not in loose  # §7.2: read as April 2011
+    bad = site.get("/search", params={"released_from": "13/2011"})
+    assert bad.status_code == 400 and "released_from: " in unescape(bad.text)
 
 
 # ---- the resumable rebuild --------------------------------------------------------------------------------

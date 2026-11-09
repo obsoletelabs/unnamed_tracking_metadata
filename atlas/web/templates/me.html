@@ -20,7 +20,7 @@
 </div>
 <h2>My proposals</h2>
 {% if mine %}<table><thead><tr><th>When</th><th>Game</th><th>Kind</th><th>Status</th><th></th></tr></thead><tbody>
-{% for r in mine %}<tr><td class="small">{{ r.when }}</td><td>{% if r.cid %}<a href="/game/{{ r.cid }}">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}</td><td>{{ r.kind|replace('_', ' ') }}</td>
+{% for r in mine %}<tr><td class="small">{{ when(r.when) }}</td><td>{% if r.cid %}<a href="/game/{{ r.cid }}">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}</td><td>{{ r.kind|replace('_', ' ') }}</td>
 <td><span class="badge {{ 'ok' if r.status == 'approved' else 'bad' if r.status in ('rejected', 'reverted') else 'warn' }}">{{ r.status }}</span>{% if r.decision_note %}<div class="small muted">{{ r.decision_note }}</div>{% endif %}</td>
 <td><a class="small" href="/proposal/{{ r.id }}">Open</a> {% if r.status == 'pending' %}<form class="inline" method="post" action="/proposal/{{ r.id }}/withdraw">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Withdraw</button></form>{% endif %}</td></tr>{% endfor %}
 </tbody></table>{% else %}<p class="muted">Nothing yet. Open a game and choose “Suggest an edit”.</p>{% endif %}
@@ -31,7 +31,7 @@
 {% if token_error %}<div class="card error" role="alert">{{ token_error }}</div>{% endif %}
 {% if new_token %}<div class="flash"><strong>{{ new_token }}</strong><br><span class="small">Copy it now; it will not be shown again.{% if new_token_sync %} Use it with the address <code>{{ public_url }}</code> on the node or app that follows this one.{% endif %}</span></div>{% endif %}
 {% if tokens %}<table><thead><tr><th>Name</th><th>Scopes</th><th>Last used</th><th></th></tr></thead><tbody>
-{% for t in tokens %}<tr><td>{{ t.name }}</td><td>{{ t.scopes|join(', ') }}</td><td class="small">{{ t.last_used or 'never' }}</td>
+{% for t in tokens %}<tr><td>{{ t.name }}</td><td>{{ t.scopes|join(', ') }}</td><td class="small">{{ when(t.last_used) or 'never' }}</td>
 <td><form class="inline" method="post" action="/me/tokens/{{ t.id }}/revoke">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Revoke this token?" type="submit">Revoke</button></form></td></tr>{% endfor %}
 </tbody></table>{% endif %}
 <form class="card" method="post" action="/me/tokens">{{ csrf(p.csrf) }}

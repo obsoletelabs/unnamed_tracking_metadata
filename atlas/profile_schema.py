@@ -127,15 +127,27 @@ class Field:
     kind: str  # choice | bool | text | number | list (for the settings form)
     choices: tuple[str, ...] = ()
     help: str = ""
+    labels: tuple[tuple[str, str], ...] = ()  # (choice, text shown in the settings form)
+
+    def label_of(self, choice: str) -> str:
+        return dict(self.labels).get(choice, choice)
 
 
 def F(name: str, label: str, check, consent: bool = True, kind: str = "text", choices: tuple[str, ...] = (),
-      help: str = "") -> Field:
-    return Field(name, label, check, consent, kind, choices, help)
+      help: str = "", labels: tuple[tuple[str, str], ...] = ()) -> Field:
+    return Field(name, label, check, consent, kind, choices, help, labels)
 
 
-_DATE = ("locale", "iso", "dmy", "mdy", "ymd")
-_TIME = ("locale", "24h", "12h")
+# Date and time styles (SPEC-UI-POLISH-PASS §6.3). Offered: the four styles. Accepted: also the values older
+# releases stored (`locale`, `ymd`), so a synced older version is never quarantined as invalid; the formatter maps
+# them where it reads them (locale -> default, ymd -> iso). No stored value is rewritten (signed history, §6.4).
+_DATE = ("dmy", "long", "mdy", "iso")
+_DATE_ACCEPTED = (*_DATE, "locale", "ymd")
+_DATE_LABELS = (("dmy", "31/12/2026 (day/month/year)"), ("long", "31 December 2026"),
+                ("mdy", "12/31/2026 (month/day/year)"), ("iso", "2026-12-31 (ISO)"))
+_TIME = ("24h", "12h")
+_TIME_ACCEPTED = (*_TIME, "locale")
+_TIME_LABELS = (("24h", "14:05 (24-hour)"), ("12h", "2:05 PM (12-hour)"))
 _THEME = ("auto", "dark", "light")
 _AVATAR = ("none", "initials", "identicon")
 _DENSITY = ("comfortable", "compact")
@@ -147,8 +159,10 @@ REGISTRY: dict[str, Field] = {f.name: f for f in (
     F("avatar.color", "Avatar colour", _color, kind="color"),
     F("language", "Language", _bcp47, help="Stored now; applied once the interface is translated."),
     F("locale", "Locale", _bcp47, help="Number and date conventions; applied once the interface is translated."),
-    F("date_format", "Date format", _choice(*_DATE), kind="choice", choices=_DATE),
-    F("time_format", "Time format", _choice(*_TIME), kind="choice", choices=_TIME),
+    F("date_format", "Date format", _choice(*_DATE_ACCEPTED), kind="choice", choices=_DATE, labels=_DATE_LABELS,
+      help="Default: day/month/year. Month-only and year-only dates are never shown as a day."),
+    F("time_format", "Time format", _choice(*_TIME_ACCEPTED), kind="choice", choices=_TIME, labels=_TIME_LABELS,
+      help="Default: 24-hour (12-hour with month/day/year)."),
     F("theme", "Theme", _choice(*_THEME), kind="choice", choices=_THEME, help="Overrides the site theme for you."),
     F("time_zone", "Time zone", _time_zone, help="IANA name, for example Europe/Berlin."),
     F("a11y.reduced_motion", "Reduce motion", _bool, kind="bool"),

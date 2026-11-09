@@ -5,26 +5,63 @@
 <h1>Administration</h1>
 {% include "_adminnav.html" %}
 {% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
-<ol class="chips" aria-label="Steps"><li class="chip">1. {{ 'Invite' if step == 'invite' else 'Address and code' }}</li><li class="chip">2. Compare numbers</li><li class="chip">3. Confirm on both nodes</li><li class="chip">4. Done</li></ol>
+{% set current = {'invite': 1, 'join': 1, 'sas': 2, 'done': 4}[step] %}
+{% if step == 'sas' and row and row.state in ('confirmed', 'issued') %}{% set current = 3 %}{% endif %}
+<ol class="chips steps" aria-label="Steps">{% for label in [('Invite' if step == 'invite' else 'Address and code'), 'Compare numbers', 'Confirm on both nodes', 'Done'] %}<li class="chip{{ ' current' if loop.index == current }}{{ ' done' if loop.index < current }}"{% if loop.index == current %} aria-current="step"{% endif %}>{{ loop.index }}. {{ label }}</li>{% endfor %}</ol>
+
+{% macro preset_choice(diffs, chosen='same_owner', admin=false) %}
+<fieldset class="preset-choice" data-preset-choice><legend>How much should this node trust the other one?</legend>
+  <label class="choice"><input type="radio" name="preset" value="same_owner"{{ ' checked' if chosen == 'same_owner' }}> <span><strong>Same owner, full trust</strong> <span class="badge ok">recommended for machines you own</span><span class="small muted block">People signed in on one of your nodes can sign in here without a second two-factor prompt, and a first sign-in may create their account here while registration is open. Administrator rights still stay with each node.</span></span></label>
+  <label class="choice"><input type="radio" name="preset" value="cautious"{{ ' checked' if chosen == 'cautious' }}> <span><strong>Cautious</strong> <span class="small muted block">This release's defaults: group sign-in asks for this node's own second factor and never creates accounts.</span></span></label>
+  <label class="choice"><input type="radio" name="preset" value="custom"{{ ' checked' if chosen == 'custom' }}> <span><strong>Custom</strong> <span class="small muted block">Leave this node's policy as it is{% if step == 'invite_form' %} and set the delegation fields yourself{% endif %}.</span></span></label>
+  <label class="choice admin-choice"><input type="checkbox" name="with_admin"{{ ' checked' if admin }}> <span>Let my administrator account from the other node act as administrator here (after this node's own two-factor step) <span class="small muted block">Only with “Same owner, full trust”. Sets this node's ceiling for group grants to administrator; a grant is still issued on the grants form by the holder of the group root.</span></span></label>
+  <label for="confirm-admin-{{ step }}" class="small">To allow it, type “{{ admin_confirm }}”</label><input id="confirm-admin-{{ step }}" name="confirm_admin" type="text" maxlength="40" autocomplete="off">
+  {% if diffs %}<details class="small"><summary>What “Same owner, full trust” changes on this node</summary>
+  {% if diffs.same_owner %}<ul data-preset-diff="same_owner">{% for d in diffs.same_owner %}<li>{{ d.label }}: {{ d['from'] }} → <strong>{{ d.to }}</strong></li>{% endfor %}</ul>{% else %}<p>Nothing: this node's policy already matches it.</p>{% endif %}
+  </details>{% endif %}
+  <p class="small muted">Each node applies its own choice to itself when the new node has joined. A cancelled or expired join changes nothing. Catalogue sync between members is set up separately on Peers (Admin → Peers).</p>
+</fieldset>
+{% endmacro %}
+
 {% if step == 'invite' %}
 <section class="card" aria-labelledby="e-invite" data-enrol-step="invite"><h2 id="e-invite">Invite a node to {{ group.name }}</h2>
-  <p>On the new node, open <strong>Administration → Node group → Join</strong> and enter:</p>
-  <dl class="facts"><dt>Address</dt><dd><code>{{ address }}</code></dd>
-  <dt>Code</dt><dd><code class="invite-code" data-invite-code>{{ code }}</code></dd>
-  <dt>Valid until</dt><dd>{{ row.expires_at.strftime('%H:%M UTC') }} (single use)</dd>
+  <p>On the new node, open <strong>Administration → Node group → Join</strong> and scan this code, paste it, or type the address and the code.</p>
+  <div class="invite-layout">
+  {% if qr_svg %}<figure class="qr-plate" data-invite-qr>{{ qr_svg }}<figcaption class="small">Scan on the new node, or type the address and code.</figcaption></figure>
+  {% else %}<p class="card" role="status" data-invite-qr-missing>This invite cannot be shown as a QR code; use the address and code.</p>{% endif %}
+  <div class="invite-facts">
+  <dl class="facts"><dt>Address</dt><dd><code class="invite-address" id="invite-address">{{ address }}</code> <button class="secondary small" type="button" data-copy="invite-address">Copy</button></dd>
+  <dt>Code</dt><dd><code class="invite-code" id="invite-code" data-invite-code>{{ code }}</code> <button class="secondary small" type="button" data-copy="invite-code">Copy</button></dd>
+  <dt>Valid until</dt><dd>{{ when(row.expires_at) }} ({{ when_text(row.expires_at, relative=True) }}, single use)</dd>
+  <dt>Trust</dt><dd data-invite-preset="{{ row.preset or 'custom' }}">{{ preset_label }}{% if row.preset_admin %} + administrators{% endif %}</dd>
   <dt>This node</dt><dd><code class="fingerprint">{{ fp(row.group_id) }}</code> (group) · node <code class="fingerprint">{{ fp(p.st.ctx.identity.node_id) }}</code></dd></dl>
-  <details><summary class="small">QR payload (code only, no personal data)</summary><pre class="small">{{ qr }}</pre></details>
-  <p class="small muted">Send the code over a channel you trust. Anyone who has it can try to join in place of your node, which is why both screens show a number to compare next.</p>
+  <details><summary class="small">Show what the QR code contains</summary><p class="small muted">This node's address and the invite code, nothing else:</p><pre class="small" id="invite-payload">{{ qr }}</pre><button class="secondary small" type="button" data-copy="invite-payload">Copy the whole invite</button></details>
+  </div></div>
+  <p class="small muted">Send the code over a channel you trust. Anyone who has it (or a photo of the QR code) can try to join in place of your node, which is why both screens show a number to compare next.</p>
   <p><a class="btn" href="/admin/group">Back to the group</a></p>
 </section>
 {% elif step == 'join' %}
 <section class="card" aria-labelledby="e-join" data-enrol-step="join"><h2 id="e-join">Join a node group</h2>
   <form method="post" action="/admin/group/join">{{ csrf(p.csrf) }}
-    <label for="j-url">Address of the inviting node</label><input id="j-url" name="url" type="url" required maxlength="300" placeholder="https://home.example.net">
-    <label for="j-code">Invite code</label><input id="j-code" name="code" type="text" required maxlength="120" autocomplete="off" spellcheck="false" placeholder="AG1-…">
-    <label for="j-name">Name of this node in the group (optional)</label><input id="j-name" name="name" type="text" maxlength="80">
+    <label for="j-url">Address of the inviting node <span class="hint">or paste the whole invite (scanned QR text)</span></label><input id="j-url" name="url" type="text" inputmode="url" required maxlength="600" placeholder="https://home.example.net" autocomplete="off" spellcheck="false">
+    <label for="j-code">Invite code</label><input id="j-code" name="code" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="AG1-…">
+    <label for="j-name">Name of this node in the group (optional)</label><input id="j-name" name="name" type="text" maxlength="80" value="{{ (form or {}).get('name', '') }}">
+    {{ preset_choice(preset_diffs, (form or {}).get('preset') or 'same_owner', (form or {}).get('with_admin')) }}
     <p><button type="submit">Continue</button></p>
   </form>
+</section>
+{% elif step == 'done' %}
+<section class="card success" aria-labelledby="e-done" data-enrol-step="done" data-enrol-state="{{ row.state }}"><h2 id="e-done">{% if row.state == 'active' %}{{ (peer.name if peer else 'The node') }} is {{ 'now in' if row.side == 'inviter' else 'joined to' }} {{ group.name if group else 'the group' }}{% else %}Certificate issued{% endif %}</h2>
+  {% if row.state != 'active' %}<p>Waiting for {{ peer.name if peer else 'the new node' }} to confirm on its side. It joins as soon as its administrator presses <strong>Join group</strong>.</p>{% endif %}
+  {% if peer %}<p><code class="fingerprint">{{ fp(peer.node_id) }}</code> · {{ peer.name }} · {{ peer.url }}</p>{% endif %}
+  <h3>This node's policy</h3>
+  {% if not row.preset %}<p class="small">Unchanged (custom): edit it under <a href="/admin/group#policy">Policy</a>.</p>
+  {% elif row.state == 'active' %}<p data-preset-applied="{{ row.preset }}"><span class="badge ok">{{ preset_label }}</span>{% if row.preset_admin %} <span class="badge warn">+ administrators</span>{% endif %}</p>
+  {% if preset_applied %}<ul class="small">{% for label in preset_applied %}<li>{{ label }}</li>{% endfor %}</ul>{% else %}<p class="small muted">It already matched; nothing changed.</p>{% endif %}
+  {% else %}<p class="small">“{{ preset_label }}” is applied when the new node has joined.</p>{% endif %}
+  {% if row.preset_admin %}<p class="small">Administrator rights through the group still need a grant: <a href="/admin/group/grants">issue one on the grants form</a> (holder of the group root, typed confirmation). Nothing was issued automatically.</p>{% endif %}
+  <p class="small muted">Accounts are never matched by name or email. To use the same account on both nodes, link it once: <a href="/me/linked-nodes">Link my account on both nodes</a>. Catalogue sync between members is set up on <a href="/admin/peers">Peers</a>.</p>
+  <p><a class="btn" href="/admin/group">Back to the group</a></p>
 </section>
 {% else %}
 <section class="card" aria-labelledby="e-sas" data-enrol-step="sas" data-enrol-state="{{ row.state }}"><h2 id="e-sas">Compare the numbers</h2>
@@ -32,12 +69,17 @@
   <p><code class="fingerprint big"><strong>{{ fp(peer.node_id) }}</strong></code><br><span class="small">{{ peer.name }} · {{ peer.url }}</span></p>{% endif %}
   {% if sas %}<p class="small muted">Both screens must show exactly this number:</p>
   <p class="sas" data-sas><strong>{{ sas }}</strong></p>
+  <p class="sas-read visually-hidden">{% for ch in sas %}{% if ch != '-' %}{{ ch }} {% endif %}{% endfor %}</p>
   {% else %}<p class="muted">Waiting for the joining node to reveal its part of the number…</p>{% endif %}
   <dl class="facts"><dt>Enrolment</dt><dd><code>{{ row.id }}</code></dd><dt>State</dt><dd>{{ row.state }}</dd>
-  {% if row.side == 'inviter' %}<dt>Permissions offered</dt><dd><ul class="chips">{% for s in row.scopes %}<li class="chip">{{ s }}</li>{% endfor %}</ul></dd>{% endif %}</dl>
+  {% if row.side == 'inviter' %}<dt>Permissions offered</dt><dd><ul class="chips">{% for s in row.scopes %}<li class="chip">{{ s }}</li>{% endfor %}</ul></dd>{% endif %}
+  <dt>Trust on this node</dt><dd data-enrol-preset="{{ row.preset or 'custom' }}">{{ preset_label }}{% if row.preset_admin %} + administrators{% endif %}</dd></dl>
+  {% if row.preset %}<div class="card inset" data-preset-changes><h3>What this changes on this node</h3>
+  {% if preset_changes %}<ul>{% for d in preset_changes %}<li>{{ d.label }}: {{ d['from'] }} → <strong>{{ d.to }}</strong></li>{% endfor %}</ul>{% else %}<p class="small">Nothing: the policy already matches.</p>{% endif %}
+  <p class="small muted">Applied when the join completes. Delegated administrator rights stay off{% if row.preset_admin %} until a grant is issued{% endif %}.</p></div>{% endif %}
   {% if sas and row.state in ('revealed', 'confirmed') %}
   <form method="post" action="/admin/group/enrolment/{{ row.id }}/confirm">{{ csrf(p.csrf) }}
-    <label><input type="checkbox" name="matches" required> The numbers match on both screens.</label>
+    <label><input type="checkbox" name="matches" required> The numbers match on both screens</label>
     {% if needs_root %}<label for="e-root">Root passphrase</label><input id="e-root" name="root_passphrase" type="password" required maxlength="256" autocomplete="off">{% endif %}
     {% if row.side == 'inviter' %}<label for="e-acct">Your current account password</label><input id="e-acct" name="password" type="password" maxlength="256" autocomplete="current-password">{% endif %}
     <p><button type="submit">{{ 'Issue certificate' if row.side == 'inviter' else ('Join group' if row.state == 'revealed' else 'Check again') }}</button></p>

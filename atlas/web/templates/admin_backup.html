@@ -17,8 +17,8 @@
   <p class="small muted">Archives contain password hashes and this node's signing key, so they are never offered for download here. Fetch them from the folder, encrypt them off-site, and rehearse a restore: <code>atlas backup verify FILE</code>, then <code>atlas backup restore FILE</code> into a fresh database.</p>
 </div>
 {% if backups %}
-<table><thead><tr><th>File</th><th>Size</th><th>Written (UTC)</th></tr></thead><tbody>
-{% for b in backups %}<tr><td><code>{{ b.name }}</code></td><td>{{ (b.size / 1048576)|round(1) }} MB</td><td>{{ b.when.strftime('%Y-%m-%d %H:%M') }}</td></tr>{% endfor %}
+<table><thead><tr><th>File</th><th>Size</th><th>Written</th></tr></thead><tbody>
+{% for b in backups %}<tr><td><code>{{ b.name }}</code></td><td>{{ (b.size / 1048576)|round(1) }} MB</td><td>{{ when(b.when) }}</td></tr>{% endfor %}
 </tbody></table>
 {% endif %}
 {% endblock %}

@@ -26,7 +26,7 @@ from .deps import (
     user_page,
 )
 from .deps import Page as Ctx
-from .routes import _proposal_card, render, safe_next, when
+from .routes import _proposal_card, render, safe_next
 
 router = APIRouter()
 _STATUS = {"not_found": 404, "forbidden": 403, "conflict": 409}
@@ -56,7 +56,7 @@ def profile(username: str, p: Annotated[Ctx, Depends(page)]):
     accepted = []
     for pr in p.session.scalars(select(Proposal).where(Proposal.proposer_id == u.id, Proposal.status == "approved")
                                 .order_by(Proposal.decided_at.desc()).limit(15)):
-        accepted.append({"kind": pr.kind.replace("_", " "), "cid": pr.canonical_id, "when": when(pr.decided_at),
+        accepted.append({"kind": pr.kind.replace("_", " "), "cid": pr.canonical_id, "when": pr.decided_at,
                          "title": game_title(p, pr.canonical_id) if pr.canonical_id else "(new game)"})
     lists = list(p.session.scalars(select(UserList).where(UserList.user_id == u.id, UserList.public.is_(True))))
     counts = {lst.id: len(p.session.scalars(select(ListItem.canonical_id).where(ListItem.list_id == lst.id)).all())
@@ -242,7 +242,7 @@ def following(p: Annotated[Ctx, Depends(user_page)]):
 def notifications(p: Annotated[Ctx, Depends(user_page)]):
     rows = list(p.session.scalars(select(Notification).where(Notification.user_id == p.me.id)
                                   .order_by(Notification.created_at.desc()).limit(100)))
-    return render(p, "notifications.html", rows=rows, when=when)
+    return render(p, "notifications.html", rows=rows)
 
 
 @router.post("/notifications/read")

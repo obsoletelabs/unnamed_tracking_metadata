@@ -26,8 +26,9 @@ KIND_CHOICES = (("", "Not set"), ("progression", "Progression"), ("missable", "M
 # obsoletelabs/unnamed_tracking_metadata#110; here it is also gated by the federation emit protocol (C1.6).
 TIER_CHOICES = (("", "Not set"), ("bronze", "Bronze"), ("silver", "Silver"), ("gold", "Gold"),
                 ("platinum", "Platinum"))
-PLATINUM_GATED_NOTE = ("Platinum cannot be published by this node yet: its federation emit protocol is below 1.2. "
-                       "An administrator raises it under Admin → Peers once every follower is upgraded.")
+# SPEC-UI-POLISH-PASS §3.6 (D5): the gate stays in code until the version-unification PR; the UI names no protocol.
+PLATINUM_GATED_NOTE = ("Platinum cannot be published by this node yet: it needs every follower on this Atlas release. "
+                       "An administrator turns it on under Admin → Peers → Compatibility once they are upgraded.")
 EXTRA_PLATINUM_NOTE = ("Another row is already platinum. Platinum usually marks completing the whole list; "
                        "keep more than one only if the game really has several.")
 FIELDS = ("kind", "tier", "points", "hidden", "icon_url", "locked_icon_url")
@@ -136,11 +137,15 @@ def _others(p: Page, cid: str) -> list[dict[str, Any]]:
     return [m for m in facets.merged_achievements(p.session, p.st.ctx, cid) if m["id"] not in mine_only]
 
 
+# §8.1: longer lists start as one line per row; shorter ones open so a quick fix needs no extra click.
+COLLAPSE_AFTER = 8
+
+
 def _editor_ctx(p: Page, g: Any, rows: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
     _decorate(p, g.id, rows)
     return {"g": g, "title": g.view.get("title"), "rows": rows, "kinds": KIND_CHOICES, "tiers": TIER_CHOICES,
             "platinum_gated": facets.platinum_gated(p.st.ctx), "others": _others(p, g.id), "max_rows": MAX_ROWS,
-            **extra}
+            "ach_collapsed": len(rows) > COLLAPSE_AFTER, **extra}
 
 
 # ---- reading the submitted rows ----------------------------------------------------------------------

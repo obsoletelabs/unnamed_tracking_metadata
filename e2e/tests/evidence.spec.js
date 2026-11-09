@@ -45,7 +45,7 @@ test('evidence: user management (#66)', async ({ page }, info) => {
 test('evidence: achievement editor (#97)', async ({ page }, info) => {
   await page.goto(`/game/${enc(seed()['Starlight Harbor'])}/achievements/edit`);
   await page.getByRole('button', { name: '+ Add a row' }).click();
-  const row = page.locator('fieldset[data-row]').last();
+  const row = page.locator('[data-row]').last();
   await row.locator('input[name^="name."]').fill('Lantern Lighter');
   await row.locator('input[name^="points."]').fill('25');
   await shoot(page, 'achievement-editor', info);

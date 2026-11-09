@@ -39,6 +39,9 @@ Achievements from different sources are merged by normalised name. The highest-t
 
 ## On the website
 
+The counts above the list are filter links that work without JavaScript (`?ach=all`, `platinum`, `rare`
+(under 15 %), `hidden`, `unobtainable`, or `set:<key>` for one set); on a phone the list becomes cards.
+
 The game page lists achievements with icon, kind, tier, points and global percentage, in the order editors gave them (then by rarity). Hidden ones are concealed: signed-out visitors see "Hidden achievement" and a *Sign in to reveal* link; signed-in members see a **Reveal (spoiler)** button that fetches the real name and description only when they click it.
 
 ![Achievements on a game page](img/achievements-desktop.png)
@@ -47,7 +50,10 @@ The game page lists achievements with icon, kind, tier, points and global percen
 
 ![The achievement editor with a row that needs fixing](img/achievement-editor-desktop.png)
 
-Signed-in members use **Edit achievements** on the game page. Each achievement is a row with separate fields: name, description, kind and tier (selects), points, a *hidden* checkbox, and an unlocked and a locked icon (paste an address **or** upload a file; stored icons show a preview, addresses that are not downloaded yet say so and are never shown from the other site). Rows can be added, removed and moved up or down (without JavaScript: use *Add a row* and the *Remove this row* checkbox; reordering needs JavaScript).
+Signed-in members use **Edit achievements** on the game page. Each row starts as one line (icons, name, tier,
+points); long lists start closed and a row that needs fixing is always open. With JavaScript a filter box and
+*Open all* / *Close all* appear, and a bar at the bottom counts rows and changes. Each achievement has separate
+fields: name, description, kind and tier (selects), points, a *hidden* checkbox, and an unlocked and a locked icon (paste an address **or** upload a file; stored icons show a preview, addresses that are not downloaded yet say so and are never shown from the other site). Rows can be added, removed and moved up or down (without JavaScript: use *Add a row* and the *Remove this row* checkbox; reordering needs JavaScript).
 
 * **What is assigned and what is empty.** The editor edits the list *this community* contributes. Other sources (for example Steam) keep their own entries, and where they have a value theirs wins; yours only fills gaps. So an empty field means nothing is assigned by you, and where another source already provides a value the empty select or box says so ("from steam: gold"). Entries from other sources are listed read-only below the editor.
 * **Checks per row.** Each row reports its own problems (missing name, points that are not a number, bad addresses, images that are not images, duplicate names) and the page cannot be previewed until they are fixed.

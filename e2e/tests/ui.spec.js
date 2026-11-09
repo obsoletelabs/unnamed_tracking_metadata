@@ -59,7 +59,8 @@ test('administration tabs are one grouped list with the current tab, and a phone
   await page.goto('/admin/peers');
   const tabs = page.getByRole('list', { name: 'Administration' });
   await expect(tabs.locator('a[aria-current=page]')).toHaveText('Peers');
-  await expect(tabs.locator('.tab-group')).toHaveText(['Node', 'Catalogue', 'Federation', 'Operations']);
+  // U3 §3.7: "Federation" carries a muted "optional" while this node has no peers and no group
+  await expect(tabs.locator('.tab-group')).toHaveText(['Node', 'Catalogue', /^Federation( optional)?$/, 'Operations']);
   await expect(tabs.locator('a[aria-current=page]')).toBeInViewport();
   expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
   // Sync health uses the C13 words: never "degraded". The seeded quarantined entries really failed to apply, so the

@@ -15,6 +15,13 @@ Search responses use a 30-second TTL. Cache keys include the normalized query an
 
 When Redis is unavailable, the process falls back to local memory rather than making the metadata API unavailable. A multi-node deployment should provide Redis when consistent cache sharing is required.
 
+## Pages and the date format
+
+Anonymous HTML pages are `Cache-Control: public, max-age=30` and carry `Vary: Cookie`, because a visitor who
+chose a date format (the `atlas_date` cookie) gets pages in that format; such responses are
+`private, no-store`. A CDN in front of the site must honour `Vary: Cookie` (or bypass HTML caching when any
+cookie is present), or one visitor's date format would be served to others.
+
 ## Invalidation
 
 Canonical mutations should invalidate affected search/metadata keys rather than relying only on short TTLs. Cache invalidation is advisory: every cached response has a bounded TTL and can be rebuilt from PostgreSQL.

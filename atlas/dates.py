@@ -20,7 +20,7 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from . import vocab
@@ -381,30 +381,252 @@ def parse_bound(value: Any, name: str) -> PartialDate | None:
         raise DateError(f"{name}: {exc}") from exc
 
 
-# ---- display ------------------------------------------------------------------------------------------
+# ---- display: the one formatter (SPEC-UI-POLISH-PASS §6) ---------------------------------------------------
 
-# str.format, not strftime: strftime pads (or does not pad) years before 1000 differently per platform.
-_DAY_FORMATS = {"iso": "{y:04d}-{m:02d}-{d:02d}", "dmy": "{d:02d}.{m:02d}.{y:04d}", "mdy": "{m:02d}/{d:02d}/{y:04d}",
-                "ymd": "{y:04d}/{m:02d}/{d:02d}"}
-_MONTH_FORMATS = {"iso": "{y:04d}-{m:02d}", "dmy": "{m:02d}.{y:04d}", "mdy": "{m:02d}/{y:04d}",
-                  "ymd": "{y:04d}/{m:02d}"}
+#: The viewer's date styles (profile field `date_format`). `dmy` is the default for everyone who has not chosen.
+STYLES: tuple[str, ...] = ("dmy", "long", "mdy", "iso")
+DEFAULT_STYLE = "dmy"
+#: Values older releases stored, mapped where they are read (no data migration: the profile history is signed, §6.4).
+LEGACY_STYLES: dict[str, str | None] = {"locale": None, "ymd": "iso"}
+STYLE_LABELS = {"dmy": "31/12/2026 (day/month/year)", "long": "31 December 2026", "mdy": "12/31/2026 (month/day/year)",
+                "iso": "2026-12-31 (ISO)"}
+TIME_FORMATS: tuple[str, ...] = ("24h", "12h")
+TIME_LABELS = {"24h": "14:05 (24-hour)", "12h": "2:05 PM (12-hour)"}
+MONTHS: tuple[str, ...] = tuple(calendar.month_name)[1:]  # English until the interface is translated (H18)
+
+# str.format, never strftime: strftime pads (or does not pad) years before 1000 differently per platform.
+_DAY = {"dmy": "{d:02d}/{m:02d}/{y:04d}", "mdy": "{m:02d}/{d:02d}/{y:04d}", "iso": "{y:04d}-{m:02d}-{d:02d}",
+        "long": "{d} {month} {y:04d}"}
+_PLACEHOLDER = {"dmy": ("dd/mm/yyyy, mm/yyyy or yyyy", "dd/mm/yyyy"),
+                "long": ("17 September 2020, September 2020 or 2020", "17 September 2020"),
+                "mdy": ("mm/dd/yyyy, mm/yyyy or yyyy", "mm/dd/yyyy"),
+                "iso": ("yyyy-mm-dd, yyyy-mm or yyyy", "yyyy-mm-dd")}
 
 
-def display(value: Any, precision: Any = None, prefs: dict[str, Any] | None = None) -> str:
-    """A release date as text, showing only what is known (part 7.3). A year is always just the year; a
-    month is "April 2011" unless the viewer chose a numeric date format; a day follows the viewer's date
-    format (ISO by default, as before). Anything invalid is shown unchanged."""
-    when = try_parse(value, precision, any_year=True)
+def style_of(prefs: Any = None) -> str:
+    """The viewer's date style: unset, unknown or legacy `locale` -> `dmy`; legacy `ymd` -> `iso`."""
+    value = prefs.get("date_format") if isinstance(prefs, dict) else None
+    if value in LEGACY_STYLES:
+        value = LEGACY_STYLES[value]
+    return value if value in STYLES else DEFAULT_STYLE
+
+
+def style_chosen(prefs: Any = None) -> bool:
+    """True when the viewer explicitly chose a date style (a legacy `locale` counts as not chosen, H-UI5)."""
+    value = prefs.get("date_format") if isinstance(prefs, dict) else None
+    return value in STYLES or value == "ymd"
+
+
+def _clock(prefs: dict, style: str) -> str:
+    fmt = prefs.get("time_format")
+    fmt = fmt if fmt in TIME_FORMATS else None  # legacy "locale" means unset
+    return fmt or ("12h" if style == "mdy" else "24h")
+
+
+def _day_text(y: int, m: int, d: int, style: str) -> str:
+    return _DAY[style].format(y=y, m=m, d=d, month=MONTHS[m - 1])
+
+
+def _zone(prefs: dict):
+    """The viewer's time zone, or None for UTC (Atlas then says so, H-UI9)."""
+    name = prefs.get("time_zone")
+    if not name:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001 - unknown zone or no tz database on this platform: UTC
+        return None
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def format_day(value: Any, precision: Any = None, prefs: Any = None) -> str:
+    """A calendar date as text, showing only what is known (C5 part 7.3): a year is the year; a month is
+    "September 2020" (ISO: "2020-09"); a day follows the viewer's style (`dmy` by default). A datetime is shown as
+    the day it is in the viewer's time zone. Anything that is not a date is shown unchanged."""
+    if value is None or value == "":
+        return ""
+    prefs = prefs if isinstance(prefs, dict) else {}
+    style = style_of(prefs)
+    if isinstance(value, datetime):
+        local = _aware(value).astimezone(_zone(prefs) or UTC)
+        return _day_text(local.year, local.month, local.day, style)
+    if isinstance(value, date):
+        return _day_text(value.year, value.month, value.day, style)
+    when = value if isinstance(value, PartialDate) else try_parse(value, precision, any_year=True)
     if when is None:
-        return "" if value is None else str(value)
-    style = (prefs or {}).get("date_format") or ""
+        return str(value)
     d = when.start()
     if when.precision == "year":
         return when.value
     if when.precision == "month":
-        fmt = _MONTH_FORMATS.get(style)
-        return fmt.format(y=d.year, m=d.month) if fmt else f"{calendar.month_name[d.month]} {d.year}"
-    return _DAY_FORMATS.get(style, _DAY_FORMATS["iso"]).format(y=d.year, m=d.month, d=d.day)
+        return when.value if style == "iso" else f"{MONTHS[d.month - 1]} {d.year:04d}"
+    return _day_text(d.year, d.month, d.day, style)
+
+
+def display(value: Any, precision: Any = None, prefs: dict[str, Any] | None = None) -> str:
+    """Deprecated alias of `format_day`, kept for one release (callers outside the web layer may import it)."""
+    return format_day(value, precision, prefs)
+
+
+def _relative(dt: datetime, now: datetime, zone: Any) -> str | None:
+    seconds = (now - dt).total_seconds()
+    ahead = seconds < 0
+    seconds = abs(seconds)
+    if seconds < 60:
+        return "in under a minute" if ahead else "just now"
+    if seconds < 3600:
+        n = int(seconds // 60)
+        return f"in {n} min" if ahead else f"{n} min ago"
+    if seconds < 86400:
+        n = int(seconds // 3600)
+        return f"in {n} h" if ahead else f"{n} h ago"
+    if not ahead and (now.astimezone(zone).date() - dt.astimezone(zone).date()).days == 1:
+        return "yesterday"
+    return None
+
+
+def format_instant(dt: Any, prefs: Any = None, *, relative: bool = False, now: datetime | None = None) -> str:
+    """A moment for display in the viewer's style, time format and time zone; without a time zone it is UTC and
+    says so ("17/09/2020 14:05 UTC"). `relative` gives "5 min ago", "3 h ago", "yesterday", then the absolute
+    form (callers keep the absolute value in `title` and `<time datetime>`)."""
+    if dt is None or dt == "":
+        return ""
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except ValueError:
+            return dt
+    if not isinstance(dt, datetime):
+        return format_day(dt, None, prefs)
+    prefs = prefs if isinstance(prefs, dict) else {}
+    style = style_of(prefs)
+    zone = _zone(prefs)
+    local = _aware(dt).astimezone(zone or UTC)
+    if relative:
+        text = _relative(_aware(dt), _aware(now or datetime.now(UTC)), zone or UTC)
+        if text:
+            return text
+    if _clock(prefs, style) == "12h":
+        hour = local.hour % 12 or 12
+        clock = f"{hour}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'}"
+    else:
+        clock = f"{local.hour:02d}:{local.minute:02d}"
+    day = _day_text(local.year, local.month, local.day, style)
+    text = f"{day}, {clock}" if style == "long" else f"{day} {clock}"
+    return text if zone is not None else f"{text} UTC"
+
+
+def iso_of(value: Any) -> str:
+    """The machine value for `<time datetime>`: ISO 8601 (UTC for moments), or the partial date as stored."""
+    if isinstance(value, datetime):
+        return _aware(value).astimezone(UTC).isoformat().replace("+00:00", "Z")
+    if isinstance(value, date):
+        return value.isoformat()
+    return "" if value is None else str(value)
+
+
+def placeholder(prefs: Any = None, *, partial: bool = True) -> str:
+    """The entry hint for a date field in the viewer's style (§7.1)."""
+    pair = _PLACEHOLDER[style_of(prefs)]
+    return pair[0] if partial else pair[1]
+
+
+# ---- entry: what a person may type into a date field (§7.2) ---------------------------------------------
+
+@dataclass(frozen=True)
+class EntryResult:
+    ok: PartialDate | None = None
+    ambiguous: tuple[PartialDate, PartialDate] | None = None
+    error: str | None = None
+
+
+_SEP = r"[/.\-]"
+_NUMERIC = re.compile(r"(\d{1,2})" + _SEP + r"(\d{1,2})" + _SEP + r"(\d{4})\Z", re.ASCII)
+_YEAR_FIRST = re.compile(r"(\d{4})" + _SEP + r"(\d{1,2})(?:" + _SEP + r"(\d{1,2}))?\Z", re.ASCII)
+_MONTH_YEAR = re.compile(r"(\d{1,2})" + _SEP + r"(\d{4})\Z", re.ASCII)
+_D_MON_Y = re.compile(r"(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\.?,?\s+(\d{4})\Z", re.ASCII)
+_MON_D_Y = re.compile(r"([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\Z", re.ASCII)
+_MON_Y = re.compile(r"([A-Za-z]+)\.?,?\s+(\d{4})\Z", re.ASCII)
+
+
+def _month_name(word: str) -> int | None:
+    """A month from its English name or any prefix of at least three letters ("Sep", "Sept", "September")."""
+    word = word.lower()
+    if len(word) < 3:
+        return None
+    for i, name in enumerate(MONTHS, start=1):
+        if name.lower().startswith(word):
+            return i
+    return None
+
+
+def _build(y: int, m: int | None, d: int | None, any_year: bool) -> PartialDate:
+    value = f"{y:04d}" + (f"-{m:02d}" if m else "") + (f"-{d:02d}" if d else "")
+    return parse(value, any_year=any_year)
+
+
+def _readable(y: int, m: int, d: int, any_year: bool) -> PartialDate | None:
+    if not 1 <= m <= 12:
+        return None
+    try:
+        return _build(y, m, d, any_year)
+    except DateError:
+        return None
+
+
+def parse_entry(text: Any, prefs: Any = None, *, any_year: bool = False) -> EntryResult:
+    """Read a typed date in any accepted form. ISO is always unambiguous; `a/b/yyyy` is read in the viewer's
+    style (`mdy` as month/day, every other style as day/month) and is ambiguous when both readings are dates,
+    unless the viewer chose a style explicitly. Release dates keep C5.1's year range unless `any_year`."""
+    raw = " ".join(str(text or "").split())
+    if not raw:
+        return EntryResult(error="enter a date")
+    try:
+        if PARTIAL_RE.fullmatch(raw):
+            return EntryResult(ok=parse(raw, any_year=any_year))
+        if m := _YEAR_FIRST.fullmatch(raw):
+            y, mo, d = int(m[1]), int(m[2]), int(m[3]) if m[3] else None
+            if not 1 <= mo <= 12:
+                return EntryResult(error=f"{raw} has no month {mo}")
+            return EntryResult(ok=_build(y, mo, d, any_year))
+        if m := _MONTH_YEAR.fullmatch(raw):
+            mo, y = int(m[1]), int(m[2])
+            if not 1 <= mo <= 12:
+                return EntryResult(error=f"{raw} has no month {mo}")
+            return EntryResult(ok=_build(y, mo, None, any_year))
+        if m := _NUMERIC.fullmatch(raw):
+            a, b, y = int(m[1]), int(m[2]), int(m[3])
+            low, high = (LEGACY_YEAR_MIN, LEGACY_YEAR_MAX) if any_year else (YEAR_MIN, YEAR_MAX)
+            if not low <= y <= high:
+                return EntryResult(error=f"a release year is between {YEAR_MIN} and {YEAR_MAX}")
+            month_first = style_of(prefs) == "mdy"
+            first = _readable(y, a, b, any_year) if month_first else _readable(y, b, a, any_year)
+            second = _readable(y, b, a, any_year) if month_first else _readable(y, a, b, any_year)
+            if first is None and second is None:
+                return EntryResult(error=f"{raw} is not a calendar date")
+            if first is None or second is None or first == second or style_chosen(prefs):
+                return EntryResult(ok=first or second)
+            return EntryResult(ambiguous=(first, second))
+        for pattern, order in ((_D_MON_Y, "dmy"), (_MON_D_Y, "mdy")):
+            if m := pattern.fullmatch(raw):
+                d, word = (int(m[1]), m[2]) if order == "dmy" else (int(m[2]), m[1])
+                mo = _month_name(word)
+                if mo is None:
+                    return EntryResult(error=f"{word} is not a month")
+                return EntryResult(ok=_build(int(m[3]), mo, d, any_year))
+        if m := _MON_Y.fullmatch(raw):
+            mo = _month_name(m[1])
+            if mo is None:
+                return EntryResult(error=f"{m[1]} is not a month")
+            return EntryResult(ok=_build(int(m[2]), mo, None, any_year))
+    except DateError as exc:
+        return EntryResult(error=str(exc))
+    return EntryResult(error=f"{raw} is not a date this field accepts ({placeholder(prefs)})")
 
 
 def region_name(code: str | None) -> str:

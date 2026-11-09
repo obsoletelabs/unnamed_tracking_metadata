@@ -174,3 +174,123 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   }
 })();
+
+// One-time date-format offer (SPEC-UI-POLISH-PASS §7.4). The server renders it hidden only while no format was
+// chosen; it is shown to an en-US browser in a US time zone (both, H-UI3). Dismissing hides it in this browser.
+var US_ZONES = ["America/New_York", "America/Detroit", "America/Chicago", "America/Menominee", "America/Denver",
+  "America/Boise", "America/Phoenix", "America/Los_Angeles", "America/Anchorage", "America/Juneau", "America/Sitka",
+  "America/Metlakatla", "America/Yakutat", "America/Nome", "America/Adak", "Pacific/Honolulu", "America/Puerto_Rico"];
+var US_ZONE_PREFIXES = ["America/Kentucky/", "America/Indiana/", "America/North_Dakota/"];
+function atlasLooksUS(lang, tz) {
+  if (lang !== "en-US" || !tz) { return false; }
+  if (US_ZONES.indexOf(tz) >= 0) { return true; }
+  for (var i = 0; i < US_ZONE_PREFIXES.length; i += 1) { if (tz.indexOf(US_ZONE_PREFIXES[i]) === 0) { return true; } }
+  return false;
+}
+(function () {
+  var offer = document.querySelector("[data-date-offer]");
+  if (!offer) { return; }
+  var dismissed = false;
+  try { dismissed = window.localStorage.getItem("atlas.dateOfferDismissed") === "1"; } catch (e) { dismissed = false; }
+  var lang = (navigator.languages && navigator.languages[0]) || navigator.language || "";
+  var tz = "";
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { tz = ""; }
+  if (!dismissed && atlasLooksUS(lang, tz)) { offer.hidden = false; }
+  var close = offer.querySelector("[data-date-offer-dismiss]");
+  if (close) {
+    close.addEventListener("click", function () {
+      offer.hidden = true;
+      try { window.localStorage.setItem("atlas.dateOfferDismissed", "1"); } catch (e) { /* private mode */ }
+    });
+  }
+})();
+
+// Copy buttons (§5.4): [data-copy="<id>"] copies that element's text (or value) and announces "Copied".
+document.addEventListener("click", function (e) {
+  var b = e.target.closest("[data-copy]");
+  if (!b) { return; }
+  e.preventDefault();
+  var el = document.getElementById(b.getAttribute("data-copy"));
+  if (!el) { return; }
+  var text = el.value !== undefined && el.tagName !== "CODE" ? el.value : el.textContent;
+  var live = document.getElementById("live-status");
+  function done(ok) {
+    if (live) { live.textContent = ok ? "Copied" : "Select the text and copy it"; }
+    b.setAttribute("data-copied", ok ? "yes" : "no");
+  }
+  function fallback() {
+    var range = document.createRange();
+    range.selectNodeContents(el);
+    var sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (err) { ok = false; }
+    done(ok);
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text.trim()).then(function () { done(true); }, fallback);
+  } else { fallback(); }
+});
+
+// Join form (§5.3): a pasted invite payload {"v":1,"type":"atlas-group-invite","url","code"} fills both fields.
+document.addEventListener("paste", function (e) {
+  var input = e.target;
+  if (!input || input.id !== "j-url") { return; }
+  var text = (e.clipboardData || window.clipboardData).getData("text");
+  var data = null;
+  try { data = JSON.parse(text); } catch (err) { return; }
+  if (!data || data.type !== "atlas-group-invite" || data.v !== 1 || !data.url || !data.code) { return; }
+  e.preventDefault();
+  input.value = data.url;
+  var code = document.getElementById("j-code");
+  if (code) { code.value = data.code; }
+  var live = document.getElementById("live-status");
+  if (live) { live.textContent = "Address and code filled from the invite"; }
+});
+
+// Achievement editor toolbar (§8.1 AE3): filter rows by name, expand or collapse every row, count changes.
+(function () {
+  var rows = document.getElementById("ach-rows");
+  var bar = document.querySelector("[data-ach-toolbar]");
+  if (!rows || !bar) { return; }
+  bar.hidden = false;
+  var filter = bar.querySelector("[data-ach-filter]");
+  var counter = document.querySelector("[data-ach-count]");
+  var start = {};
+  function each(fn) { var list = rows.querySelectorAll("[data-row]"); for (var i = 0; i < list.length; i += 1) { fn(list[i]); } }
+  function snapshot(row) {
+    var out = [];
+    var inputs = row.querySelectorAll("input, select, textarea");
+    for (var i = 0; i < inputs.length; i += 1) {
+      var el = inputs[i];
+      out.push(el.type === "checkbox" ? String(el.checked) : (el.type === "file" ? String(el.files && el.files.length) : el.value));
+    }
+    return out.join("\u0001");
+  }
+  each(function (row) { start[row.getAttribute("data-row-key")] = snapshot(row); });
+  function count() {
+    if (!counter) { return; }
+    var n = 0, changed = 0;
+    each(function (row) { n += 1; if (start[row.getAttribute("data-row-key")] !== snapshot(row)) { changed += 1; } });
+    counter.textContent = n + " row" + (n === 1 ? "" : "s") + " · " + changed + " changed";
+  }
+  if (filter) {
+    filter.addEventListener("input", function () {
+      var q = filter.value.trim().toLowerCase();
+      each(function (row) {
+        var name = row.querySelector("input[name^='name.']");
+        row.hidden = q !== "" && (!name || name.value.toLowerCase().indexOf(q) < 0);
+      });
+    });
+  }
+  bar.addEventListener("click", function (e) {
+    var t = e.target.closest("[data-ach-expand]");
+    if (!t) { return; }
+    var open = t.getAttribute("data-ach-expand") === "open";
+    each(function (row) { row.open = open; });
+  });
+  rows.addEventListener("input", count);
+  rows.addEventListener("change", count);
+  new MutationObserver(count).observe(rows, {childList: true});
+  count();
+})();

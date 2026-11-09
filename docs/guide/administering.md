@@ -6,6 +6,12 @@ Everything here is in the **Admin** area (administrators only). Almost nothing n
 
 ## Overview
 
+**Getting started.** Until every item is done, the top of **Admin → Overview** lists what a node needs: a secret
+key, a metadata provider, some records, a backup newer than 7 days, two-factor sign-in for your account, and on a
+personal (`local`) node closed registration. The public address appears only once the node follows a peer or is in
+a group. *Connect to other nodes* is optional and never counts as unfinished: a node with no peers works on its
+own. **Hide this list** hides it on this node (stored in `node_state`); a small link shows it again.
+
 **Admin → Overview** shows the node's role and id, replication position, providers, users (role, status, email state, external sign-in permission) and a **recent activity log**: settings changed, proposals decided, roles changed, tokens created, peers added. Every moderation and admin action is recorded with who did it.
 
 ## Settings

@@ -49,8 +49,19 @@
 {% if p.rights and p.rights.federated %}<p class="flash group-session" role="status">Signed in through another node of your group.{% if p.rights.banner %} {{ p.rights.banner }}{% endif %}</p>
 {% elif p.rights and p.rights.banner %}<p class="flash group-session" role="status">{{ p.rights.banner }}</p>{% endif %}
   {% if p.flash %}<div class="flash" role="status">{{ p.flash }}</div>{% endif %}
+  {% if date_offer %}{# §7.4: shown by app.js only to en-US browsers in a US time zone; nothing without scripts #}
+  <aside class="offer" data-date-offer hidden aria-labelledby="date-offer-q">
+    <p id="date-offer-q"><strong>Show dates as 09/17/2020 (month/day/year)?</strong> <span class="small muted">This site shows 17/09/2020 (day/month/year) unless you choose.</span></p>
+    <div class="offer-actions">
+      <form class="inline" method="post" action="/prefs/date-format">{% if p.user %}{{ csrf(p.csrf) }}{% endif %}<input type="hidden" name="value" value="mdy"><input type="hidden" name="next" value="{{ p.request.url.path }}"><button type="submit" data-date-offer-choice="mdy">Use month/day/year</button></form>
+      <form class="inline" method="post" action="/prefs/date-format">{% if p.user %}{{ csrf(p.csrf) }}{% endif %}<input type="hidden" name="value" value="dmy"><input type="hidden" name="next" value="{{ p.request.url.path }}"><button class="secondary" type="submit" data-date-offer-choice="dmy">Keep 17/09/2020</button></form>
+      {% if p.user %}<a class="small" href="/me/settings">More formats</a>{% endif %}
+      <button class="ghost small" type="button" data-date-offer-dismiss aria-label="Dismiss this question">×</button>
+    </div>
+  </aside>{% endif %}
   {% block content %}{% endblock %}
 </div></main>
+<div id="live-status" class="visually-hidden" aria-live="polite"></div>
 <footer><div class="wrap">{{ app_name }}{% if s.node_operator %} · run by {{ s.node_operator }}{% endif %} · {{ s.footer_text }} <a href="/api/v2/site" rel="nofollow">API</a></div></footer>
 </body>
 </html>
