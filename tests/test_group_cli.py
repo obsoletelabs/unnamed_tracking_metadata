@@ -40,7 +40,7 @@ def test_cli_create_invite_join_confirm_members_revoke_status(env, capsys):
     assert run("a", "create", "--name", "Home", "--recovery-out", str(tmp),
                answers=[ROOT_PW, ROOT_PW, REC_PW[0], REC_PW[0]]) == 0
     files = list(tmp.glob("atlas-group-*-recovery-1.json"))
-    assert len(files) == 1 and json.loads(files[0].read_text())["contains"] == ["recovery_key", "root_key"]
+    assert len(files) == 1 and json.loads(files[0].read_text())["contains"] == ["recovery_key", "root_key_wrapped"]
     assert run("a", "status") == 0
     capsys.readouterr()
 
@@ -82,8 +82,9 @@ def test_cli_leave_guard_and_root_export(env, capsys):
     out = tmp / "root.json"
     phrase = "synthetic export phrase 55aa"
     assert run("a", "root", "export-recovery", "--out", str(out), answers=[ROOT_PW, phrase, phrase]) == 0
-    assert json.loads(out.read_text())["contains"] == ["root_key"]
-    assert run("a", "root", "verify-recovery", "--recovery-file", str(out), answers=[phrase]) == 0
+    assert json.loads(out.read_text())["contains"] == ["root_key_wrapped"]
+    # a v2 file (C10 R1-5) wraps G under the root passphrase: verifying it asks for both
+    assert run("a", "root", "verify-recovery", "--recovery-file", str(out), answers=[phrase, ROOT_PW]) == 0
     assert run("a", "leave") == 0
     with nodes["a"].session() as s:
         group = groups.load(s)
@@ -114,8 +115,15 @@ def test_cli_root_import_succession_and_cancel(env, capsys):
     assert run("b", "root", "import", "--recovery-file", file, "--old-root", "decommissioned",
                answers=["not the file passphrase!!"]) == 1
     assert "wrong passphrase" in capsys.readouterr().err
+    # v2 (C10 R1-5): the file's root passphrase unwraps G and stays the root passphrase by default
     assert run("b", "root", "import", "--recovery-file", file, "--old-root", "decommissioned",
-               answers=[REC_PW[0], new_root, new_root]) == 0
+               answers=[REC_PW[0], "not the root passphrase!!"]) == 1
+    assert "wrong root passphrase" in capsys.readouterr().err
+    assert run("b", "root", "import", "--recovery-file", file, "--old-root", "decommissioned", "--new-root-passphrase",
+               answers=[REC_PW[0], ROOT_PW, new_root, new_root, new_rec, new_rec]) == 1
+    assert "--recovery-out FILE is needed" in capsys.readouterr().err
+    assert run("b", "root", "import", "--recovery-file", file, "--old-root", "decommissioned",
+               answers=[REC_PW[0], ROOT_PW]) == 0
     with b.session() as s:
         group = groups.load(s)
         assert group.root_state == "holder" and group.status == "resyncing" and group.root_moved
@@ -126,7 +134,7 @@ def test_cli_root_import_succession_and_cancel(env, capsys):
                answers=[REC_PW[0], root2, root2, new_rec, new_rec]) == 0
     assert "activates in 24 h" in capsys.readouterr().out
     (new_file,) = list(out_dir.glob("*.json"))
-    assert json.loads(new_file.read_text())["contains"] == ["recovery_key", "root_key"]
+    assert json.loads(new_file.read_text())["contains"] == ["recovery_key", "root_key_wrapped"]
     assert run("b", "status") == group_cli.DEGRADED  # a pending succession is degraded
     with b.session() as s:
         assert groups.pending_successions(groups.load(s))

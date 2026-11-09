@@ -452,10 +452,21 @@ def _activated(w):
     (rec,) = w.recovery_keys()
     new = Ed25519PrivateKey.generate()
     succ = w.succession(1, new, [rec])
-    groups.ingest_succession(w.s, w.group, succ, groups.utcnow())
+    # x delivered it, and no other member is left to confirm it: the R1-5 waiver applies (C10 review #1)
+    groups.ingest_succession(w.s, w.group, succ, groups.utcnow(), delivered_by=x.node_id)
     later = groups.utcnow() + timedelta(hours=25)
     assert groups.activate_successions(w.s, w.group, later) == 1
     return x, carried, root, new, later
+
+
+def confirm_view(w, ident, at, index=1):
+    """A member's view issued after the activation delay that shows succession `index` (R1-5 confirmation)."""
+    issued = gc.stamp(at)
+    body = {"node_id": ident.node_id, "state_hash": "0" * 64, "crl_seq": {}, "revoked_count": 0,
+            "succession_index": index - 1, "succession_pending": True, "issued_at": issued}
+    view = gc.make_object("group.view", w.gid, f"view:{ident.node_id}/{issued}", body,
+                          {"kind": "node", "id": ident.node_id, "key_id": ident.key_id}, ident.private)
+    assert groups.ingest_view(w.s, w.group, view, at, own_node=w.me.node_id) == "stored"
 
 
 def test_succession_activates_and_carries_members(w):
@@ -651,7 +662,9 @@ def test_delegate_cannot_ban_a_node_it_did_not_enrol(w):
     assert w.verdict(me) == "ok" and w.group.status == "active"
     w.apply(w.crl(d, [*early["body"]["entries"], groups.crl_entry(root_lookalike, "removed", groups.utcnow()),
                       groups.crl_entry(own, "removed", groups.utcnow())], 3))
-    assert w.s.get(GroupBannedNode, (w.gid, x.node_id)).reason == "removed"  # its own enrolee: banned
+    # its own enrolee: banned, as a ban derived on every read (C10 R1-13), never stored
+    assert w.s.get(GroupBannedNode, (w.gid, x.node_id)) is None
+    assert w.trust().banned[x.node_id].reason == "removed"
     assert w.verdict(own) == "revoked"
 
 
@@ -763,14 +776,17 @@ def test_succession_issued_with_recovery_file_activates_here(w):
         w.root()
     later = groups.utcnow() + timedelta(hours=25)
     groups.rebuild(w.s, w.group, w.me.node_id, later)
+    assert groups.pending_successions(w.group)  # due, but no other member has confirmed it yet (R1-5)
+    confirm_view(w, x, later)
+    groups.rebuild(w.s, w.group, w.me.node_id, later)
     new_id = obj["body"]["new_root_key_id"]
     assert w.group.root_key_id == new_id and w.group.root_state == "holder"
     assert w.s.get(groups.NodeState, groups.SUCCESSION_ROOT) is None
     new_root = groups.unlock_root(w.s, w.settings, w.group, NEW_ROOT_PW)
     assert gc.key_id_of(gc.ed_public_b64(new_root)) == new_id
     assert w.verdict(cx, later) == "ok" and w.verdict(cbad, later) == "not_carried"
-    reopened = gc.open_recovery_file(files[0], NEW_REC_PW)  # the 1-of-1 file now holds G'
-    assert gc.key_id_of(gc.ed_public_b64(reopened.root)) == new_id
+    reopened = gc.open_recovery_file(files[0], NEW_REC_PW)  # the 1-of-1 file now holds G' (wrapped, v2)
+    assert gc.key_id_of(gc.ed_public_b64(gc.recovery_root(reopened, NEW_ROOT_PW))) == new_id
     y = synth()
     member = w.member(y)
     cert = groups.issue_cert(w.s, w.group, w.me, member, w.pop(y, member), list(groups.DEFAULT_SCOPES), None,

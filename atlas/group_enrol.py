@@ -315,7 +315,8 @@ def confirm_inviter(session: Session, settings: Settings, group: OwnerGroup, ide
     kind = _secret(settings, row).get("kind")
     root = groups.unlock_root(session, settings, group, root_passphrase or "") if kind == "root" else None
     if kind == "delegate":
-        fresh = groups.freshness(session, group, identity.node_id, None, settings.group_view_max_age_hours, now)
+        fresh = groups.freshness(session, group, identity.node_id, None, settings.group_view_max_age_hours, now,
+                                 action="enrol")
         if not fresh.ok:
             raise GroupError(f"a delegated enrolment needs a fresh view of the group: {fresh.reason}", "conflict")
     hello_body = row.transcript["hello"]

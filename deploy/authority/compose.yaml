@@ -11,6 +11,7 @@ x-atlas: &atlas
     ATLAS_DATABASE_URL: postgresql+psycopg://atlas:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db/atlas
     ATLAS_AUTO_MIGRATE: "false"   # the migrate job runs first; replicas never race on the schema
     ATLAS_MEDIA_DIR: /media
+    ATLAS_GROUP_JOURNAL_DIR: /group-journal   # node groups: the revocation journal survives a restore (C10 R1-3)
 
 services:
   caddy:
@@ -42,6 +43,7 @@ services:
     <<: *atlas
     command: ["atlas", "migrate"]
     restart: "no"
+    volumes: ["group-journal:/group-journal"]   # `atlas backup restore` here replays the group journal
     depends_on:
       db: {condition: service_healthy}
 
@@ -52,7 +54,7 @@ services:
     # Not published on the host: only Caddy (same private network) can reach it, which is what makes trusting
     # its forwarded headers safe.
     expose: ["8000"]
-    volumes: ["media:/media"]
+    volumes: ["media:/media", "group-journal:/group-journal"]
     depends_on:
       migrate: {condition: service_completed_successfully}
 
@@ -81,5 +83,6 @@ services:
 volumes:
   pg-data:
   media:
+  group-journal:
   caddy-data:
   caddy-config:

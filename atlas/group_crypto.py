@@ -12,6 +12,7 @@ import hmac
 import json
 import re
 import secrets
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -150,22 +151,59 @@ def x_from_raw(raw: bytes) -> X25519PrivateKey:
 
 # ---- envelope (§1.3) ---------------------------------------------------------------------------------------
 
+MAX_SAFE_INT = 2 ** 53
+
+
+def nfc(text: str) -> str:
+    return unicodedata.normalize("NFC", text)
+
+
+def canonical_ok(value: Any) -> bool:
+    """R1-10: signed group bodies hold no floats, only integers within +/-2^53 and NFC strings (keys included), so
+    every implementation hashes the same bytes. `canonical_json` itself is shared with the feed and unchanged."""
+    if isinstance(value, bool) or value is None:
+        return True
+    if isinstance(value, int):
+        return -MAX_SAFE_INT <= value <= MAX_SAFE_INT
+    if isinstance(value, float):
+        return False
+    if isinstance(value, str):
+        return unicodedata.is_normalized("NFC", value)
+    if isinstance(value, list):
+        return all(canonical_ok(v) for v in value)
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and canonical_ok(k) and canonical_ok(v) for k, v in value.items())
+    return False
+
+
 def object_parts(obj: dict) -> list[str]:
     signer = obj["signer"]
     return [obj["group_id"], signer["kind"], signer["id"], signer["key_id"], obj["id"], obj["body_hash"]]
 
 
+def domain_for(t: str, v: Any) -> bytes:
+    """The signing domain of an object of type `t` at envelope version `v` (C10 §C10.17 R1-10).
+
+    The `...-v1` domains are the `_v: 1` domains. Any other version has no domain until a v2 table exists, so a
+    v2 envelope is never verified (or signed) under a v1 domain. The v1 bytes are unchanged."""
+    if type(v) is not int or v != 1:
+        raise GroupCryptoError(f"no signing domain for {t} at envelope version {v!r}")
+    return DOMAINS[t]
+
+
 def make_object(t: str, group_id: str, oid: str, body: dict, signer: dict, private: Ed25519PrivateKey) -> dict:
+    if not canonical_ok(body):
+        raise GroupCryptoError("a signed group body holds no floats, only safe integers and NFC strings")
     obj = {"t": t, "_v": 1, "group_id": group_id, "id": oid, "body": body,
            "signer": {"kind": signer["kind"], "id": signer["id"], "key_id": signer["key_id"]},
            "body_hash": body_hash(body)}
-    obj["sig"] = sign_message(private, DOMAINS[t], object_parts(obj))
+    obj["sig"] = sign_message(private, domain_for(t, obj["_v"]), object_parts(obj))
     return obj
 
 
 def co_sign(obj: dict, private: Ed25519PrivateKey) -> str:
     """Another key's signature over exactly the message of `obj` (genesis PoPs, succession co-signatures)."""
-    return sign_message(private, DOMAINS[obj["t"]], object_parts(obj))
+    return sign_message(private, domain_for(obj["t"], obj.get("_v")), object_parts(obj))
 
 
 def well_formed(obj: Any, group_id: str | None = None) -> bool:
@@ -182,6 +220,8 @@ def well_formed(obj: Any, group_id: str | None = None) -> bool:
             return False
         if not message_parts_ok(object_parts(obj)) or not isinstance(obj.get("sig"), str):
             return False
+        if not canonical_ok(obj["body"]):
+            return False
         return body_hash(obj["body"]) == obj["body_hash"]
     except (KeyError, TypeError):
         return False
@@ -190,7 +230,11 @@ def well_formed(obj: Any, group_id: str | None = None) -> bool:
 def verify_object(obj: dict, public_b64: str, signature: str | None = None) -> bool:
     if not well_formed(obj):
         return False
-    return verify_message(public_b64, DOMAINS[obj["t"]], object_parts(obj), signature or obj["sig"])
+    try:
+        domain = domain_for(obj["t"], obj["_v"])
+    except GroupCryptoError:
+        return False
+    return verify_message(public_b64, domain, object_parts(obj), signature or obj["sig"])
 
 
 # ---- member proof of possession (§1.3) ---------------------------------------------------------------------
@@ -339,18 +383,31 @@ def recovery_aad(group_id: str, recovery_key_id: str) -> bytes:
     return DOMAINS["recovery_file"] + group_id.encode() + b"\n" + recovery_key_id.encode()
 
 
+RECOVERY_VERSION = 2  # v2 (C10 §C10.17 R1-5): G is wrapped under the root passphrase inside the file
+
+
 def make_recovery_file(genesis: dict, succession: list[dict], recovery: Ed25519PrivateKey | None,
-                       root: Ed25519PrivateKey | None, passphrase: str, created_at: str | None = None) -> dict:
-    """A passphrase-wrapped file holding a recovery key, the root key, or both (`export-recovery` without an
-    existing recovery file holds G only; its key id is then "root")."""
-    if recovery is None and root is None:
-        raise GroupCryptoError("a recovery file holds a recovery key, the root key, or both")
+                       root: Ed25519PrivateKey | None, passphrase: str, created_at: str | None = None, *,
+                       root_passphrase: str | None = None, root_wrapped: dict | None = None) -> dict:
+    """A passphrase-wrapped file holding a recovery key, the root key G, or both (`export-recovery` without an
+    existing recovery file holds G only; its key id is then "root").
+
+    Format v2 (R1-5): G is never stored raw. It is carried as `root_wrapped`, the same `wrap_root` structure as
+    the node's sealed root (scrypt + AES-GCM under the **root** passphrase, AAD the root domain + group id),
+    so cracking the file passphrase yields R only. Pass `root` with `root_passphrase`, or an already wrapped G
+    (`root_wrapped`, one wrap and two copies at creation)."""
     group_id = genesis["group_id"]
+    if root is not None and root_wrapped is None:
+        if not root_passphrase:
+            raise GroupCryptoError("a recovery file holding the root key needs the root passphrase to wrap it (v2)")
+        root_wrapped = wrap_root(root, root_passphrase, group_id)
+    if recovery is None and root_wrapped is None:
+        raise GroupCryptoError("a recovery file holds a recovery key, the root key, or both")
     rid = key_id_of(ed_public_b64(recovery)) if recovery is not None else "root"
     plain = canonical_json({"recovery_private": b64(ed_private_raw(recovery)) if recovery is not None else None,
-                            "root_private": b64(ed_private_raw(root)) if root is not None else None})
-    contains = (["recovery_key"] if recovery is not None else []) + (["root_key"] if root is not None else [])
-    return {"format": RECOVERY_FORMAT, "v": 1, "group_id": group_id, "name": genesis["body"]["name"],
+                            "root_wrapped": root_wrapped})
+    contains = (["recovery_key"] if recovery is not None else []) + (["root_key_wrapped"] if root_wrapped else [])
+    return {"format": RECOVERY_FORMAT, "v": RECOVERY_VERSION, "group_id": group_id, "name": genesis["body"]["name"],
             "created_at": created_at or stamp(), "genesis": genesis, "succession": succession,
             "recovery_key_id": rid, "contains": contains, "wrapped": wrap(plain, passphrase, recovery_aad(group_id, rid))}
 
@@ -359,26 +416,58 @@ def make_recovery_file(genesis: dict, succession: list[dict], recovery: Ed25519P
 class RecoveryKeys:
     group_id: str
     recovery: Ed25519PrivateKey | None
-    root: Ed25519PrivateKey | None
+    root: Ed25519PrivateKey | None  # raw G: only from a v1 file (the UI asks for a re-export)
     genesis: dict
     succession: list[dict]
+    root_wrapped: dict | None = None  # v2: G wrapped under the root passphrase
+    version: int = RECOVERY_VERSION
+
+    @property
+    def holds_root(self) -> bool:
+        return self.root is not None or self.root_wrapped is not None
+
+    @property
+    def legacy_raw_root(self) -> bool:
+        """A v1 file that holds G unprotected: a cracked file passphrase is a full, delay-free takeover."""
+        return self.root is not None
+
+
+def recovery_root(keys: RecoveryKeys, root_passphrase: str | None) -> Ed25519PrivateKey:
+    """G from an opened recovery file: raw from a v1 file, unwrapped with the root passphrase from a v2 file."""
+    if keys.root is not None:
+        return keys.root
+    if keys.root_wrapped is None:
+        raise GroupCryptoError("this recovery file holds no root key")
+    if not root_passphrase:
+        raise WrongPassphrase("this recovery file holds the root key wrapped under the root passphrase")
+    return unwrap_root(keys.root_wrapped, root_passphrase, keys.group_id)
 
 
 def open_recovery_file(data: dict, passphrase: str) -> RecoveryKeys:
     try:
-        if data.get("format") != RECOVERY_FORMAT or data.get("v") != 1:
+        version = data.get("v")
+        if data.get("format") != RECOVERY_FORMAT or version not in (1, 2):
             raise GroupCryptoError("not an Atlas group recovery file")
         group_id, rid = data["group_id"], data["recovery_key_id"]
         plain = json.loads(unwrap(data["wrapped"], passphrase, recovery_aad(group_id, rid)))
         recovery = ed_from_raw(unb64(plain["recovery_private"], 32)) if plain.get("recovery_private") else None
-        root = ed_from_raw(unb64(plain["root_private"], 32)) if plain.get("root_private") else None
+        root = root_wrapped = None
+        if version == 1:
+            root = ed_from_raw(unb64(plain["root_private"], 32)) if plain.get("root_private") else None
+        else:
+            if plain.get("root_private"):
+                raise GroupCryptoError("a v2 recovery file never holds the raw root key")
+            root_wrapped = plain.get("root_wrapped")
+            if root_wrapped is not None and not isinstance(root_wrapped, dict):
+                raise GroupCryptoError("malformed recovery file")
     except (KeyError, TypeError, AttributeError, json.JSONDecodeError) as exc:
         raise GroupCryptoError("malformed recovery file") from exc
-    if recovery is None and (root is None or rid != "root"):
+    if recovery is None and ((root is None and root_wrapped is None) or rid != "root"):
         raise GroupCryptoError("malformed recovery file")
     if recovery is not None and key_id_of(ed_public_b64(recovery)) != rid:
         raise GroupCryptoError("the recovery file's key does not match its key id")
-    return RecoveryKeys(group_id, recovery, root, data["genesis"], list(data.get("succession") or []))
+    return RecoveryKeys(group_id, recovery, root, data["genesis"], list(data.get("succession") or []),
+                        root_wrapped=root_wrapped, version=version)
 
 
 # ---- enrolment: invite code, transcript, SAS (§2.2, §2.3) ---------------------------------------------------

@@ -286,7 +286,8 @@ def _add_grants(session: Session, settings: Settings, user: User, login: UserSes
     for g in grants:
         b = g["body"]
         issuer = None if b["issuer"] == "root" else b["issuer"]
-        fresh = groups.freshness(session, group, own_node, issuer, settings.group_view_max_age_hours, tr=tr)
+        fresh = groups.freshness(session, group, own_node, issuer, settings.group_view_max_age_hours, tr=tr,
+                                 action="grant")
         if not fresh.ok:
             r.banner = f"Your group role is paused on this node: {fresh.reason}."
             continue

@@ -74,7 +74,8 @@ def assertion(idp, idp_user: str, rp, now: datetime | None = None, **over) -> di
                                 granted_at=now or groups.utcnow()))
         a = group_channel.sign_assertion(s, group, idp.identity, aud_node=rp.node_id, uid=over.pop("uid", uid),
                                          nonce="n" * 32, state_hash="s" * 43, auth_time=now or groups.utcnow(),
-                                         amr=["pwd"], username_hint="tester", now=now)
+                                         amr=["pwd"], username_hint="tester", now=now,
+                                         **{k: over.pop(k) for k in ("purpose", "witness") if k in over})
         s.commit()
         return a
 

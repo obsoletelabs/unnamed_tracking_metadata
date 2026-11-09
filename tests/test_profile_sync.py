@@ -210,7 +210,8 @@ def _cert_end(node, of) -> object:
 
 
 def test_expired_certificate_inside_grace_takes_only_the_advertised_head(pair):
-    """After `not_after`, only entries up to the head advertised before expiry, inside 72 h (§1.5, A11-g/y)."""
+    """After `not_after`, only entries up to the head advertised before expiry, inside 72 h (§1.5, A11-g/y). Since
+    C10 review #1 (R1-4) such an entry is held, not applied, and blocks its stream until a renewal or the grace end."""
     a, b, ua, ub = pair
     edit(b, ub, "theme", "dark")
     edit(b, ub, "ui.density", "compact")
@@ -225,8 +226,8 @@ def test_expired_certificate_inside_grace_takes_only_the_advertised_head(pair):
         row.advertised_head, row.advertised_at = theme["seq"], end - timedelta(hours=1)
         s.commit()
     outs = deliver(a, entries, now=end + timedelta(hours=1), served_by=b.node_id)
-    assert outs == [(theme["seq"], "applied", ""), (theme["seq"] + 1, "rejected", "origin_expired")]
-    assert shown(a, ua, "theme") == "dark" and shown(a, ua, "ui.density") is None
+    assert outs == [(theme["seq"], "held", "origin_expired")]
+    assert shown(a, ua, "theme") is None and shown(a, ua, "ui.density") is None
 
 
 def test_expired_certificate_outside_grace_is_rejected(pair):

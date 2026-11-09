@@ -376,14 +376,19 @@ def cmd_sync(_args) -> int:
 def cmd_resync(args) -> int:
     def run(session, settings, identity):
         group = _group(session)
+        if args.confirm_root:  # R1-3: the owner ends a skipped trust epoch with the root passphrase
+            groups.confirm_trust_epoch(session, settings, group, _ask("Root passphrase: "), cli=True)
+            print("skipped resync confirmed with the root passphrase (audited)")
+            return 0
         if group.status != "resyncing":
             print(f"the group is {group.status}; nothing to do")
             return 0
         if not args.skip:
             raise groups.GroupError("pull every member with `atlas group sync`; or --skip (audited)")
-        group.status = "active"
-        groups.audit(session, None, "group_resync_skipped", group.group_id, {}, cli=True)
-        print("resync skipped (audited)")
+        groups.skip_resync(session, group, cli=True)
+        print("resync skipped (audited): a new trust epoch starts. Privileged group actions need a fresh view from "
+              "a third member until a full `atlas group sync` succeeds; in a two-member group, until the other "
+              "member answers, or `atlas group resync --confirm-root`")
         return 0
 
     return _run(run)
@@ -422,21 +427,26 @@ def cmd_root(args) -> int:
     def run(session, settings, identity):
         group = _group(session)
         if args.root_cmd == "export-recovery":
-            root = groups.unlock_root(session, settings, group, _ask("Root passphrase: "))
+            root_phrase = _ask("Root passphrase: ")
+            root = groups.unlock_root(session, settings, group, root_phrase)
             phrase = _ask("Passphrase for the new recovery file (14+ characters): ", confirm=True)
             try:
                 gc.check_passphrase(phrase, groups._names(settings, None, group.name))
             except gc.WeakPassphrase as exc:
                 raise groups.GroupError(f"passphrase refused: {exc}") from None
+            if phrase == root_phrase:
+                raise groups.GroupError("use a recovery-file passphrase that differs from the root passphrase")
             recovery = None
             if args.recovery_file:
                 old = gc.open_recovery_file(json.loads(Path(args.recovery_file).read_text("utf-8")),
                                             _ask("Passphrase of that recovery file: "))
                 recovery = old.recovery
+            # v2 (R1-5): G is wrapped under the root passphrase inside the file, never stored raw
             data = gc.make_recovery_file(group.genesis, list(group.succession or []), recovery, root, phrase,
-                                         gc.stamp())
+                                         gc.stamp(), root_passphrase=root_phrase)
             Path(args.out).write_text(json.dumps(data, indent=1), encoding="utf-8")
-            groups.audit(session, None, "group_root_exported", group.group_id, {"out": "file"}, cli=True)
+            groups.audit(session, None, "group_root_exported", group.group_id, {"out": "file", "v": data["v"]},
+                         cli=True)
             print(f"wrote {args.out}; verify it with `atlas group root verify-recovery --recovery-file {args.out}`")
             return 0
         if args.root_cmd == "verify-recovery":
@@ -444,15 +454,36 @@ def cmd_root(args) -> int:
             keys = gc.open_recovery_file(data, _ask("Recovery-file passphrase: "))
             if keys.group_id != group.group_id:
                 raise groups.GroupError("that file belongs to another group")
-            holds_root = keys.root is not None and gc.key_id_of(gc.ed_public_b64(keys.root)) == group.root_key_id
+            holds_root = groups.verify_recovery_root(keys, group, _ask("Root passphrase (the file wraps the root key "
+                                                                       "under it): ") if keys.root_wrapped else None)
             if holds_root:
                 session.merge(groups.NodeState(key=groups.RECOVERY_VERIFIED, value=gc.stamp()))
             print("recovery file verified" + (" (holds the current root key)" if holds_root else " (no root key)"))
+            if keys.legacy_raw_root:
+                print("warning: this is a v1 file holding the root key unprotected; re-export it with "
+                      "`atlas group root export-recovery` (v2 wraps it under the root passphrase)")
             return 0
         if args.root_cmd == "import":
             keys = _open_files([args.recovery_file])[0]
-            phrase = _ask("New root passphrase for this node (14+ characters): ", confirm=True)
-            moved = groups.import_root(session, settings, group, identity, keys, phrase, args.old_root, cli=True)
+            root_phrase = new_phrase = reexport = None
+            if keys.root_wrapped is not None:
+                root_phrase = _ask("Root passphrase (the file wraps the root key under it): ")
+                if args.new_root_passphrase:
+                    new_phrase = _ask("New root passphrase for this node (14+ characters): ", confirm=True)
+                    reexport = _ask("Passphrase for the re-exported recovery file (14+ characters): ", confirm=True)
+            else:
+                print("warning: this v1 recovery file holds the root key unprotected; a v2 re-export is written")
+                new_phrase = _ask("New root passphrase for this node (14+ characters): ", confirm=True)
+                reexport = _ask("Passphrase for the re-exported recovery file (14+ characters): ", confirm=True)
+            if reexport and not args.recovery_out:
+                raise groups.GroupError("--recovery-out FILE is needed: the import writes a re-exported recovery file")
+            done = groups.import_root(session, settings, group, identity, keys, new_phrase, args.old_root,
+                                      root_passphrase=root_phrase, reexport_passphrase=reexport, cli=True)
+            if done.reexport is not None:  # written before the import commits (R1-5)
+                Path(args.recovery_out).write_text(json.dumps(done.reexport, indent=1), encoding="utf-8")
+                print(f"wrote the re-exported recovery file {args.recovery_out}; keep it offline, the old file is "
+                      "now out of date")
+            moved = done.moved
             print(f"the group root is now on this node; other members learn it from {moved['id']}")
             print("this node is resyncing: run `atlas group sync` (or `atlas group resync --skip` if the old root "
                   "node is gone for good) before any root operation")
@@ -566,6 +597,8 @@ def register(sub) -> None:
     ga.add_parser("sync").set_defaults(fn=cmd_sync)
     rs = ga.add_parser("resync")
     rs.add_argument("--skip", action="store_true")
+    rs.add_argument("--confirm-root", action="store_true",
+                    help="end a skipped resync's trust epoch with the root passphrase (C10 R1-3)")
     rs.set_defaults(fn=cmd_resync)
     ne = ga.add_parser("new-epoch", help="open a new epoch of this node's change streams (after a clone fork)")
     ne.set_defaults(fn=cmd_new_epoch)
@@ -582,6 +615,9 @@ def register(sub) -> None:
     im.add_argument("--recovery-file", required=True)
     im.add_argument("--old-root", required=True, choices=("decommissioned", "running"),
                     help="is the old root node destroyed, or still running?")
+    im.add_argument("--new-root-passphrase", action="store_true",
+                    help="choose a new root passphrase (default: keep the one the file wraps the root key under)")
+    im.add_argument("--recovery-out", help="file for the re-exported recovery file (needed with a new passphrase)")
     im.set_defaults(fn=cmd_root)
     sc = roa.add_parser("succession", help="replace a stolen or lost root key with a recovery quorum")
     sc.add_argument("--recovery-file", action="append", required=True, help="repeat for a 2-of-3 quorum")
