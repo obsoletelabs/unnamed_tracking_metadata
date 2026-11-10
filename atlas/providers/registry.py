@@ -102,6 +102,21 @@ class Fetcher:
         with self._lock:
             return self._budgets.setdefault((p.name, kind), _Budget(cap, cap))
 
+    def _node_budget(self, session: Session, p: Provider) -> bool:
+        """The database-counted budget per credential (CONTRACT-C14 §4.3 step 6), shared by every process on
+        this node; the per-process bucket stays as a local brake."""
+        from .. import provider_budget
+
+        if not isinstance(session, Session) or not isinstance(getattr(p, "requests_per_minute", None), int):
+            return True
+        return provider_budget.allows(session, self.settings, p)
+
+    def _count(self, session: Session, p: Provider) -> None:
+        from .. import provider_budget
+
+        if isinstance(session, Session) and isinstance(getattr(p, "requests_per_minute", None), int):
+            provider_budget.count(session, self.settings, p)
+
     def _cached(self, session: Session, provider: str, key: str) -> ProviderCache | None:
         return session.get(ProviderCache, (provider, key))
 
@@ -142,7 +157,7 @@ class Fetcher:
                 m.provider_cache.inc(provider=p.name, result="stale")
                 return stale, "stale_served"
             raise self._held_back(p, "circuit_open", f"{p.name} is temporarily unavailable (circuit open)")
-        if not b.take():
+        if not self._node_budget(session, p) or not b.take():
             if stale is not None:
                 m.provider_backoff.inc(provider=p.name, reason="budget_exhausted")
                 m.provider_cache.inc(provider=p.name, result="stale")
@@ -150,6 +165,7 @@ class Fetcher:
             raise self._held_back(p, "budget_exhausted", f"{p.name} request budget exhausted; retry shortly")
         token = CURRENT_PROVIDER.set(p.name)
         try:
+            self._count(session, p)
             if kind == "search":
                 results = p.search(self.client, arg)
             else:
@@ -240,7 +256,7 @@ class Fetcher:
         m.provider_cache.inc(provider=p.name, result="miss")
         usable = row is not None and not row.negative
         b = self._budget(p, "fetch")
-        if self._clock() < b.open_until or not b.take():
+        if self._clock() < b.open_until or not self._node_budget(session, p) or not b.take():
             reason = "circuit_open" if self._clock() < b.open_until else "budget_exhausted"
             m.provider_backoff.inc(provider=p.name, reason=reason)
             if usable:
@@ -249,6 +265,7 @@ class Fetcher:
             return empty, "unavailable"
         token = CURRENT_PROVIDER.set(p.name)
         try:
+            self._count(session, p)
             data = call(p, fn)
         except ProviderError:
             with self._lock:

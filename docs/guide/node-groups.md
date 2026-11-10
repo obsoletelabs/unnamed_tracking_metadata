@@ -400,3 +400,79 @@ On the admin strip each member also carries a **Catalogue sync** chip (on, faili
 step of an enrolment shows it for the new member. Joining a group does not copy records by itself in this release:
 the chip only reports whether this node follows that member on **Peers** (matched by node ID, or by address). To
 share catalogues, follow the member there like any other peer, from both nodes.
+
+## Asking your nodes
+
+A node in a group asks the other members for games it is waiting for, and for images it cannot fetch. Everything
+travels inside the sealed member call; nothing new is published in this node's feed.
+
+**When it asks.** Whenever a change from a peer waits for its game (Admin → Peers → *Entries waiting for their
+record*), the game is queued once. Waiting rows that existed before the upgrade are queued by a background pass,
+500 per group round, which pauses (never skips) while the queue is full (`group_assist_max_jobs`, 5 000). At the
+end of every group round up to `group_assist_run_limit` (50) due games are asked for: one `assist.find` per member
+with up to 100 games, then `assist.fetch` from the first member that has one. A member that does not know these
+calls (an older release) is never asked. If nobody has a game the node asks again after 1 hour, 6 hours, 24 hours,
+then daily, and after `group_assist_give_up_days` (30) the waiting card says **None of your nodes has this game
+either (asked dd/mm/yyyy)**. The waiting entries keep waiting either way. **Ask my nodes** on the card asks again
+at once, also after it gave up (`POST /api/v2/group/assist/ask`, `read` scope).
+
+**What an answer is.** A member answers only from what it holds: published data, and its own provider data when
+its policy shares that in the group. It never answers for a record it keeps on that node only or private, never
+passes on what it got from the group, never sends data from a library app or plugin, and never forwards the
+question. Its answer is signed for this node and this request. This node keeps it as observations of the source
+`atlas-group` (trust 5, below every provider) and of the providers, all marked as group data, on a record that is
+**group only**: it is never signed into this node's public feed, and visitors see it only if **Show group data to
+visitors** is on. Search keys are taken only when free; an answer never merges or redirects records.
+
+**When waiting changes apply.** A member's copy is not proof that the upstream published the game. The waiting
+changes of feed F apply at once only when:
+
+* the member sends F's own signed entry that introduced the game, and it checks out against the key this node
+  pinned for F; or
+* the member *is* F (its feed key is the one this node pinned for F) and vouches for the game.
+
+Otherwise the card says **<member> has this game and applied these changes there** with **Use what <member>
+has**. With the **same owner** preset (`group_assist_auto_adopt`) this happens without the click. Either way it can
+be undone: `atlas group assist forget <node>` (add `--dry-run` to count first) puts those changes back to waiting
+and removes what that member's answers brought. A member removed from the group is forgotten automatically; a
+member whose answer failed a check is *suspect* for an hour, during which its offers are paused. When this node's
+own pull of F later brings the game, the group's copy steps aside and the game is no longer group only.
+
+If a member merged the game into another one, this node does not follow the merge: it notes the hint on the card
+and asks for the other game as its own.
+
+**Images.** The media worker fetches an image from a member (`assist.blob`, in 192 KiB pieces checked against the
+image's digest) when the origin fails, or before the origin with the preset (`group_assist_group_before_origin`).
+A member serves only images it may share, and an image whose source terms forbid caching never travels. Links
+that arrive in an answer are untrusted: only `https` links on port 443 without user names or key-like query
+parameters are kept, and their bytes are fetched only through the media fetcher, which refuses private, loopback,
+link-local (cloud metadata) and IPv4-mapped addresses before connecting, connects to the address it checked, and
+checks every redirect again.
+
+**Provider lookups (`group_assist_lookups`).** With **answer**, this node runs provider lookups for members that
+ask, from its own keys and only out of the share of its budget it does not keep for itself
+(`group_assist_lookup_reserve`, 50 %). Its keys never leave it, and the answer carries only public result fields
+with checked `https` links. With **answer+ask**, `POST /api/v2/group/assist/lookup` (`contribute` scope) asks the
+member with the most room; with a record it keeps the result there as group data. Each provider's budget is
+counted per key across every process of the node, and nodes of the group that share one key split it between
+them automatically.
+
+**Shared proposal state (`group_share_contribution_state`).** When a node proposes changes to a main Atlas, its
+other nodes show the state of each proposal (waiting for review, applied) on Admin → Group. Only states travel,
+never values, notes or account data. Turning it off on a node stops it sending and taking, and withdraws what it
+had shared.
+
+| Setting | Values | Default | Same owner preset |
+|---|---|---|---|
+| `group_assist_ask` | on / off | on | on |
+| `group_assist_answer` | off / public / group | public | group |
+| `group_assist_share_provider_data` | none / fields / fields+media / fields+media+achievements | none | fields+media+achievements |
+| `group_assist_lookups` | off / answer / answer+ask | off | answer+ask |
+| `group_assist_lookup_reserve` | percent kept for this node | 50 | 50 |
+| `group_assist_auto_adopt` | on / off | off | on |
+| `group_assist_group_before_origin` | on / off | off | on |
+| `group_share_contribution_state` | on / off | on | on |
+
+`atlas group assist status` shows the queue; `atlas group assist run` asks now. Migration `0039` adds the tables;
+downgrading below it is refused while answers from the group are kept, until each member is forgotten or
+`ATLAS_DOWNGRADE_FORCE=1` is set.

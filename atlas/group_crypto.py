@@ -53,10 +53,14 @@ DOMAINS: dict[str, bytes] = {
     "sealreq": b"atlas-grp-sealreq-v1\n",
     "root_wrap": b"atlas-grp-root-v1\n",
     "recovery_file": b"atlas-grp-recovery-v1\n",
+    # CONTRACT-C14 §1.4: helper-signed bundles and lookup attestations (C14-2), and contribution state shared in the
+    # owner group (H67, §7.7). Both use the C10 envelope; no consumer of group state accepts either type.
+    "group.assist": b"atlas-grp-assist-v1\n",
+    "group.contrib_state": b"atlas-grp-contrib-v1\n",
 }
 SAS_INFO = b"atlas-grp-sas-v1"  # HKDF info only, never signed
 OBJECT_TYPES = ("group.genesis", "group.succession", "group.succession_cancel", "group.root_moved", "group.cert",
-                "group.crl", "group.grant", "group.view")
+                "group.crl", "group.grant", "group.view", "group.assist", "group.contrib_state")
 SEAL_SUITE = "x25519-chacha20poly1305-v1"
 SKEW = 300  # seconds (§1.3)
 SUPPORTED_VERSION = 1

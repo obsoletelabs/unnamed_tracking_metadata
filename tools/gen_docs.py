@@ -79,6 +79,30 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "group_public_categories": ("Federation", "Scopes (C14): space-separated field categories visitors may see of "
                                 "data from your nodes while `group_data_public_pages` is on (`identity release "
                                 "platforms classification credits series external_ids cover_art` by default)."),
+    "group_assist_ask": ("Federation", "Asking your nodes (C14): ask the other members of the owner group for "
+                         "games this node waits for and images it cannot fetch. Also on Admin → Group."),
+    "group_assist_answer": ("Federation", "Asking your nodes: what this node answers members with: `off`, "
+                            "`public` (published data only, the default) or `group` (also its own provider data, "
+                            "as `group_assist_share_provider_data` allows)."),
+    "group_assist_share_provider_data": ("Federation", "Asking your nodes: which of this node's provider data it "
+                                         "shares in the group with `group_assist_answer = group`: `none`, `fields`, "
+                                         "`fields+media` or `fields+media+achievements`."),
+    "group_assist_lookups": ("Federation", "Asking your nodes: provider lookups for members: `off`, `answer` (run "
+                             "them from this node's keys) or `answer+ask` (also ask members)."),
+    "group_assist_lookup_reserve": ("Federation", "Asking your nodes: percent of each provider budget kept for this "
+                                    "node's own lookups (0-95, default 50)."),
+    "group_assist_auto_adopt": ("Federation", "Asking your nodes: apply waiting changes a member reports it applied "
+                                "without the \"Use what <member> has\" click (same-owner preset)."),
+    "group_assist_group_before_origin": ("Federation", "Asking your nodes: fetch images from a member before their "
+                                         "origin (same-owner preset); otherwise only when the origin fails."),
+    "group_share_contribution_state": ("Federation", "Share the state of this node's proposals to a main Atlas with "
+                                       "the other members of the owner group, and show theirs (on by default)."),
+    "group_assist_max_jobs": ("Federation", "Asking your nodes: the most games queued at once (5000)."),
+    "group_assist_run_limit": ("Federation", "Asking your nodes: games asked for per group round (50)."),
+    "group_assist_give_up_days": ("Federation", "Asking your nodes: days after which a game nobody has is no longer "
+                                  "asked for automatically (30)."),
+    "group_assist_max_answer": ("Federation", "Asking your nodes: largest answer this node sends, in bytes "
+                                "(512 KiB)."),
     "sync_batch_size": ("Federation", "Feed entries fetched per request."),
     "sync_max_parked_backlog": ("Federation", "Entries a follower keeps downloading, verifying and relaying after the "
                                 "first entry it had to park (it needs a newer release). Above this it pauses downloading "

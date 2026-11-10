@@ -91,6 +91,16 @@
   {% else %}{{ g.peer or 'The upstream' }} has not published this game's record yet, only changes to it. These changes will apply on their own when the game arrives.{% endif %}</p>
   <details><summary>Copy a note for {{ g.peer or 'the upstream' }}'s operator</summary><textarea class="small" readonly rows="3" id="note-{{ loop.index }}" aria-label="Note for the upstream's operator">{{ g.note }}</textarea> <button class="secondary small" type="button" data-copy="note-{{ loop.index }}">Copy</button></details>
   <p class="small muted">{{ g.count }} entr{{ 'y' if g.count == 1 else 'ies' }} from <code>{{ g.node_id[:16] }}</code>, waiting since {{ when(g.since_dt) }}.</p>
+  {% if waiting.in_group %}{% set a = g.assist %}<div class="assist-line" data-assist-state="{{ a.state if a else 'none' }}">
+  {% if a and a.state == 'offer' %}<p class="small">{{ a.helper }} has this game and applied these changes there. <span class="muted">Its copy is not proof that {{ g.peer or 'the upstream' }} published it; you can take it now and undo it later with <code>atlas group assist forget</code>.</span></p>
+    <form method="post" action="/admin/peers/assist/adopt" class="inline">{{ csrf(p.csrf) }}<input type="hidden" name="item" value="{{ a.item }}"><button class="secondary small" type="submit">Use what {{ a.helper }} has</button></form>
+  {% elif a and a.state == 'merge_hint' %}<p class="small">{{ a.helper }} merged this game into {% if a.title %}<strong>{{ a.title }}</strong>{% else %}<code>{{ a.survivor }}</code>{% endif %}. This node asked your nodes for that game too; the changes still wait for {{ g.peer or 'the upstream' }}.</p>
+  {% elif a and a.state == 'not_from_feed' %}<p class="small">Your nodes sent this game{% if a.helper %} ({{ a.helper }}){% endif %}; it shows here only for you and your nodes. These changes apply once {{ g.peer or 'the upstream' }} publishes it.</p>
+  {% elif a and a.state == 'none_has_it' %}<p class="small">None of your nodes has this game either{% if a.at %} (asked {{ when(a.at) }}){% endif %}.</p>
+  {% elif a and a.state == 'media_type_not_adopted' %}<p class="small">Your nodes have this item, but it is of a media type this node does not describe (Admin → Schema).</p>
+  {% elif a and a.state in ('asked', 'queued') %}<p class="small">Asked your nodes{% if a.at %} ({{ when(a.at) }}){% endif %}. No answer yet; asking again later.</p>{% endif %}
+  {% if waiting.asking and (not a or a.state in ('none_has_it', 'media_type_not_adopted', 'asked')) %}<form method="post" action="/admin/peers/assist/ask" class="inline">{{ csrf(p.csrf) }}<input type="hidden" name="cid" value="{{ g.canonical_id }}"><button class="secondary small" type="submit">Ask my nodes</button></form>{% endif %}
+  </div>{% endif %}
 </div>{% endfor %}
 {% if waiting.records > waiting.groups|length %}<p class="small muted">Showing the first {{ waiting.groups|length }} of {{ waiting.records }} records.</p>{% endif %}
 </section>{% endif %}

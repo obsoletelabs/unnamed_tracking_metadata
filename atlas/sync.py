@@ -161,10 +161,22 @@ def _named(kind: str, body: dict[str, Any]) -> list[str]:
     return feed.named(kind, body)
 
 
-def missing_record(session: Session, kind: str, body: dict[str, Any]) -> str | None:
-    """The first record an entry names that this node does not hold (C13 §5.2), or None."""
+def missing_record(session: Session, kind: str, body: dict[str, Any], node_id: str | None = None) -> str | None:
+    """The first record an entry names that this node does not hold (C13 §5.2), or None.
+
+    A record this node holds only from the owner group (created from a helper's bundle, `scope_ceiling_by =
+    "assist"`, CONTRACT-C14 §3.4) still counts as missing for feed `node_id` unless that feed introduced it here
+    (`introduced_by`), the entry itself introduces it, or the group gave evidence for that feed (class 1 or an
+    accepted class 2 wake, §3.5): a helper's word never lets a new entry skip the wait (T-A17)."""
+    created = None
+    if kind in ("obs", "record", "detach") and isinstance(body, dict):
+        created = body.get("new_canonical_id" if kind == "detach" else "canonical_id")
     for cid in _named(kind, body):
-        if session.get(Canonical, cid) is None:
+        row = session.get(Canonical, cid)
+        if row is None:
+            return cid
+        if node_id is not None and row.scope_ceiling_by == "assist" and cid != created \
+                and not introduced_by(session, node_id, cid):
             return cid
     return None
 
@@ -196,12 +208,13 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         log.warning("invalid feed entry %s (%s) from %s: %s", seq, kind, node_id, outcome.message)
         _record(session, node_id, seq, kind, QUARANTINE, "invalid", outcome.message, outcome.detail)
         return QUARANTINE
-    if (waiting := missing_record(session, kind, outcome.body or {})) is not None:
+    if (waiting := missing_record(session, kind, outcome.body or {}, node_id)) is not None:
         if existing is None or existing.disposition != WAIT or existing.resolved_at is not None:
             log.info("feed entry %s (%s) from %s waits for record %s", seq, kind, node_id, waiting)
         _record(session, node_id, seq, kind, WAIT, WAITING_FOR_RECORD,
                 f"waiting for record {waiting}: the feed has not introduced it yet", {"kind": kind},
                 waiting_for=waiting, count=existing is None or existing.disposition != WAIT)
+        _ask_group(session, ctx, waiting, node_id)
         return WAIT
     try:
         with session.begin_nested():
@@ -225,6 +238,11 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         body = outcome.body or {}
         created = body.get("new_canonical_id" if kind == "detach" else "canonical_id")
         if isinstance(created, str):
+            held = session.get(Canonical, created)
+            if held is not None and held.scope_ceiling_by == "assist":
+                from . import assist  # C14 §3.4 step 9: this node's own pull now introduced a group record
+
+                assist.on_feed_introduced(session, ctx, node_id, created)
             trigger = kind
             if kind == "obs" and isinstance(body.get("observation"), dict) \
                     and body["observation"].get("source") == feed_schema.RECORD_SOURCE:
@@ -277,6 +295,18 @@ def _named_fields(kind: str) -> tuple[str, ...]:
     return feed.NAMES.get(kind, ())
 
 
+def _ask_group(session: Session, ctx: Ctx, cid: str, node_id: str) -> None:
+    """CONTRACT-C14 §3.1: a record this node waits for becomes one job for the owner group to answer (nothing
+    happens outside a group, or with `group_assist_ask` off)."""
+    from . import assist
+
+    try:
+        with session.begin_nested():
+            assist.note_missing(session, ctx.settings, cid, "waiting_for_record", node_id)
+    except Exception:  # noqa: BLE001 - asking the group is a hint; the wait row is what counts
+        log.exception("could not queue a group question for %s", cid)
+
+
 def introduced_by(session: Session, node_id: str, cid: str) -> bool:
     """Whether `node_id`'s feed introduced record `cid` here (C13 §5.3 scope): an observation that feed signed sits
     on it (an `obs`, the `record` / bridge observation, or the observation a `detach` of that feed moved onto it),
@@ -285,13 +315,17 @@ def introduced_by(session: Session, node_id: str, cid: str) -> bool:
 
     if session.get(Observation, feed.record_obs_id(node_id, cid)) is not None:
         return True
-    return session.scalars(select(Observation.id).where(
-        Observation.canonical_id == cid, Observation.origin_node == node_id).limit(1)).first() is not None
+    if session.scalars(select(Observation.id).where(
+            Observation.canonical_id == cid, Observation.origin_node == node_id).limit(1)).first() is not None:
+        return True
+    from . import assist  # C14 §3.5: class 1 evidence, or an accepted class 2 wake, for this feed
+
+    return assist.feed_may_apply(session, node_id, cid)
 
 
 #: C13 §9.1 `atlas_sync_woken_total{node_id, trigger}`: how many records arrived and applied what waited for them,
 #: kept in node state (`sync_woken:<trigger>:<feed>`) so every worker and the metrics collector see one count.
-WOKEN_TRIGGERS = ("obs", "record", "bridge", "detach")
+WOKEN_TRIGGERS = ("obs", "record", "bridge", "detach", "group")
 
 
 def woken_counts(session: Session) -> dict[tuple[str, str], int]:
@@ -2092,7 +2126,7 @@ def rescan(session: Session, node_id: str) -> dict[str, int]:
         abandoned = existing is not None and existing.disposition == WAIT and existing.reason == ABANDONED
         if (existing is None or abandoned) and row.kind in _SIDECARS and \
                 feed_schema.classify(row.kind, body).action == APPLY:
-            missing = missing_record(session, row.kind, body)
+            missing = missing_record(session, row.kind, body, node_id)
             if missing is not None:  # C13 §5.6: an earlier release dropped it; it waits for its record now
                 _record(session, node_id, row.seq, row.kind, WAIT, "dropped_by_previous_release",
                         f"waiting for record {missing}: an earlier release dropped this entry because the feed "
@@ -2156,7 +2190,7 @@ def _rescan_waiting(session: Session, node_id: str) -> int:
         entry = session.get(ReplicatedChange, (row.node_id, row.seq))
         if entry is None or not isinstance(entry.body, dict):
             continue
-        waiting = missing_record(session, entry.kind, entry.body)
+        waiting = missing_record(session, entry.kind, entry.body, row.node_id)
         if waiting is not None:
             row.disposition, row.reason, row.waiting_for = WAIT, WAITING_FOR_RECORD, waiting
             converted += 1
