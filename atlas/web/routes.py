@@ -1008,6 +1008,9 @@ def _artwork_of(p: Page, cid: str, aid: str) -> tuple[Any, Any]:
     art = p.session.get(Artwork, aid)
     if art is None or art.canonical_id != g.id or art.blob_hash is None:
         raise HTTPException(404, "No such image.")
+    clause = scope.artwork_clause(p.viewer, p.st.ctx.settings)  # C14 §5.7: an image this viewer may not see
+    if clause is not None and p.session.scalar(select(Artwork.id).where(Artwork.id == art.id, clause)) is None:
+        raise HTTPException(404, "No such image.")
     return g, art
 
 
