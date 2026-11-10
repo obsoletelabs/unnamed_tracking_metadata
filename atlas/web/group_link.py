@@ -144,8 +144,11 @@ def begin_link(p: Ctx, node_id: str, password: str, refuse, chosen: list[str] | 
                via: str = "linked_nodes"):
     """§5.3 steps 1-3 behind both entry points: /me/linked-nodes and, under "Same owner, full trust", the last
     step of an enrolment (SPEC-UI-POLISH-PASS addendum item 1). The person re-enters their password here and
-    checks the other node's fingerprint there; nothing is matched by name or email. `chosen`, when given, is this
-    node's consent (what it may take from and send to the group), saved before the other node is asked."""
+    checks the other node's fingerprint there; nothing is matched by name or email. `chosen`, when given, is the
+    consent picked on the enrolment page (what this node may take from and send to the group). It is NOT saved yet
+    (U3 second review): it is parked with the pending link and only pre-ticks the link wizard when the person comes
+    back; the consent is stored when the link completes. An abandoned attempt leaves the stored consent untouched,
+    and the parked choice expires with the pending link."""
     s, identity = p.session, p.st.ctx.identity
     if not accounts.reauthenticated(p.me, password, p.login):
         return refuse("Confirm your current password to link another node.")
@@ -159,16 +162,17 @@ def begin_link(p: Ctx, node_id: str, password: str, refuse, chosen: list[str] | 
     cert = group_signin.asserting_member(tr, node_id, identity.node_id)
     if cert is None:
         return refuse("That node cannot confirm accounts in this group.")
-    if chosen is not None:
-        profile.set_consent(s, p.me.id, group.group_id, [n for n in chosen if n in profile_schema.REGISTRY])
-    resp = _begin(p, group, cert, node_id, "link", p.me.id, "/me/linked-nodes")
+    pick = None if chosen is None else [n for n in profile_schema.REGISTRY if n in set(chosen)]
+    resp = _begin(p, group, cert, node_id, "link", p.me.id, "/me/linked-nodes", pick=pick)
     groups.audit(s, p.me.id, "group_link_started", p.me.id, {"idp_node": node_id, "via": via})
     return resp
 
 
-def _begin(p: Ctx, group, cert: dict, idp_node: str, purpose: str, link_user_id: str | None, next_url: str):
+def _begin(p: Ctx, group, cert: dict, idp_node: str, purpose: str, link_user_id: str | None, next_url: str,
+           pick: list[str] | None = None):
     """§5.3 steps 2-3 for either purpose: the state row bound to a fresh `atlas_grp_bind` cookie, and the sealed
-    authreq auto-posted to the asserting member's own (certificate) address."""
+    authreq auto-posted to the asserting member's own (certificate) address. `pick` (a link only) is a consent
+    choice made before the link was asked for; it is parked next to the state row, never saved as consent here."""
     s, identity = p.session, p.st.ctx.identity
     _purge(s)
     member = cert["body"]["member"]
@@ -176,6 +180,9 @@ def _begin(p: Ctx, group, cert: dict, idp_node: str, purpose: str, link_user_id:
     s.add(GroupSigninState(id=_h(state), group_id=group.group_id, idp_node=idp_node, purpose=purpose, nonce=nonce,
                            binding=_h(bind), link_user_id=link_user_id, next_url=next_url,
                            expires_at=now + STATE_TTL))
+    if pick is not None and link_user_id is not None:
+        s.add(GroupWebHandle(id=_pick_id(_h(state)), kind=PICK_KIND, payload={"user": link_user_id, "fields": pick},
+                             expires_at=now + STATE_TTL))
     body = {"rp_node": identity.node_id, "idp_node": idp_node, "purpose": purpose, "state_hash": _h(state),
             "nonce": nonce, "issued_at": gc.stamp(now), "not_after": gc.stamp(now + AUTHREQ_TTL)}
     env = gc.make_object("group.authreq", group.group_id, f"authreq:{nonce}", body,
@@ -560,15 +567,41 @@ def _merge_snapshots(first: dict, second: dict) -> dict:
     return out
 
 
+PICK_KIND = "linkpick"
+
+
+def _pick_id(state_hash: str) -> str:
+    return _h(f"{PICK_KIND}:{state_hash}")
+
+
+def _take_pick(p: Ctx, a: dict) -> list[str] | None:
+    """The consent choice parked by `begin_link` for this link attempt, if any (single use)."""
+    state_hash = a["body"].get("state_hash")
+    row = p.session.get(GroupWebHandle, _pick_id(state_hash)) if isinstance(state_hash, str) else None
+    if row is None or row.kind != PICK_KIND:
+        return None
+    p.session.delete(row)
+    if row.payload.get("user") != p.me.id or groups.aware(row.expires_at) < groups.utcnow():
+        return None
+    return [n for n in profile_schema.REGISTRY if n in set(row.payload.get("fields") or [])]
+
+
 def _wizard(p: Ctx, group, a: dict, error: str | None = None) -> HTMLResponse:
-    """The link wizard: per field, this node's value against the other node's, and this node's consent."""
-    accept = profile.accept(p.session, p.st.ctx.settings, p.me.id, group.group_id)
+    """The link wizard: per field, this node's value against the other node's, and this node's consent (pre-ticked
+    from the enrolment page's choice when the link started there, else from the stored consent)."""
+    pick = _take_pick(p, a)
+    if pick is None:
+        accept = profile.accept(p.session, p.st.ctx.settings, p.me.id, group.group_id)
+        consent = set(profile.consent_fields(p.session, p.me.id, group.group_id))
+    else:
+        policy = set(profile.policy_fields(p.st.ctx.settings))
+        accept, consent = [n for n in pick if n in policy], set(pick)
     snap, theirs = _snapshot(p, group, a, accept)
     expires = min(groups.utcnow() + WIZARD_TTL, _wizard_deadline(a))
     handle = _park(p.session, "linkform", {"a": a, "snap": snap, "fetched": accept, "user": p.me.id}, expires)
     return render(p, "group_link_wizard.html", handle=handle, rows=_diff(p, theirs), error=error,
                   idp=_member_name(p, group, a["body"]["iss_node"]), fields=profile_schema.REGISTRY,
-                  consent=set(profile.consent_fields(p.session, p.me.id, group.group_id)),
+                  consent=consent,
                   policy=set(profile.policy_fields(p.st.ctx.settings)))
 
 

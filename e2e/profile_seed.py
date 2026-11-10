@@ -6,8 +6,9 @@ concurrent display-name edit from that member, which opens a review row. It writ
 (the synthetic joiner is not a running node); every value is synthetic.
 Usage (repository root): uv run python e2e/profile_seed.py reset|link [theme]
 The optional theme (default dark) is alice's synced theme; pass `auto` so the emulated colour scheme decides, for a
-real light/dark pair of shots. `profile-sync on|off` sets this node's "Profile sync" policy row (the U3 done-step
-note for preset rows left as the administrator set them).
+real light/dark pair of shots. `profile-sync on|off` sets this node's "Profile sync" policy row (the U3 compare step
+lists it when "Same owner, full trust" will turn it back on); `signin-public on|off` sets the public group sign-in
+buttons row (the U3 done-step note for preset rows an enrolment leaves as the administrator set them).
 """
 
 from __future__ import annotations
@@ -48,8 +49,9 @@ def main(action: str, theme: str = "dark") -> int:
     settings = Settings(_env_file=None, database_url=f"sqlite:///{DB.as_posix()}", role="local")
     engine = make_engine(settings.database_url)
     with make_sessionmaker(engine)() as s:
-        if action == "profile-sync":
-            runtime.save(s, settings, None, {"group_profile_sync": theme == "on"})
+        if action in ("profile-sync", "signin-public"):
+            key = "group_profile_sync" if action == "profile-sync" else "group_signin_public"
+            runtime.save(s, settings, None, {key: theme == "on"})
             s.commit()
             engine.dispose()
             print('{"ok": true}')

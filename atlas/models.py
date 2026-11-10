@@ -1464,7 +1464,7 @@ class GroupWebHandle(Base):
     __tablename__ = "group_web_handle"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256(handle)
-    kind: Mapped[str] = mapped_column(String(10))  # authorize|callback|start (+ consent|linkform, A11 amendment)
+    kind: Mapped[str] = mapped_column(String(10))  # authorize|callback|start (+ consent|linkform A11, linkpick U3)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

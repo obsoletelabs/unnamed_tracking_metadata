@@ -118,11 +118,15 @@ test('group: invite with QR code and preset, compare, done', async ({ page, base
   await expect(page.locator('figure[data-invite-qr] svg')).toBeVisible();
   const code = (await page.locator('[data-invite-code]').innerText()).trim();
   await shoot(page, 'group-invite-qr', info);
+  // U3 second review: "Same owner, full trust" turns profile sync back on; the compare step lists it beforehand
+  py('e2e/profile_seed.py', 'profile-sync', 'off');
+  await page.waitForTimeout(5_500);  // the node picks up policy changes at most every 5 s
   const j = joiner(baseURL, code, info.project.name === 'mobile' ? 'Phone' : 'Laptop');
   await page.goto(`/admin/group/enrolment/${j.enrolment_id}`);
   await page.locator('[data-sas]').waitFor();
   expect((await page.locator('[data-sas]').innerText()).trim()).toBe(j.sas);
   await expect(page.locator('[data-preset-changes]')).toBeVisible();
+  await expect(page.locator('[data-preset-changes]')).toContainText('Sync user preferences in the owner group');
   await shoot(page, 'group-compare', info);
   await page.getByLabel('The numbers match on both screens').check();
   await page.fill('#e-root', ROOT_PW);
@@ -143,16 +147,17 @@ test('group: invite with QR code and preset, compare, done', async ({ page, base
   await shoot(page, 'group-done', info);
   await offer.scrollIntoViewIfNeeded();
   await shoot(page, 'group-done-link-step', info);
-  // U3 review: a preset row the activation left as set here (profile sync off) is named on the done step
-  py('e2e/profile_seed.py', 'profile-sync', 'off');
+  // U3 review: a preset row an enrolment leaves as set here (public sign-in buttons on) is named on the done step
+  py('e2e/profile_seed.py', 'signin-public', 'on');
   try {
     await page.waitForTimeout(5_500);  // the node picks up policy changes at most every 5 s
     await page.reload();
-    await expect(page.locator('[data-preset-kept-key="group_profile_sync"]')).toBeVisible();
+    await expect(page.locator('[data-preset-kept-key="group_signin_public"]')).toBeVisible();
+    await expect(page.locator('[data-preset-kept-key="group_profile_sync"]')).toHaveCount(0);
     await page.locator('[data-preset-kept]').scrollIntoViewIfNeeded();
     await shoot(page, 'group-done-kept', info);
   } finally {
-    py('e2e/profile_seed.py', 'profile-sync', 'on');
+    py('e2e/profile_seed.py', 'signin-public', 'off');
   }
 });
 
