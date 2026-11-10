@@ -86,6 +86,8 @@ These can be changed live in **Admin → Settings** without restarting. Each cha
 | **Group accounts whose grants are ignored here** (`group_denied_accounts`) | text | — | Space-separated group account ids. Their grants add nothing on this node. |
 | **Freshness limit for privileged group actions (hours)** (`group_view_max_age_hours`) | number (1–168) | `24` | Sign-ins and delegated rights need a view of the group from a third node newer than this. |
 | **Days a preference waits for its missing history** (`group_hold_timeout_days`) | number (1–90) | `7` |  |
+| **Show data from your nodes to visitors** (`group_data_public_pages`) | on/off | `False` | Off: visitors who are not signed in (and accounts without the scope detail right) never see anything this node received from your other nodes. On: they see the public field categories below, without any badge, node name or count. |
+| **Field categories visitors may see** (`group_public_categories`) | text | `identity release platforms classification credits series external_ids cover_art` | Space-separated category names (see Admin → Sharing). The rest is shown to signed-in accounts with the scope detail right only. |
 
 ## Artwork
 

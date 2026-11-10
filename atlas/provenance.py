@@ -152,14 +152,24 @@ def _field_value(o: Observation, field: str) -> Any:
     return _value(Obs(o.id, o.source, o.source_kind, o.external_id, o.payload, 0, 0), field)
 
 
-def provenance(session: Session, settings: Settings, row: Canonical, *, curate: bool, values: bool) -> dict[str, Any]:
+def provenance(session: Session, settings: Settings, row: Canonical, *, curate: bool, values: bool,
+               viewer: Any = None) -> dict[str, Any]:
     """`GET /games/{cid}/provenance` (§11.11.1). `values` (curate only) adds candidate values per field, grouped by
-    value (at most MAX_GROUPS groups, best first)."""
+    value (at most MAX_GROUPS groups, best first).
+
+    C14 §5.7: for a viewer without scope.detail, `row` is the record as that viewer sees it (its projection), and
+    observations they may not see (host/plugin library data, data received from the group) are neither listed nor
+    counted."""
+    from . import scope
+
     explain = row.explain or {}
     view = row.view or {}
     obs_rows = session.scalars(select(Observation).where(Observation.canonical_id == row.id,
                                                          Observation.is_current.is_(True))
                                .order_by(Observation.id.desc())).all()
+    if viewer is not None and not viewer.detail:
+        ceiling = getattr(row, "scope_ceiling", None)
+        obs_rows = [o for o in obs_rows if not scope.is_host_obs(o) and not scope.is_group_obs(o, ceiling)]
     by_id = {o.id: o for o in obs_rows}
     locks = {lk.field: lk for lk in session.scalars(select(Lock).where(Lock.canonical_id == row.id))}
     authorities = authority_origins(session, settings) if values else None
@@ -192,6 +202,8 @@ def provenance(session: Session, settings: Settings, row: Canonical, *, curate: 
         fields[name] = entry
 
     obs_out, counts = [], {}
+    detail = viewer is not None and viewer.detail  # C14 §5.5: the additive `scope` key, scope.detail only
+    grouped_node = scope.in_group(session) if detail else False
     for o in obs_rows:
         if o.source_kind in HOST_KINDS:
             counts[(o.source, o.source_kind)] = counts.get((o.source, o.source_kind), 0) + 1
@@ -203,8 +215,12 @@ def provenance(session: Session, settings: Settings, row: Canonical, *, curate: 
         if curate:
             item.update({"observed_at": _iso(o.observed_at), "last_seen_at": _iso(o.last_seen_at),
                          "origin_node": o.origin_node})
+        if detail:
+            item["scope"] = scope.of_observation(settings, o, getattr(row, "scope_ceiling", None),
+                                                 grouped=grouped_node)
         obs_out.append(item)
-    grouped = [{"source": s, "source_kind": k, "count": n} for (s, k), n in sorted(counts.items())]
+    grouped = [{"source": s, "source_kind": k, "count": n, **({"scope": "local"} if detail else {})}
+               for (s, k), n in sorted(counts.items())]
     out: dict[str, Any] = {
         "id": row.id, "version": row.version, "matcher": (explain.get("_meta") or {}).get("matcher"),
         "trust_digest": (explain.get("_meta") or {}).get("trust_digest"), "fields": fields,

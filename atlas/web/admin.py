@@ -12,7 +12,7 @@ from sqlalchemy import select
 from .. import integrations, media, pages, runtime, secrets_box
 from ..models import AuditEntry, Page, Setting
 from .deps import Page as Ctx
-from .deps import admin_form, admin_page, go, page
+from .deps import admin_form, admin_page, go, local_admin_form, local_admin_page, page
 from .routes import render
 
 router = APIRouter()
@@ -88,6 +88,53 @@ async def settings_save(request: Request, p: Annotated[Ctx, Depends(admin_form)]
         return render(p, "admin_settings.html", status=400, groups=_groups(p), error=str(exc))
     p.st.refresh(p.session, force=True)
     return go("/admin/settings", "saved" if changed else "nochange")
+
+
+# ---- Admin → Sharing (CONTRACT-C14 §5.6/§5.7, C14-1) ----------------------------------------------------------------
+
+SHARING_ROWS = (
+    ("public", "Public", "Pinned peers", "Manual, or automatic for approved local edits", "Always, to your nodes",
+     "Signed into your feed (authority)"),
+    ("group", "From your nodes", "Your other nodes, when asked", "Never: provider data never goes upstream",
+     "When your nodes ask, per the group policy", "Never"),
+    ("private", "Only for one account", "Profile sync only", "Never", "Never", "Never"),
+    ("local", "This node only", "Nothing", "Only by an explicit Propose, user-entered values only", "Never", "Never"),
+)
+
+
+def _sharing(p: Ctx, error: str | None = None, status: int = 200):
+    from .. import scope
+
+    s = p.st.ctx.settings
+    grouped = scope.in_group(p.session)
+    linked = bool(getattr(s, "upstream_url", None))
+    public = scope.public_categories(s)
+    cats = [{"key": k, "label": label, "public": k in public} for k, (label, _f) in scope.CATEGORIES.items()]
+    return render(p, "admin_sharing.html", status=status, rows=SHARING_ROWS, grouped=grouped, linked=linked,
+                  switch=bool(getattr(s, "group_data_public_pages", False)), categories=cats,
+                  counts=scope.ceiling_counts(p.session), pending=scope.pending(p.session),
+                  detail_users=len(scope.granted_all(p.session)), error=error)
+
+
+@router.get("/admin/sharing", response_class=HTMLResponse)
+def sharing(p: Annotated[Ctx, Depends(local_admin_page)]):
+    """What travels where (§5.6) and what visitors see of data received from your nodes (§5.7). Local
+    administrators only, like the other group policy settings."""
+    return _sharing(p)
+
+
+@router.post("/admin/sharing")
+async def sharing_save(request: Request, p: Annotated[Ctx, Depends(local_admin_form)]):
+    form = await request.form()
+    values: dict[str, Any] = {"group_data_public_pages": form.get("group_data_public_pages") == "on",
+                              "group_public_categories": " ".join(str(v) for v in form.getlist("public_category"))}
+    try:
+        changed = runtime.save(p.session, p.st.base, p.me.id, values)  # type: ignore[arg-type]
+    except runtime.SettingError as exc:
+        p.session.rollback()
+        return _sharing(p, error=str(exc), status=400)
+    p.st.refresh(p.session, force=True)
+    return go("/admin/sharing", "saved" if changed else "nochange")
 
 
 @router.post("/admin/settings/reset/{key}")

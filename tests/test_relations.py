@@ -62,8 +62,9 @@ def ended(session):
 
 
 def version(session, cid):
+    # a column read, not the model: the downgrade tests read it on an older schema (0038 added scope columns)
     session.expire_all()
-    return session.get(Canonical, cid).version
+    return session.scalar(select(Canonical.version).where(Canonical.id == cid))
 
 
 @pytest.fixture

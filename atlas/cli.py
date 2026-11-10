@@ -467,6 +467,27 @@ def _prices_fetch(args, settings, maker) -> int:
     return 1 if report.stopped else 0
 
 
+def cmd_scope(args) -> int:
+    """`atlas scope reproject|status` (CONTRACT-C14 §5.7): rebuild what viewers without scope.detail see."""
+    from . import scope
+
+    settings, maker = _maker()
+    ctx = _ctx(settings, maker)
+    if args.action == "reproject":
+        with maker() as session:
+            scope.schedule_reproject(session)
+            session.commit()
+        examined = scope.reproject_pending(maker, ctx, max_batches=10**9)
+        print(f"projection rebuilt: {examined} record(s) examined")
+        return 0
+    with maker() as session:
+        counts = scope.ceiling_counts(session)
+        print(f"projection rebuild pending: {'yes' if scope.pending(session) else 'no'}")
+        for name in scope.CEILINGS:
+            print(f"records with a {name} ceiling: {counts.get(name, 0)}")
+    return 0
+
+
 def cmd_feed(args) -> int:
     """`atlas feed introduce --missing|--all [--dry-run]` (C13 §4.2): publish a `record` (or, below 1.5 with the
     bridge on, a bridge observation) for records this feed names but never introduced (`--missing`), or for every
@@ -590,6 +611,9 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--limit", type=int, default=500, help="fetch: at most this many linked products (default 500)")
     pr.add_argument("--dry-run", action="store_true", help="fetch: ask the store but store nothing")
     pr.set_defaults(fn=cmd_prices)
+    scp = sub.add_parser("scope", help="scopes (C14): rebuild the visitor projection, or show ceilings")
+    scp.add_argument("action", choices=("reproject", "status"))
+    scp.set_defaults(fn=cmd_scope)
     fd = sub.add_parser("feed", help="this node's signed feed (C13): introduce records it names but never published")
     fda = fd.add_subparsers(dest="action", required=True)
     intro = fda.add_parser("introduce", help="sign a `record` for records followers cannot know yet")

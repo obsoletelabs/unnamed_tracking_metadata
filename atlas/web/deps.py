@@ -3,7 +3,7 @@ from __future__ import annotations
 import hmac
 import secrets
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -47,6 +47,17 @@ class Page:
     csrf: str
     new_cookie: str | None = None  # anonymous CSRF token to set
     rights: accounts.Rights | None = None  # C10 §6.3, computed once per request in `page`
+    _viewer: Any = None  # C14 §5.7, computed on first use
+
+    @property
+    def viewer(self) -> Any:
+        """Who is looking, for the visibility rule (CONTRACT-C14 §5.7)."""
+        if self._viewer is None:
+            from .. import scope
+
+            self._viewer = scope.viewer_for_user(self.session, self.st.ctx.settings, self.user, self.login,
+                                                 self.rights)
+        return self._viewer
 
     @property
     def me(self) -> User:
