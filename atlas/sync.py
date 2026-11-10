@@ -293,7 +293,7 @@ def _not_adopted(session: Session, node_id: str, seq: int, kind: str, key: str, 
                 node_id, key, why)
     _record(session, node_id, seq, kind, QUARANTINE, MEDIA_TYPE_NOT_ADOPTED,
             f"{_peer_name(session, node_id)} uses media type {key!r}, which this node does not adopt ({why}). "
-            "Create the type locally and the entry applies on its next retry, or skip it.",
+            "Create the type locally and the entry applies on its next retry, or dismiss it.",
             {"kind": kind, "media_type": key})
 
 
@@ -549,6 +549,11 @@ def _record_failure(session: Session, node_id: str, seq: int, kind: str, exc: Ex
     _record(session, node_id, seq, kind, QUARANTINE, "apply_error", f"{type(exc).__name__}: {exc}", {"kind": kind})
 
 
+def _dismissed(row: SyncFailure) -> bool:
+    """An entry an administrator dismissed ("Dismiss", `dismiss_not_adopted`): automatic retries skip it."""
+    return row.reason == "skipped" and (row.detail or {}).get("skipped_reason") == "dismissed"
+
+
 def retry_failures(session: Session, ctx: Ctx, node_id: str | None = None, *, limit: int = 100,
                    max_attempts: int | None = None, due_only: bool | None = None,
                    started: datetime | None = None) -> dict[str, int]:
@@ -575,7 +580,7 @@ def retry_failures(session: Session, ctx: Ctx, node_id: str | None = None, *, li
         candidates = session.scalars(query.order_by(SyncFailure.last_attempt_at, SyncFailure.seq)
                                      .limit(limit * 10)).all()
         # `started`: a row that failed during this pull is not retried in it (its first retry is the next pull)
-        rows = sorted((r for r in candidates if (next_retry_at(r) or now) <= now
+        rows = sorted((r for r in candidates if (next_retry_at(r) or now) <= now and not _dismissed(r)
                        and (started is None or (_aware(r.last_attempt_at) or now) < started)),
                       key=lambda r: (r.node_id, r.seq))[:limit]
     else:
@@ -640,25 +645,40 @@ def _wake_ready_types(session: Session, ctx: Ctx, node_id: str | None, limit: in
     """C15 §2.2 safety net (retries and the startup wake): entries waiting for a media type this node now holds as
     its own (`local`: a built-in an upgrade seeded, or one an administrator created) or from the same feed's schema.
     A type another upstream owns does not wake them (C13 §5.3 scope). With `inherit_schema` off, an entry whose type
-    is still missing is quarantined `media_type_not_adopted`."""
+    is still missing is quarantined `media_type_not_adopted`.
+
+    It pages through every open type wait with a (feed, seq) cursor, so rows that keep waiting (their type is still
+    missing, or another upstream owns it) never hide rows further down whose type is here now; `limit` bounds the
+    entries it applies per call, not the rows it looks at."""
     from .models import MediaType
 
     inherit = getattr(ctx.settings, "inherit_schema", True)
-    woken = 0
-    for row in _type_rows(session, node_id, ("", 0), limit):
-        key = (row.waiting_for or "")[len(TYPE_WAIT_PREFIX):]
-        entry = session.get(ReplicatedChange, (row.node_id, row.seq))
-        if entry is None or row.resolved_at is not None or row.disposition != WAIT:
-            continue
-        mtype = session.get(MediaType, key)
-        if mtype is None:
-            if not inherit:
-                _not_adopted(session, row.node_id, row.seq, row.kind, key, NOT_INHERITED)
-            continue
-        if mtype.origin != "local" and mtype.origin_node not in (None, row.node_id):
-            continue
-        if apply_late(session, ctx, row, entry) in (APPLY, NOOP, SUPERSEDED):
-            woken += 1
+    types: dict[str, MediaType | None] = {}
+    woken = attempted = 0
+    after: tuple[str, int] = ("", 0)
+    while attempted < limit and (rows := _type_rows(session, node_id, after, max(limit, 1))):
+        for row in rows:
+            after = (row.node_id, row.seq)
+            key = (row.waiting_for or "")[len(TYPE_WAIT_PREFIX):]
+            entry = session.get(ReplicatedChange, (row.node_id, row.seq))
+            if entry is None or row.resolved_at is not None or row.disposition != WAIT:
+                continue
+            if key not in types:
+                types[key] = session.get(MediaType, key)
+            mtype = types[key]
+            if mtype is None:
+                if not inherit:
+                    _not_adopted(session, row.node_id, row.seq, row.kind, key, NOT_INHERITED)
+                continue
+            if mtype.origin != "local" and mtype.origin_node not in (None, row.node_id):
+                continue
+            attempted += 1
+            if apply_late(session, ctx, row, entry) in (APPLY, NOOP, SUPERSEDED):
+                woken += 1
+            if attempted >= limit:
+                break
+        if len(rows) < max(limit, 1):
+            break
     return woken
 
 
@@ -669,12 +689,17 @@ def open_waiting(session: Session, node_id: str | None = None) -> dict[str, Any]
         base.append(SyncFailure.node_id == node_id)
     count = session.scalar(select(func.count()).select_from(SyncFailure).where(*base)) or 0
     if not count:
-        return {"count": 0, "records": 0, "oldest_seq": None, "since": None}
+        return {"count": 0, "records": 0, "oldest_seq": None, "since": None, "type_entries": 0, "types": 0}
+    typed = [*base, SyncFailure.waiting_for.like(TYPE_WAIT_PREFIX + "%")]
+    type_entries = session.scalar(select(func.count()).select_from(SyncFailure).where(*typed)) or 0
+    types = session.scalar(select(func.count(func.distinct(SyncFailure.waiting_for))).where(*typed)) or 0
     records = session.scalar(select(func.count(func.distinct(SyncFailure.waiting_for))).where(*base)) or 0
     oldest = session.scalar(select(func.min(SyncFailure.seq)).where(*base))
     since = session.scalar(select(func.min(SyncFailure.first_failed_at)).where(*base))
+    # C15 §2.2 (A20): of those, the entries waiting for a media type and how many types (additive fields; `records`
+    # keeps its C13 meaning, distinct wait keys, so tolerant readers see no change)
     return {"count": count, "records": records, "oldest_seq": oldest,
-            "since": _aware(since).isoformat() if since else None}
+            "since": _aware(since).isoformat() if since else None, "type_entries": type_entries, "types": types}
 
 
 # ---- retry ordering: a late retry never overwrites a later entry ------------------------------------------
@@ -1670,7 +1695,7 @@ def _type_group(session: Session, node: str, key: str, count: int, first: int, l
             "kinds": dict(sorted(kinds.items())), "seqs": [first, last], "blocked_by": None,
             "since": _aware(since).isoformat() if since else None, "retry": "on_arrival", "action": "copy_note",
             "note": (f"Your Atlas feed has records of media type {key!r} ({span}) but this node has not received "
-                     "that type's definition. Publish your media types (Admin → Media types → save the type) so "
+                     "that type's definition. Publish your media types (Admin → Fields → save the type) so "
                      "followers receive the schema.")[:600]}
 
 
@@ -2535,9 +2560,10 @@ def skip(session: Session, ctx: Ctx, node_id: str, seq: int, reason: str, *, act
 
 def dismiss_not_adopted(session: Session, node_id: str, seq: int, *, actor_id: str | None = None,
                         via: str = "web") -> None:
-    """C15 §2.2 "Dismiss": an entry quarantined `media_type_not_adopted` stays retained and signed but is marked
-    skipped, so retries stop reporting it as a failure. Audited. `atlas sync replay` (or creating the type and
-    retrying) can still apply it."""
+    """C15 §2.2 "Dismiss": an entry quarantined `media_type_not_adopted` stays retained, signed and listed (as
+    quarantined `skipped`, with the reason "dismissed by an administrator") under the entries that could not be
+    applied, but automatic retries leave it alone (`retry_failures`). Audited. An administrator's retry (after
+    creating the type) or `atlas sync replay` can still apply it."""
     service.write_lock(session)
     row = session.get(SyncFailure, (node_id, seq))
     if row is None or row.resolved_at is not None or row.reason != MEDIA_TYPE_NOT_ADOPTED:

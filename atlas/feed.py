@@ -136,14 +136,21 @@ def named(kind: str, body: dict[str, Any]) -> list[str]:
     return out
 
 
+def bridged_types(settings: Any) -> list[str]:
+    """CONTRACT-C15 §4.1: the media types the bridge carries (`federation_bridge_media_types`). Unset or empty means
+    the default, games only: every caller (`bridges`, `introduce`, Admin → Peers) reads it through here so they
+    cannot disagree (Settings also refuses an empty list)."""
+    allowed = [t for t in (getattr(settings, "federation_bridge_media_types", None) or []) if t]
+    return allowed or ["game"]
+
+
 def bridges(settings: Any, media_type: str | None) -> bool:
     """CONTRACT-C15 §4.1: whether the bridge may introduce a record of `media_type` (`federation_bridge_media_types`,
     games only by default: a 1.0 follower would file any bridged observation as a game). None = the node-wide
     question (is the bridge on at all), used where no record is in hand."""
     if media_type is None:
         return True
-    allowed = getattr(settings, "federation_bridge_media_types", None)
-    return (media_type or "game") in (allowed if allowed is not None else ["game"])
+    return (media_type or "game") in bridged_types(settings)
 
 
 def introduction_mode(settings: Any, media_type: str | None = None) -> str:
@@ -275,9 +282,8 @@ def bridge_skipped(session: Session, settings: Any) -> int:
     the bridge is not in use."""
     if introduction_mode(settings) != VIA_BRIDGE:
         return 0
-    allowed = list(getattr(settings, "federation_bridge_media_types", None) or [])
     return session.scalar(select(func.count()).select_from(Canonical).where(
-        Canonical.merged_into.is_(None), Canonical.media_type.not_in(allowed or ["game"]))) or 0
+        Canonical.merged_into.is_(None), Canonical.media_type.not_in(bridged_types(settings)))) or 0
 
 
 # ---- `atlas feed introduce` (C13 §4.2) ---------------------------------------------------------------------
@@ -301,7 +307,7 @@ def _unbridgeable(settings: Any) -> list[str] | None:
     record = feed_schema.parse_protocol(feed_schema.RECORD_PROTOCOL)
     if feed_schema.parse_protocol(feed_schema.emit_protocol(settings)) >= record:  # other types get a `record`
         return None
-    return list(getattr(settings, "federation_bridge_media_types", None) or ["game"])
+    return bridged_types(settings)
 
 
 def candidates(session: Session, scope: str, after: str = "", limit: int | None = None,

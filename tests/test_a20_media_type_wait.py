@@ -197,6 +197,10 @@ def test_admin_peers_shows_the_wait_and_the_not_adopted_actions(tmp_path):
     signup(web, "admin")  # the first account administers the node
     page = web.get("/admin/peers").text
     assert 'data-waiting-for="type:comic"' in page and "Waiting for the media type" in page
+    # review fix: one entry reads as one entry, and type waits are not counted as unpublished records
+    assert "1 entry from" in page and "(for <strong>Watchmen</strong>) describes records" in page
+    assert "Entries waiting for their media type" in page and "the upstream feed has not published yet" not in page
+    assert "Admin → Fields" in page
 
     configure(mirror, inherit_schema=False)
     with mirror.st.maker() as s:
@@ -264,3 +268,72 @@ def test_doctor_lists_and_retypes_records_the_old_fallback_misfiled(tmp_path, mo
     with mirror.st.maker() as s:
         assert s.scalars(select(AuditEntry).where(AuditEntry.action == "doctor_retype")).first().detail["count"] == 1
         assert s.scalars(select(Artwork).where(Artwork.canonical_id == cid)).first() is not None  # nothing lost
+
+
+def test_safety_net_reaches_rows_behind_ones_that_keep_waiting(tmp_path):
+    # Review fix: `_wake_ready_types` read only the first `limit` rows; rows still waiting hid the ones behind them.
+    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    for i in range(3):
+        authority.emit("obs", comic_obs(f"Manga {i}", "manga"))  # stays missing (inherit on): keeps waiting
+    last = comic_obs("Comic", "comic")
+    authority.emit("obs", last)
+    pull(mirror, authority)
+    with mirror.st.maker() as s:
+        custom.save_type(s, mirror.st.ctx, "comic", "Comic")
+        s.commit()
+    with mirror.st.maker() as s:
+        assert sync._wake_ready_types(s, mirror.st.ctx, None, 2) == 1  # limit 2 < the 3 manga rows ahead
+        s.commit()
+    assert record_of(mirror, last["canonical_id"]).media_type == "comic"
+    assert [r[4] for r in waiting(mirror, authority)] == ["type:manga"] * 3
+
+
+def test_a_dismissed_entry_is_left_alone_by_automatic_retries(tmp_path):
+    authority = Node(tmp_path, "authority", "authority")
+    mirror = Node(tmp_path, "mirror", "mirror", inherit_schema=False)
+    authority.emit("obs", comic_obs())
+    pull(mirror, authority)
+    with mirror.st.maker() as s:
+        sync.dismiss_not_adopted(s, authority.node_id, 1, via="test")
+        s.commit()
+    with mirror.st.maker() as s:
+        before = s.get(SyncFailure, (authority.node_id, 1)).attempts
+        row = s.get(SyncFailure, (authority.node_id, 1))
+        row.last_attempt_at = row.last_attempt_at.replace(year=2000)  # its backoff has long passed
+        s.commit()
+    with mirror.st.maker() as s:
+        assert sync.retry_failures(s, mirror.st.ctx)["retried"] == 0
+        assert s.get(SyncFailure, (authority.node_id, 1)).attempts == before
+        assert "or dismiss it" in s.get(SyncFailure, (authority.node_id, 1)).error
+
+
+def test_doctor_scan_runs_again_when_a_type_arrives_later(tmp_path, monkeypatch):
+    # Review fix: the scan ran once per node, before A21 seeds `book` or a schema brings a type; it now keys on the
+    # set of known types.
+    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    body = comic_obs()
+    authority.emit("obs", body)
+
+    def old_fallback(session, cid, media_type=None):
+        if session.get(Canonical, cid) is None:
+            session.add(Canonical(id=cid, view={}, explain={}, media_type="game"))
+            session.flush()
+
+    with monkeypatch.context() as m:
+        m.setattr(sync, "_ensure_canonical", old_fallback)
+        pull(mirror, authority)
+    with mirror.st.maker() as s:
+        assert doctor.startup_scan(s) == 0  # the A20 upgrade: `comic` unknown, nothing reportable
+        assert doctor.startup_scan(s) is None  # unchanged types: no rescan
+        s.commit()
+    with mirror.st.maker() as s:
+        custom.save_type(s, mirror.st.ctx, "comic", "Comic")  # arrives later (seeded, schema, or created)
+        s.commit()
+    with mirror.st.maker() as s:
+        assert doctor.startup_scan(s) == 1
+        assert doctor.startup_scan(s) is None
+        s.add(NodeState(key="legacy_probe", value="x"))
+        s.get(NodeState, doctor.SCANNED).value = "1"  # a marker the first A20 build wrote (count only)
+        s.commit()
+    with mirror.st.maker() as s:
+        assert doctor.startup_scan(s) == 1  # re-keyed once

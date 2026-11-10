@@ -346,19 +346,22 @@ create it). Admin → Peers shows them under **Waiting for the media type** with
 Two cases cannot end by waiting, so the entry is quarantined `media_type_not_adopted` instead: this node does not
 adopt its upstream's media types (`ATLAS_INHERIT_SCHEMA=false`), or the feed's own schema names the type but its
 definition could not be adopted. The failed-entries table then offers **Create type locally** (an ordinary local type
-you can rename later; the entries apply at once) and **Dismiss** (audited; the signed entry stays retained). An entry
+you can rename later; the entries apply at once) and **Dismiss** (audited; the signed entry stays retained and listed as dismissed, and automatic retries leave it
+alone; creating the type and retrying from this page still applies it). An entry
 that names no media type (a 1.0 emitter) still files its record as a game, so old feeds replay unchanged; a media
 type that is not a valid key is quarantined `invalid`.
 
 Records an earlier release already filed as games this way stay games until you act: **`atlas doctor media-types`**
 lists them per peer feed (a live `game` record whose first `obs`/`record` from that feed named another type this node
 knows now; exit 3 when there are some), and `--retype NODE_ID` gives that feed's records their named type (local
-only, audited). Nothing is retyped automatically, because a curator may have edited them; the first start of this
-release counts them once and logs a warning.
+only, audited). Nothing is retyped automatically, because a curator may have edited them; the node counts them and
+logs a warning at its first start on this release and again whenever the set of known media types changes (a type a
+later release seeds, one a schema brings, one an administrator creates), since a misfile is only reportable once
+its named type exists here.
 
 **The bridge and other media types (A20, CONTRACT-C15 §4.1).** A 1.0 follower files every observation as a game,
 whatever its media type says, so the bridge introduces only the types in `ATLAS_FEDERATION_BRIDGE_MEDIA_TYPES`
-(default `["game"]`). A record of another type gets a `record` when the emit protocol is 1.5 (a 1.0–1.4 follower parks
+(default `["game"]`; an empty list is refused at startup). A record of another type gets a `record` when the emit protocol is 1.5 (a 1.0–1.4 follower parks
 it, `unsupported_kind`, and applies it after upgrading), and is not introduced at all below 1.5; `atlas feed
 introduce` leaves those out instead of looping. Admin → Peers → *Records on this node's feed* counts the records the
 bridge does not carry.

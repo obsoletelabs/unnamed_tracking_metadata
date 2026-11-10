@@ -169,7 +169,7 @@ def _records(p: Ctx) -> dict | None:
                introduced_through=feed.introduced_through(p.session),
                bridge=bool(p.st.ctx.settings.federation_bridge_record_obs),
                bridge_skipped=feed.bridge_skipped(p.session, p.st.ctx.settings),  # C15 §4.1
-               bridge_types=list(p.st.ctx.settings.federation_bridge_media_types or ["game"]))
+               bridge_types=feed.bridged_types(p.st.ctx.settings))
     return out
 
 

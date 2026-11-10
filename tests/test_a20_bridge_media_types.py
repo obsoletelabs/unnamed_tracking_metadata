@@ -94,3 +94,28 @@ def test_admin_peers_counts_the_skipped_records(tmp_path):
     signup(web, "admin")
     page = web.get("/admin/peers").text
     assert 'data-bridge-skipped="1"' in page and "carries only game records" in page
+
+
+def test_an_empty_bridge_list_is_refused_and_every_helper_reads_the_same_default():
+    # Review fix: `[]` was "nothing bridged" in `bridges()` but `["game"]` in `introduce`/Admin → Peers.
+    import pytest
+    from pydantic import ValidationError
+
+    from atlas.settings import Settings
+
+    with pytest.raises(ValidationError, match="at least one media type"):
+        Settings(federation_bridge_media_types=[])
+    with pytest.raises(ValidationError, match="at least one media type"):
+        Settings(federation_bridge_media_types=["  "])
+    assert Settings(federation_bridge_media_types=[" comic "]).federation_bridge_media_types == ["comic"]
+
+    class Loose:  # a settings object that skipped validation (tests, a hand-built ctx)
+        federation_bridge_media_types: list[str] = []
+        federation_bridge_record_obs = True
+        min_follower_protocol = "1.0"
+        emit_protocol = "1.4"
+
+    loose = Loose()
+    assert feed.bridged_types(loose) == ["game"]
+    assert feed.bridges(loose, "game") and not feed.bridges(loose, "comic")
+    assert feed._unbridgeable(loose) == ["game"]

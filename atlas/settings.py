@@ -226,6 +226,15 @@ class Settings(BaseSettings):
     def strip_slash(cls, v: str) -> str:
         return v.rstrip("/")
 
+    @field_validator("federation_bridge_media_types")
+    @classmethod
+    def bridge_media_types(cls, v: list[str]) -> list[str]:
+        """C15 §4.1: an empty list would bridge nothing, not even games; refuse it rather than read it two ways."""
+        cleaned = [t.strip() for t in v if isinstance(t, str) and t.strip()]
+        if not cleaned:
+            raise ValueError("federation_bridge_media_types must name at least one media type (default [\"game\"])")
+        return cleaned
+
     @field_validator("min_follower_protocol", "emit_protocol")
     @classmethod
     def protocol_version(cls, v: str | None) -> str | None:

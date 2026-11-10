@@ -21,7 +21,7 @@ from .service import Ctx, rebuild, write_lock
 
 log = logging.getLogger("atlas.doctor")
 
-#: node_state key of the one-time startup scan (its value is the number found then).
+#: node_state key of the startup scan: `<sorted known media types>|<number found then>` (re-scans when the types change).
 SCANNED = "doctor_media_types_scanned"
 _KINDS = ("obs", "record")
 
@@ -93,12 +93,28 @@ def retype(session: Session, ctx: Ctx, node_id: str, *, actor_id: str | None = N
     return len(changed)
 
 
+def _types_marker(session: Session) -> str:
+    """The value the scan is keyed to: the sorted set of media types this node knows. A misfile can only be reported
+    once its named type exists here, so a type that arrives later (A21 seeding `book`, a custom type from a schema,
+    one an administrator creates) must make the scan run again."""
+    return ",".join(sorted(session.scalars(select(MediaType.key))))
+
+
 def startup_scan(session: Session) -> int | None:
-    """Once per node (after the upgrade to A20): count misfiled records and log a notice. None when already done."""
-    if session.get(NodeState, SCANNED) is not None:
+    """Count misfiled records and log a notice, once per set of known media types: at startup after the upgrade to
+    A20, and again (startup or a later sync round) whenever a type was added or removed since the last scan. None
+    when the known types have not changed since then. Cheap to call often: the scan itself only runs on a change."""
+    marker = _types_marker(session)
+    state = session.get(NodeState, SCANNED)
+    previous = state.value if state is not None else None
+    if previous is not None and previous.split("|", 1)[0] == marker:
         return None
     found = report(session)
-    session.add(NodeState(key=SCANNED, value=str(found["count"])))
+    value = f"{marker}|{found['count']}"
+    if state is None:
+        session.add(NodeState(key=SCANNED, value=value))
+    else:
+        state.value = value
     session.flush()
     if found["count"]:
         log.warning("%d record(s) were filed as games by an older release although their upstream named another "
