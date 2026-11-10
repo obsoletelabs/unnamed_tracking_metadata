@@ -75,12 +75,16 @@ local policy, only when the join completes (a cancelled or expired join changes 
 | Accept the other node's two-factor step (`group_trust_remote_mfa`) | off | **on** | on |
 | Group administrators (`group_federated_privilege`) | deny | deny | **local_mfa** |
 | Highest delegated role (`group_max_delegated_role`) | none | none | **admin** |
+| Share preferences across the group (`group_profile_sync`) | left as set | **on** | on |
+| Sign in with the group (`group_signin`) | left as set | **on** | on |
 
-When the join completes, a preset writes only the rows that tell the presets apart (the four above), so a change
-you made in between to group sign-in, the public sign-in buttons, profile sync or local two-factor for delegated
-rights is kept. The done step lists what this enrolment actually changed. If this node's policy cannot be written
-at that moment, the join still completes, the failure is audited (`group_policy_preset_failed`) and you apply
-the preset under **Policy**. **Apply** on the Policy card writes every row of the preset.
+When the join completes, *Cautious* writes only the four rows that tell the presets apart, and *Same owner, full
+trust* also turns preference sharing and group sign-in on, so the group feels like one node even where you had
+turned them off. The SAS step lists each row that will change before you confirm. The public sign-in buttons and
+local two-factor for delegated rights are never changed by an enrolment; if they differ from the preset, the done
+step names them with a link to **Policy**. If this node's policy cannot be written at that moment, the join still
+completes, the failure is audited (`group_policy_preset_failed`) and you apply the preset under **Policy**.
+**Apply** on the Policy card writes every row of the preset.
 
 *Custom* leaves the policy as it is and shows the old delegation fields. The administrator checkbox needs the
 typed confirmation and never changes the invite's permissions: an administrator grant is still issued on the

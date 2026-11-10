@@ -66,7 +66,8 @@ def _page(p: Page, error: str | None = None, status: int = 200, **extra):
             health=_health(rows, settings), preset_now=group_presets.current(settings),
             preset_diffs={k: group_presets.diff(settings, k) for k in (group_presets.SAME_OWNER,
                                                                          group_presets.CAUTIOUS)},
-            invite_diff=group_presets.diff(settings, group_presets.SAME_OWNER, keys=group_presets.ACTIVATION_KEYS),
+            invite_diff=group_presets.diff(settings, group_presets.SAME_OWNER,
+                                          keys=group_presets.activation_keys(group_presets.SAME_OWNER)),
             preset_labels=group_presets.LABELS, admin_confirm=ADMIN_CONFIRM,
             held_updates=groups.held_member_updates(p.session, group, identity.node_id)
             if group.root_state == "holder" else [],
@@ -394,7 +395,7 @@ def _invite_page(p: Page, row, code: str, group):
 def _join_page(p: Page, error: str | None = None, status: int = 200, **form):
     settings, _ = _ctx(p)
     return render(p, "admin_group_enrol.html", step="join", fp=groups.gc_fp, error=error, status=status,
-                  form=form, preset_diffs={k: group_presets.diff(settings, k, keys=group_presets.ACTIVATION_KEYS)
+                  form=form, preset_diffs={k: group_presets.diff(settings, k, keys=group_presets.activation_keys(k))
                                            for k in (group_presets.SAME_OWNER, group_presets.CAUTIOUS)},
                   preset_labels=group_presets.LABELS, admin_confirm=ADMIN_CONFIRM)
 
@@ -462,10 +463,14 @@ def _peer_of(row) -> dict | None:
 
 
 def _enrolment(p: Page, eid: str, error: str | None = None, status: int = 200):
-    settings, _ = _ctx(p)
     row = p.session.get(GroupEnrolment, eid)
     if row is None:
         return _page(p, "No such enrolment.", 404)
+    if row.state == "active" and row.preset:
+        # the inviter's preset is applied when the joiner fetches its certificate (an API call), which does not
+        # refresh this process's settings: re-read them so the done step and its link offer show the new policy
+        p.st.refresh(p.session, force=True)
+    settings, _ = _ctx(p)
     peer = _peer_of(row)
     group = groups.load(p.session)
     done = row.state == "active" or (row.side == "inviter" and row.state == "issued")
@@ -474,7 +479,7 @@ def _enrolment(p: Page, eid: str, error: str | None = None, status: int = 200):
                   needs_root=row.side == "inviter" and group is not None and group.root_state == "holder",
                   group=group, preset_label=group_presets.LABELS.get(row.preset or group_presets.CUSTOM),
                   preset_changes=group_presets.diff(settings, row.preset, bool(row.preset_admin),
-                                                    keys=group_presets.ACTIVATION_KEYS),
+                                                    keys=group_presets.activation_keys(row.preset)),
                   preset_applied=_applied(p, row) if done else [],
                   preset_kept=group_presets.kept(settings, row.preset, bool(row.preset_admin)) if done else [],
                   link_offer=_link_offer(p, row, peer) if done else None,

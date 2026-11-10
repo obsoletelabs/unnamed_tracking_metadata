@@ -30,11 +30,20 @@ KEYS = ("group_profile_sync", "group_signin", "group_signin_public", "group_auto
         "group_delegated_requires_mfa", "group_federated_privilege", "group_max_delegated_role")
 _FULL_TRUST = {"group_auto_provision": True, "group_trust_remote_mfa": True}
 _WITH_ADMIN = {"group_federated_privilege": "local_mfa", "group_max_delegated_role": "admin"}
-#: The rows an enrolment's preset writes when the join completes (U3 review): only those that tell the presets
-#: apart. The other rows (group sign-in, the public login buttons, profile sync, local MFA for delegated rights) keep
-#: whatever the administrator set, so a policy edit made between the compare step and activation is not overwritten
-#: silently. "Apply" on the policy page still writes every row of §4.2.
+#: The rows an enrolment's preset writes when the join completes (U3 review): the rows that tell the presets apart.
+#: The rows left out here (the public login buttons, local MFA for delegated rights) keep whatever the administrator
+#: set, so a policy edit made between the compare step and activation is not overwritten silently; the compare step
+#: lists exactly the rows that will change. "Apply" on the policy page still writes every row of §4.2.
 ACTIVATION_KEYS = (*_FULL_TRUST, *_WITH_ADMIN)
+#: "Same owner, full trust" also writes the two rows that make the group feel like one node (§4.2/§4.3 and the
+#: polish addendum, U3 second review): profile/preference sync and group sign-in. Without them a node whose
+#: administrator had turned either off would join "with full trust" and still not behave as one node.
+ONE_NODE_KEYS = ("group_profile_sync", "group_signin")
+
+
+def activation_keys(preset: str | None) -> tuple[str, ...]:
+    """The rows an enrolment that chose `preset` writes on activation (and that its compare and done steps list)."""
+    return (*ACTIVATION_KEYS, *ONE_NODE_KEYS) if preset == SAME_OWNER else ACTIVATION_KEYS
 
 
 def _defaults() -> dict[str, Any]:
@@ -56,9 +65,8 @@ def values(preset: str, with_admin: bool = False, keys: tuple[str, ...] = KEYS) 
 
 def kept(settings: Settings, preset: str | None, with_admin: bool = False) -> list[dict[str, Any]]:
     """The §4.2 rows an enrolment's activation leaves as the administrator set them although the preset would set
-    them differently (the rows outside ACTIVATION_KEYS). Shown on the done step so a node whose profile sync or group
-    sign-in is off does not silently fail to "feel like one node"."""
-    rest = tuple(k for k in KEYS if k not in ACTIVATION_KEYS)
+    them differently (the rows outside `activation_keys(preset)`). Shown on the done step with a link to Policy."""
+    rest = tuple(k for k in KEYS if k not in activation_keys(preset))
     return diff(settings, preset, with_admin, keys=rest)
 
 
@@ -74,7 +82,7 @@ def current(settings: Settings) -> dict[str, Any]:
 def diff(settings: Settings, preset: str | None, with_admin: bool = False,
          keys: tuple[str, ...] = KEYS) -> list[dict[str, Any]]:
     """What applying the preset changes here: [{key, label, from, to}], unchanged rows left out (§4.3). Pass
-    `keys=ACTIVATION_KEYS` for what an enrolment's preset will change when the join completes."""
+    `keys=activation_keys(preset)` for what an enrolment's preset will change when the join completes."""
     if preset not in (SAME_OWNER, CAUTIOUS):
         return []
     out = []
@@ -121,7 +129,8 @@ def apply_on_activation(session: Session, settings: Settings, row: Any, actor: s
         return []
     try:
         with session.begin_nested():
-            return apply(session, settings, row.preset, bool(row.preset_admin), actor, keys=ACTIVATION_KEYS,
+            return apply(session, settings, row.preset, bool(row.preset_admin), actor,
+                         keys=activation_keys(row.preset),
                          target=activation_target(row))
     except Exception as exc:  # noqa: BLE001  (any failure of the local write, a database error included)
         groups.audit(session, actor, "group_policy_preset_failed", activation_target(row),

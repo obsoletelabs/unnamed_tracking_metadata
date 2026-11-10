@@ -29,6 +29,12 @@ from .test_group_ui import create_via_ui, csrf, ui  # noqa: F401  (fixture)
 from .test_web import PW, signup
 
 
+def eff(node):
+    """This node's effective settings (runtime store over the base settings)."""
+    with node.session() as s:
+        return runtime.effective(node.settings, runtime.load(s))
+
+
 def linked_uid(node, username):
     with node.session() as s:
         u = s.scalars(select(User).where(User.username == username)).one()
@@ -247,17 +253,66 @@ def test_failing_policy_write_never_breaks_the_enrolment(ui, monkeypatch, error)
     assert policy(a)["group_auto_provision"] is False  # nothing half-written
 
 
-def test_done_step_names_preset_rows_left_off(ui):  # noqa: F811
-    """U3 review: activation writes only ACTIVATION_KEYS, so a node whose profile sync is off stays off. The done step
-    says so instead of offering an empty link form with no explanation."""
+def test_same_owner_turns_profile_sync_and_signin_back_on(ui):  # noqa: F811
+    """U3 second review (SPEC-UI-POLISH-PASS §4.2/§4.3): "Same owner, full trust" writes profile sync and group
+    sign-in on activation, so a node whose administrator had turned them off still feels like one node. The compare
+    step lists them before the join; the done step lists them as applied."""
+    a, b, ca, cb = ui
+    with b.session() as s:
+        runtime.save(s, b.settings, None, {"group_profile_sync": False, "group_signin": False})
+        s.commit()
+    keys = {d["key"] for d in group_presets.diff(eff(b), group_presets.SAME_OWNER,
+                                                  keys=group_presets.activation_keys(group_presets.SAME_OWNER))}
+    assert {"group_profile_sync", "group_signin"} <= keys  # what the compare step lists before the join
+    eid = joined(a, b, ca, cb)
+    assert eff(b).group_profile_sync is True and eff(b).group_signin is True
+    done = cb.get(f"/admin/group/enrolment/{eid}").text
+    assert "data-preset-kept" not in done and 'name="c.' in done  # the link form offers fields again
+
+
+def test_cautious_never_touches_profile_sync_or_signin(ui):  # noqa: F811
     a, b, ca, cb = ui
     with b.session() as s:
         runtime.save(s, b.settings, None, {"group_profile_sync": False})
         s.commit()
+    assert "group_profile_sync" not in group_presets.activation_keys(group_presets.CAUTIOUS)
+    joined(a, b, ca, cb, inviter="cautious", joiner="cautious")
+    assert eff(b).group_profile_sync is False
+
+
+def test_done_step_names_preset_rows_left_off(ui):  # noqa: F811
+    """U3 review: the rows outside activation_keys() keep the administrator's value; the done step says so."""
+    a, b, ca, cb = ui
+    with b.session() as s:
+        runtime.save(s, b.settings, None, {"group_signin_public": True})
+        s.commit()
     eid = joined(a, b, ca, cb)
+    assert eff(b).group_signin_public is True
     done = cb.get(f"/admin/group/enrolment/{eid}").text
-    assert 'data-preset-kept-key="group_profile_sync"' in done and "/admin/group#policy" in done
-    assert "data-link-no-fields" in done and 'name="c.' not in done
+    assert 'data-preset-kept-key="group_signin_public"' in done and "/admin/group#policy" in done
+
+
+def test_enrolment_consent_saved_only_when_the_link_completes(ui):  # noqa: F811
+    """U3 second review: the consent picked on the enrolment page is parked with the pending link, not saved. An
+    abandoned attempt leaves the stored consent as it was; a completed one stores what the wizard submitted."""
+    from atlas import profile
+    from atlas.models import GroupWebHandle, ProfileSyncConsent
+
+    a, b, ca, cb = ui
+    eid = joined(a, b, ca, cb)
+    r = cb.post(f"/admin/group/enrolment/{eid}/link", data={
+        "csrf": csrf(cb, f"/admin/group/enrolment/{eid}"), "password": PW, "c.theme": "on", "c.bio": "on"})
+    assert r.status_code == 200 and 'action="http://a.test/group/authorize"' in r.text
+    with b.session() as s:  # abandoned here: nothing stored as consent, the choice only parked
+        assert s.scalars(select(ProfileSyncConsent)).first() is None
+        assert [sorted(h.payload["fields"]) for h in s.scalars(select(GroupWebHandle)
+                                                       .where(GroupWebHandle.kind == "linkpick"))] == [["bio", "theme"]]
+    # a fresh attempt from the enrolment page carrying a different choice, completed through the wizard
+    ticked = link_from_enrolment(a, b, ca, cb, eid, fields=["theme", "locale"])
+    ub, _ = linked_uid(b, "adminb")
+    with b.session() as s:
+        gid = s.scalars(select(GroupAccountLink)).first().group_id
+        assert set(profile.consent_fields(s, ub, gid)) == set(ticked)
 
 
 def test_user_sync_strip_hides_raw_member_errors(ui):  # noqa: F811
