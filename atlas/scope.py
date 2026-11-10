@@ -179,17 +179,21 @@ def _switch(settings: Any) -> bool:
 
 def holds_detail(session: Session, settings: Any, user: User | None, login: Any = None, rights: Any = None) -> bool:
     """§5.7 (critic of Review #1): administrators and curators (local role, or review rights from a valid grant),
-    every active account while registration is closed, sessions opened through the owner group, and accounts an
-    administrator granted `scope.detail`. A self-registered account on an open node does not hold it."""
+    every active account while registration is closed, and accounts an administrator granted `scope.detail`. A
+    self-registered account on an open node does not hold it.
+
+    A session opened through the owner group holds it only "per its C10 caps": through the rights this request was
+    given (`effective_rights`, which caps the local role and adds valid grants) or an explicit grant to the linked
+    account. Signing in through the group never adds it by itself, or anyone who self-registers on an open sibling
+    (or here) and links the account would get the operator's view."""
     if user is None or user.status != "active":
         return False
-    if user.role in ("admin", "curator"):
-        return True
+    federated = login is not None and getattr(login, "via_group", None) is not None
     if rights is not None and (getattr(rights, "review", False) or getattr(rights, "admin", False)):
         return True
-    if getattr(settings, "registration", "open") == "closed":
+    if not federated and user.role in ("admin", "curator"):
         return True
-    if login is not None and getattr(login, "via_group", None):
+    if getattr(settings, "registration", "open") == "closed":
         return True
     return session.get(UserPermission, (user.id, DETAIL)) is not None
 
@@ -270,7 +274,7 @@ def group_obs_clause() -> Any:
     return or_(Observation.source == GROUP_SOURCE, Observation.source_scope.like(GROUP_SCOPE_PREFIX + "%"))
 
 
-def _hidden_obs_clause() -> Any:
+def hidden_obs_clause() -> Any:
     return or_(Observation.source_kind.in_(HOST_KINDS), group_obs_clause())
 
 
@@ -481,7 +485,7 @@ def needs_projection(session: Session, row: Canonical) -> bool:
     if row.scope_ceiling in ("group", "private"):
         return True
     return session.scalars(select(Observation.id).where(
-        Observation.canonical_id == row.id, Observation.is_current.is_(True), _hidden_obs_clause()).limit(1)
+        Observation.canonical_id == row.id, Observation.is_current.is_(True), hidden_obs_clause()).limit(1)
     ).first() is not None
 
 
@@ -549,7 +553,7 @@ def schedule_reproject(session: Session) -> None:
 
 
 def _candidates(session: Session, after: str, limit: int) -> list[str]:
-    hidden = select(Observation.canonical_id).where(Observation.is_current.is_(True), _hidden_obs_clause())
+    hidden = select(Observation.canonical_id).where(Observation.is_current.is_(True), hidden_obs_clause())
     with_rows = select(ScopeProjection.canonical_id)
     return list(session.scalars(select(Canonical.id).where(
         Canonical.id > after, Canonical.merged_into.is_(None),
@@ -561,6 +565,9 @@ def reproject_step(session: Session, ctx: Any, *, limit: int = 200) -> dict[str,
     """One resumable batch of the projection rebuild, or None when none is pending."""
     if session.get(NodeState, PENDING) is None:
         return None
+    from .service import write_lock
+
+    write_lock(session)  # `service.rebuild` rewrites the same rows inside ingest/edit transactions (same lock)
     state = session.get(NodeState, CURSOR)
     after = state.value if state is not None else ""
     ids = _candidates(session, after, limit)

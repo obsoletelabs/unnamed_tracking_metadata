@@ -70,6 +70,7 @@ from .web.social import router as social_router
 log = logging.getLogger("atlas")
 _STATUS = {"invalid": 400, "forbidden": 403, "not_found": 404, "conflict": 409,
            "emit_protocol": 409,  # a valid request this node cannot publish yet (C1.6)
+           "scope_ceiling": 409,  # C14 §5.4: a mixed entry (ceiling'd + public record) is never signed
            # C11 §11.9-11.12: merge / unmerge / lock refusals
            "distinct": 409, "merge_too_large": 409, "already_reverted": 409, "unmerge_blocked": 409,
            "legacy_merge": 409, "upstream_owned": 409, "stale_version": 412, "invalid_lock": 400}

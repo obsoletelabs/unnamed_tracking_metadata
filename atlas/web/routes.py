@@ -1385,7 +1385,8 @@ def game_merge(cid: str, p: Annotated[Page, Depends(review_form)], into: Annotat
         _guard_upstream(p.session, p.st, into.strip())
         target = service.merge_canonicals(p.session, p.st.ctx, cid, into.strip(), actor=p.me.username)
     except AtlasError as exc:
-        raise HTTPException(404 if exc.code == "not_found" else 409 if exc.code == "conflict" else 400, str(exc)) from exc
+        status = 404 if exc.code == "not_found" else 409 if exc.code in ("conflict", "scope_ceiling") else 400
+        raise HTTPException(status, str(exc)) from exc
     return go(f"/game/{target.id}", "merged")
 
 
