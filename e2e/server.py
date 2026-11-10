@@ -44,6 +44,10 @@ def main() -> int:
         "ATLAS_SECRET_KEY": secrets.token_urlsafe(32),
         "ATLAS_STEAM_ENABLED": "false",
         "ATLAS_MEDIA_CACHE_ENABLED": "false",  # no outbound image fetches during tests
+        # The synthetic group members (e2e/group_joiner.py) are not running nodes. A group round against them holds the
+        # SQLite write lock while its outbound call times out, so a page write or a seed script in that window fails
+        # with "database is locked". The first round waits one interval, so an hour keeps rounds out of a run.
+        "ATLAS_GROUP_SYNC_INTERVAL": "3600",
     }
     if env["ATLAS_ROLE"] == "authority":  # an authority requires verified email by default; there is no mail here
         env.setdefault("ATLAS_EMAIL_VERIFICATION", "optional")
