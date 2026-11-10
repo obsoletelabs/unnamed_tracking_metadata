@@ -35,7 +35,7 @@ node only). A record can also carry a **ceiling**: `local` ("Keep on this node o
 ceiling'd record is ever signed into a public feed. Scope (how far an item travels) is separate from visibility
 (who may see it on this node):
 
-- Host and plugin library data is never shown to visitors, API tokens without operator rights, or accounts without
+- Host and plugin library data is never shown to visitors, followers' tokens, or accounts without
   the "sees data from your nodes" right (`scope.detail`).
 - Data received from your other nodes is shown to visitors only while **Show data from your nodes to visitors**
   is on, and then only in the field categories you allow.
@@ -45,6 +45,6 @@ See [Scopes and sharing](guide/scopes.md).
 ## API
 
 - `GET /api/v2/games/{id}` and the other read routes apply the visibility rule. A record a caller may not see is
-  a plain `404`. Callers with `scope.detail` (and operator tokens) get an additional `scope` object.
+  a plain `404`. Callers with `scope.detail` (and the node's own app tokens) get an additional `scope` object.
 - `PUT /api/v2/games/{id}/scope` (`curate`) sets `{"ceiling": "local"}` or lifts the ceiling with
   `{"ceiling": null}`. A record already introduced on the feed cannot be kept back (`409`).

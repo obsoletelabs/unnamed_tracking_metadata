@@ -37,7 +37,7 @@ PUT /api/v2/games/{id}/scope
 Scope says how far an item travels. Visibility says who may see it on this node. Atlas applies one rule inside
 every read query, so search, browsing, totals, suggestions, relations, lists, media and the API agree:
 
-| Item | Visitors, read-only API tokens, accounts without the right | Accounts that see data from your nodes |
+| Item | Visitors, followers' tokens, accounts without the right | Accounts that see data from your nodes |
 |---|---|---|
 | Host/plugin library data (Playnite and similar) | Never. A record known only through it is not found | Yes |
 | This node's own provider data, artwork and curator values | Yes, as before | Yes |
@@ -53,8 +53,10 @@ A record a viewer may not see answers exactly like an unknown record (`404`, sam
 - Sessions opened through your node group.
 - Accounts an administrator ticks **sees data from your nodes** for on **Admin → Users**.
 
-An account that registered itself on an open node does not see it unless you grant it. Operator API tokens
-(`contribute`, `curate` or `admin`) see everything. Other tokens see what a visitor sees.
+An account that registered itself on an open node does not see it unless you grant it. API tokens an
+administrator mints for this node's own apps (the Playnite plugin, the Tracking App) act for the operator and see
+everything. A token that holds `sync` without `contribute`, `curate` or `admin` (a follower's) sees what a visitor
+sees. A personal token sees what its account sees.
 
 ## Admin → Sharing
 
