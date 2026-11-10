@@ -115,7 +115,7 @@ Atlas inferred from the last sync and a banner asks you to confirm it once (**Ad
 | Status | Badge (example) | Meaning |
 | --- | --- | --- |
 | `caught_up` | Caught up | every entry the upstream reported is verified and applied, nothing waits |
-| `caught_up_waiting` | Caught up · 4 changes waiting for their game | applied up to the head, but some entries wait for their game or could not be applied (see below) |
+| `caught_up_waiting` | Caught up · 4 changes waiting for their game (or media type) | applied up to the head, but some entries wait for their game or media type, or could not be applied (see below) |
 | `catching_up` | Copying: 11 of 23 | the upstream has entries this node has not applied yet |
 | `empty` | Connected · nothing published | the chosen feed has no entries: often the wrong feed was chosen |
 | `not_contacted` | Not contacted yet | added, never synced (or the first pull did not answer in time) |

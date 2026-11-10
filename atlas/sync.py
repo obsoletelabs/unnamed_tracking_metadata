@@ -1526,7 +1526,7 @@ def peer_status(peer: Peer, heads: dict[str, Any] | None, *, interval: int | Non
 PEER_STATUS_LABELS = {"paused": ("Paused", "warn"), "not_contacted": ("Not contacted yet", "warn"),
                       "needs_you": ("Blocked: needs you", "bad"), "unreachable": ("Can't reach it", "bad"),
                       "empty": ("Connected · nothing published", "warn"), "catching_up": ("Copying", "warn"),
-                      "caught_up_waiting": ("Caught up · changes waiting for their game", "warn"),
+                      "caught_up_waiting": ("Caught up · changes waiting", "warn"),  # A20: a game or a media type
                       "caught_up": ("Caught up", "ok")}
 _STATUS_ACTIONS = {"paused": "resume", "not_contacted": "sync_now", "needs_you": "see_details",
                    "unreachable": "check_address", "empty": "choose_again", "catching_up": "sync_now",
