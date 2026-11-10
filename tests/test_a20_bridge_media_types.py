@@ -6,6 +6,7 @@ the skipped records. (A21's `book` is such a type; A20 has no `book`, so a custo
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -34,7 +35,11 @@ def bridged_obs(node: Node) -> list[str]:
         return [r.body["canonical_id"] for r in s.scalars(select(ChangeLog).where(ChangeLog.kind == "obs"))]
 
 
-def test_t_b16_a_non_game_record_is_not_bridged_by_default(tmp_path, monkeypatch):
+@pytest.mark.parametrize("follower_release", ["1.0", "1.4"])
+def test_t_b16_a_non_game_record_is_not_bridged_by_default(tmp_path, monkeypatch, follower_release):
+    """Pinned for a 1.0 follower as in the A19 skew drill (_notes/a19-skew-records-v10.json, previous protocol 1.0):
+    that report comes from a real 1.0 checkout and holds no replayable entries, so the 1.0 follower is emulated
+    in-process (`as_release`: only the 1.0 kinds are known)."""
     authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5", min_follower_protocol="1.0",
                      federation_bridge_record_obs=True)
     settings = authority.st.ctx.settings
@@ -50,7 +55,7 @@ def test_t_b16_a_non_game_record_is_not_bridged_by_default(tmp_path, monkeypatch
         assert feed.bridge_skipped(s, authority.st.ctx.settings) == 1
 
     follower = Node(tmp_path, "follower", "mirror")
-    with as_release(monkeypatch, "1.4"):  # a follower that knows no `record`: it parks it, never files a game
+    with as_release(monkeypatch, follower_release):  # knows no `record`: it parks it, never files a game
         pull(follower, authority)
         parked = [r for r in open_rows(follower, authority) if r[2] == "parked"]
         assert parked and parked[0][1:] == ("record", "parked", "unsupported_kind")

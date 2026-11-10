@@ -343,9 +343,10 @@ blocked. Entries that name the record wait for it as usual. When the **same feed
 the waiting entries apply in feed order in that pull (another feed's schema does not wake them, as for records; the
 retry and startup safety net also wakes them once the type exists here as this node's own, for example after you
 create it). Admin → Peers shows them under **Waiting for the media type** with a note for the upstream's operator.
-Two cases cannot end by waiting, so the entry is quarantined `media_type_not_adopted` instead: this node does not
-adopt its upstream's media types (`ATLAS_INHERIT_SCHEMA=false`), or the feed's own schema names the type but its
-definition could not be adopted. The failed-entries table then offers **Create type locally** (an ordinary local type
+Three cases cannot end by waiting, so the entry is quarantined `media_type_not_adopted` instead: this node does not
+adopt its upstream's media types (`ATLAS_INHERIT_SCHEMA=false`), the feed's own schema names the type but its
+definition could not be adopted, or a later schema of the same feed no longer carries the type (the upstream deleted
+it; each schema lists all of the upstream's types, so nothing that feed sends afterwards brings it back). The failed-entries table then offers **Create type locally** (an ordinary local type
 you can rename later; the entries apply at once) and **Dismiss** (audited; the signed entry stays retained and listed as dismissed, and automatic retries leave it
 alone; creating the type and retrying from this page still applies it). An entry
 that names no media type (a 1.0 emitter) still files its record as a game, so old feeds replay unchanged; a media

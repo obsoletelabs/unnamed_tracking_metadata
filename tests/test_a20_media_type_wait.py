@@ -132,6 +132,31 @@ def test_t_b10_without_inherit_schema_it_is_quarantined_not_adopted(tmp_path):
     assert record_of(mirror, body["canonical_id"]).media_type == "comic"
 
 
+def test_t_b10_a_later_schema_that_drops_the_type_quarantines_instead_of_an_endless_wait(tmp_path):
+    """C15 §2.2 "no endless wait" with `inherit_schema` on: the feed's own later schema is its whole set of types, so
+    an older entry whose type it leaves out (deleted upstream) is quarantined; a newer entry keeps waiting."""
+    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    old = comic_obs("Watchmen")
+    authority.emit("obs", old)  # seq 1: names `comic`
+    pull(mirror, authority)
+    assert waiting(mirror, authority)[0][4] == "type:comic"
+    authority.emit("schema", schema())  # seq 2: the authority no longer has `comic`
+    newer = comic_obs("Saga")
+    authority.emit("obs", newer)  # seq 3: after the schema, so the next schema may still bring it
+    pull(mirror, authority)
+    with mirror.st.maker() as s:
+        row = s.get(SyncFailure, (authority.node_id, 1))
+        assert (row.disposition, row.reason, row.waiting_for) == ("quarantined", "media_type_not_adopted", None)
+        assert "later schema (entry 2) does not carry it" in row.error
+    assert waiting(mirror, authority) == [(1, "obs", "quarantined", "media_type_not_adopted", None, 2),
+                                          (3, "obs", "wait", "waiting_for_media_type", "type:comic", 1)]
+    assert record_of(mirror, old["canonical_id"]) is None
+    authority.emit("schema", schema(COMIC))
+    pull(mirror, authority)  # the newer entry applies; the quarantined one waits for an administrator
+    assert waiting(mirror, authority) == [(1, "obs", "quarantined", "media_type_not_adopted", None, 2)]
+    assert record_of(mirror, newer["canonical_id"]).media_type == "comic"
+
+
 def test_t_b10_no_media_type_still_files_as_game_and_a_named_one_never_does(tmp_path):
     authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
     legacy, empty, named = comic_obs("Old", None), comic_obs("Blank", ""), comic_obs("Named", "comic")
@@ -201,6 +226,13 @@ def test_admin_peers_shows_the_wait_and_the_not_adopted_actions(tmp_path):
     assert "1 entry from" in page and "(for <strong>Watchmen</strong>) describes records" in page
     assert "Entries waiting for their media type" in page and "the upstream feed has not published yet" not in page
     assert "Admin → Fields" in page
+    # fix pass: the per-peer badge and the line under it name the media type, not a game
+    with mirror.st.maker() as s:
+        heads = {"waiting": sync.open_waiting(s, authority.node_id), "quarantined": {"count": 0},
+                 "observed_head": 1, "applied_head": 1}
+    assert sync.status_label("caught_up_waiting", heads) == "Caught up · 1 change waiting for their media type"
+    line = sync.status_detail("caught_up_waiting", heads)
+    assert "1 media type hasn't arrived from the upstream yet" in line and "game" not in line
 
     configure(mirror, inherit_schema=False)
     with mirror.st.maker() as s:

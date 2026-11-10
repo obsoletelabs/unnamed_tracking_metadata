@@ -270,7 +270,8 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
             wake_waiting(session, ctx, node_id, created, trigger=trigger, late=late)
     elif kind == "schema":  # C15 §2.2: the feed's own schema may bring the types its entries wait for
         late = not _IN_FEED_ORDER.get() and seq <= applied_head(session, node_id)
-        wake_media_types(session, ctx, node_id, named=_schema_type_keys(outcome.body or {}), late=late)
+        wake_media_types(session, ctx, node_id, named=_schema_type_keys(outcome.body or {}), late=late,
+                         schema_seq=seq)
     return NOOP if result == NOOP else APPLY
 
 
@@ -330,11 +331,15 @@ def _type_rows(session: Session, node_id: str | None, after: tuple[str, int], ba
 
 
 def wake_media_types(session: Session, ctx: Ctx, node_id: str, *, named: set[str] | None = None,
-                     late: bool = False) -> int:
+                     late: bool = False, schema_seq: int | None = None) -> int:
     """C15 §2.2: after `node_id`'s `schema` entry applied, apply in feed order that feed's entries that wait for a
     media type this node holds now (C13 §5.3 scope: another feed's schema does not wake them). A waiting entry whose
-    type the same schema names but this node could not create (an invalid definition), and any entry waiting for a
-    type while `inherit_schema` is off, is quarantined `media_type_not_adopted` instead of waiting forever."""
+    type the same schema names but this node could not create (an invalid definition), any entry waiting for a type
+    while `inherit_schema` is off, and any entry older than the schema (`schema_seq`) whose type that schema does not
+    carry, is quarantined `media_type_not_adopted` instead of waiting forever. A `schema` is the authority's whole set
+    of local types at its seq, so a type the authority had when it signed an earlier entry and that the schema leaves
+    out was deleted upstream (or never was the authority's): no later entry of this feed is due to bring it. Entries
+    newer than the schema keep waiting for the next one."""
     from .models import MediaType
 
     batch = getattr(ctx.settings, "sync_wake_batch", 500)
@@ -353,6 +358,9 @@ def wake_media_types(session: Session, ctx: Ctx, node_id: str, *, named: set[str
                 elif named is not None and key in named:
                     _not_adopted(session, row.node_id, row.seq, row.kind, key,
                                  "the feed's schema names it, but its definition could not be adopted here")
+                elif named is not None and schema_seq is not None and row.seq < schema_seq:
+                    _not_adopted(session, row.node_id, row.seq, row.kind, key,
+                                 f"the feed's later schema (entry {schema_seq}) does not carry it")
                 continue
             if late:
                 outcome = apply_late(session, ctx, row, entry)
@@ -1529,13 +1537,22 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
+def _waits_for(heads: dict[str, Any]) -> str:
+    """C15 §2.2 (A20): what the waiting entries wait for, in words; C13's "game" while none waits for a media type."""
+    waiting = heads["waiting"]
+    typed = waiting.get("type_entries") or 0
+    if not typed:
+        return "game"
+    return "media type" if typed >= waiting["count"] else "game or media type"
+
+
 def status_label(code: str, heads: dict[str, Any] | None) -> str:
     """The badge text of C13 §5.5, with the counts it names."""
     if heads and code == "catching_up" and heads["observed_head"]:
         return f"Copying: {heads['applied_head']} of {heads['observed_head']}"
     if heads and code == "caught_up_waiting":
         if heads["waiting"]["count"]:
-            return f"Caught up · {_plural(heads['waiting']['count'], 'change')} waiting for their game"
+            return f"Caught up · {_plural(heads['waiting']['count'], 'change')} waiting for their {_waits_for(heads)}"
         return f"Caught up · {_plural(heads['quarantined']['count'], 'change')} not applied"
     return PEER_STATUS_LABELS[code][0]
 
@@ -1585,9 +1602,16 @@ def status_detail(code: str, heads: dict[str, Any] | None, *, peer: Peer | None 
             left = heads["observed_head"] - heads["applied_head"]
             parts.append(f"{left} entr{'y' if left == 1 else 'ies'} to go")
         if heads["waiting"]["count"]:
-            records_waiting = heads["waiting"].get("records") or 0
-            parts.append(f"{_plural(records_waiting, 'game')} {'has' if records_waiting == 1 else 'have'}n't "
-                         f"arrived from {name if name != 'The upstream' else 'the upstream'} yet")
+            src = name if name != "The upstream" else "the upstream"
+            # C15 §2.2 (A20): `records` counts distinct wait keys, a media type among them; name each kind apart
+            types_waiting = heads["waiting"].get("types") or 0
+            records_waiting = (heads["waiting"].get("records") or 0) - types_waiting
+            if records_waiting > 0:
+                parts.append(f"{_plural(records_waiting, 'game')} {'has' if records_waiting == 1 else 'have'}n't "
+                             f"arrived from {src} yet")
+            if types_waiting:
+                parts.append(f"{_plural(types_waiting, 'media type')} {'has' if types_waiting == 1 else 'have'}n't "
+                             f"arrived from {src} yet")
         if heads["quarantined"]["count"]:
             parts.append(_plural(heads["quarantined"]["count"], "change") + " could not be applied")
         if code == "caught_up":
