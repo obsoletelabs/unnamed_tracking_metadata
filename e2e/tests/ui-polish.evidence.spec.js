@@ -143,6 +143,17 @@ test('group: invite with QR code and preset, compare, done', async ({ page, base
   await shoot(page, 'group-done', info);
   await offer.scrollIntoViewIfNeeded();
   await shoot(page, 'group-done-link-step', info);
+  // U3 review: a preset row the activation left as set here (profile sync off) is named on the done step
+  py('e2e/profile_seed.py', 'profile-sync', 'off');
+  try {
+    await page.waitForTimeout(5_500);  // the node picks up policy changes at most every 5 s
+    await page.reload();
+    await expect(page.locator('[data-preset-kept-key="group_profile_sync"]')).toBeVisible();
+    await page.locator('[data-preset-kept]').scrollIntoViewIfNeeded();
+    await shoot(page, 'group-done-kept', info);
+  } finally {
+    py('e2e/profile_seed.py', 'profile-sync', 'on');
+  }
 });
 
 function py(script, ...args) {
@@ -162,7 +173,8 @@ test('group sync: not-linked badge, strip, invite users to link', async ({ page 
   await shoot(page, 'prefs-not-linked', info);
   await page.goto('/admin/group#group-sync-h', { waitUntil: 'networkidle' });
   const invite = page.getByRole('button', { name: 'Invite users to link' });
-  if (await invite.count()) await invite.click();
+  // wait for the POST and its redirect, so the seed script below never writes the SQLite file at the same time
+  if (await invite.count()) await Promise.all([page.waitForURL(/\/admin\/group/), invite.click()]);
   await expect(page.locator('[data-group-link-invite="on"]')).toBeVisible();
   await page.goto('/', { waitUntil: 'networkidle' });
   await expect(page.locator('[data-link-notice]')).toBeVisible();
@@ -170,8 +182,12 @@ test('group sync: not-linked badge, strip, invite users to link', async ({ page 
   await page.goto('/admin/group#group-sync-h', { waitUntil: 'networkidle' });
   await page.locator('[data-group-sync="admin"]').scrollIntoViewIfNeeded();
   await shoot(page, 'group-sync-admin', info);
-  await page.getByRole('button', { name: 'Stop showing the notice' }).click();
-  py('e2e/profile_seed.py', 'link');  // alice linked (written into the e2e database by the seed script)
+  await Promise.all([page.waitForResponse((r) => r.url().includes('/admin/group/link-invite')),
+    page.getByRole('button', { name: 'Stop showing the notice' }).click()]);
+  await page.waitForLoadState('networkidle');
+  // alice linked (written into the e2e database by the seed script); theme 'auto' so the emulated colour scheme
+  // decides and the light/dark pair below really differ (a synced 'dark' would override it)
+  py('e2e/profile_seed.py', 'link', 'auto');
   await page.goto('/me/linked-nodes', { waitUntil: 'networkidle' });
   await expect(page.locator('[data-group-sync="me"]')).toBeVisible();
   await shoot(page, 'group-sync-me', info);
