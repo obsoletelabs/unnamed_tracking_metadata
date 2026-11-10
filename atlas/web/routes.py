@@ -785,7 +785,7 @@ def _edit_ctx(p: Page, mtype: str, **extra: Any) -> dict[str, Any]:
 @router.get("/game/{cid}/edit", response_class=HTMLResponse)
 def edit_form(cid: str, p: Annotated[Page, Depends(user_page)]):
     g, _ = live_game(p, cid)
-    cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False)
+    cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False, viewer=p.viewer)
     return render(p, "edit.html", new=False, v=_form_view(g.view), action=f"/game/{g.id}/edit", cancel=f"/game/{g.id}",
                   error=None, cfields=custom_inputs(p, g.media_type, cur),
                   **_edit_ctx(p, g.media_type, rel_rows=_release_rows(g.view.get("releases"))))
@@ -800,7 +800,7 @@ def edit_submit(cid: str, p: Annotated[Page, Depends(user_form)], f: Annotated[d
                        f.get("publisher", "").strip(), f.get("series", "").strip(), f.get("description", "").strip(),
                        f.get("platforms", ""), f.get("tags", ""), f.get("features", ""))
     new.update(_extra_values(f))
-    cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False)
+    cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False, viewer=p.viewer)
     payload = _changed(_form_view(g.view), new)
     rel_rows, entries = _releases_from_form(f)
     releases = _release_change(g.view, entries)
@@ -1260,12 +1260,16 @@ def _proposal_card(p: Page, r: Proposal) -> dict[str, Any]:
         "when": r.created_at, "note": r.note, "own": r.proposer_id == p.me.id,
         "rows": [], "entries": []}
     if r.kind in ("edit", "new_game"):
-        cur = (p.session.get(Canonical, r.canonical_id).view if r.canonical_id and p.session.get(Canonical, r.canonical_id)
-               else {})
         row = p.session.get(Canonical, r.canonical_id) if r.canonical_id else None
+        # C14 §5.7: the "current value" column is the record as this viewer sees it (a proposer without
+        # `scope.detail` sees the projection, never host or withheld group values); a record they may not see
+        # shows no current values at all.
+        shown = scope.visible(p.session, p.viewer, row) if row is not None else None
+        cur = (shown.view or {}) if shown is not None else {}
         mtype = row.media_type if row else r.payload.get("media_type", "game")
         defs = {f.key: f for f in custom.fields_for(p.session, mtype)}
-        old_custom = custom.merged(p.session, p.st.ctx, r.canonical_id, public_only=False) if r.canonical_id else {}
+        old_custom = (custom.merged(p.session, p.st.ctx, r.canonical_id, public_only=False, viewer=p.viewer)
+                      if shown is not None else {})
         for k, v in r.payload.items():
             if k == "custom":
                 for ck, cv in v.items():
@@ -1648,7 +1652,11 @@ def admin_user(uid: str, p: Annotated[Page, Depends(admin_form)], role: Annotate
                 raise AtlasError("you cannot change your own account here", "conflict")
             target.oidc_allowed = oidc == "on"
             accounts.audit(p.session, p.me.id, "oidc_allow", target.id, {"allowed": target.oidc_allowed})
-        if detail_field:
+        if detail_field and (detail == "on") != bool(scope.granted(p.session, [target.id])):
+            # C10 §6.3/§6.4: `scope.detail` is a standing per-account right that would outlive a group grant, so
+            # only a local administrator changes it (like roles and admin-minted tokens).
+            if not p.is_local_admin:
+                raise AtlasError("only a local administrator can change who sees data from your nodes", "forbidden")
             if detail == "on" and scope.grant(p.session, target, scope.DETAIL, p.me.id):
                 accounts.audit(p.session, p.me.id, "permission_grant", target.id, {"permission": scope.DETAIL})
             elif detail != "on" and scope.revoke(p.session, target, scope.DETAIL):

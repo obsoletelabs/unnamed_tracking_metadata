@@ -599,3 +599,137 @@ def test_standalone_node_public_pages_unchanged(node, monkeypatch):
     r = c.get(f"/media/{grp}")
     assert r.status_code == 200 and r.headers["cache-control"] == "private, no-store"
     check_own()
+
+
+# ---- T-S10, widened (second review): every surface, every viewer, the switch off and on -----------------------------
+
+def _seed_wide(node):
+    """Facets that must follow their record's visibility: a group observation (a withheld description) on the public
+    record, relations from the public record to the hidden ones, an achievement on the group record, an image of
+    the host record, and a public list holding all three records."""
+    from atlas.models import Achievement, Artwork, ListItem, Relation, UserList
+
+    with node.st.maker() as s:
+        _ingest(s, node.st.ctx, "igdb", [{"external_id": "w1", "title": "Webpublic Alpha",
+                                          "facts": {"description": f"mixed {GROUP_MARK}"}}], scope_name="group:n1")
+        s.add_all([Relation(from_id=node.pub, to_id=node.host, type="remake_of", source="curator"),
+                   Relation(from_id=node.pub, to_id=node.grp, type="port_of", source="curator")])
+        ach = Achievement(canonical_id=node.grp, source="group:n1", external_id="a1", name=f"Ach {GROUP_MARK}",
+                          norm_name="ach", description=f"Ach {GROUP_MARK}")
+        art = Artwork(canonical_id=node.host, source="playnite", kind="cover", url=f"https://img.invalid/{HOST_MARK}.png")
+        s.add_all([ach, art])
+        owner = User(username="lister", password_hash=accounts.hash_password(PW), role="user")
+        s.add(owner)
+        s.flush()
+        lst = UserList(user_id=owner.id, name="Mixed shelf", public=True)
+        s.add(lst)
+        s.flush()
+        s.add_all([ListItem(list_id=lst.id, canonical_id=cid) for cid in (node.pub, node.host, node.grp)])
+        s.commit()
+        scope.reproject_pending(node.st.maker, node.st.ctx)
+        return {"ach": ach.id, "art": art.id, "list": lst.id}
+
+
+def _web_wide(client, node, ids, extra=()):
+    parts = []
+    paths = ["/", "/search?q=Web", "/search?q=Groupidentity", f"/game/{node.pub}", f"/game/{node.pub}/relations",
+             f"/game/{node.pub}/links", f"/game/{node.host}/relations", f"/game/{node.host}/links",
+             f"/game/{node.grp}/achievements/{ids['ach']}", f"/game/{node.host}/artwork/{ids['art']}",
+             f"/list/{ids['list']}", "/u/lister", *extra]
+    for path in paths:
+        r = client.get(path)
+        parts.append(f"{path} {r.status_code} {r.text}")
+    return "\n".join(parts)
+
+
+def _api_wide(client, node, headers):
+    parts = [_api_surfaces(client, node, headers)]
+    for path in (f"/api/v2/games/{node.pub}/relations", f"/api/v2/games/{node.pub}/provenance",
+                 f"/api/v2/games/{node.pub}/explain", f"/api/v2/games/{node.grp}/achievements",
+                 f"/api/v2/games/{node.host}/artwork", f"/api/v2/games/{node.pub}/artwork"):
+        r = client.get(path, headers=headers)
+        parts.append(f"{path} {r.status_code} {r.text}")
+    return "\n".join(parts)
+
+
+def _personal_token(node, username):
+    from atlas import auth
+
+    with node.st.maker() as s:
+        user = s.scalars(select(User).where(User.username == username)).one()
+        row, secret = auth.create_token(s, f"{username}-app", ["read"])
+        row.user_id = user.id
+        s.commit()
+    return {"Authorization": "Bearer " + secret}
+
+
+def _changes_ids(client, headers):
+    r = client.get("/api/v2/changes?feed=local&limit=500", headers=headers)
+    assert r.status_code == 200, r.text
+    return {e["id"] for e in r.json()["results"]}
+
+
+@pytest.mark.parametrize("switch", [False, True])
+def test_canaries_every_surface_every_viewer(node, switch):
+    """T-S10 (second review): record page, lists, profiles, relations, links, achievements, artwork, provenance,
+    explain, resolve, the local change feed, the proposal page and the edit form, for anonymous, token and user
+    viewers with the switch off and on; hidden records answer like unknown ones everywhere."""
+    ids = _seed_wide(node)
+    _set_switch(node, switch)
+    signup(_fresh(node), "boss")  # the first account is the administrator; the next one registers itself
+    u = _fresh(node)
+    signup(u, "stranger")
+
+    def check(blob):
+        leaks = [chunk.split(" ", 2)[:2] for chunk in re.split(r"\n(?=/|resolve )", blob)
+                 if HOST_MARK in chunk or GROUP_MARK in chunk]
+        assert not leaks, f"a withheld value leaked on {leaks}"
+        assert (GROUP_TITLE in blob) if switch else (GROUP_TITLE not in blob)
+        assert "Your nodes" not in blob
+
+    check(_web_wide(_fresh(node), node, ids))
+    # the self-registered user also has the edit form and their own proposal on a record holding group data
+    csrf = token(u, f"/game/{node.pub}/edit")
+    r = u.post(f"/game/{node.pub}/edit", data={"csrf": csrf, "title": "Webpublic Alpha", "release_date": "2020-01-02",
+                                                "description": "my words", "note": "probe"})
+    assert r.status_code == 303, r.text
+    with node.st.maker() as s:
+        from atlas.models import Proposal
+
+        pid = s.scalars(select(Proposal.id).where(Proposal.canonical_id == node.pub)).first()
+    assert pid
+    check(_web_wide(u, node, ids, extra=(f"/proposal/{pid}", f"/game/{node.pub}/edit", "/me/export.json")))
+    for headers in (_mint(node, ["read", "sync"]), _personal_token(node, "stranger")):
+        check(_api_wide(node, node, headers))
+        seen = _changes_ids(node, headers)
+        assert node.pub in seen and node.host not in seen
+        assert (node.grp in seen) == switch
+    # the operator's tools still see everything
+    op = _mint(node, ["read", "curate"])
+    assert {node.pub, node.host, node.grp} <= _changes_ids(node, op)
+
+
+def test_group_admin_cannot_change_scope_detail(node, monkeypatch):
+    """C10 §6.3/§6.4: `scope.detail` is a standing right, so an administrator through a group grant (not a local
+    administrator) can neither grant nor revoke it, and the Users page shows them no checkbox."""
+    from atlas.web.deps import Page
+
+    signup(_fresh(node), "boss")
+    signup(_fresh(node), "stranger")
+    with node.st.maker() as s:
+        sid = s.scalars(select(User.id).where(User.username == "stranger")).one()
+    a = _fresh(node)
+    assert login(a, "boss").status_code == 303
+    # the same administrator, but holding the right through a group grant (C10: `rights.local_admin` is False)
+    monkeypatch.setattr(Page, "is_local_admin", property(lambda self: False))
+    page = a.get("/admin/users")
+    assert page.status_code == 200 and 'name="detail"' not in page.text
+    csrf = token(a, "/admin/users")
+    r = a.post(f"/admin/users/{sid}", data={"csrf": csrf, "role": "user", "status": "active", "has_detail": "1",
+                                            "detail": "on"})
+    assert r.status_code == 409 and "local administrator" in r.text
+    with node.st.maker() as s:
+        assert s.get(UserPermission, (sid, scope.DETAIL)) is None
+    # a save that leaves the right as it is still changes role and status
+    r = a.post(f"/admin/users/{sid}", data={"csrf": csrf, "role": "user", "status": "active"})
+    assert r.status_code == 303

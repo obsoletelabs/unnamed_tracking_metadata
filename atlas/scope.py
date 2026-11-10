@@ -755,6 +755,15 @@ def achievements_visible(session: Session, viewer: Viewer | None, settings: Any,
     return viewer.switch and "achievements" in public_categories(settings)
 
 
+def achievement_clause(viewer: Viewer | None, settings: Any) -> Any:
+    """A SQL condition on `Achievement` for the rows this viewer may see, or None for all of them: a row stored
+    under a group source (`atlas-group`, `group:<member>`) is withheld like the record-level rule above (second
+    review; C14-2 adds the per-row evidence for rows received under a provider's name)."""
+    if viewer is None or viewer.detail or (viewer.switch and "achievements" in public_categories(settings)):
+        return None
+    return not_(or_(Achievement.source == GROUP_SOURCE, Achievement.source.like(GROUP_SCOPE_PREFIX + "%")))
+
+
 def custom_visible(viewer: Viewer | None, settings: Any, source: str) -> bool:
     if viewer is None or viewer.detail or not _group_source(source):
         return True
@@ -795,8 +804,10 @@ def media_access(session: Session, viewer: Viewer | None, settings: Any, digest:
         return "public"
     if any(ceilings.get(i.canonical_id) not in ("group", "private") for i in icons):
         return "public"
+    row_ok = achievement_clause(viewer, settings) is None
     group_icons = [i for i in icons if i.canonical_id not in hidden and ceilings.get(i.canonical_id) == "group"
-                   and achievements_visible(session, viewer, settings, i.canonical_id)]
+                   and achievements_visible(session, viewer, settings, i.canonical_id)
+                   and (row_ok or not _group_source(i.source))]
     if shown_art or group_icons:
         return "group"
     return None

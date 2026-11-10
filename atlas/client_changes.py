@@ -127,11 +127,15 @@ def renew_epoch(session: Session) -> str:
     return value
 
 
-def page(session: Session, since: int, limit: int, client_epoch: str | None = None) -> dict[str, Any]:
+def page(session: Session, since: int, limit: int, client_epoch: str | None = None, *,
+         hidden: Any = None) -> dict[str, Any]:
     """One page of the local feed after `since`. `reset` means the client's cursor cannot be continued:
     entries it has not seen were pruned, or the log was recreated or rewound (a downgrade and re-upgrade, a
     restore or a recovery candidate), which a client that sends its stored `client_epoch` always learns.
-    Without an epoch only a cursor above the head is recognised as stale."""
+    Without an epoch only a cursor above the head is recognised as stale.
+
+    `hidden` (C14 §5.7, `scope.hidden_ids(viewer)`): a subquery of the record ids the caller may not see. Their
+    entries are left out exactly as if the record did not exist (the cursor still moves past them)."""
     current = epoch(session)
     top = head(session)
     floor = session.scalar(select(func.min(ClientChange.seq)))
@@ -148,7 +152,12 @@ def page(session: Session, since: int, limit: int, client_epoch: str | None = No
             ids.append(row.canonical_id)
             causes[row.canonical_id] = set()
         causes[row.canonical_id].add(row.cause)
-    records = {r.id: r for r in session.scalars(select(Canonical).where(Canonical.id.in_(ids)))} if ids else {}
+    records: dict[str, Canonical] = {}
+    if ids:
+        q = select(Canonical).where(Canonical.id.in_(ids))
+        if hidden is not None:
+            q = q.where(Canonical.id.not_in(hidden))
+        records = {r.id: r for r in session.scalars(q)}
     next_cursor = rows[-1].seq if rows else since
     return {
         "epoch": current,
