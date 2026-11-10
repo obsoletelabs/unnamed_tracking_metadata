@@ -398,3 +398,21 @@ def test_api_put_scope(node):
     assert node.put(f"/api/v2/games/{node.grp}/scope", headers=_mint(node, ["read"]),
                     json={"ceiling": "local"}).status_code == 403
     assert node.put(f"/api/v2/games/{node.grp}/scope", headers=h, json={"ceiling": "public"}).status_code == 422
+
+
+def test_group_artwork_is_hidden_from_visitors(node):
+    """T-S10: an image received from the group (screenshots are withheld by default) is neither listed, nor
+    reachable by id, nor served as bytes to a visitor; cover art follows the switch."""
+    from atlas.models import Artwork
+
+    with node.st.maker() as s:
+        shot = Artwork(canonical_id=node.pub, source="igdb", kind="screenshot", url="https://img.invalid/g.png",
+                       blob_hash="c" * 64, fetched_from="group:n1", redistributable=False)
+        s.add(shot)
+        s.commit()
+        aid = shot.id
+    anon = _fresh(node)
+    assert anon.get(f"/game/{node.pub}/artwork/{aid}").status_code == 404
+    assert "c" * 64 not in anon.get(f"/game/{node.pub}").text
+    _set_switch(node, True)
+    assert _fresh(node).get(f"/game/{node.pub}/artwork/{aid}").status_code == 404  # screenshots: withheld
