@@ -54,7 +54,15 @@ password and the root passphrase, and is limited to 5 attempts per hour per admi
    fields.
 3. Both screens show a **12-digit number** and the other node's fingerprint. Compare them over a channel you
    trust. Tick "The numbers match on both screens" on the inviting node (with the root passphrase) and then on
-   the new node. The last step links to **Link my account on both nodes** (`/me/linked-nodes`).
+   the new node.
+4. **Link my account on both nodes** (with "Same owner, full trust"). The done step offers to link *your own*
+   account right away: the non-sensitive preferences (display name, avatar, language, locale, date and time
+   format, theme, time zone, accessibility, density, list order, hidden achievements) are pre-ticked; *About you*,
+   *Public profile* and *Sign-in references* are one click away. Confirm your password, sign in on the other node
+   and check its fingerprint there, then choose which value to keep where the nodes differ. It is the same
+   explicit link as **Linked nodes** below, never a match by name or email, and nothing sensitive (password,
+   two-factor, sessions, tokens, email, role) is ever shared. With another preset the done step links to
+   **Linked nodes** instead.
 
 ### How much the nodes trust each other
 
@@ -67,6 +75,12 @@ local policy, only when the join completes (a cancelled or expired join changes 
 | Accept the other node's two-factor step (`group_trust_remote_mfa`) | off | **on** | on |
 | Group administrators (`group_federated_privilege`) | deny | deny | **local_mfa** |
 | Highest delegated role (`group_max_delegated_role`) | none | none | **admin** |
+
+When the join completes, a preset writes only the rows that tell the presets apart (the four above), so a change
+you made in between to group sign-in, the public sign-in buttons, profile sync or local two-factor for delegated
+rights is kept. The done step lists what this enrolment actually changed. If this node's policy cannot be written
+at that moment, the join still completes, the failure is audited (`group_policy_preset_failed`) and you apply
+the preset under **Policy**. **Apply** on the Policy card writes every row of the preset.
 
 *Custom* leaves the policy as it is and shows the old delegation fields. The administrator checkbox needs the
 typed confirmation and never changes the invite's permissions: an administrator grant is still issued on the
@@ -157,7 +171,8 @@ for a replay: the resync pull alone ends `resyncing`.
 
 ## Linked accounts and synced preferences
 
-Accounts are never matched by email or username. A person links their accounts explicitly:
+Accounts are never matched by email or username, and no one links another person's account. A person links
+their accounts explicitly (the enroller can do it as the last step of enrolment, above):
 
 1. On the node where they want the link (say *Laptop*), **Linked nodes** (`/me/linked-nodes`) → choose the other
    node → confirm with the current password.
@@ -367,3 +382,17 @@ identity node appends for every assertion it signs) and a field (`mint_nonce` on
 older node parks them, which stops only that account's stream from that node, so upgrade every member together.
 An older node accepts the new view fields. Recovery files written now are v2, which an older release cannot open:
 keep a v1 file until every node runs this release if you may need to downgrade.
+
+## Group sync status
+
+**Linked nodes** and the **Node group** admin page show a **Group sync** strip: per member, when this node last
+heard from it (and the last error if it could not be reached), what is shared, and the preference conflicts that
+need a decision. On **Settings** a preference of an unlinked account in a group shows **Not linked to your other
+nodes · Link now** instead of "this node only"; "this node only" stays for preferences you or the administrator
+chose not to share. The admin page also counts the accounts on this node that are not linked yet; **Invite users
+to link** shows those people a notice with a **Link now** button until you stop it. It never links anyone.
+
+On the admin strip each member also carries a **Catalogue sync** chip (on, failing, paused or off) and the done
+step of an enrolment shows it for the new member. Joining a group does not copy records by itself in this release:
+the chip only reports whether this node follows that member on **Peers** (matched by node ID, or by address). To
+share catalogues, follow the member there like any other peer, from both nodes.

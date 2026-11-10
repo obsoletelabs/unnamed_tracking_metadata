@@ -47,7 +47,7 @@
 {% if group.status == 'halted' %}<div class="card error" role="alert">Conflicting root successions were seen: the recovery keys of this group are compromised. Create a new group.</div>{% endif %}
 {% if pending %}<div class="card error" role="alert">A root succession is pending (index {{ pending[0].body.body.index }}, activates {{ when(pending[0].activates_at) }}). If it is not yours, cancel it with a recovery quorum (<code>atlas group root succession-cancel</code>).</div>{% endif %}
 <ul class="chips section-chips" aria-label="On this page">
-  <li><a class="chip" href="#overview">Overview</a></li><li><a class="chip" href="#members">Members ({{ members|length }})</a></li>
+  <li><a class="chip" href="#overview">Overview</a></li><li><a class="chip" href="#members">Members ({{ members|length }})</a></li><li><a class="chip" href="#group-sync-h">Group sync</a></li>
   <li><a class="chip" href="#add-node">Add a node</a></li><li><a class="chip" href="#policy">Policy</a></li>
   <li><a class="chip" href="#g-grants">Grants</a></li><li><a class="chip" href="#recovery">Recovery</a></li>
   <li><a class="chip" href="#danger">Danger zone</a></li>
@@ -111,6 +111,13 @@
   </details>
 </section>
 
+{# Group sync (addendum items 3-4): the shared view of the members, and the people who have not linked yet. #}
+{% set admin = true %}{% include "_group_sync.html" %}
+{% if strip.unlinked_n %}<section class="card inset" aria-labelledby="g-link-invite" data-group-link-invite="{{ 'on' if link_invite else 'off' }}"><h3 id="g-link-invite">{{ strip.unlinked_n }} account{{ '' if strip.unlinked_n == 1 else 's' }} here {{ 'is' if strip.unlinked_n == 1 else 'are' }} not linked to the group yet</h3>
+  <p class="small">Their preferences stay on this node until they link. Each person links their own account from <strong>Settings → Linked nodes</strong>, after signing in on the other node; accounts are never linked for someone else and never matched by name or email.</p>
+  <form class="inline" method="post" action="/admin/group/link-invite">{{ csrf(p.csrf) }}{% if link_invite %}<input type="hidden" name="action" value="off"><span class="badge ok">notice shown</span> <button class="secondary small" type="submit">Stop showing the notice</button>{% else %}<input type="hidden" name="action" value="on"><button class="secondary" type="submit">Invite users to link</button> <span class="small muted">shows them a notice with a “Link now” button</span>{% endif %}</form>
+</section>{% endif %}
+
 {# 2. Members: status first; permissions and certificate behind details; revoke lives in the danger zone. #}
 <section id="members" aria-labelledby="g-members"><h2 id="g-members">Members ({{ members|length }})</h2>
 <div class="table-scroll"><table class="data-cards" data-group-members><thead><tr><th scope="col">Node</th><th scope="col">Status</th><th scope="col">Address</th><th scope="col">Last seen</th><th scope="col">Certificate</th></tr></thead><tbody>
@@ -136,7 +143,7 @@
       <label class="choice"><input type="radio" name="preset" value="cautious"> <span><strong>Cautious</strong> <span class="small muted block">This release's defaults.</span></span></label>
       <label class="choice"><input type="radio" name="preset" value="custom"> <span><strong>Custom</strong> <span class="small muted block">Leave this node's policy as it is and set the delegation below yourself.</span></span></label>
       <label class="choice admin-choice"><input type="checkbox" name="with_admin"> <span>Let my administrator account from the other node act as administrator here (after this node's own two-factor step) <span class="small muted block">Only with “Same owner, full trust”; a grant is still needed (Grants).</span></span></label>
-      {% if preset_diffs.same_owner %}<details class="small"><summary>What “Same owner, full trust” changes on this node</summary><ul data-preset-diff="same_owner">{% for d in preset_diffs.same_owner %}<li>{{ d.label }}: {{ d['from'] }} → <strong>{{ d.to }}</strong></li>{% endfor %}</ul><p class="muted">Applied when the new node has joined; a cancelled or expired invite changes nothing.</p></details>{% endif %}
+      {% if invite_diff %}<details class="small"><summary>What “Same owner, full trust” changes on this node</summary><ul data-preset-diff="same_owner">{% for d in invite_diff %}<li>{{ d.label }}: {{ d['from'] }} → <strong>{{ d.to }}</strong></li>{% endfor %}</ul><p class="muted">Applied when the new node has joined; a cancelled or expired invite changes nothing. Catalogue federation with the new node is not part of the preset in this release: follow it on Peers.</p></details>{% endif %}
     </fieldset>
     <details class="custom-delegation"><summary>Custom: delegation for the new node</summary>
     <label for="g-del">Let the new node enrol other nodes (0 = no)</label><input id="g-del" name="delegate_enrol" type="number" min="0" max="8" value="0">

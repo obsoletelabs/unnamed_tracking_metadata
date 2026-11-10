@@ -133,11 +133,20 @@ async def _form_field(request: Request, name: str) -> str | None:
 def link_start(p: Annotated[Ctx, Depends(user_form)], node_id: Annotated[str, Form(max_length=16)],
                password: Annotated[str, Form(max_length=256)] = ""):
     throttle(p, f"group-link:{p.me.id}", 10, 3600)
-    s, identity = p.session, p.st.ctx.identity
 
     def refuse(message: str):
         return render(p, "me_linked_nodes.html", status=400, **linked_context(p, message))
 
+    return begin_link(p, node_id, password, refuse)
+
+
+def begin_link(p: Ctx, node_id: str, password: str, refuse, chosen: list[str] | None = None,
+               via: str = "linked_nodes"):
+    """§5.3 steps 1-3 behind both entry points: /me/linked-nodes and, under "Same owner, full trust", the last
+    step of an enrolment (SPEC-UI-POLISH-PASS addendum item 1). The person re-enters their password here and
+    checks the other node's fingerprint there; nothing is matched by name or email. `chosen`, when given, is this
+    node's consent (what it may take from and send to the group), saved before the other node is asked."""
+    s, identity = p.session, p.st.ctx.identity
     if not accounts.reauthenticated(p.me, password, p.login):
         return refuse("Confirm your current password to link another node.")
     group = groups.active(s)
@@ -150,8 +159,10 @@ def link_start(p: Annotated[Ctx, Depends(user_form)], node_id: Annotated[str, Fo
     cert = group_signin.asserting_member(tr, node_id, identity.node_id)
     if cert is None:
         return refuse("That node cannot confirm accounts in this group.")
+    if chosen is not None:
+        profile.set_consent(s, p.me.id, group.group_id, [n for n in chosen if n in profile_schema.REGISTRY])
     resp = _begin(p, group, cert, node_id, "link", p.me.id, "/me/linked-nodes")
-    groups.audit(s, p.me.id, "group_link_started", p.me.id, {"idp_node": node_id})
+    groups.audit(s, p.me.id, "group_link_started", p.me.id, {"idp_node": node_id, "via": via})
     return resp
 
 
@@ -645,4 +656,4 @@ async def wizard_finish(request: Request, p: Annotated[Ctx, Depends(user_form)])
     return go("/me/linked-nodes", "saved")
 
 
-__all__ = ["router", "verify_link_assertion", "verify_assertion", "BIND_COOKIE"]
+__all__ = ["router", "verify_link_assertion", "verify_assertion", "begin_link", "BIND_COOKIE"]

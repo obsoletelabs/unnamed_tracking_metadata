@@ -106,10 +106,15 @@ def render(p: Page, name: str, status: int = 200, anon_csrf: bool = False, **ctx
 
         ctx["pref_rows"] = preference_rows(p)
         ctx["prefs_linked"] = any(r["synced"] for r in ctx["pref_rows"])
+        ctx["prefs_unlinked"] = bool(ctx["pref_rows"]) and ctx["pref_rows"][0]["unlinked"]
     if name.startswith("admin") and "fed_optional" not in ctx:  # §3.7: "optional" on the Federation nav label
         from . import setup_checklist
 
         ctx["fed_optional"] = not setup_checklist.connected(p.session)
+    if p.user and "link_notice" not in ctx and not name.startswith(("me_linked_nodes", "group_", "admin_group")):
+        from .group import link_invite_banner
+
+        ctx["link_notice"] = link_invite_banner(p)  # addendum item 4: the administrator's "Invite users to link"
     unread = social.unread_count(p.session, p.user.id) if p.user else 0
     prefs = profile.values(p.session, s, p.user) if p.user else anonymous_prefs(p.request)
     resp = templates.TemplateResponse(p.request, name, {
