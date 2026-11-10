@@ -7,7 +7,7 @@
   {% for m in strip.members %}<li data-sync-member="{{ m.node }}" data-sync-state="{{ 'error' if m.error else ('stale' if m.stale else 'ok') }}"><strong>{{ m.name }}</strong>
     {% if m.error %}<span class="badge warn">not reached</span>{% elif m.stale %}<span class="badge warn">not seen lately</span>{% else %}<span class="badge ok">in step</span>{% endif %}
     <span class="small muted">{% if m.seen %}last sync {{ when(m.seen, relative=True) }}{% else %}never synced{% endif %}</span>{% if admin %}{% set c = m.catalogue %}
-    <a class="chip small" href="/admin/peers" data-catalogue-sync="{{ c.state }}">Catalogue sync: {{ {'on': 'on', 'error': 'failing', 'paused': 'paused', 'off': 'off'}[c.state] }}</a>{% endif %}{% if m.error %}<span class="small error block">{{ m.error }}</span>{% endif %}</li>
+    <a class="chip small" href="/admin/peers" data-catalogue-sync="{{ c.state }}">Catalogue sync: {{ {'on': 'on', 'error': 'failing', 'paused': 'paused', 'off': 'off'}[c.state] }}</a>{% endif %}{% if admin and m.error %}<span class="small error block">{{ m.error }}</span>{% endif %}</li>
   {% else %}<li class="muted">No other member yet.</li>{% endfor %}
   </ul>
   <dl class="facts small">

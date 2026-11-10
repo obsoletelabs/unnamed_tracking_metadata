@@ -476,6 +476,7 @@ def _enrolment(p: Page, eid: str, error: str | None = None, status: int = 200):
                   preset_changes=group_presets.diff(settings, row.preset, bool(row.preset_admin),
                                                     keys=group_presets.ACTIVATION_KEYS),
                   preset_applied=_applied(p, row) if done else [],
+                  preset_kept=group_presets.kept(settings, row.preset, bool(row.preset_admin)) if done else [],
                   link_offer=_link_offer(p, row, peer) if done else None,
                   catalogue=_catalogue_of(p, peer) if done else None)
 
