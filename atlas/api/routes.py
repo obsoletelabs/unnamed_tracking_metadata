@@ -73,14 +73,51 @@ def _iso(dt: datetime | None) -> str | None:
 
 
 def game_out(row: Canonical, redirected_from: str | None = None, session: Session | None = None,
-             ctx: Any = None) -> dict[str, Any]:
+             ctx: Any = None, viewer: Any = None) -> dict[str, Any]:
     out = {
         "id": row.id, "version": row.version, "redirected_from": redirected_from,
         "media_type": row.media_type, "updated_at": _iso(row.updated_at), **row.view,
     }
     if session is not None and ctx is not None:
-        out["custom"] = custom.merged(session, ctx, row.id)
+        out["custom"] = custom.merged(session, ctx, row.id, viewer=viewer)
     return out
+
+
+def _item_scope(session: Session, st: AppState, a: Artwork, viewer: Any) -> dict[str, Any]:
+    """C14 §5.5: the additive `scope` of one image, for callers with scope detail only."""
+    from .. import scope
+
+    if viewer is None or not viewer.detail:
+        return {}
+    return {"scope": scope.of_artwork(st.ctx.settings, a, scope.ceiling_of(session, a.canonical_id),
+                                      grouped=scope.in_group(session))}
+
+
+def _viewer(session: Session, st: AppState, principal: Any) -> Any:
+    """The visibility class of an API caller (CONTRACT-C14 §5.7, `scope.viewer_for_principal`)."""
+    from .. import scope
+
+    return scope.viewer_for_principal(session, st.ctx.settings, principal)
+
+
+def _visible(session: Session, st: AppState, principal: Any, cid: str) -> tuple[Any, str | None, Any]:
+    """`service.get_canonical` under the visibility rule; a refused record is the same 404 as an unknown one."""
+    from .. import scope
+
+    viewer = _viewer(session, st, principal)
+    row, redirected = scope.get_visible(session, viewer, cid)
+    return row, redirected, viewer
+
+
+def scope_out(session: Session, st: AppState, row: Any, viewer: Any) -> dict[str, Any]:
+    """The additive `scope` key of a record (C14 §5.5): only for viewers with scope.detail. For anyone else the key
+    is absent (not null), so the answer cannot be told apart from a node without C14."""
+    from .. import scope
+
+    if viewer is None or not viewer.detail:
+        return {}
+    info = scope.record_summary(session, st.ctx.settings, scope.unwrap(row))
+    return {"scope": {"ceiling": info["ceiling"], "widest": info["widest"], "counts": info["counts"]}}
 
 
 def _guard_upstream(session: Session, st: AppState, cid: str) -> None:
@@ -297,7 +334,16 @@ class ResolveResponse(BaseModel):
     results: list[ResolveResult]
 
 
-def _resolution_out(r: Resolution, session: Session, st: AppState, include_view: bool) -> dict[str, Any]:
+def _resolution_out(r: Resolution, session: Session, st: AppState, include_view: bool,
+                    viewer: Any = None) -> dict[str, Any]:
+    from .. import scope
+
+    named = ([r.canonical_id] if r.canonical_id else []) + list(r.conflict or []) + [c for c, _s in r.candidates]
+    for cid in named:
+        row = session.get(Canonical, cid)
+        if row is not None and scope.visible(session, viewer, row) is None:
+            r = Resolution()  # C14 §5.7: a record the caller may not see resolves like no match at all
+            break
     entry: dict[str, Any] = {
         "canonical_id": r.canonical_id, "method": r.method, "confidence": r.confidence,
         "candidates": [{"id": c, "score": s} for c, s in r.candidates], "assigned": r.assigned,
@@ -309,30 +355,33 @@ def _resolution_out(r: Resolution, session: Session, st: AppState, include_view:
     }
     if include_view:
         row = session.get(Canonical, r.canonical_id) if r.canonical_id else None
-        entry["game"] = game_out(row, None, session, st.ctx) if row else None
+        row = scope.visible(session, viewer, row) if row is not None else None
+        entry["game"] = game_out(row, None, session, st.ctx, viewer=viewer) if row else None
     return entry
 
 
 @router.post("/resolve", tags=["read"], response_model=ResolveResponse, response_model_exclude_unset=True,
              summary="Resolve client ids and titles to canonical Atlas ids (C4)")
-def resolve(body: ResolveRequest, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+def resolve(body: ResolveRequest, st: St, session: Sess,
+            principal: Annotated[auth.Principal, Depends(require("read"))]):
     """Read-only. Identity evidence wins over titles; conflicting identity evidence returns `canonical_id: null`
     with `reason: conflict` (a behaviour change, H2: older Atlas returned the item's own id with `crosswalk`)."""
     if len(body.items) > st.ctx.settings.max_resolve:
         raise HTTPException(413, f"at most {st.ctx.settings.max_resolve} items per request")
     out = []
+    viewer = _viewer(session, st, principal)
     for it in body.items:
         r = classify(
             session, st.ctx.settings, namespace=it.namespace or "", external_id=it.external_id or "",
             provider_ids=it.provider_ids, title=it.title, release_date=it.release_date,
             platform=it.platform, developer=it.developer, media_type=it.media_type,
         ) if (it.external_id or it.title or it.provider_ids) else Resolution()
-        out.append(_resolution_out(r, session, st, body.include_view))
+        out.append(_resolution_out(r, session, st, body.include_view, viewer))
     return {"results": out}
 
 
 @router.get("/games", tags=["read"])
-def list_games(session: Sess, st: St, _: Annotated[auth.Principal, Depends(require("read"))],
+def list_games(session: Sess, st: St, principal: Annotated[auth.Principal, Depends(require("read"))],
                q: Annotated[str, Query(max_length=200, description="Title search. Required unless a release "
                                        "filter is given.")] = "",
                limit: Annotated[int, Query(ge=1, le=100)] = 25,
@@ -349,26 +398,37 @@ def list_games(session: Sess, st: St, _: Annotated[auth.Principal, Depends(requi
                    "last; `-release` newest first. `relevance` ranks exact and prefix title matches first "
                    "*within each page* of the title order, so pages with `offset` follow the title order; use "
                    "`title` or `release` for a stable order across pages."))] = "relevance",
-               offset: Annotated[int, Query(ge=0, le=100_000)] = 0):
+               offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+               scope: Annotated[str | None, Query(max_length=8, description=(
+                   "C14: only records whose ceiling is `group`, `local` or `private`, or `public` (no ceiling and "
+                   "at least one public item). Only for callers with scope detail; ignored otherwise."))] = None,
+               has: Annotated[str | None, Query(max_length=8, description=(
+                   "C14: only records with at least one `group` or `local` item. Only for callers with scope "
+                   "detail; ignored otherwise."))] = None):
     # Only a missing q needs a filter: a blank q (`q=%20`) lists recent records, as it always did.
     if q == "" and not released_from and not released_to:
         raise HTTPException(422, "give q (a title search) or a release filter")
+    viewer = _viewer(session, st, principal)
     rows = service.search(session, q, limit, offset, media_type=type, released_from=released_from,
-                          released_to=released_to, sort=sort)
-    return {"results": [game_out(r, None, session, st.ctx) for r in rows]}
+                          released_to=released_to, sort=sort, viewer=viewer, has=has, scope_filter=scope)
+    return {"results": [game_out(r, None, session, st.ctx, viewer=viewer) for r in rows]}
 
 
 @router.get("/games/{cid}", tags=["read"])
 def get_game(cid: str, response: Response, session: Sess, st: St,
-             _: Annotated[auth.Principal, Depends(require("read"))]):
+             principal: Annotated[auth.Principal, Depends(require("read"))]):
     """One record. `relations` (C6.3) lists its active relations: `parents` (this record is a DLC, port,
     remake... of them), `children` (theirs to this one), `members_of` (the series and collections it is in) and
     `members` (when this record is a series or collection). Each list is ordered by type, then id, and holds
-    at most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions."""
-    row, redirected = service.get_canonical(session, cid)
+    at most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions.
+
+    C14 (additive): `scope {ceiling, widest, counts}` for callers with scope detail only; for anyone else the key
+    is absent."""
+    row, redirected, viewer = _visible(session, st, principal, cid)
     response.headers["ETag"] = f'"{row.id}-{row.version}"'
-    return {**game_out(row, redirected, session, st.ctx), "relations": relations.of(session, row.id),
-            "unmerged": merges.unmerged_recently(session, row.id)}
+    return {**game_out(row, redirected, session, st.ctx, viewer=viewer),
+            "relations": relations.of(session, row.id, viewer=viewer, settings=st.ctx.settings),
+            "unmerged": merges.unmerged_recently(session, row.id), **scope_out(session, st, row, viewer)}
 
 
 class RelationItem(BaseModel):
@@ -385,7 +445,7 @@ class RelationsBody(BaseModel):
 
 
 @router.get("/games/{cid}/relations", tags=["read"])
-def get_relations(cid: str, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))],
+def get_relations(cid: str, session: Sess, st: St, principal: Annotated[auth.Principal, Depends(require("read"))],
                   depth: Annotated[int, Query(ge=1, le=relations.MAX_EXPAND_DEPTH, description=(
                       "Hops to follow in both directions."))] = 1,
                   limit: Annotated[int, Query(ge=1, le=relations.MAX_EXPAND_NODES, description=(
@@ -393,9 +453,9 @@ def get_relations(cid: str, session: Sess, _: Annotated[auth.Principal, Depends(
     """The relation graph around a record (C6.3), breadth first up to `depth` hops and `limit` records, for
     navigation between a game, its DLC, ports, remakes, series and collections. `truncated` says that more
     exists. Deterministic order."""
-    row, redirected = service.get_canonical(session, cid)
-    return {**relations.expand(session, row.id, depth, max_nodes=limit), "redirected_from": redirected,
-            "editions": row.view.get("editions", [])}
+    row, redirected, viewer = _visible(session, st, principal, cid)
+    return {**relations.expand(session, row.id, depth, max_nodes=limit, viewer=viewer, settings=st.ctx.settings),
+            "redirected_from": redirected, "editions": row.view.get("editions", [])}
 
 
 @router.put("/games/{cid}/relations", tags=["curate"])
@@ -427,9 +487,37 @@ def put_relations(cid: str, body: RelationsBody, st: St, session: Sess,
     return {**out, "published": True}
 
 
+class ScopeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ceiling: Literal["local"] | None = Field(description=(
+        "`local`: keep the record on this node only (nothing about it is signed into a feed or shared with your "
+        "nodes). `null`: publish it (lift any ceiling; on an authority the record is introduced on the feed)."))
+
+
+@router.put("/games/{cid}/scope", tags=["curate"])
+def put_scope(cid: str, body: ScopeBody, st: St, session: Sess,
+              p: Annotated[auth.Principal, Depends(require("curate"))]):
+    """Set or lift a record's scope ceiling (CONTRACT-C14 §5.3). A ceiling cannot un-publish: `local` on a record
+    this node's feed already introduced is refused (409 `conflict`). `group` is set only by the group assistance
+    (C14-2) and `private` has no writer yet."""
+    from .. import scope
+
+    row, _r = service.get_canonical(session, cid)
+    try:
+        if body.ceiling == "local":
+            scope.set_ceiling(session, st.ctx, row.id, "local", by="operator", actor=None)
+            seq = None
+        else:
+            seq = scope.publish(session, st.ctx, row.id, actor=None)
+    except scope.CeilingRefused as exc:
+        raise AtlasError(str(exc), "conflict") from exc
+    session.refresh(row)
+    return {"id": row.id, "ceiling": row.scope_ceiling, "introduced_seq": seq}
+
+
 @router.get("/games/{cid}/explain", tags=["read"])
-def explain(cid: str, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
-    row, redirected = service.get_canonical(session, cid)
+def explain(cid: str, session: Sess, st: St, principal: Annotated[auth.Principal, Depends(require("read"))]):
+    row, redirected, _shown_to = _visible(session, st, principal, cid)
     return {"id": row.id, "redirected_from": redirected, "explain": row.explain}
 
 
@@ -462,11 +550,12 @@ def get_provenance(cid: str, st: St, session: Sess, p: Annotated[auth.Principal,
     """Why each field has its value: the winning source, its trust class, the reason it won, the runners-up
     and any conflict (C11 §11.11.1). Host and plugin observations are counted, never shown, without curate
     scope."""
-    row, redirected = service.get_canonical(session, cid)
+    row, redirected, viewer = _visible(session, st, p, cid)
     curate = p.allows("curate")
     if detail == "values" and not curate:
         raise AtlasError("detail=values needs the curate scope", "forbidden")
-    out = provenance.provenance(session, st.ctx.settings, row, curate=curate, values=detail == "values")
+    out = provenance.provenance(session, st.ctx.settings, row, curate=curate, values=detail == "values",
+                                viewer=viewer)
     return {**out, "redirected_from": redirected}
 
 
@@ -1070,11 +1159,11 @@ def get_artwork(cid: str, st: St, session: Sess, principal: Annotated[auth.Princ
     if region is not None and not REGION_RE.fullmatch(region):
         raise HTTPException(422, "region must be ww, eu, na, asia, oce, latam or an ISO 3166-1 alpha-2 code")
     want_lang = facets.clean_locale(lang, "lang") if lang else None
-    row, redirected = service.get_canonical(session, cid)
+    row, redirected, viewer = _visible(session, st, principal, cid)
     ranked = facets.merged_artwork(session, st.ctx, row.id, region=region, lang=want_lang,
-                                   include_duplicates=include_duplicates)
+                                   include_duplicates=include_duplicates, viewer=viewer)
     near = facets.near_duplicates(ranked) if principal.allows("curate") else None
-    by_id = {a.id: _art_out(st.ctx.settings, a, near) for a in ranked}
+    by_id = {a.id: {**_art_out(st.ctx.settings, a, near), **_item_scope(session, st, a, viewer)} for a in ranked}
     best: dict[str, Any] = {}
     for a in ranked:
         if a.duplicate_of is None:
@@ -1156,14 +1245,15 @@ def get_achievements(cid: str, st: St, session: Sess, principal: Annotated[auth.
 
     Large catalogues can be read in pages: pass `limit` (at most 200) and `offset`, and follow `next_offset` until it
     is null. The order is stable, so pages never overlap or skip. Without `limit` the whole list is returned."""
-    row, redirected = service.get_canonical(session, cid)
+    row, redirected, viewer = _visible(session, st, principal, cid)
     allowed = principal.personal or principal.allows("curate")
     wanted: bool | set[str] = False
     if reveal and allowed:
         wanted = True if reveal.strip().lower() == "all" else {i.strip() for i in reveal.split(",") if i.strip()}
     listing = facets.achievement_listing(session, st.ctx, row.id, reveal=wanted, lang=lang, order=order,
                                          set_filter=set_, platform=platform,
-                                         include_retired=include_retired and principal.allows("curate"))
+                                         include_retired=include_retired and principal.allows("curate"),
+                                         viewer=viewer)
     results = listing["results"]
     total = len(results)
     hidden_count = sum(1 for r in results if r["hidden"])
@@ -1203,7 +1293,7 @@ PriceProvider = Annotated[str | None, Query(max_length=32, description="Only thi
 
 
 @router.get("/games/{cid}/prices", tags=["read"])
-def get_prices(cid: str, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
+def get_prices(cid: str, session: Sess, st: St, principal: Annotated[auth.Principal, Depends(require("read"))],
                region: PriceRegion = None, currency: PriceCurrency = None, provider: PriceProvider = None):
     """The newest observed price of every offer of a record (C8.2): one row per provider, product, package,
     edition, platform, region and currency, ordered by provider, region, currency. Money is integer minor units
@@ -1212,14 +1302,14 @@ def get_prices(cid: str, session: Sess, principal: Annotated[auth.Principal, Dep
     Prices whose licence does not allow redistribution are returned only to curator and admin tokens. Prices are
     not part of the record's view or version, and are never published in the federation feed."""
     _price_filters(region, currency)
-    row, redirected = service.get_canonical(session, cid)
+    row, redirected, _v = _visible(session, st, principal, cid)
     result = prices.latest(session, row.id, region=region, currency=currency, provider=provider,
                            restricted=principal.allows("curate"))
     return {"id": row.id, "redirected_from": redirected, **result}
 
 
 @router.get("/games/{cid}/prices/history", tags=["read"])
-def get_price_history(cid: str, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
+def get_price_history(cid: str, session: Sess, st: St, principal: Annotated[auth.Principal, Depends(require("read"))],
                       region: Annotated[str, Query(min_length=2, max_length=2, description=(
                           "The storefront region (required: price history is regional)."))],
                       currency: PriceCurrency = None, provider: PriceProvider = None,
@@ -1235,7 +1325,7 @@ def get_price_history(cid: str, session: Sess, principal: Annotated[auth.Princip
     pages). Follow `next_cursor` until it is null. Observations older than their retention (30 days by default,
     at most 365) are gone."""
     _price_filters(region, currency)
-    row, redirected = service.get_canonical(session, cid)
+    row, redirected, _v = _visible(session, st, principal, cid)
     result = prices.history(session, row.id, region=region, currency=currency, provider=provider,
                             product_id=product_id, edition=edition, platform=platform, since=since, until=until,
                             limit=limit, cursor=cursor, restricted=principal.allows("curate"))
@@ -1265,7 +1355,8 @@ def price_status(session: Sess, _: Annotated[auth.Principal, Depends(require("ad
 
 
 @router.get("/artwork/{art_id}/image", tags=["read"])
-def get_artwork_image(art_id: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+def get_artwork_image(art_id: str, st: St, session: Sess,
+                      principal: Annotated[auth.Principal, Depends(require("read"))]):
     """The image of one artwork row (C12 §12.5.5, §12.5.8, §12.7.2, H50).
 
     * the cached bytes of a `proxy` source (`public, max-age=300`, digest as ETag);
@@ -1283,6 +1374,13 @@ def get_artwork_image(art_id: str, st: St, session: Sess, _: Annotated[auth.Prin
         art = session.get(Artwork, art_id)
         if art is None:
             raise HTTPException(404, "no such image")
+        from .. import scope
+
+        viewer = _viewer(session, st, principal)
+        clause = scope.artwork_clause(viewer, st.ctx.settings)
+        if clause is not None and session.scalars(
+                select(Artwork.id).where(Artwork.id == art.id, clause)).first() is None:
+            raise HTTPException(404, "no such image")  # C14 §5.7: exactly the answer for an unknown id
         settings = st.ctx.settings
         fetch = media.fetch_policy(settings, art.source, art.url)
         if fetch == "none":
@@ -1290,7 +1388,8 @@ def get_artwork_image(art_id: str, st: St, session: Sess, _: Annotated[auth.Prin
             raise HTTPException(404, "image is not served here")
         if fetch == "proxy" and art.blob_hash and media.find_blob(settings, art.blob_hash):
             result = "hit"
-            return media_response(st, art.blob_hash, etag=True)
+            group = scope.is_group_art(art, scope.ceiling_of(session, art.canonical_id))
+            return media_response(st, art.blob_hash, etag=True, access="group" if group else "public", viewer=viewer)
         if source_class(art.source) != "provider" or media.is_upload(settings, art.url):
             raise HTTPException(404, "image is not available yet")
         result = "refused"
@@ -1308,9 +1407,11 @@ def get_artwork_image(art_id: str, st: St, session: Sess, _: Annotated[auth.Prin
         instruments.media_cache.inc(route="image", result=result)
 
 
-def media_response(st: AppState, digest: str, *, etag: bool = False):
+def media_response(st: AppState, digest: str, *, etag: bool = False, access: str = "public", viewer: Any = None):
     """`etag` is for addresses whose bytes can change (the per-row image route): a short public cache and the
-    digest as ETag. `/media/<sha256>` names the bytes themselves and is immutable."""
+    digest as ETag. `/media/<sha256>` names the bytes themselves and is immutable. `access="group"` (C14 §5.7):
+    bytes only data received from the group references, never `immutable`: `private, no-store` for a signed-in
+    viewer, `private, max-age=300` for a visitor while `group_data_public_pages` is on."""
     from fastapi.responses import FileResponse
 
     found = media.find_blob(st.ctx.settings, digest)
@@ -1321,23 +1422,29 @@ def media_response(st: AppState, digest: str, *, etag: bool = False):
                "Content-Security-Policy": "default-src 'none'; sandbox"}
     if etag:
         headers.update({"Cache-Control": "public, max-age=300", "ETag": f'"{digest}"'})
+    if access == "group":
+        signed_in = viewer is not None and viewer.kind in ("user", "detail")
+        headers["Cache-Control"] = "private, no-store" if signed_in else "private, max-age=300"
+        headers.pop("ETag", None)
     return FileResponse(path, media_type=ctype, headers=headers)
 
 
 @router.get("/media/{digest}", tags=["read"])
-def get_media(digest: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
-    return served_media(session, st, digest, "no such image")
+def get_media(digest: str, st: St, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))]):
+    return served_media(session, st, digest, "no such image", viewer=_viewer(session, st, principal))
 
 
-def served_media(session: Session, st: AppState, digest: str, missing: str):
-    """`/media/<sha256>` (API and site): cached bytes still servable under the source's policy (§12.5.5)."""
-    from .. import instruments
+def served_media(session: Session, st: AppState, digest: str, missing: str, *, viewer: Any = None):
+    """`/media/<sha256>` (API and site): cached bytes still servable under the source's policy (§12.5.5), and
+    only when the viewer may see a row that references them (C14 §5.7; a refusal is the same 404)."""
+    from .. import instruments, scope
 
-    if not media.servable(session, st.ctx.settings, digest):  # a provider switched to redirect/none (§12.5.5)
+    access = scope.media_access(session, viewer, st.ctx.settings, digest) if viewer is not None else "public"
+    if access is None or not media.servable(session, st.ctx.settings, digest):  # redirect/none (§12.5.5)
         instruments.media_cache.inc(route="media", result="refused")
         raise HTTPException(404, missing)
     try:
-        response = media_response(st, digest)
+        response = media_response(st, digest, access=access, viewer=viewer)
     except HTTPException:
         instruments.media_cache.inc(route="media", result="miss")
         raise

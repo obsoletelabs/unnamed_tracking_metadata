@@ -482,7 +482,7 @@ def set_values(session: Session, ctx: Ctx, cid: str, source: str, values: dict[s
     touch_version(session, cid, cause="feed" if signed else "local")
     if signed:
         publish_seeded_fields(session, ctx, {*values, *clear})
-        feed.emit(session, ctx, "custom", {"canonical_id": cid, "source": source, "values": values,
+        feed.emit_or_local(session, ctx, "custom", {"canonical_id": cid, "source": source, "values": values,
                                                       "clear": list(clear)})
 
 
@@ -491,8 +491,11 @@ def source_values(session: Session, cid: str, source: str) -> dict[str, Any]:
         select(CustomValue).where(CustomValue.canonical_id == cid, CustomValue.source == source))}
 
 
-def merged(session: Session, ctx: Ctx, cid: str, *, public_only: bool = True) -> dict[str, Any]:
-    """Per key, the value from the most trusted source. Fields without a definition are not shown."""
+def merged(session: Session, ctx: Ctx, cid: str, *, public_only: bool = True, viewer: Any = None) -> dict[str, Any]:
+    """Per key, the value from the most trusted source. Fields without a definition are not shown. `viewer`
+    (C14 §5.7): values received from the group only where that viewer may see them."""
+    from . import scope
+
     row = session.get(Canonical, cid)
     if row is None:
         return {}
@@ -501,6 +504,8 @@ def merged(session: Session, ctx: Ctx, cid: str, *, public_only: bool = True) ->
     for cv in session.scalars(select(CustomValue).where(CustomValue.canonical_id == cid)):
         f = defs.get(cv.key)
         if f is None or (public_only and not f.public):
+            continue
+        if not scope.custom_visible(viewer, ctx.settings, cv.source):
             continue
         trust = ctx.settings.trust(cv.source)
         if cv.key not in best or trust > best[cv.key][0]:

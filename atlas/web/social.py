@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
-from .. import accounts, social
+from .. import accounts, scope, social
 from ..models import Canonical, Comment, Follow, ListItem, Notification, Proposal, Report, User, UserList
 from ..service import AtlasError
 from . import release_year
@@ -42,6 +42,7 @@ def back(default: str, to: str | None = None) -> str:
 
 def game_title(p: Ctx, cid: str) -> str:
     row = p.session.get(Canonical, cid)
+    row = scope.visible(p.session, p.viewer, row) if row is not None else None  # C14 §5.7
     return (row.view.get("title") if row and row.view else None) or cid
 
 
@@ -59,7 +60,10 @@ def profile(username: str, p: Annotated[Ctx, Depends(page)]):
         accepted.append({"kind": pr.kind.replace("_", " "), "cid": pr.canonical_id, "when": pr.decided_at,
                          "title": game_title(p, pr.canonical_id) if pr.canonical_id else "(new game)"})
     lists = list(p.session.scalars(select(UserList).where(UserList.user_id == u.id, UserList.public.is_(True))))
-    counts = {lst.id: len(p.session.scalars(select(ListItem.canonical_id).where(ListItem.list_id == lst.id)).all())
+    hidden = scope.hidden_ids(p.viewer)
+    shown = () if hidden is None else (ListItem.canonical_id.not_in(hidden),)
+    counts = {lst.id: len(p.session.scalars(select(ListItem.canonical_id).where(ListItem.list_id == lst.id,
+                                                                                *shown)).all())
               for lst in lists}
     following = bool(p.user and p.session.get(Follow, (p.user.id, "user", u.id)))
     return render(p, "profile.html", u=u, stats=social.profile_stats(p.session, u), accepted=accepted, lists=lists,
@@ -153,6 +157,10 @@ def view_list(lid: str, p: Annotated[Ctx, Depends(page)]):
         g = p.session.get(Canonical, it.canonical_id)
         if g is not None and g.merged_into:
             g = p.session.get(Canonical, g.merged_into)
+        if g is not None:
+            g = scope.visible(p.session, p.viewer, g)  # C14 §5.7: a record this viewer may not see is left out
+            if g is None:
+                continue
         items.append({"cid": g.id if g else it.canonical_id, "title": (g.view.get("title") if g and g.view else "?"),
                       "year": (release_year(g.view) if g and g.view else ""), "note": it.note})
     return render(p, "list.html", row=row, owner=owner, items=items, mine=bool(p.user and p.user.id == row.user_id))

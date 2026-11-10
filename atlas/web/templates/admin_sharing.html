@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Sharing · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+<h2 class="flush-top">Sharing</h2>
+<p class="muted">Every item on a record has a scope: how far it may travel. This page says where each scope goes, and what visitors see of data this node received from your other nodes.</p>
+{% if not grouped and not linked %}<p class="card" data-standalone>Not in a group · Not linked to a main Atlas. Everything stays here.</p>{% endif %}
+{% if pending %}<p class="card" role="status" data-scope-pending>Visitor views are being recalculated in the background. Until that finishes, some records show what visitors saw before.</p>{% endif %}
+
+<h3>Where each scope goes</h3>
+<div class="table-scroll">
+<table class="sharing-table" data-sharing-table><caption class="sr">Where items of each scope travel</caption>
+<thead><tr><th scope="col">Scope</th><th scope="col">Accepted from</th><th scope="col" class="muted" title="Contributing upstream is not available yet">Contributed upstream</th><th scope="col"{% if not grouped %} class="muted"{% endif %}>Shared with your nodes</th><th scope="col">Public feed</th></tr></thead>
+<tbody>{% for key, label, pull, push, share, feed in rows %}<tr data-scope-row="{{ key }}">
+<th scope="row" data-label="Scope"><span class="badge scope scope-{{ key }}">{{ label }}</span></th>
+<td data-label="Accepted from">{{ pull }}</td>
+<td data-label="Contributed upstream" class="muted" aria-disabled="true">{{ push }}</td>
+<td data-label="Shared with your nodes"{% if not grouped %} class="muted" aria-disabled="true"{% endif %}>{{ share }}</td>
+<td data-label="Public feed">{{ feed }}</td></tr>{% endfor %}</tbody></table></div>
+<p class="small muted">Contributing edits upstream is not available yet, so that column is shown for reference only.{% if not grouped %} This node is not in a group, so nothing is shared with other nodes.{% endif %}</p>
+
+<h3>Records kept back</h3>
+<p data-ceiling-counts>{{ counts.get('local', 0) }} kept on this node only · {{ counts.get('group', 0) }} shared with your nodes only{% if counts.get('private') %} · {{ counts.get('private') }} for one account only{% endif %}.</p>
+<p class="small muted">Set on a record's page, under Curation: "Keep on this node only" or "Publish it". A record already in your public feed cannot be kept back; followers keep what they have.</p>
+
+<h3>What visitors see</h3>
+<form class="card" method="post" action="/admin/sharing">{{ csrf(p.csrf) }}
+  <label><input type="checkbox" name="group_data_public_pages" data-switch {{ 'checked' if switch }}> Show data from your nodes to visitors</label>
+  <p class="small muted">Off: visitors who are not signed in, API tokens and accounts that do not see data from your nodes never see anything this node received from your other nodes; a record that exists only through them is not found. On: they see the categories ticked below, never where they came from. Data this node fetched itself is always shown as before.</p>
+  <fieldset><legend>Categories visitors may see when this is on</legend>
+  <ul class="category-list">{% for c in categories %}<li><label><input type="checkbox" name="public_category" value="{{ c.key }}" {{ 'checked' if c.public }}> {{ c.label }}</label></li>{% endfor %}</ul>
+  <p class="small muted">Unticked categories are shown to signed-in accounts that see data from your nodes only.</p></fieldset>
+  <p><button type="submit">Save sharing</button></p>
+</form>
+<p class="small muted">{{ detail_users }} account{{ '' if detail_users == 1 else 's' }} given "sees data from your nodes" on <a href="/admin/users">Users</a>. Administrators and curators always see it.</p>
+{% endblock %}

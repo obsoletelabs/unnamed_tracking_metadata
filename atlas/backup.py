@@ -274,12 +274,12 @@ def _self_fk_columns(table: Table) -> list[str]:
 
 def _has_rows(conn) -> list[str]:
     """Tables with data. The client change log epoch that migration 0023 writes into a freshly migrated
-    database is not data: the restore replaces it anyway."""
+    database is not data, nor is the projection rebuild marker of migration 0038: the restore replaces both."""
     occupied = []
     for t in _tables():
         query = select(func.count()).select_from(t)
         if t.name == "node_state":
-            query = query.where(t.c.key != client_changes.EPOCH)
+            query = query.where(t.c.key.not_in((client_changes.EPOCH, "scope_projection_pending")))
         if conn.execute(query).scalar():
             occupied.append(t.name)
     return occupied

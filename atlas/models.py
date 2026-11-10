@@ -61,6 +61,50 @@ class Canonical(Base):
     merged_into: Mapped[str | None] = mapped_column(ForeignKey("canonical.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    # CONTRACT-C14 §5.3 (migration 0038): how far this record may travel at most. NULL: derived from its items;
+    # `group`, `private` or `local`. A ceiling only narrows. `scope_ceiling_by`: who set it (`assist`, `operator`).
+    scope_ceiling: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    scope_ceiling_by: Mapped[str | None] = mapped_column(String(8), nullable=True)
+
+
+class ScopeProjection(Base):
+    """CONTRACT-C14 §5.7 (migration 0038): what a viewer without `scope.detail` sees of one record, kept only for
+    records that hold something such a viewer may not see (host/plugin library data, data received from the
+    group, a `private` ceiling). A record without a row here looks the same to every viewer.
+
+    `tier` is `anon_off` (`group_data_public_pages` off) or `anon_on` (on: group items limited to the public field
+    categories, owner decision D1). `present = false` means the record does not exist for that viewer: it is left
+    out of every list, search and count, and its page is the same 404 as an unknown id. The columns mirror the
+    `canonical` columns that search, sort and filter read, so the visibility rule is applied inside the SQL query,
+    before ranking, pagination and counts."""
+
+    __tablename__ = "scope_projection"
+
+    canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id", ondelete="CASCADE"), primary_key=True)
+    tier: Mapped[str] = mapped_column(String(8), primary_key=True)
+    present: Mapped[bool] = mapped_column(Boolean, default=True)
+    view: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    explain: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    norm_title: Mapped[str] = mapped_column(String(500), default="")
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    release_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    release_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    release_precision: Mapped[str | None] = mapped_column(String(5), nullable=True)
+
+    __table_args__ = (Index("ix_scope_projection_tier", "tier", "present"),)
+
+
+class UserPermission(Base):
+    """A right an administrator granted one account (CONTRACT-C14 §9, migration 0038). Values: `scope.detail`
+    (C14-1 §5.7: sees scope badges, counts, filters and group data on this node's pages); `feed.access` follows
+    with C14-3m."""
+
+    __tablename__ = "user_permission"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
+    permission: Mapped[str] = mapped_column(String(32), primary_key=True)
+    granted_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Relation(Base):

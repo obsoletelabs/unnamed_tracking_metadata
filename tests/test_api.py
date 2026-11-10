@@ -74,7 +74,9 @@ def test_submit_resolve_get_flow(client):
 
 def test_observation_and_resolve_contract_accept_media_type(client):
     write = mint(client, ["contribute"])
-    read = mint(client, ["read"])
+    # C14 §5.7: a record that exists only through plugin data is operator-private, so a read-only service token
+    # (seen like a visitor) does not find it; an operator token does.
+    read = mint(client, ["read", "contribute"])
     game = {**obs("qa-game-source", "game-1", "Dune", release_date="2021-10-22"), "media_type": "game"}
     movie = {**obs("qa-movie-source", "movie-1", "Dune", release_date="2021-10-22"), "media_type": "movie"}
     game_response = client.post("/api/v2/observations", json=game, headers=H(write))
@@ -150,7 +152,7 @@ def test_large_achievement_catalogue_is_readable_in_bounded_pages(client):
     items = [{"name": f"Achievement {n:04d}", "external_id": f"ACH_{n}", "position": n} for n in range(450)]
     assert client.put(f"/api/v2/games/{cid}/achievements", json={"items": items}, headers=curator).json() == {
         "count": 450}
-    read = H(mint(client, ["read"]))
+    read = H(mint(client, ["read", "curate"]))  # C14 §5.7: plugin-only records are operator-private
     unpaged = client.get(f"/api/v2/games/{cid}/achievements", headers=read).json()
     assert len(unpaged["results"]) == 450 and unpaged["total"] == 450 and unpaged["next_offset"] is None
     seen, offset, pages = [], 0, 0

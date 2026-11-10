@@ -381,7 +381,7 @@ def reveal(cid: str, aid: str, p: Annotated[Page, Depends(page)], json: int = 0)
             return JSONResponse({"error": "sign in"}, status_code=401, headers={"Cache-Control": "no-store"})
         return go(f"/login?next=/game/{cid}/achievements/{aid}")
     g, _ = live_game(p, cid)
-    listing = facets.achievement_listing(p.session, p.st.ctx, g.id, reveal={aid})
+    listing = facets.achievement_listing(p.session, p.st.ctx, g.id, reveal={aid}, viewer=p.viewer)
     entries = listing["results"]
     index = next((n for n, m in enumerate(entries) if m["id"] == aid or aid in m["keys"]), None)
     if index is None:

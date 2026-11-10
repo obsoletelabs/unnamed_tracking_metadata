@@ -137,6 +137,10 @@ def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event)
                 with maker() as s:
                     oidc.purge(s)
                     s.commit()
+                with background.operation("scope_projection"):  # C14 §5.7, after an upgrade or a setting
+                    from . import scope
+
+                    scope.reproject_pending(maker, ctx, max_batches=5)
                 with maker() as s:  # daily retention of the local client change log (C3.2)
                     if client_changes.maybe_prune(s, ctx.settings.client_changes_retain_days) is not None:
                         s.commit()

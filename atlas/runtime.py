@@ -129,6 +129,15 @@ REGISTRY: tuple[Spec, ...] = (
       "Sign-ins and delegated rights need a view of the group from a third node newer than this.", lo=1, hi=168),
     S("group_hold_timeout_days", "Days a preference waits for its missing history", GROUP_POLICY, "int",
       lo=1, hi=90),
+    # CONTRACT-C14 §3.8/§5.7 (H64, D1): data received from the group on this node's public pages. Off by default;
+    # also edited on Admin → Sharing (local administrators only).
+    S("group_data_public_pages", "Show data from your nodes to visitors", GROUP_POLICY, "bool",
+      "Off: visitors who are not signed in (and accounts without the scope detail right) never see anything this "
+      "node received from your other nodes. On: they see the public field categories below, without any badge, "
+      "node name or count."),
+    S("group_public_categories", "Field categories visitors may see", GROUP_POLICY, "str",
+      "Space-separated category names (see Admin → Sharing). The rest is shown to signed-in accounts with the "
+      "scope detail right only.", max_len=400),
     S("inherit_schema", "Adopt the upstream media types and fields", "Federation", "bool",
       "Mirrors and local nodes copy the authority's custom fields; yours always take precedence."),
     S("media_cache_enabled", "Download and cache artwork", "Artwork", "bool"),
@@ -269,6 +278,13 @@ def save(session: Session, base: Settings, actor_id: str | None, form: dict[str,
         if any(not _ACCOUNT_UID.match(i) for i in ids):
             raise SettingError("Group accounts whose grants are ignored here: give group account ids (26 characters)")
         parsed["group_denied_accounts"] = " ".join(dict.fromkeys(ids))
+    if "group_public_categories" in parsed:
+        from .scope import clean_categories
+
+        try:
+            parsed["group_public_categories"] = clean_categories(parsed["group_public_categories"])
+        except ValueError as exc:
+            raise SettingError(f"Field categories visitors may see: {exc}") from exc
     trial = current.model_copy(update={k: to_attr(BY_KEY[k], v) for k, v in parsed.items()})
     _check(trial)
     changed = []
@@ -284,6 +300,10 @@ def save(session: Session, base: Settings, actor_id: str | None, form: dict[str,
         session.add(AuditEntry(actor_id=actor_id, action="setting", target=key,
                                detail={"from": from_attr(spec, current_value(spec, current)), "to": value}))
         changed.append(key)
+    if "group_public_categories" in changed:  # the anon_on projections hold the old categories (C14 §5.7)
+        from .scope import schedule_reproject
+
+        schedule_reproject(session)
     session.flush()
     return changed
 

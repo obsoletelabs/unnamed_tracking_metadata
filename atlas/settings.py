@@ -162,6 +162,11 @@ class Settings(BaseSettings):
     group_signin: bool = True
     group_signin_public: bool = False
     group_denied_accounts: str = ""  # space-separated group account ids whose delegated rights are dropped here
+    # CONTRACT-C14 §3.8/§5.7 (H64 reconciled, owner decision D1): whether visitors without `scope.detail` see data
+    # received from the group (off by default), and which field categories of it (`atlas.scope.CATEGORIES`).
+    group_data_public_pages: bool = False
+    group_public_categories: str = Field(
+        default="identity release platforms classification credits series external_ids cover_art", max_length=400)
     tagline: str = "Media metadata, merged and sourced"
     footer_text: str = "Community metadata. Contributions are CC0."
     accent_color: str = "#6aa8ff"  # dark theme accent
