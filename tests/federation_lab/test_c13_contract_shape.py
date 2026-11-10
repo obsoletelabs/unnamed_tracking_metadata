@@ -4,7 +4,8 @@
 steps §10.2 spells out, on a fresh network with no peers pinned:
 
 * an upstream U (the lab's `official`) in legacy emission with five curated records, a provider-only record S with
-  four curated sidecars (seq 6-9), a silent provider-only record Q, and a retained relayed feed F that is empty;
+  four curated sidecars (seq 6-10: the schema entry #78 adds is seq 8), a silent provider-only record Q, and a
+  retained relayed feed F that is empty;
 * a follower N (`local`) that looks U up (the API probe and the admin form), follows U's own feed, waits for S,
   and recovers in one pull after U raises its emit protocol and runs `atlas feed introduce --all`;
 * variants 7a and 7a': U with the bridge on, and U at emit 1.5 while it still serves 1.1 followers.
@@ -53,8 +54,17 @@ def _provider_only(node, title: str, steam: str) -> str:
     return result.canonical_id
 
 
+#: What `_sidecars` appends to an authority's feed. The schema entry is #78 (f07c442): an authority publishes its
+#: seeded multiplayer definitions once, just before its first signed multiplayer value (`players_max` here), so a
+#: mirror does not quarantine that value. It is not about S, so it never waits for S on a follower. The §10.2 scenarios
+#: were written a day before #78 and expected four entries; `tests/test_lab_feed_shape.py` pins this tuple in the
+#: default test run, so the opt-in lab cannot drift from the feed again unnoticed.
+SIDECAR_KINDS = ("artwork", "achievements", "schema", "custom", "achievements")
+
+
 def _sidecars(node, cid: str) -> None:
-    """The seq 6-9 analogue: artwork, achievements, custom fields and achievements again, by a curator."""
+    """The seq 6-9 analogue of §10.2 (6-10 since #78, see SIDECAR_KINDS): artwork, achievements, custom fields and
+    achievements again, by a curator."""
     with node.state.maker() as session:
         ctx = node.state.ctx
         facets.set_artwork(session, ctx, cid, "curator", [{"kind": "key_art", "url": "https://img.example.org/s.png"}],
@@ -111,8 +121,8 @@ def test_contract_shape_waits_then_recovers_with_introduce_all(network):
     with official.state.maker() as session:  # F: U retains indie's feed, which holds nothing
         session.add(ReplicatedFeed(node_id=indie.node_id, public_key=indie.root_key))
         session.commit()
-    assert _kinds(official) == [(n, "obs") for n in range(1, 6)] + [
-        (6, "artwork"), (7, "achievements"), (8, "custom"), (9, "achievements")]
+    assert _kinds(official) == [(n, "obs") for n in range(1, 6)] + list(enumerate(SIDECAR_KINDS, start=6))
+    waiting = [(6, "artwork"), (7, "achievements"), (9, "custom"), (10, "achievements")]  # 8 is the schema
     info = official.client.get("/api/v2/sync/info", headers=official.headers()).json()
     assert info["records"] == {"live": 7, "introduced": 5, "not_federated": 2}
     assert info["introduced_through"] is None
@@ -123,7 +133,7 @@ def test_contract_shape_waits_then_recovers_with_introduce_all(network):
     assert probe.status_code == 200, probe.text
     feeds = probe.json()["feeds"]
     assert [(f["origin"], f["node_id"], f["head"], f["recommended"]) for f in feeds] == [
-        ("own", official.node_id, 9, True), ("relayed", indie.node_id, 0, False)]
+        ("own", official.node_id, 10, True), ("relayed", indie.node_id, 0, False)]
     assert feeds[1]["warnings"] == ["empty_feed", "smaller_than_own"]
     assert probe.json()["records"] == {"live": 7, "introduced": 5, "not_federated": 2}
     page = local.admin.post("/admin/peers/probe", data={"csrf": csrf(local.admin, "/admin/peers"),
@@ -134,10 +144,9 @@ def test_contract_shape_waits_then_recovers_with_introduce_all(network):
     peer_id, _ = _follow_own(local, official)
 
     # Step 3: adding the peer pulled the first page. Caught up, four changes waiting for their game.
-    assert _open(local) == [(seq, kind, "wait", s) for seq, kind in
-                            ((6, "artwork"), (7, "achievements"), (8, "custom"), (9, "achievements"))]
+    assert _open(local) == [(seq, kind, "wait", s) for seq, kind in waiting]  # the schema entry applied at once
     status = local.sync_status(official)
-    assert status["state"] == "waiting" and status["applied_head"] == 9
+    assert status["state"] == "waiting" and status["applied_head"] == 10
     peers_page = local.admin.get("/admin/peers").text
     assert "Caught up · 4 changes waiting for their game" in peers_page
     assert re.search(r"Atlas Central has 2 records it does not publish", peers_page)
@@ -146,20 +155,20 @@ def test_contract_shape_waits_then_recovers_with_introduce_all(network):
         assert wrong not in peers_page.lower(), wrong
     group = re.search(rf'<div class="card waiting-group" data-waiting-for="{s}"[^>]*>.*?</div>', peers_page, re.S)
     assert group is not None and 'data-waiting-subreason="upstream_unpublished"' in group.group(0)
-    assert "achievements ×2, artwork, custom · entries 6–9" in group.group(0)
+    assert "achievements ×2, artwork, custom · entries 6–10" in group.group(0)
     assert "data-waiting-title=\"none\"><strong>A game Atlas Central hasn't published yet" in group.group(0)
     api = local.client.get("/api/v2/sync/status", headers=local.headers(local.admin_token)).json()
     [summary] = api["peers"]
     assert summary["status"]["code"] == "caught_up_waiting"
     assert [(g["canonical_id"], g["subreason"], g["kinds"], g["seqs"]) for g in summary["waiting"]] == [
-        (s, "upstream_unpublished", {"achievements": 2, "artwork": 1, "custom": 1}, [6, 9])]
+        (s, "upstream_unpublished", {"achievements": 2, "artwork": 1, "custom": 1}, [6, 10])]
 
     # Step 4: 25 more pulls change nothing.
     for _ in range(25):
         assert local.sync(peer_id) is None
     with local.state.maker() as session:
         rows = session.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))).all()
-        assert sorted((r.seq, r.disposition, r.attempts) for r in rows) == [(n, "wait", 1) for n in range(6, 10)]
+        assert sorted((r.seq, r.disposition, r.attempts) for r in rows) == [(n, "wait", 1) for n, _ in waiting]
 
     # Step 5: U raises its emit protocol and runs `atlas feed introduce --all`: a record for S and Q, nothing else.
     form = {"csrf": csrf(official.admin, "/admin/peers"), "emit_protocol": "1.5", "password": network.password,
@@ -168,11 +177,11 @@ def test_contract_shape_waits_then_recovers_with_introduce_all(network):
     done = _current_cli(official, "feed", "introduce", "--all")
     assert done.returncode == 0, (done.stdout, done.stderr)
     assert json.loads(done.stdout)["finished"] is True
-    assert [kind for _, kind in _kinds(official, after=9)] == ["record", "record"]
+    assert [kind for _, kind in _kinds(official, after=10)] == ["record", "record"]
     with official.state.maker() as session:
-        bodies = {r.body["canonical_id"] for r in session.scalars(select(ChangeLog).where(ChangeLog.seq > 9))}
+        bodies = {r.body["canonical_id"] for r in session.scalars(select(ChangeLog).where(ChangeLog.seq > 10))}
         assert bodies == {s, q}
-        assert feed.introduced_through(session) == official.head() == 11
+        assert feed.introduced_through(session) == official.head() == 12
 
     # Step 6: one pull on N applies both records and the four waiting entries, in feed order, with no manual retry.
     assert local.sync(peer_id) is None
@@ -182,7 +191,7 @@ def test_contract_shape_waits_then_recovers_with_introduce_all(network):
         assert session.get(Canonical, q).view["title"] == "Quiet Game"
         assert all(session.get(Canonical, c) is not None for c in curated)
     status = local.sync_status(official)
-    assert status["state"] == "in_sync" and status["applied_head"] == 11
+    assert status["state"] == "in_sync" and status["applied_head"] == 12
     peers_page = local.admin.get("/admin/peers").text
     assert 'data-peer-status="caught_up"' in peers_page and "7 of 7 records published" in peers_page
     assert _woken(local, official, "record") == 1
@@ -199,13 +208,14 @@ def test_bridge_variants_introduce_with_observations_older_followers_apply(netwo
     s = _provider_only(official, "Subnautica 2", "1962700")
     _sidecars(official, s)
     q = _provider_only(official, "Quiet Game", "1962701")
+    assert [kind for _, kind in _kinds(official, after=1)] == list(SIDECAR_KINDS)
     peer_id, _ = _follow_own(local, official)
     assert [row[1] for row in _open(local)] == ["artwork", "achievements", "custom", "achievements"]
 
     # 7a: the bridge, emit unchanged
     done = _current_cli(official, "feed", "introduce", "--all")
     assert done.returncode == 0, (done.stdout, done.stderr)
-    assert [kind for _, kind in _kinds(official, after=5)] == ["obs", "obs"]
+    assert [kind for _, kind in _kinds(official, after=1 + len(SIDECAR_KINDS))] == ["obs", "obs"]
     assert local.sync(peer_id) is None
     assert _open(local) == []
     with local.state.maker() as session:
