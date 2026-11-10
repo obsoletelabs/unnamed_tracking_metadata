@@ -60,8 +60,34 @@
   {% if preset_applied %}<ul class="small">{% for label in preset_applied %}<li>{{ label }}</li>{% endfor %}</ul>{% else %}<p class="small muted">It already matched; nothing changed.</p>{% endif %}
   {% else %}<p class="small">“{{ preset_label }}” is applied when the new node has joined.</p>{% endif %}
   {% if row.preset_admin %}<p class="small">Administrator rights through the group still need a grant: <a href="/admin/group/grants">issue one on the grants form</a> (holder of the group root, typed confirmation). Nothing was issued automatically.</p>{% endif %}
-  <p class="small muted">Accounts are never matched by name or email. To use the same account on both nodes, link it once: <a href="/me/linked-nodes">Link my account on both nodes</a>. Catalogue sync between members is set up on <a href="/admin/peers">Peers</a>.</p>
-  <p><a class="btn" href="/admin/group">Back to the group</a></p>
+  {% if link_offer and link_offer.linked %}
+  <section class="card inset" aria-labelledby="e-link" data-enrol-link="linked"><h3 id="e-link">Your account</h3>
+    <p><span class="badge ok">linked</span> Your account here is linked with your account on {{ link_offer.peer.name }}. Your shared preferences now follow you between the nodes: <a href="/me/linked-nodes">see the group sync status</a>.</p>
+  </section>
+  {% elif link_offer %}
+  <section class="card inset" aria-labelledby="e-link" data-enrol-link="offer"><h3 id="e-link">Last step: link my account on both nodes now</h3>
+    <p>You are signed in here as <strong>{{ link_offer.username }}</strong>. Link it with your account on <strong>{{ link_offer.peer.name }}</strong> so the group feels like one node: your preferences follow you, and you can open either node signed in.</p>
+    <ol class="small">
+      <li>Confirm your password here.</li>
+      <li>On {{ link_offer.peer.name }}, sign in if you are not already, and check that the fingerprint it shows for this node is <code class="fingerprint">{{ fp(p.st.ctx.identity.node_id) }}</code>.</li>
+      <li>Back here, choose which value to keep where the two nodes differ.</li>
+    </ol>
+    <form method="post" action="/admin/group/enrolment/{{ row.id }}/link" data-enrol-link-form>{{ csrf(p.csrf) }}
+      <fieldset class="prefs-consent"><legend>Share these preferences between your nodes</legend>
+      {% for f in link_offer.fields %}<label><input type="checkbox" name="c.{{ f.name }}"{{ ' checked' if f.ticked }} data-link-field="{{ f.name }}"> {{ f.label }}{% if f.sensitive %} <span class="hint">off unless you tick it</span>{% endif %}</label>
+      {% endfor %}</fieldset>
+      <p class="small muted">Never shared: your password, two-factor settings, sessions, tokens, email address and role. Accounts are never matched by name or email; only you can link yours, and other people on this node link their own.</p>
+      <label for="e-link-pw">Your current password here</label><input id="e-link-pw" name="password" type="password" maxlength="256" autocomplete="current-password" required>
+      <p><button type="submit">Link my account on both nodes</button> <a class="btn secondary" href="/admin/group">Not now</a></p>
+    </form>
+  </section>
+  {% else %}
+  <p class="small muted">Accounts are never matched by name or email. To use the same account on both nodes, link it once: <a href="/me/linked-nodes">Link my account on both nodes</a>.</p>
+  {% endif %}
+  {% if catalogue %}<p class="small" data-enrol-catalogue="{{ catalogue.state }}"><a class="chip" href="/admin/peers">Catalogue sync: {{ 'on' if catalogue.state == 'on' else ('failing' if catalogue.state == 'error' else ('paused' if catalogue.state == 'paused' else 'off')) }}</a>
+    <span class="muted">{% if catalogue.state == 'off' %}Joining does not copy records by itself in this release. To share catalogues, follow {{ peer.name }} on <a href="/admin/peers">Peers</a> (and this node there).{% else %}This node follows {{ peer.name }}'s catalogue on <a href="/admin/peers">Peers</a>.{% endif %}</span></p>
+  {% else %}<p class="small muted">Catalogue sync between members is set up on <a href="/admin/peers">Peers</a>.</p>{% endif %}
+  <p><a class="btn{{ ' secondary' if link_offer and not link_offer.linked }}" href="/admin/group">Back to the group</a></p>
 </section>
 {% else %}
 <section class="card" aria-labelledby="e-sas" data-enrol-step="sas" data-enrol-state="{{ row.state }}"><h2 id="e-sas">Compare the numbers</h2>

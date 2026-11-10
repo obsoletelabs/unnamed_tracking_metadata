@@ -53,6 +53,7 @@ def preference_rows(p: Ctx) -> list[dict]:
     group = groups.active(s)
     linked = group is not None and group_channel.local_link(s, group.group_id, me.id) is not None
     accepted = set(profile.accept(s, settings, me.id, group.group_id)) if linked else set()
+    policy = set(profile.policy_fields(settings))
     names = node_names(s, group)
     values = profile.values(s, settings, me)
     shown = {r.field: r for r in s.scalars(select(profile.ProfileField).where(profile.ProfileField.user_id == me.id))}
@@ -67,6 +68,10 @@ def preference_rows(p: Ctx) -> list[dict]:
             v = profile.version(s, me.id, name, conflict.loser_hlc)
             competing = describe(None if v is None or v.cleared else v.value) if v else None
         rows.append({"name": name, "spec": spec, "value": values[name], "synced": name in accepted,
+                     # in a group but this account is not linked: an actionable badge, not "this node only"
+                     "unlinked": group is not None and not linked,
+                     "why": None if name in accepted else ("not shared by this node's administrator"
+                                                           if name not in policy else "you chose not to share it"),
                      "stored": row is not None and row.value is not None,
                      "origin": None if origin in (None, own) else names.get(origin, groups.gc_fp(origin)),
                      "conflict": conflict, "competing": competing, "editable": name in EDITABLE})
@@ -228,8 +233,77 @@ def linked_context(p: Ctx, error: str | None = None) -> dict:
                policy=set(profile.policy_fields(settings)), consent=set(profile.consent_fields(s, me.id,
                                                                                                group.group_id)),
                signout=consent_row.signout_propagation if consent_row else True, fields=profile_schema.REGISTRY,
-               resyncing=group.status == "resyncing")
+               resyncing=group.status == "resyncing", strip=sync_strip(p, group, me))
     return ctx
+
+
+def sync_strip(p: Ctx, group, user=None) -> dict:
+    """The "Group sync" strip (SPEC-UI-POLISH-PASS addendum item 3), on /me/linked-nodes (`user` given: what this
+    account shares and its open decisions) and on the admin group page (no user: the node's totals). Per member:
+    when this node last heard from it, its status and the last error. Read only; computed from rows already kept."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import func
+
+    from ..models import GroupAccountLink, User
+
+    s, settings = p.session, p.st.ctx.settings
+    own = p.st.ctx.identity.node_id
+    peers = catalogue_peers(s)
+    interval = max(int(settings.group_sync_interval), 1)
+    limit = datetime.now(UTC) - timedelta(seconds=5 * interval)
+    members = []
+    for m in s.scalars(select(groups.GroupMember).where(groups.GroupMember.group_id == group.group_id)
+                       .order_by(groups.GroupMember.name)):
+        if m.node_id == own or m.status in ("revoked", "left"):
+            continue
+        seen = groups.aware(m.last_seen_at) if m.last_seen_at is not None else None
+        members.append({"name": m.name, "node": m.node_id, "status": m.status, "seen": seen,
+                        "stale": seen is None or seen < limit, "error": m.last_error,
+                        "catalogue": catalogue_state(peers, m.node_id, m.url)})
+    policy = profile.policy_fields(settings)
+    out: dict[str, Any] = {"members": members, "interval": interval, "sync_on": bool(policy),
+                           "last": max((m["seen"] for m in members if m["seen"]), default=None)}
+    if user is not None:
+        linked = group_channel.local_link(s, group.group_id, user.id) is not None
+        shared = profile.accept(s, settings, user.id, group.group_id) if linked else []
+        out.update(linked=linked, shared=[profile_schema.REGISTRY[n].label for n in shared],
+                   conflicts=profile.open_count(s, user.id))
+    else:
+        people = s.scalar(select(func.count()).select_from(User).where(User.deleted_at.is_(None),
+                                                                       User.status == "active")) or 0
+        linked_n = s.scalar(select(func.count(func.distinct(GroupAccountLink.user_id))).where(
+            GroupAccountLink.group_id == group.group_id)) or 0
+        out.update(shared=[profile_schema.REGISTRY[n].label for n in policy], people=people, linked_n=linked_n,
+                   unlinked_n=max(people - linked_n, 0),
+                   conflicts=s.scalar(select(func.count()).select_from(ProfileConflict).where(
+                       ProfileConflict.status == "open")) or 0)
+    return out
+
+
+def catalogue_peers(session) -> list:
+    from ..models import Peer
+
+    return list(session.scalars(select(Peer)))
+
+
+def _same_url(a: str | None, b: str | None) -> bool:
+    return bool(a and b) and a.rstrip("/").lower() == b.rstrip("/").lower()
+
+
+def catalogue_state(peers: list, node_id: str, url: str | None) -> dict:
+    """SPEC-UI-POLISH-PASS §4.2 "catalogue federation with members" [dep], as far as this release's backend goes:
+    group membership never creates a peer by itself (no auto-peer exists yet), so this only reports whether the
+    administrator follows that member's catalogue on Peers. `on`: an enabled peer for the member's node id (or its
+    address) with no error; `error`: enabled but its last pull failed; `paused`: the peer is disabled; `off`: none.
+    """
+    peer = next((x for x in peers if x.node_id == node_id), None) or next(
+        (x for x in peers if _same_url(x.url, url)), None)
+    if peer is None:
+        return {"state": "off", "peer_id": None}
+    if not peer.enabled:
+        return {"state": "paused", "peer_id": peer.id}
+    return {"state": "error" if peer.last_error else "on", "peer_id": peer.id, "error": peer.last_error}
 
 
 @router.get("/me/linked-nodes", response_class=HTMLResponse)

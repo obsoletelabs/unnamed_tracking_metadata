@@ -158,7 +158,7 @@ def test_preset_same_owner_sets_table(ui):  # noqa: F811
     assert policy(b) == CAUTIOUS  # the joiner chose cautious: each side sets only itself
     done = ca.get(f"/admin/group/enrolment/{eid}").text
     assert 'data-enrol-step="done"' in done and 'data-preset-applied="same_owner"' in done
-    assert "/me/linked-nodes" in done
+    assert 'data-enrol-link="offer"' in done and "/admin/group/enrolment/" + eid + "/link" in done
     with a.session() as s:
         assert s.scalars(select(AuditEntry).where(AuditEntry.action == "group_policy_preset")).first() is not None
 

@@ -12,12 +12,13 @@
 </form>
 <h2 id="preferences">Preferences</h2>
 <form class="card prefs" method="post" action="/me/preferences">{{ csrf(p.csrf) }}
+  {% if prefs_unlinked %}<div class="offer" data-prefs-unlinked><p>This node is in a group with your other nodes, but your account is not linked to them yet, so these preferences stay here.</p><div class="offer-actions"><a class="btn small" href="/me/linked-nodes#link">Link now</a></div></div>{% endif %}
   <p class="small muted">{% if prefs_linked %}Marked preferences are kept in step with your <a href="/me/linked-nodes">linked nodes</a>; the others stay on this node.{% else %}Kept on this node. <a href="/me/linked-nodes">Linked nodes</a> can share them across your owner group.{% endif %}</p>
   {% for r in pref_rows if r.editable %}{% set f = r.spec %}
   <div class="pref{{ ' has-conflict' if r.conflict }}">
     <div class="pref-head">
       <label for="f-{{ loop.index }}">{{ f.label }}</label>
-      {% if r.synced %}<span class="badge ok" title="Shared with your linked nodes">synced</span>{% else %}<span class="badge" title="Not shared">this node only</span>{% endif %}
+      {% if r.synced %}<span class="badge ok" title="Shared with your linked nodes">synced</span>{% elif r.unlinked %}<a class="badge warn" href="/me/linked-nodes#link" data-pref-unlinked>Not linked to your other nodes · Link now</a>{% else %}<span class="badge" title="Not shared: {{ r.why }}">this node only</span>{% endif %}
       {% if r.origin %}<span class="small muted">set on {{ r.origin }}</span>{% endif %}
       {% if r.conflict %}<a class="badge warn" href="/me/conflicts">{% if r.competing %}also "{{ r.competing }}" on another node{% else %}needs a decision{% endif %}</a>{% endif %}
     </div>

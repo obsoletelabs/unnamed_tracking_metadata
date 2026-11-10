@@ -500,6 +500,15 @@ header.site form.search { flex: 1 1 280px; }
 .offer[hidden] { display: none; }
 .offer form { margin: 0; }
 .offer [data-date-offer-dismiss] { margin-left: auto; }
+.offer p { margin: 0; flex: 1 1 18rem; }
+/* group sync strip (U3 addendum item 3) */
+.sync-members { list-style: none; padding: 0; margin: 0 0 var(--space-3); display: grid; gap: var(--space-2);
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); }
+.sync-members li { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-2) var(--space-3);
+  display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: baseline; background: var(--surface-2); }
+.sync-members li[data-sync-state="ok"] { border-left: 3px solid var(--ok); }
+.sync-members li[data-sync-state="stale"], .sync-members li[data-sync-state="error"] { border-left: 3px solid var(--warn); }
+.group-sync .section-head p { margin: 0; }
 /* step chips */
 .chips.steps .chip.current { border-color: var(--accent); color: var(--text); font-weight: 700; }
 .chips.steps .chip.done { color: var(--muted); }
@@ -558,3 +567,15 @@ details > summary > h2.inline { font-size: 1.25rem; }
 details.ach-others > summary { cursor: pointer; margin-top: 1.6em; }
 .stat.current { border-left-color: var(--accent); }
 .stat a[aria-current] .stat-label { color: var(--text); }
+/* achievement detail (§8.2) */
+.ach-detail-head { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: flex-start; }
+.ach-detail-head > div:last-child { flex: 1 1 16rem; min-width: 0; }
+.ach-icon-pair { display: flex; gap: var(--space-3); }
+.ach-icon-pair figure { margin: 0; text-align: center; padding: var(--space-2); border-radius: var(--radius);
+  background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface) 0% 50%) 50% / 16px 16px; }
+.ach-icon-pair img { display: block; border-radius: var(--radius-sm); }
+.ach-icon-pair img.locked { filter: grayscale(1); opacity: .7; }
+.ach-ph.big { width: 96px; height: 96px; font-size: 2rem; }
+.ach-detail-rarity { margin: var(--space-3) 0; }
+.ach-detail-rarity .rarity-bar { width: 100%; max-width: 28rem; height: 8px; }
+.ach-nav { display: flex; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-3); }
