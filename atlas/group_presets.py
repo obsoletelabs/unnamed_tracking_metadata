@@ -54,6 +54,14 @@ def values(preset: str, with_admin: bool = False, keys: tuple[str, ...] = KEYS) 
     return {k: v for k, v in out.items() if k in keys}
 
 
+def kept(settings: Settings, preset: str | None, with_admin: bool = False) -> list[dict[str, Any]]:
+    """The §4.2 rows an enrolment's activation leaves as the administrator set them although the preset would set
+    them differently (the rows outside ACTIVATION_KEYS). Shown on the done step so a node whose profile sync or group
+    sign-in is off does not silently fail to "feel like one node"."""
+    rest = tuple(k for k in KEYS if k not in ACTIVATION_KEYS)
+    return diff(settings, preset, with_admin, keys=rest)
+
+
 def current(settings: Settings) -> dict[str, Any]:
     """Which preset the current policy equals: {"preset": name, "with_admin": bool}, or custom."""
     now = {k: getattr(settings, k) for k in KEYS}

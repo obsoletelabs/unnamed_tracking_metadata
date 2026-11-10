@@ -59,6 +59,10 @@
   {% elif row.state == 'active' %}<p data-preset-applied="{{ row.preset }}"><span class="badge ok">{{ preset_label }}</span>{% if row.preset_admin %} <span class="badge warn">+ administrators</span>{% endif %}</p>
   {% if preset_applied %}<ul class="small">{% for label in preset_applied %}<li>{{ label }}</li>{% endfor %}</ul>{% else %}<p class="small muted">It already matched; nothing changed.</p>{% endif %}
   {% else %}<p class="small">“{{ preset_label }}” is applied when the new node has joined.</p>{% endif %}
+  {% if preset_kept %}<section class="card inset small" data-preset-kept><p><span class="badge warn">not changed</span></p>
+    <p>Left as you set them on this node, so the group may not feel like one node yet:</p>
+    <ul>{% for d in preset_kept %}<li data-preset-kept-key="{{ d.key }}">{{ d.label }} is <strong>{{ d['from'] }}</strong> (“{{ preset_label }}” would set {{ d.to }})</li>{% endfor %}</ul>
+    <p>Turn them on under <a href="/admin/group#policy">Policy</a> if you want them.</p></section>{% endif %}
   {% if row.preset_admin %}<p class="small">Administrator rights through the group still need a grant: <a href="/admin/group/grants">issue one on the grants form</a> (holder of the group root, typed confirmation). Nothing was issued automatically.</p>{% endif %}
   {% if link_offer and link_offer.linked %}
   <section class="card inset" aria-labelledby="e-link" data-enrol-link="linked"><h3 id="e-link">Your account</h3>
@@ -75,6 +79,7 @@
     <form method="post" action="/admin/group/enrolment/{{ row.id }}/link" data-enrol-link-form>{{ csrf(p.csrf) }}
       <fieldset class="prefs-consent"><legend>Share these preferences between your nodes</legend>
       {% for f in link_offer.fields %}<label><input type="checkbox" name="c.{{ f.name }}"{{ ' checked' if f.ticked }} data-link-field="{{ f.name }}"> {{ f.label }}{% if f.sensitive %} <span class="hint">off unless you tick it</span>{% endif %}</label>
+      {% else %}<p class="small muted" data-link-no-fields>None while preference sync is off on this node. Linking still lets you open either node signed in.</p>
       {% endfor %}</fieldset>
       <p class="small muted">Never shared: your password, two-factor settings, sessions, tokens, email address and role. Accounts are never matched by name or email; only you can link yours, and other people on this node link their own.</p>
       <label for="e-link-pw">Your current password here</label><input id="e-link-pw" name="password" type="password" maxlength="256" autocomplete="current-password" required>

@@ -245,3 +245,31 @@ def test_failing_policy_write_never_breaks_the_enrolment(ui, monkeypatch, error)
         assert failed.target == f"enrolment:{eid}" and "refused" in failed.detail["error"]
     monkeypatch.undo()
     assert policy(a)["group_auto_provision"] is False  # nothing half-written
+
+
+def test_done_step_names_preset_rows_left_off(ui):  # noqa: F811
+    """U3 review: activation writes only ACTIVATION_KEYS, so a node whose profile sync is off stays off. The done step
+    says so instead of offering an empty link form with no explanation."""
+    a, b, ca, cb = ui
+    with b.session() as s:
+        runtime.save(s, b.settings, None, {"group_profile_sync": False})
+        s.commit()
+    eid = joined(a, b, ca, cb)
+    done = cb.get(f"/admin/group/enrolment/{eid}").text
+    assert 'data-preset-kept-key="group_profile_sync"' in done and "/admin/group#policy" in done
+    assert "data-link-no-fields" in done and 'name="c.' not in done
+
+
+def test_user_sync_strip_hides_raw_member_errors(ui):  # noqa: F811
+    """U3 review: the raw transport error of a member is an admin matter; the person's page shows only the badge."""
+    from atlas.models import GroupMember
+
+    a, b, ca, cb = ui
+    joined(a, b, ca, cb)
+    with b.session() as s:
+        for m in s.scalars(select(GroupMember)):
+            m.last_error = "ConnectError: 10.0.0.7:8443 refused"
+        s.commit()
+    me = cb.get("/me/linked-nodes").text
+    assert "not reached" in me and "10.0.0.7" not in me
+    assert "10.0.0.7" in cb.get("/admin/group").text
