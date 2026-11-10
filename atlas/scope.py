@@ -205,9 +205,11 @@ def viewer_for_user(session: Session, settings: Any, user: User | None, login: A
 
 
 def viewer_for_principal(session: Session, settings: Any, principal: Any) -> Viewer:
-    """An API caller. A personal token is its user; an operator token (contribute, curate or admin) sees what an
-    administrator sees; any other token (a follower's or a read-only service token) is a `token` viewer, which sees
-    what an anonymous visitor sees."""
+    """An API caller. A personal token is its user. A token an administrator minted for this node's own apps (the
+    Playnite plugin, the Tracking App: `read`, `contribute`, `curate`, `admin`) acts for the operator and sees what
+    an administrator sees, so the app integration contracts keep resolving the operator's own library. A token that
+    holds `sync` without an operator scope is a follower's: a `token` viewer, which sees what an anonymous visitor
+    sees (see CONTRACT-AMENDMENTS "C14-1")."""
     from .models import Token
 
     switch = _switch(settings)
@@ -217,7 +219,7 @@ def viewer_for_principal(session: Session, settings: Any, principal: Any) -> Vie
         row = session.get(Token, principal.token_id)
         user = session.get(User, row.user_id) if row is not None and row.user_id else None
         return viewer_for_user(session, settings, user)
-    if principal.scopes & OPERATOR_TOKEN_SCOPES:
+    if principal.scopes & OPERATOR_TOKEN_SCOPES or "sync" not in principal.scopes:
         return Viewer("detail", switch, admin="admin" in principal.scopes)
     return Viewer("token", switch)
 
@@ -780,9 +782,11 @@ def media_access(session: Session, viewer: Viewer | None, settings: Any, digest:
     hidden = set(session.scalars(hidden_ids(viewer))) if hidden_ids(viewer) is not None else set()
     shown_art = art if clause is None else list(session.scalars(select(Artwork).where(Artwork.blob_hash == digest,
                                                                                          clause)))
-    if any(not is_group_art(a, ceilings.get(a.canonical_id)) for a in shown_art):
+    # Bytes this node fetched itself are content-addressed and carry no host data: they stay public even when the
+    # record they belong to is hidden (the Tracking App host downloads them without a token, C4 artwork flow).
+    if any(not is_group_art(a, ceilings.get(a.canonical_id)) for a in art):
         return "public"
-    if any(i.canonical_id not in hidden and ceilings.get(i.canonical_id) != "group" for i in icons):
+    if any(ceilings.get(i.canonical_id) not in ("group", "private") for i in icons):
         return "public"
     group_icons = [i for i in icons if i.canonical_id not in hidden and ceilings.get(i.canonical_id) == "group"
                    and achievements_visible(session, viewer, settings, i.canonical_id)]

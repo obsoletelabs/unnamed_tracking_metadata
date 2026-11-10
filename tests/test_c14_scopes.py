@@ -291,8 +291,8 @@ def test_canaries_anonymous_switch_on(node):
 
 
 def test_canaries_token_viewer(node):
-    """T-S10: a read-only service token sees what a visitor sees."""
-    blob = _api_surfaces(node, node, _mint(node, ["read"]))
+    """T-S10: a follower's token (`sync`, no operator scope) sees what a visitor sees."""
+    blob = _api_surfaces(node, node, _mint(node, ["read", "sync"]))
     assert HOST_MARK not in blob and GROUP_MARK not in blob and GROUP_TITLE not in blob
     assert '"scope"' not in blob
     assert f"/api/v2/games/{node.host} 404" in blob and f"/api/v2/games/{node.grp} 404" in blob
@@ -395,7 +395,7 @@ def test_api_put_scope(node):
         assert r.json()["ceiling"] == "local"
         r = node.put(f"/api/v2/games/{node.grp}/scope", headers=h, json={"ceiling": None})
         assert r.status_code == 200 and r.json()["ceiling"] is None
-    assert node.put(f"/api/v2/games/{node.grp}/scope", headers=_mint(node, ["read"]),
+    assert node.put(f"/api/v2/games/{node.grp}/scope", headers=_mint(node, ["read", "sync"]),
                     json={"ceiling": "local"}).status_code == 403
     assert node.put(f"/api/v2/games/{node.grp}/scope", headers=h, json={"ceiling": "public"}).status_code == 422
 
