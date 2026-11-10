@@ -18,6 +18,7 @@ async function shoot(page, name, info) {
   fs.mkdirSync(DIR, { recursive: true });
   for (const scheme of ['light', 'dark']) {
     await page.emulateMedia({ colorScheme: scheme });
+    await page.waitForTimeout(400);  // let colour transitions finish before the capture
     await page.screenshot({ path: path.join(DIR, `${name}-${scheme}-${info.project.name}.png`), fullPage: true });
   }
   await page.emulateMedia({ colorScheme: 'light' });
@@ -128,8 +129,53 @@ test('group: invite with QR code and preset, compare, done', async ({ page, base
   await page.fill('#e-acct', PASSWORD);
   await page.getByRole('button', { name: 'Issue certificate' }).click();
   await page.locator('[data-enrol-step="done"]').waitFor();
-  await expect(page.locator('a[href="/me/linked-nodes"]')).toBeVisible();
+  await shoot(page, 'group-done-issued', info);
+  // the synthetic joiner fetches its certificate (its last step): the enrolment becomes active here
+  execFileSync('uv', ['run', '--frozen', 'python', 'e2e/group_joiner.py', 'complete', baseURL, j.enrolment_id],
+    { cwd: ROOT, env: { ...process.env, PYTHONPATH: ROOT, PYTHONUTF8: '1' }, encoding: 'utf8' });
+  await page.reload();
+  await expect(page.locator('[data-enrol-state="active"]')).toBeVisible();
+  // addendum item 1: under "Same owner, full trust" the last step offers to link the enroller's own account
+  const offer = page.locator('[data-enrol-link="offer"]');
+  await expect(offer).toBeVisible();
+  await expect(offer.locator('[data-link-field="theme"]')).toBeChecked();
+  await expect(offer.locator('[data-link-field="bio"]')).not.toBeChecked();
   await shoot(page, 'group-done', info);
+  await offer.scrollIntoViewIfNeeded();
+  await shoot(page, 'group-done-link-step', info);
+});
+
+function py(script, ...args) {
+  const out = execFileSync('uv', ['run', '--frozen', 'python', script, ...args],
+    { cwd: ROOT, env: { ...process.env, PYTHONPATH: ROOT, PYTHONUTF8: '1' }, encoding: 'utf8' });
+  return out;
+}
+
+test('group sync: not-linked badge, strip, invite users to link', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  await page.goto('/admin/group', { waitUntil: 'networkidle' });
+  if (!(await page.locator('[data-group-sync="admin"]').count())) return;  // no group on this node
+  py('e2e/profile_seed.py', 'reset');  // alice unlinked: the synthetic joiner is not a running node
+  await page.goto('/me/settings#preferences', { waitUntil: 'networkidle' });
+  await expect(page.locator('[data-prefs-unlinked]')).toBeVisible();
+  await expect(page.locator('[data-pref-unlinked]').first()).toContainText('Not linked to your other nodes');
+  await shoot(page, 'prefs-not-linked', info);
+  await page.goto('/admin/group#group-sync-h', { waitUntil: 'networkidle' });
+  const invite = page.getByRole('button', { name: 'Invite users to link' });
+  if (await invite.count()) await invite.click();
+  await expect(page.locator('[data-group-link-invite="on"]')).toBeVisible();
+  await page.goto('/', { waitUntil: 'networkidle' });
+  await expect(page.locator('[data-link-notice]')).toBeVisible();
+  await shoot(page, 'link-notice', info);
+  await page.goto('/admin/group#group-sync-h', { waitUntil: 'networkidle' });
+  await page.locator('[data-group-sync="admin"]').scrollIntoViewIfNeeded();
+  await shoot(page, 'group-sync-admin', info);
+  await page.getByRole('button', { name: 'Stop showing the notice' }).click();
+  py('e2e/profile_seed.py', 'link');  // alice linked (written into the e2e database by the seed script)
+  await page.goto('/me/linked-nodes', { waitUntil: 'networkidle' });
+  await expect(page.locator('[data-group-sync="me"]')).toBeVisible();
+  await shoot(page, 'group-sync-me', info);
+  py('e2e/profile_seed.py', 'reset');
 });
 
 test('join: pasting the whole invite fills address and code', async ({ page }, info) => {
@@ -160,4 +206,10 @@ test('achievements: compact editor and filter links', async ({ page }, info) => 
   await expect(page.locator('[data-ach-toolbar]')).toBeVisible();
   await expect(page.locator('[data-ach-count]')).toContainText('row');
   await shoot(page, 'ach-editor', info);
+  // §8.2: the detail page (icon pair, rarity with its measured date, set, sources, prev/next)
+  await page.goto(`/game/${id}#achievements`, { waitUntil: 'networkidle' });
+  await page.locator('[data-ach-detail-link]').first().click();
+  await page.locator('[data-ach-detail]').waitFor();
+  await expect(page.locator('[data-nav]').first()).toBeVisible();
+  await shoot(page, 'ach-detail', info);
 });
