@@ -145,7 +145,22 @@ def _editor_ctx(p: Page, g: Any, rows: list[dict[str, Any]], **extra: Any) -> di
     _decorate(p, g.id, rows)
     return {"g": g, "title": g.view.get("title"), "rows": rows, "kinds": KIND_CHOICES, "tiers": TIER_CHOICES,
             "platinum_gated": facets.platinum_gated(p.st.ctx), "others": _others(p, g.id), "max_rows": MAX_ROWS,
-            "ach_collapsed": len(rows) > COLLAPSE_AFTER, **extra}
+            "ach_collapsed": len(rows) > COLLAPSE_AFTER, "ach_sets": _set_choices(p, g.id), "set_of": set_of,
+            **extra}
+
+
+def _set_choices(p: Page, cid: str) -> list[tuple[str, str]]:
+    """AE6: the sets this list defines, as (key, label), base first; empty when there is only the base set, so the
+    editor shows no select. The value travels in the row's `extra` JSON (`set`), so the wire is unchanged."""
+    sets = [s for s in facets.set_items(p.session, cid, SOURCE) if s["key"] != "base"]
+    if not sets:
+        return []
+    return [("base", "Base game"), *((s["key"], s.get("name") or s["key"]) for s in sets)]
+
+
+def set_of(row: dict[str, Any]) -> str:
+    """The set key a row's `extra` JSON names ("base" when none)."""
+    return str(_parse_extra(row.get("extra", "")).get("set") or "base")
 
 
 # ---- reading the submitted rows ----------------------------------------------------------------------
@@ -219,6 +234,15 @@ async def _read_rows(p: Page, form: Any) -> tuple[list[dict[str, Any]], list[dic
                "global_percent": str(form.get(f"global_percent.{k}") or "")[:20], "errors": [], "notes": [],
                "hidden": bool(form.get(f"hidden.{k}")), "extra": str(form.get(f"extra.{k}") or "")[:MAX_EXTRA],
                "status": str(form.get(f"status.{k}") or "")[:16]}
+        chosen = form.get(f"set.{k}")
+        if isinstance(chosen, str) and chosen.strip():  # AE6: the set select rewrites `set` in the extra JSON
+            extra = _parse_extra(row["extra"])
+            chosen = chosen.strip()[:64]
+            if chosen == "base":
+                extra.pop("set", None)
+            else:
+                extra["set"] = chosen
+            row["extra"] = json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else ""
         for f in ("name", "description", "kind", "tier", "points", "icon_url", "locked_icon_url"):
             row[f] = str(form.get(f"{f}.{k}") or "").strip()
         problems: list[str] = []
@@ -357,11 +381,22 @@ def reveal(cid: str, aid: str, p: Annotated[Page, Depends(page)], json: int = 0)
             return JSONResponse({"error": "sign in"}, status_code=401, headers={"Cache-Control": "no-store"})
         return go(f"/login?next=/game/{cid}/achievements/{aid}")
     g, _ = live_game(p, cid)
-    found = next((m for m in facets.merged_achievements(p.session, p.st.ctx, g.id, reveal={aid})
-                  if m["id"] == aid or aid in m["keys"]), None)
-    if found is None:
+    listing = facets.achievement_listing(p.session, p.st.ctx, g.id, reveal={aid})
+    entries = listing["results"]
+    index = next((n for n, m in enumerate(entries) if m["id"] == aid or aid in m["keys"]), None)
+    if index is None:
         raise HTTPException(404, "No such achievement.")
+    found = entries[index]
     if json:
         return JSONResponse({"name": found["name"], "description": found["description"]},
                             headers={"Cache-Control": "no-store"})
-    return render(p, "achievement.html", g=g, a=found, title=g.view.get("title"))
+    # §8.2: prev/next within the game, in the game page's order. A neighbour is linked by id only; if it is hidden
+    # its own page keeps it behind the spoiler guard, so stepping through never shows a secret by itself.
+    prev_e = entries[index - 1] if index > 0 else None
+    next_e = entries[index + 1] if index + 1 < len(entries) else None
+    the_set = next((s for s in listing["sets"] if s["id"] == found["set"]), None)
+    resp = render(p, "achievement.html", g=g, a=found, title=g.view.get("title"), position=index + 1,
+                  total=len(entries), prev_e=prev_e, next_e=next_e, the_set=the_set,
+                  many_sets=len(listing["sets"]) > 1)
+    resp.headers["Cache-Control"] = "private, no-store"
+    return resp

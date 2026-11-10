@@ -266,3 +266,64 @@ def test_field_names_unchanged(site):  # noqa: F811
     for field in ("name", "description", "kind", "tier", "points", "global_percent", "status", "hidden", "icon_url",
                   "locked_icon_url", "external_id", "akey", "extra", "remove"):
         assert f'name="{field}.{key}"' in page, field
+
+
+# ---- AE6 set select and the §8.2 detail page (U3 review) -----------------------------------------------------
+
+def test_set_select_bound_to_extra(site):  # noqa: F811
+    signup(site, "alice")  # administrator: an edit applies at once
+    url = f"/game/{site.gid}/achievements/edit"
+    with site.st.maker() as s:  # only the base set: no select
+        facets.set_achievements(s, site.st.ctx, site.gid, proposals.SOURCE, [{"name": "Lamp Lit"}], ordered=True)
+        s.commit()
+    assert "data-ach-set" not in site.get(url).text
+    _seed_achievements(site, source=proposals.SOURCE)
+    page = unescape(site.get(url).text)
+    assert page.count("data-ach-set") == 4  # three rows and the new-row template
+    keys = re.findall(r'name="row" value="([^"]+)"', page)
+    tide = next(k for k in keys if re.search(rf'name="name.{re.escape(k)}" value="Tide Turner"', page))
+    assert re.search(rf'name="set.{re.escape(tide)}" data-ach-set><option value="base" >Base game</option>'
+                     rf'<option value="tides" selected>Tides</option>', page)
+    # move "Lamp Lit" into the Tides set and "Tide Turner" back to the base set; the wire stays `extra.set`
+    rows = {}
+    for k in keys:
+        name = re.search(rf'name="name.{re.escape(k)}" value="([^"]*)"', page).group(1)
+        extra = unescape(re.search(rf'name="extra.{re.escape(k)}" value="([^"]*)"', page).group(1))
+        rows[k] = {"name": name, "extra": extra, "external_id": re.search(
+            rf'name="external_id.{re.escape(k)}" value="([^"]*)"', page).group(1),
+            "set": {"Lamp Lit": "tides", "Tide Turner": "base"}.get(name, "")}
+    r = site.post(url, data=_ach_form(token(site, url), rows, action="submit"))
+    assert r.status_code == 303, r.text
+    with site.st.maker() as s:
+        items = {i["name"]: i for i in facets.achievement_items(
+            list(s.scalars(select(facets.Achievement).where(facets.Achievement.canonical_id == site.gid,
+                                                           facets.Achievement.source == proposals.SOURCE))), s)}
+    assert items["Lamp Lit"].get("set") == "tides" and items["Tide Turner"].get("set", "base") == "base"
+
+
+def test_achievement_detail_page(site):  # noqa: F811
+    signup(site, "alice")
+    with site.st.maker() as s:
+        facets.set_achievements(s, site.st.ctx, site.gid, "curator", [
+            {"name": "Lamp Lit", "external_id": "A1", "tier": "gold", "points": 30, "global_percent": 2.5},
+            {"name": "Tide Turner", "external_id": "T1", "set": "tides", "global_percent": 60.0},
+            {"name": "Secret Shore", "description": "The ending", "external_id": "S1", "hidden": True}],
+            sets=[{"key": "tides", "kind": "dlc", "name": "Tides"}], ordered=True)
+        s.commit()
+        ids = {e["name"]: e["id"] for e in facets.merged_achievements(s, site.st.ctx, site.gid, reveal=True)}
+    page = unescape(site.get(f"/game/{site.gid}/achievements/{ids['Lamp Lit']}").text)
+    assert 'data-ach-detail="' in page and "ach-icon-pair" in page and "unlocked" in page and "locked" in page
+    assert "data-ach-rarity" in page and "2.5%" in page and "ultra rare" in page
+    assert re.search(r"data-ach-measured>measured (<time[^>]*>[^<]+</time>|at an unknown date)", page)
+    assert 'data-ach-sources>curator' in page and "data-ach-set>Base game" not in page
+    assert 'data-nav="next"' in page and "Position" in page
+    # the neighbour that is hidden is never named in the link
+    tide = unescape(site.get(f"/game/{site.gid}/achievements/{ids['Tide Turner']}").text)
+    assert "data-ach-set>Tides" in tide and 'data-nav="prev"' in tide
+    nxt = re.search(r'data-nav="next" rel="next">([^<]+)<', tide)
+    assert nxt is None or "Secret Shore" not in nxt.group(1)
+    # the hidden one itself: behind the spoiler guard, not in the title or heading
+    secret = site.get(f"/game/{site.gid}/achievements/{ids['Secret Shore']}")
+    text = unescape(secret.text)
+    assert "<h1>Hidden achievement</h1>" in text and "data-ach-spoiler" in text
+    assert "Secret Shore" not in text.split("data-ach-spoiler")[0] and "no-store" in secret.headers["cache-control"]
