@@ -46,11 +46,16 @@ every read query, so search, browsing, totals, suggestions, relations, lists, me
 
 A record a viewer may not see answers exactly like an unknown record (`404`, same text).
 
+A merge or relation between a record kept back and a public record is refused (`409`, code `scope_ceiling`):
+publish the record first.
+
 ### Who sees data from your nodes (`scope.detail`)
 
 - Administrators and curators, and anyone with review rights through your node group.
 - Every account while registration is **closed**.
-- Sessions opened through your node group.
+- A session opened through your node group only when that session has review or administrator rights here
+  (after the `group_federated_privilege` limit, see [node groups](node-groups.md)) or the account was granted the
+  right below. Signing in through the group does not give it by itself.
 - Accounts an administrator ticks **sees data from your nodes** for on **Admin → Users**.
 
 An account that registered itself on an open node does not see it unless you grant it. API tokens an

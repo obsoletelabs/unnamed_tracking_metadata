@@ -97,8 +97,11 @@ def emit_or_local(session: Session, ctx: Any, kind: str, body: dict[str, Any]) -
     try:
         return emit(session, ctx, kind, body)
     except ScopeCeiling as exc:
-        if not exc.local_ok:
-            raise
+        if not exc.local_ok:  # §5.4: a mixed entry fails closed with the "Publish it" refusal (409), not a 500
+            from .service import AtlasError
+
+            raise AtlasError(str(exc), "scope_ceiling", canonical_id=exc.canonical_id,
+                             ceiling=exc.ceiling) from exc
         log.info("not signed: %s has the scope ceiling %s", exc.canonical_id, exc.ceiling)
         return None
 
@@ -329,7 +332,8 @@ def candidates(session: Session, scope: str, after: str = "", limit: int | None 
         query = query.where(Canonical.id.in_(select(FeedIntroduced.canonical_id)
                                              .where(FeedIntroduced.via == VIA_LEGACY)))
     else:
-        query = query.where(Canonical.merged_into.is_(None), Canonical.id.not_in(introduced))
+        query = query.where(Canonical.merged_into.is_(None), Canonical.id.not_in(introduced),
+                            Canonical.id.not_in(publicly_absent()))
     query = query.where(Canonical.scope_ceiling.is_(None)).order_by(Canonical.id)  # C14 §5.4: never introduced
     return list(session.scalars(query.limit(limit) if limit else query))
 
@@ -341,8 +345,20 @@ def unintroduced_count(session: Session, scope: str = "all") -> int:
                                              .where(FeedIntroduced.via == VIA_LEGACY)))
     else:
         query = query.where(Canonical.merged_into.is_(None), Canonical.id.not_in(
-            select(FeedIntroduced.canonical_id).where(FeedIntroduced.via != VIA_LEGACY)))
+            select(FeedIntroduced.canonical_id).where(FeedIntroduced.via != VIA_LEGACY)),
+            Canonical.id.not_in(publicly_absent()))
     return session.scalar(query) or 0
+
+
+def publicly_absent() -> Any:
+    """Records that do not exist for a visitor (C14 §5.7: only host/plugin library data or data received from the
+    group, a `private` ceiling): `federation_introduce = all` never introduces them, or the feed would disclose a
+    record a follower's token may not see. An entry that names one still introduces it (`emit`)."""
+    from .models import ScopeProjection
+    from .scope import ANON_OFF
+
+    return select(ScopeProjection.canonical_id).where(ScopeProjection.tier == ANON_OFF,
+                                                      ScopeProjection.present.is_(False))
 
 
 def introduce_batch(session: Session, ctx: Any, scope: str, *, limit: int = INTRODUCE_BATCH) -> dict[str, Any]:

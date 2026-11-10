@@ -56,6 +56,18 @@ def _epoch(dt: datetime) -> int:
     return int(dt.timestamp())
 
 
+def _publicly_absent(session: Session, cid: str) -> bool:
+    """C14 §5.7: the record does not exist for a visitor (host/plugin library data only, or only group data)."""
+    from sqlalchemy import not_
+
+    from . import scope
+
+    session.flush()  # the projection is rebuilt later in this ingest: ask the observations themselves
+    return session.scalars(select(Observation.id).where(
+        Observation.canonical_id == cid, Observation.is_current.is_(True),
+        not_(scope.hidden_obs_clause())).limit(1)).first() is None
+
+
 def write_lock(session: Session) -> None:
     """Serialise writers for the rest of the transaction. Resolution is read-then-write, so concurrent
     writers could otherwise both create a record for the same identity. PostgreSQL: a transaction-scoped
@@ -340,7 +352,8 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
                     "source_updated_at": obs.source_updated_at, "observed_at": obs.observed_at.isoformat(),
                 },
             })
-        elif ctx.settings.role == "authority" and getattr(ctx.settings, "federation_introduce", "") == "all":
+        elif ctx.settings.role == "authority" and getattr(ctx.settings, "federation_introduce", "") == "all" \
+                and not _publicly_absent(session, cid):
             feed.ensure_introduced(session, ctx, cid, "publish")  # C13 §4.3 (H55): publish every record
         method = "forced" if decision.reason == "forced" else \
             ({"exact": "exact", "fuzzy": "fuzzy"}.get(decision.reason, "crosswalk") if decision.assigned else "none")

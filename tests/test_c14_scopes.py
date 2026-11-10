@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
-from atlas import feed, feed_schema, main, scope, service
+from atlas import accounts, feed, feed_schema, main, scope, service
 from atlas.models import Canonical, ChangeLog, FeedIntroduced, ScopeProjection, User, UserPermission
 
 from .conftest import batch, build_settings
@@ -40,8 +40,8 @@ def local_ctx(session):
     return Ctx(settings=build_settings(role="local"), identity=identity)
 
 
-def test_scope_vocabulary_and_derivation(session, ctx):
-    """T-S1: four scopes, three ceilings; origin decides an item's scope."""
+def test_scope_derivation_table(session, ctx):
+    """T-S1: four scopes, three ceilings; origin decides an item's scope (host, group and provider rows)."""
     assert scope.SCOPES == ("public", "group", "private", "local")
     assert set(scope.CEILINGS) == {"group", "private", "local"}
     [host] = _ingest(session, ctx, "playnite", [{"external_id": "h1", "title": "Host Only"}], kind="plugin")
@@ -59,9 +59,9 @@ def test_scope_vocabulary_and_derivation(session, ctx):
     assert scope.badge("group")["label"] == "Your nodes" and scope.badge("local")["label"] == "This node only"
 
 
-def test_ceiling_keeps_edits_local_and_publish_introduces(session, local_ctx):
-    """T-S2/T-S9: a ceiling'd record's edits are never signed (kept on this node), on every role; publishing lifts
-    the ceiling."""
+def test_group_ceiling_blocks_feed_emission_fail_closed(session, local_ctx):
+    """T-S3 (and T-S9 on a local node): a ceiling'd record's edits are never signed (kept on this node), on every
+    role; publishing lifts the ceiling."""
     ctx = local_ctx
     [r] = _ingest(session, ctx, "igdb", [{"external_id": "c1", "title": "Ceiling Game"}])
     session.commit()
@@ -81,7 +81,7 @@ def test_ceiling_keeps_edits_local_and_publish_introduces(session, local_ctx):
 
 
 def test_mixed_entry_fails_closed(session, local_ctx):
-    """T-S9: an entry naming a ceiling'd and a public record is refused outright (not kept locally)."""
+    """T-S3/T-S9: an entry naming a ceiling'd and a public record is refused outright (not kept locally)."""
     ctx = local_ctx
     a, b = (_ingest(session, ctx, "igdb", [{"external_id": e, "title": t}])[0] for e, t in
             (("m1", "Mixed One"), ("m2", "Mixed Two")))
@@ -94,7 +94,7 @@ def test_mixed_entry_fails_closed(session, local_ctx):
 
 
 def test_ceiling_cannot_unpublish(session, ctx):
-    """T-S3: an introduced record cannot be kept on this node only; followers keep what they have."""
+    """T-S9: Keep-on-this-node is refused for an introduced record; followers keep what they have."""
     [r] = _ingest(session, ctx, "igdb", [{"external_id": "p1", "title": "Published Game"}])
     session.commit()
     feed.ensure_introduced(session, ctx, r.canonical_id, "test")
@@ -105,7 +105,7 @@ def test_ceiling_cannot_unpublish(session, ctx):
 
 
 def test_host_only_record_is_operator_private(session, ctx):
-    """T-S4: a record that exists only through host/plugin data does not exist for visitors or tokens: same error
+    """T-S10: a record that exists only through host/plugin data does not exist for visitors or tokens: same error
     as an unknown id."""
     [r] = _ingest(session, ctx, "playnite", [{"external_id": "h2", "title": f"Host {HOST_MARK}"}], kind="plugin")
     session.commit()
@@ -119,7 +119,7 @@ def test_host_only_record_is_operator_private(session, ctx):
 
 
 def test_mixed_record_hides_host_values(session, ctx):
-    """T-S5: a record with provider and host data shows visitors the provider values only."""
+    """T-S10: a record with provider and host data shows visitors the provider values only."""
     [r] = _ingest(session, ctx, "igdb", [{"external_id": "x1", "title": "Mixed Record"}])
     _ingest(session, ctx, "playnite", [{"external_id": "x1h", "title": "Mixed Record",
                                         "provider_ids": {"igdb": "x1"},
@@ -134,7 +134,7 @@ def test_mixed_record_hides_host_values(session, ctx):
 
 
 def test_group_switch_and_categories(session, ctx):
-    """T-S6/D1: group-received data is absent while the switch is off; with it on, only public categories."""
+    """T-S10/D1: group-received data is absent while the switch is off; with it on, only public categories."""
     [r] = _ingest(session, ctx, "igdb", [{"external_id": "g2", "title": GROUP_TITLE,
                                           "facts": {"description": f"about {GROUP_MARK}", "genres": ["Puzzle"]}}],
                   scope_name="group:n1")
@@ -172,7 +172,7 @@ def test_search_counts_never_leak(session, ctx):
     assert [g.view["title"] for g in only_group] == ["Leakcheck Groupie"]
 
 
-def test_feed_record_body_is_the_public_projection(session, ctx):
+def test_feed_emit_filters_group_and_local_fields(session, ctx):
     """T-S11: a record's signed identity never carries a host/plugin value."""
     [r] = _ingest(session, ctx, "igdb", [{"external_id": "f1", "title": "Feed Public Title"}])
     _ingest(session, ctx, "playnite", [{"external_id": "f1h", "title": f"Feed {HOST_MARK}",
@@ -265,7 +265,7 @@ def _api_surfaces(client, node, headers):
     return "\n".join(parts)
 
 
-def test_canaries_anonymous_switch_off(node):
+def test_visibility_predicate_canaries_every_surface(node):
     """T-S10: no host or group value, badge, count or filter reaches a visitor; hidden records are plain 404s."""
     anon = _fresh(node)
     blob = _surfaces(anon, node)
@@ -278,8 +278,8 @@ def test_canaries_anonymous_switch_off(node):
         assert r.status_code == unknown.status_code == 404
 
 
-def test_canaries_anonymous_switch_on(node):
-    """T-S10/D1: with the switch on, visitors see the public categories of group data, never a badge or the
+def test_anonymous_sees_no_group_badge(node):
+    """T-S7/T-S10/D1: with the switch on, visitors see the public categories of group data, never a badge or the
     withheld categories; host data stays hidden."""
     _set_switch(node, True)
     anon = _fresh(node)
@@ -298,17 +298,21 @@ def test_canaries_token_viewer(node):
     assert f"/api/v2/games/{node.host} 404" in blob and f"/api/v2/games/{node.grp} 404" in blob
 
 
-def test_operator_token_sees_detail_with_additive_keys(node):
-    """Operator tokens act for the operator (detail): every record, with the additive `scope` key."""
+def test_scope_filters_and_api_keys_additive(node):
+    """T-S4: operator tokens act for the operator (detail): every record, with the additive `scope` key; old
+    clients (a visitor, a follower's token) see the unchanged keys."""
     h = _mint(node, ["read", "curate"])
     g = node.get(f"/api/v2/games/{node.grp}", headers=h)
     assert g.status_code == 200 and g.json()["scope"]["widest"] == "group"
     assert node.get(f"/api/v2/games/{node.host}", headers=h).status_code == 200
     listed = node.get("/api/v2/games?q=Web&has=group", headers=h).json()
     assert listed is not None
+    for headers in (_mint(node, ["read", "sync"]),):  # the API has no anonymous reader
+        old = node.get(f"/api/v2/games/{node.pub}", headers=headers)
+        assert old.status_code == 200 and "scope" not in old.json()
 
 
-def test_self_registered_user_lacks_detail_until_granted(node):
+def test_self_registered_user_lacks_scope_detail(node):
     """T-S13: on an open node, an account that registered itself sees what a visitor sees; an administrator can
     grant `scope.detail` on Users, and it is audited."""
     a = _fresh(node)
@@ -343,8 +347,8 @@ def test_closed_registration_gives_every_account_detail(session):
     assert not scope.holds_detail(session, build_settings(), user)
 
 
-def test_sharing_page_standalone(node):
-    """T-S12: a standalone node's Sharing page: the table, the standalone line, the push column greyed, the
+def test_standalone_node_sharing_page(node):
+    """T-S6: a standalone node's Sharing page: the table, the standalone line, the push column greyed, the
     switch off; saving the categories reprojects."""
     with node.st.maker() as s:
         admin = User(username="boss2", password_hash=__import__("atlas.accounts", fromlist=["x"]).hash_password(PW),
@@ -416,3 +420,182 @@ def test_group_artwork_is_hidden_from_visitors(node):
     assert "c" * 64 not in anon.get(f"/game/{node.pub}").text
     _set_switch(node, True)
     assert _fresh(node).get(f"/game/{node.pub}/artwork/{aid}").status_code == 404  # screenshots: withheld
+
+
+# ---- review fixes: federated sessions, mixed merges, every introduction mode, own data inside a group ---------------
+
+def test_federated_session_detail_follows_c10_caps(session):
+    """T-S13 (critic): a session opened through the owner group gets `scope.detail` only per its C10 caps (the
+    request's effective rights) or an explicit grant, never from `via_group` alone: an account that registered itself
+    (here or on an open sibling) and was linked stays a visitor."""
+    from types import SimpleNamespace
+
+    from atlas.accounts import Rights
+
+    s = build_settings()  # registration open
+    user = User(username="linked", password_hash="!", role="user")
+    curator = User(username="capped", password_hash="!", role="curator")
+    session.add_all([user, curator])
+    session.flush()
+    federated = SimpleNamespace(via_group="g1")
+    assert not scope.holds_detail(session, s, user)
+    assert not scope.holds_detail(session, s, user, federated)
+    assert not scope.holds_detail(session, s, user, federated, Rights(federated=True))
+    assert scope.viewer_for_user(session, s, user, federated, Rights(federated=True)).kind == "user"
+    # a curator whose review rights the group policy capped in this session (group_federated_privilege): a visitor
+    assert not scope.holds_detail(session, s, curator, federated, Rights(federated=True))
+    assert scope.holds_detail(session, s, curator)  # signed in locally: the local role applies
+    # rights the session holds (the local role passed the caps, or a valid delegated grant) do give it
+    assert scope.holds_detail(session, s, user, federated, Rights(federated=True, review=True))
+    scope.grant(session, user, scope.DETAIL, "admin")
+    assert scope.holds_detail(session, s, user, federated, Rights(federated=True))
+
+
+def test_mixed_merge_is_a_409_with_the_publish_message(node):
+    """T-S9 (critic), through the API and the site: merging a ceiling'd record with a public one is refused with the
+    §5.4 message (409, not a 500), nothing is signed, and both records stay as they were."""
+    with node.st.maker() as s:
+        scope.set_ceiling(s, node.st.ctx, node.grp, "local")
+        s.commit()
+        before = s.scalar(select(func.count()).select_from(ChangeLog))
+    h = _mint(node, ["read", "curate"])
+    for src, dst in ((node.grp, node.pub), (node.pub, node.grp)):
+        r = node.post(f"/api/v2/games/{src}/merge", headers=h, json={"into": dst})
+        assert r.status_code == 409, r.text
+        err = r.json()["error"]
+        assert err["code"] == "scope_ceiling" and "Publish it" in err["message"]
+    with node.st.maker() as s:
+        assert s.scalar(select(func.count()).select_from(ChangeLog)) == before
+        assert s.get(Canonical, node.grp).merged_into is None and s.get(Canonical, node.pub).merged_into is None
+        s.add(User(username="cur9", password_hash=accounts.hash_password(PW), role="curator"))
+        s.commit()
+    c = _fresh(node)
+    assert login(c, "cur9").status_code == 303
+    csrf = token(c, f"/game/{node.pub}")
+    r = c.post(f"/game/{node.grp}/merge", data={"csrf": csrf, "into": node.pub})
+    assert r.status_code == 409 and "Publish it" in r.text
+
+
+MODES = {
+    "legacy": {},
+    "bridge": {"federation_bridge_record_obs": True},
+    "record": {"emit_protocol": "1.5"},
+}
+
+
+@pytest.mark.parametrize("mode", sorted(MODES))
+def test_ceiling_gate_holds_in_legacy_bridge_and_record_modes(session, mode):
+    """T-S9 (critic): on an authority, in every introduction mode and with `federation_introduce=all`: a ceiling'd
+    record is never introduced or marked; an observation ingested into it, a lock, an unlock and a relation to a
+    public record stay on this node (or are refused) without signing; a mixed merge fails closed with the "Publish
+    it" refusal; Publish lifts the ceiling."""
+    from atlas import relations
+    from atlas.service import Ctx
+    from atlas.signing import load_identity
+
+    identity = load_identity(session)
+    session.commit()
+    ctx = Ctx(settings=build_settings(role="authority", federation_introduce="all", **MODES[mode]), identity=identity)
+    assert feed.introduction_mode(ctx.settings) == mode
+    [pub] = _ingest(session, ctx, "igdb", [{"external_id": f"p-{mode}", "title": f"Gatepublic {mode}"}])
+    session.commit()
+    [cap] = _ingest(session, ctx, "playnite", [{"external_id": f"c-{mode}", "title": f"Gatekept {mode}"}],
+                    kind="plugin")  # host data only: `all` does not introduce it on ingest
+    session.commit()
+    cid = cap.canonical_id
+    assert session.get(FeedIntroduced, cid) is None
+    scope.set_ceiling(session, ctx, cid, "local")
+    session.commit()
+    before = session.scalar(select(func.count()).select_from(ChangeLog))
+    obs = {"id": "o-" + mode, "source_kind": "metadata", "source": "manual", "source_scope": "test",
+           "external_id": "c2", "payload": {"title": "new"}}
+    assert feed.emit_or_local(session, ctx, "obs", {"canonical_id": cid, "media_type": "game",
+                                                    "observation": obs}) is None
+    assert feed.emit_or_local(session, ctx, "lock", {"canonical_id": cid, "field": "title", "value": "Y"}) is None
+    assert feed.emit_or_local(session, ctx, "unlock", {"canonical_id": cid, "field": "title"}) is None
+    assert feed.ensure_introduced(session, ctx, cid, "publish") is None
+    assert cid not in {c.id for c in feed.candidates(session, "all")}
+    assert session.get(FeedIntroduced, cid) is None
+    session.commit()
+    assert session.scalar(select(func.count()).select_from(ChangeLog)) == before
+    with pytest.raises(service.AtlasError) as exc:
+        service.merge_canonicals(session, ctx, cid, pub.canonical_id, actor="cur")
+    assert exc.value.code == "scope_ceiling" and "Publish it" in str(exc.value)
+    session.rollback()
+    try:  # gated below emit 1.4 (kept local, never signed) or refused at 1.5: never signed either way
+        relations.add(session, ctx, cid, pub.canonical_id, "remake_of", actor="cur")
+        session.commit()
+    except service.AtlasError as refused:
+        assert refused.code == "scope_ceiling"
+        session.rollback()
+    assert session.scalar(select(func.count()).select_from(ChangeLog)) == before
+    assert session.get(FeedIntroduced, cid) is None
+    scope.publish(session, ctx, cid)
+    session.commit()
+    assert session.get(Canonical, cid).scope_ceiling is None
+
+
+def _blob(node, colour) -> str:
+    import hashlib
+    import io
+    from pathlib import Path
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), colour).save(buf, "PNG")
+    data = buf.getvalue()
+    digest = hashlib.sha256(data).hexdigest()
+    path = Path(node.st.ctx.settings.media_dir) / digest[:2] / f"{digest}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return digest
+
+
+def test_standalone_node_public_pages_unchanged(node, monkeypatch):
+    """T-S12 (Review #1 + critic): a node's own provider data and art stay public with today's cache headers, also
+    for a node in a group with `group_assist_share_provider_data = fields+media` and `group_data_public_pages` off.
+    Bytes only group data references are refused to visitors while the switch is off and carry `private` headers
+    (never `immutable`) otherwise: `private, max-age=300` for a visitor, `private, no-store` for a signed-in user."""
+    from atlas.models import Artwork, Observation
+
+    own, grp = _blob(node, (10, 120, 30)), _blob(node, (200, 10, 10))
+    with node.st.maker() as s:
+        s.add(Artwork(canonical_id=node.pub, source="igdb", kind="key_art", url="https://img.invalid/own.png",
+                      blob_hash=own, redistributable=False))
+        s.add(Artwork(canonical_id=node.grp, source="igdb", kind="key_art", url="https://img.invalid/grp.png",
+                      blob_hash=grp, fetched_from="group:n1", redistributable=False))
+        s.commit()
+
+    def check_own():
+        anon = _fresh(node)
+        page = anon.get(f"/game/{node.pub}")
+        assert page.status_code == 200 and "Webpublic Alpha" in page.text
+        r = anon.get(f"/media/{own}")
+        assert r.status_code == 200, r.text
+        assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+    def in_group(settings_obj):
+        monkeypatch.setattr(scope, "in_group", lambda session: True)
+        object.__setattr__(settings_obj, "group_assist_share_provider_data", "fields+media")
+
+    check_own()  # standalone
+    in_group(node.st.ctx.settings)
+    with node.st.maker() as s:
+        o = s.scalars(select(Observation).where(Observation.canonical_id == node.pub)).first()
+        assert scope.of_observation(node.st.ctx.settings, o, grouped=True) == "group"  # it travels to the group…
+    check_own()  # …and its display is unchanged: visibility follows origin, not travel scope
+    assert _fresh(node).get(f"/media/{grp}").status_code == 404  # switch off: group-only bytes do not exist
+    _set_switch(node, True)
+    in_group(node.st.ctx.settings)
+    r = _fresh(node).get(f"/media/{grp}")
+    assert r.status_code == 200 and r.headers["cache-control"] == "private, max-age=300"
+    assert "immutable" not in r.headers["cache-control"] and "public" not in r.headers["cache-control"]
+    with node.st.maker() as s:
+        s.add(User(username="cur12", password_hash=accounts.hash_password(PW), role="curator"))
+        s.commit()
+    c = _fresh(node)
+    assert login(c, "cur12").status_code == 303
+    r = c.get(f"/media/{grp}")
+    assert r.status_code == 200 and r.headers["cache-control"] == "private, no-store"
+    check_own()
