@@ -835,7 +835,7 @@ def _client_changed_ids(kind: str, body: dict[str, Any]) -> list[str]:
 def client_changes(
     st: St,
     session: Sess,
-    _: Annotated[auth.Principal, Depends(require("read"))],
+    principal: Annotated[auth.Principal, Depends(require("read"))],
     since: Annotated[int, Query(ge=0, description="Last `next_cursor` stored by the client.")] = 0,
     limit: Annotated[int, Query(ge=1, le=500, description="Maximum feed events in this page.")] = 100,
     node_id: Annotated[
@@ -863,8 +863,12 @@ def client_changes(
     if feed_name == "local":
         if node_id is not None:
             raise HTTPException(400, "node_id is not allowed with feed=local: the local log has no other origin.")
+        from .. import scope
+
+        # C14 §5.7: a caller sees only the records it may read; the others are left out as if absent.
+        hidden = scope.hidden_ids(_viewer(session, st, principal))
         return {"feed": "local", "node_id": st.ctx.identity.node_id,
-                **client_change_log.page(session, since, limit, epoch)}
+                **client_change_log.page(session, since, limit, epoch, hidden=hidden)}
     if epoch is not None:
         raise HTTPException(400, "epoch is only used with feed=local.")
     origin = node_id or st.ctx.identity.node_id

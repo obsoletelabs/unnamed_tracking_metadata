@@ -90,3 +90,30 @@ test('evidence: the same pages for an anonymous visitor (switch off)', async ({ 
   expect(missing.status()).toBe(404);
   await ctx.close();
 });
+
+test('evidence: a self-registered account proposes an edit; the proposal page shows only what it may see',
+  async ({ browser, request }, info) => {
+    // Second review: the proposal's "current value" column is the record as the proposer sees it (the projection),
+    // never the description received from your other node.
+    const ids = await seedScopes(request);
+    const ctx = await browser.newContext({ ...info.project.use, storageState: { cookies: [], origins: [] } });
+    const page = await ctx.newPage();
+    const name = `visitor${info.project.name}${Date.now() % 100000}`;
+    await page.goto('/register');
+    await page.fill('input[name=username]', name);
+    await page.fill('input[name=password]', 'e2e-Synthetic-Pass-12345');
+    await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/register')),
+      page.click('form[action="/register"] button[type=submit]')]);
+    await page.goto(`/game/${enc(ids.mixed)}/edit`);
+    await page.fill('textarea[name=description]', 'A short synthetic description written by a visitor.');
+    await Promise.all([page.waitForURL((u) => !u.pathname.endsWith('/edit')),
+      page.click('form[action$="/edit"] button[type=submit]')]);
+    await page.goto('/me');
+    const open = page.locator('a[href^="/proposal/"]').first();
+    await expect(open).toBeVisible();
+    await open.click();
+    await expect(page.locator('main')).toContainText('A short synthetic description written by a visitor.');
+    await expect(page.locator('body')).not.toContainText('received from your other node');
+    await shoot(page, 'proposal-visitor', info);
+    await ctx.close();
+  });

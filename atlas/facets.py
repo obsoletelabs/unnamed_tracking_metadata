@@ -1115,6 +1115,8 @@ def achievement_listing(session: Session, ctx: Ctx, cid: str, *, reveal: bool | 
         q = q.where(Achievement.retired_at.is_(None))
     if not scope.achievements_visible(session, viewer, ctx.settings, cid):  # C14 §5.7, D1: withheld by default
         q = q.where(false())
+    elif (rows_rule := scope.achievement_clause(viewer, ctx.settings)) is not None:
+        q = q.where(rows_rule)
     rows = list(session.scalars(q))
     trust = ctx.settings.trust
     rank = {s: (CLASS_RANK[source_class(s)], trust(s)) for s in {a.source for a in rows}}

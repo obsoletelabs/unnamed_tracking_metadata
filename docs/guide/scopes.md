@@ -44,7 +44,9 @@ every read query, so search, browsing, totals, suggestions, relations, lists, me
 | Data received from your other nodes | Only while **Show data from your nodes to visitors** is on, and only the allowed categories, with no badge or node name | Yes, with badge |
 | Public feed data | Yes | Yes |
 
-A record a viewer may not see answers exactly like an unknown record (`404`, same text).
+A record a viewer may not see answers exactly like an unknown record (`404`, same text). The same rule applies
+to its relations, lists, achievements, the proposal and edit pages, and the local change feed
+(`GET /api/v2/changes?feed=local` leaves such records out; the cursor still moves past their entries).
 
 A merge or relation between a record kept back and a public record is refused (`409`, code `scope_ceiling`):
 publish the record first.
@@ -56,7 +58,8 @@ publish the record first.
 - A session opened through your node group only when that session has review or administrator rights here
   (after the `group_federated_privilege` limit, see [node groups](node-groups.md)) or the account was granted the
   right below. Signing in through the group does not give it by itself.
-- Accounts an administrator ticks **sees data from your nodes** for on **Admin → Users**.
+- Accounts a **local** administrator ticks **sees data from your nodes** for on **Admin → Users**. It is a
+  standing right, so an administrator who holds that role only through a node-group grant cannot change it.
 
 An account that registered itself on an open node does not see it unless you grant it. API tokens an
 administrator mints for this node's own apps (the Playnite plugin, the Tracking App) act for the operator and see
