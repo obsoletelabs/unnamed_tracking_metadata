@@ -74,9 +74,13 @@ def _import(st: AppState, session: Session, provider: str, external_id: str,
             art = len(got.artwork)
         _apply_custom(st, session, row, provider, got)
         try:
-            items = st.providers.achievements(session, provider, external_id)
+            # C15 §2.7: a type whose achievements flag is off gets no list and no percentages from the provider
+            items = st.providers.achievements(session, provider, external_id) \
+                if custom.achievements_apply(session, row.media_type) else None
         except ProviderError:
             items = []
+        if items is None:
+            return Imported(row, res.method, res.confidence, res.review, art, ach)
         today = datetime.now(UTC).date()
         if items:  # a provider's percentages were measured when fetched (C12 §12.1.6)
             facets.set_achievements(session, st.ctx, row.id, provider, items, measured_at=today)

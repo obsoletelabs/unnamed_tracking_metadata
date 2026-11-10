@@ -99,12 +99,42 @@ def _is_upstream_origin(session: Session, cid: str) -> bool:
     ).first() is not None
 
 
-def _ensure_canonical(session: Session, cid: str, media_type: str | None = None) -> None:
+class MediaTypeMissing(Exception):
+    """CONTRACT-C15 §2.2 (A20): an `obs` or `record` creates a record of a media type this node does not have. The
+    entry waits for the type (`waiting_for = "type:<key>"`), or is quarantined `media_type_not_adopted` when this
+    node will not get the type from that feed; it is never filed as a game."""
+
+    def __init__(self, key: str):
+        super().__init__(f"unknown media type {key!r}")
+        self.key = key
+
+
+#: `sync_failure.waiting_for` of an entry that waits for a media type, not a record: `type:<key>` (at most 37
+#: characters, never an `atlas:` id). `WAITING_FOR_MEDIA_TYPE` is its reason.
+TYPE_WAIT_PREFIX = "type:"
+WAITING_FOR_MEDIA_TYPE = "waiting_for_media_type"
+MEDIA_TYPE_NOT_ADOPTED = "media_type_not_adopted"
+_TYPE_KEY = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
+
+
+def type_wait_key(media_type: str) -> str:
+    return TYPE_WAIT_PREFIX + media_type
+
+
+def _ensure_canonical(session: Session, cid: str, media_type: Any = None) -> None:
+    """Create the record an entry brings, with the media type the entry names. An entry that names no type (a 1.0
+    emitter) keeps the old `game` default, so old feeds replay unchanged. A named type this node does not have raises
+    `MediaTypeMissing` (C15 §2.2): before A20 it fell back to `game`, which filed a book as a game."""
     from .models import MediaType
 
     if session.get(Canonical, cid) is None:
-        known = media_type and session.get(MediaType, media_type) is not None
-        session.add(Canonical(id=cid, view={}, explain={}, media_type=media_type if known else "game"))
+        if media_type is None or media_type == "":
+            media_type = "game"
+        elif not isinstance(media_type, str) or not _TYPE_KEY.match(media_type):
+            raise InvalidEntry("media_type is not a media type key")
+        elif media_type != "game" and session.get(MediaType, media_type) is None:
+            raise MediaTypeMissing(media_type)  # `game` is the built-in base type: it never waits
+        session.add(Canonical(id=cid, view={}, explain={}, media_type=media_type))
         session.flush()
 
 
@@ -203,13 +233,18 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
                 f"waiting for record {waiting}: the feed has not introduced it yet", {"kind": kind},
                 waiting_for=waiting, count=existing is None or existing.disposition != WAIT)
         return WAIT
+    from .facets import AchievementsNotApplicable
+
     try:
         with session.begin_nested():
             result = _apply(session, ctx, node_id, seq, kind, _follow_redirects(session, node_id, seq, kind,
                                                                                 outcome.body))
-    except InvalidEntry as exc:
+    except MediaTypeMissing as exc:
+        return _media_type_missing(session, ctx, node_id, seq, kind, exc.key, existing)
+    except (InvalidEntry, AchievementsNotApplicable) as exc:
+        # C15 §2.7: achievements for a record whose type has them off are invalid, never waited for
         log.warning("invalid feed entry %s (%s) from %s: %s", seq, kind, node_id, exc)
-        _record(session, node_id, seq, kind, QUARANTINE, "invalid", f"InvalidEntry: {exc}", {"kind": kind})
+        _record(session, node_id, seq, kind, QUARANTINE, "invalid", f"{type(exc).__name__}: {exc}", {"kind": kind})
         return QUARANTINE
     except (AtlasError, KeyError, TypeError, ValueError, AttributeError) as exc:
         log.warning("could not apply feed entry %s (%s) from %s: %s", seq, kind, node_id, exc)
@@ -233,7 +268,109 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
             # whole range in feed order (every later entry applies again after it)
             late = not _IN_FEED_ORDER.get() and seq <= applied_head(session, node_id)
             wake_waiting(session, ctx, node_id, created, trigger=trigger, late=late)
+    elif kind == "schema":  # C15 §2.2: the feed's own schema may bring the types its entries wait for
+        late = not _IN_FEED_ORDER.get() and seq <= applied_head(session, node_id)
+        wake_media_types(session, ctx, node_id, named=_schema_type_keys(outcome.body or {}), late=late)
     return NOOP if result == NOOP else APPLY
+
+
+def _schema_type_keys(body: dict[str, Any]) -> set[str]:
+    types = body.get("types")
+    return {t["key"] for t in types if isinstance(t, dict) and isinstance(t.get("key"), str)} \
+        if isinstance(types, list) else set()
+
+
+def _peer_name(session: Session, node_id: str) -> str:
+    name = session.scalars(select(Peer.name).where(Peer.node_id == node_id).limit(1)).first()
+    return name or f"Upstream {node_id[:12]}"
+
+
+NOT_INHERITED = "this node does not inherit its upstream's media types"
+
+
+def _not_adopted(session: Session, node_id: str, seq: int, kind: str, key: str, why: str) -> None:
+    log.warning("feed entry %s (%s) from %s names media type %r, which this node does not adopt (%s)", seq, kind,
+                node_id, key, why)
+    _record(session, node_id, seq, kind, QUARANTINE, MEDIA_TYPE_NOT_ADOPTED,
+            f"{_peer_name(session, node_id)} uses media type {key!r}, which this node does not adopt ({why}). "
+            "Create the type locally and the entry applies on its next retry, or skip it.",
+            {"kind": kind, "media_type": key})
+
+
+def _media_type_missing(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, key: str,
+                        existing: SyncFailure | None) -> str:
+    """C15 §2.2: wait for the type while this feed's schema can still bring it; otherwise quarantine (no endless
+    wait): with `inherit_schema` off the `schema` kind is a no-op here."""
+    if existing is not None and existing.resolved_at is None and existing.reason == "skipped":
+        # dismissed by an administrator ("Dismiss", `dismiss_not_adopted`): a retry keeps that decision visible
+        _record(session, node_id, seq, kind, QUARANTINE, "skipped", existing.error, existing.detail)
+        return QUARANTINE
+    if not getattr(ctx.settings, "inherit_schema", True):
+        _not_adopted(session, node_id, seq, kind, key, NOT_INHERITED)
+        return QUARANTINE
+    if existing is None or existing.disposition != WAIT or existing.resolved_at is not None:
+        log.info("feed entry %s (%s) from %s waits for media type %s", seq, kind, node_id, key)
+    _record(session, node_id, seq, kind, WAIT, WAITING_FOR_MEDIA_TYPE,
+            f"waiting for media type {key!r}: the feed has not published its schema yet",
+            {"kind": kind, "media_type": key}, waiting_for=type_wait_key(key),
+            count=existing is None or existing.disposition != WAIT)
+    return WAIT
+
+
+def _type_rows(session: Session, node_id: str | None, after: tuple[str, int], batch: int) -> list[SyncFailure]:
+    """Open rows waiting for a media type, in (feed, seq) order after `after`."""
+    query = select(SyncFailure).where(SyncFailure.disposition == WAIT, SyncFailure.resolved_at.is_(None),
+                                      SyncFailure.waiting_for.like(TYPE_WAIT_PREFIX + "%"))
+    if node_id is not None:
+        query = query.where(SyncFailure.node_id == node_id, SyncFailure.seq > after[1])
+    else:
+        query = query.where((SyncFailure.node_id > after[0])
+                            | ((SyncFailure.node_id == after[0]) & (SyncFailure.seq > after[1])))
+    return list(session.scalars(query.order_by(SyncFailure.node_id, SyncFailure.seq).limit(batch)))
+
+
+def wake_media_types(session: Session, ctx: Ctx, node_id: str, *, named: set[str] | None = None,
+                     late: bool = False) -> int:
+    """C15 §2.2: after `node_id`'s `schema` entry applied, apply in feed order that feed's entries that wait for a
+    media type this node holds now (C13 §5.3 scope: another feed's schema does not wake them). A waiting entry whose
+    type the same schema names but this node could not create (an invalid definition), and any entry waiting for a
+    type while `inherit_schema` is off, is quarantined `media_type_not_adopted` instead of waiting forever."""
+    from .models import MediaType
+
+    batch = getattr(ctx.settings, "sync_wake_batch", 500)
+    inherit = getattr(ctx.settings, "inherit_schema", True)
+    woken, after = 0, ("", 0)
+    while rows := _type_rows(session, node_id, after, batch):
+        for row in rows:
+            after = (row.node_id, row.seq)
+            key = (row.waiting_for or "")[len(TYPE_WAIT_PREFIX):]
+            entry = session.get(ReplicatedChange, (row.node_id, row.seq))
+            if entry is None or row.resolved_at is not None or row.disposition != WAIT:
+                continue
+            if session.get(MediaType, key) is None:
+                if not inherit:
+                    _not_adopted(session, row.node_id, row.seq, row.kind, key, NOT_INHERITED)
+                elif named is not None and key in named:
+                    _not_adopted(session, row.node_id, row.seq, row.kind, key,
+                                 "the feed's schema names it, but its definition could not be adopted here")
+                continue
+            if late:
+                outcome = apply_late(session, ctx, row, entry)
+            else:
+                with entry_at(entry.created_at):
+                    outcome = apply_entry(session, ctx, row.node_id, row.seq, entry.kind, entry.body,
+                                          may_park=False)
+            if outcome in (APPLY, NOOP, SUPERSEDED):
+                woken += 1
+        session.flush()
+        if len(rows) < batch:
+            break
+    if woken:
+        log.info("media types arrived from %s (schema): %d waiting entr%s applied", node_id, woken,
+                 "y" if woken == 1 else "ies")
+        state_key = f"sync_woken:schema:{node_id}"
+        _set_state(session, state_key, str((_int_state(session, state_key) or 0) + 1))
+    return woken
 
 
 #: C13 §5.2 "Redirects": single-target sidecars land on the survivor of a record merged on this node. `merge` and
@@ -291,7 +428,7 @@ def introduced_by(session: Session, node_id: str, cid: str) -> bool:
 
 #: C13 §9.1 `atlas_sync_woken_total{node_id, trigger}`: how many records arrived and applied what waited for them,
 #: kept in node state (`sync_woken:<trigger>:<feed>`) so every worker and the metrics collector see one count.
-WOKEN_TRIGGERS = ("obs", "record", "bridge", "detach")
+WOKEN_TRIGGERS = ("obs", "record", "bridge", "detach", "schema")
 
 
 def woken_counts(session: Session) -> dict[tuple[str, str], int]:
@@ -494,6 +631,32 @@ def _wake_ready(session: Session, ctx: Ctx, node_id: str | None, limit: int) -> 
         if not isinstance(row.waiting_for, str) or not introduced_by(session, row.node_id, row.waiting_for):
             continue
         # later entries of the feed may have applied since this one began to wait
+        if apply_late(session, ctx, row, entry) in (APPLY, NOOP, SUPERSEDED):
+            woken += 1
+    return woken + _wake_ready_types(session, ctx, node_id, limit)
+
+
+def _wake_ready_types(session: Session, ctx: Ctx, node_id: str | None, limit: int) -> int:
+    """C15 §2.2 safety net (retries and the startup wake): entries waiting for a media type this node now holds as
+    its own (`local`: a built-in an upgrade seeded, or one an administrator created) or from the same feed's schema.
+    A type another upstream owns does not wake them (C13 §5.3 scope). With `inherit_schema` off, an entry whose type
+    is still missing is quarantined `media_type_not_adopted`."""
+    from .models import MediaType
+
+    inherit = getattr(ctx.settings, "inherit_schema", True)
+    woken = 0
+    for row in _type_rows(session, node_id, ("", 0), limit):
+        key = (row.waiting_for or "")[len(TYPE_WAIT_PREFIX):]
+        entry = session.get(ReplicatedChange, (row.node_id, row.seq))
+        if entry is None or row.resolved_at is not None or row.disposition != WAIT:
+            continue
+        mtype = session.get(MediaType, key)
+        if mtype is None:
+            if not inherit:
+                _not_adopted(session, row.node_id, row.seq, row.kind, key, NOT_INHERITED)
+            continue
+        if mtype.origin != "local" and mtype.origin_node not in (None, row.node_id):
+            continue
         if apply_late(session, ctx, row, entry) in (APPLY, NOOP, SUPERSEDED):
             woken += 1
     return woken
@@ -1491,6 +1654,26 @@ def _group_title(session: Session, node_id: str, cid: Any, blocked: int | None) 
     return None, None
 
 
+def _type_group(session: Session, node: str, key: str, count: int, first: int, last: int, since: Any,
+                kinds: Counter) -> dict[str, Any]:
+    """C15 §2.2: a waiting group of entries that wait for a media type (not a record)."""
+    entry = session.get(ReplicatedChange, (node, first))
+    body = entry.body if entry is not None and isinstance(entry.body, dict) else {}
+    payload = (body.get("observation") or {}).get("payload") if isinstance(body.get("observation"), dict) else None
+    title = body.get("title") if entry is not None and entry.kind == "record" else \
+        (payload or {}).get("title") if isinstance(payload, dict) else None
+    span = f"entry {first}" if first == last else f"entries {first}–{last}"
+    return {"cause": WAITING_FOR_MEDIA_TYPE, "subreason": "media_type", "media_type": key,
+            "label": f"Waiting for media type {key}", "count": count, "node_id": node, "canonical_id": None,
+            "title": " ".join(title.split())[:200] if isinstance(title, str) and title.strip() else None,
+            "title_provenance": "observation" if isinstance(title, str) and title.strip() else None,
+            "kinds": dict(sorted(kinds.items())), "seqs": [first, last], "blocked_by": None,
+            "since": _aware(since).isoformat() if since else None, "retry": "on_arrival", "action": "copy_note",
+            "note": (f"Your Atlas feed has records of media type {key!r} ({span}) but this node has not received "
+                     "that type's definition. Publish your media types (Admin → Media types → save the type) so "
+                     "followers receive the schema.")[:600]}
+
+
 def waiting_note(cid: str, seqs: tuple[int, int]) -> str:
     """§8.2 "Copy a note" text for the upstream's operator."""
     span = f"entry {seqs[0]}" if seqs[0] == seqs[1] else f"entries {seqs[0]}–{seqs[1]}"
@@ -1516,6 +1699,9 @@ def waiting_groups(session: Session, node_id: str | None = None, *, name: str | 
         kinds = Counter(session.scalars(select(SyncFailure.kind).where(
             SyncFailure.node_id == node, SyncFailure.waiting_for == cid, SyncFailure.disposition == WAIT,
             SyncFailure.resolved_at.is_(None)).limit(1000)))
+        if isinstance(cid, str) and cid.startswith(TYPE_WAIT_PREFIX):
+            out.append(_type_group(session, node, cid[len(TYPE_WAIT_PREFIX):], count, first, last, since, kinds))
+            continue
         through = _int_state(session, "sync_introduced_through:" + node)
         blocked = _blocked_by(session, node, cid, first) if isinstance(cid, str) else None
         title, provenance = _group_title(session, node, cid, blocked)
@@ -2345,6 +2531,25 @@ def skip(session: Session, ctx: Ctx, node_id: str, seq: int, reason: str, *, act
     session.flush()
     _, applied = _apply_pending(session, ctx, node_id)
     return {"node_id": node_id, "seq": seq, "applied_head": applied}
+
+
+def dismiss_not_adopted(session: Session, node_id: str, seq: int, *, actor_id: str | None = None,
+                        via: str = "web") -> None:
+    """C15 §2.2 "Dismiss": an entry quarantined `media_type_not_adopted` stays retained and signed but is marked
+    skipped, so retries stop reporting it as a failure. Audited. `atlas sync replay` (or creating the type and
+    retrying) can still apply it."""
+    service.write_lock(session)
+    row = session.get(SyncFailure, (node_id, seq))
+    if row is None or row.resolved_at is not None or row.reason != MEDIA_TYPE_NOT_ADOPTED:
+        raise ValueError(f"entry {seq} of {node_id} is not waiting on a media type this node does not adopt")
+    row.reason = "skipped"
+    row.detail = {**(row.detail or {}), "skipped_reason": "dismissed", "parked_reason": MEDIA_TYPE_NOT_ADOPTED}
+    row.error = f"dismissed by an administrator; was {MEDIA_TYPE_NOT_ADOPTED}: {row.error}"[:2000]
+    row.last_attempt_at = datetime.now(UTC)
+    session.add(AuditEntry(actor_id=actor_id, action="sync_skip", target=f"{node_id}:{seq}"[:128],
+                           detail={"reason": "dismissed", "parked_reason": MEDIA_TYPE_NOT_ADOPTED, "kind": row.kind,
+                                   "via": via}))
+    session.flush()
 
 
 def view_digest(session: Session, node_id: str | None) -> dict[str, Any]:

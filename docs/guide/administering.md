@@ -52,6 +52,7 @@ The page also lists the store namespaces Atlas links on game pages (`steam`, `go
 
 * **rename core fields**, so a movie's *Developer* reads *Director* and *Publisher* reads *Studio*;
 * add **custom fields**: text, long text, number, date, yes/no, choice (with options), list, link (`https://`). Each has a label, help text, order, **shown** (page and API) and **editable by contributors** switches.
+* switch **Achievements apply to this type** off (on for every type, built-in or yours, unless you change it). Off: records of the type show no achievements, the curator API, proposals and provider imports refuse them, a follower refuses them from its upstream (quarantined as invalid), and `GET /api/v2/games/{id}/achievements` answers `applicable: false` with empty lists. Achievements already stored are kept, hidden, and come back when you switch it on again. The flag travels with the schema to followers that adopt it (from emit protocol 1.5; below it, it stays on this node).
 
 The built-in anime fields are episode count, format, release status and source material. Movies start with runtime, writer, production countries and tagline. TV shows start with episode and season counts, episode runtime and release status. These are ordinary editable fields: admins can rename or remove them, and Atlas will not recreate a field after an admin removes it.
 

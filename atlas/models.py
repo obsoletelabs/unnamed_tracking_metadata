@@ -865,6 +865,10 @@ class MediaType(Base):
     position: Mapped[int] = mapped_column(Integer, default=100)
     labels: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)  # core field -> label, e.g. developer: Director
     origin: Mapped[str] = mapped_column(String(8), default="local")  # local | upstream
+    # CONTRACT-C15 §2.7 (A20, migration 0060): whether achievements apply to records of this type. True for every
+    # existing type; an administrator may turn it off. False: the curator API, imports and followers refuse
+    # achievements for such records, and existing rows are kept but hidden (`applicable: false`).
+    achievements: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
 
 
 class FieldDef(Base):

@@ -443,7 +443,8 @@ def game(cid: str, p: Annotated[Page, Depends(page)], ach: Annotated[str, Query(
                   art_total=len(art), art_cached=len(cached),
                   art_kinds=facets.KINDS, activity=activity,
                   achievements=ach_filter(listing["results"], listing["sets"], ach),
-                  ach_all=listing["results"], ach_sets=listing["sets"], ach=ach if ach in ACH_FILTERS or
+                  ach_all=listing["results"], ach_sets=listing["sets"],
+                  ach_applicable=listing.get("applicable", True), ach=ach if ach in ACH_FILTERS or
                   ach.startswith("set:") else "all",
                   rel=relations.of(s, g.id, limit=RELATION_PREVIEW), rel_labels=relations.LABELS,
                   redirected_from=p.request.query_params.get("from"), **extra)

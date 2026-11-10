@@ -98,6 +98,9 @@ CAUSES = {("parked", None): ("needs_upgrade", "Needs a newer Atlas", "Upgrade At
           ("quarantined", "invalid"): ("malformed", "Sent something Atlas can't accept",
                                        "Nothing to retry: the signed entry stays retained (atlas sync skip)"),
           ("quarantined", "skipped"): ("skipped", "Skipped by an administrator", "Undo with atlas sync replay"),
+          ("quarantined", "media_type_not_adopted"): ("media_type_not_adopted",
+                                                      "Uses a media type this node does not adopt",
+                                                      "Create the type locally, or dismiss"),
           ("quarantined", None): ("apply_failed", "Couldn't be applied (likely a bug)", "Retry now")}
 
 
@@ -164,7 +167,9 @@ def _records(p: Ctx) -> dict | None:
     out.update(missing=feed.unintroduced_count(p.session, "missing"), mode=feed.introduction_mode(p.st.ctx.settings),
                pending=p.session.get(NodeState, feed.INTRODUCE_PENDING) is not None,
                introduced_through=feed.introduced_through(p.session),
-               bridge=bool(p.st.ctx.settings.federation_bridge_record_obs))
+               bridge=bool(p.st.ctx.settings.federation_bridge_record_obs),
+               bridge_skipped=feed.bridge_skipped(p.session, p.st.ctx.settings),  # C15 §4.1
+               bridge_types=list(p.st.ctx.settings.federation_bridge_media_types or ["game"]))
     return out
 
 
@@ -494,6 +499,39 @@ def sync_now(pid: str, p: Annotated[Ctx, Depends(admin_form)]):
         row.last_error = f"{type(exc).__name__}: {exc}"[:300]
         p.session.commit()
         return peers(p, error=f"Sync failed: {row.last_error}", tone="error")  # type: ignore[arg-type]
+
+
+@router.post("/admin/peers/failures/create-type", response_class=HTMLResponse)
+def create_type_for_failure(p: Annotated[Ctx, Depends(admin_form)], key: Annotated[str, Form(max_length=40)]):
+    """C15 §2.2 "Create type locally": an upstream's entries name a media type this node does not adopt. Create it
+    here (an ordinary local type, which an administrator can rename or delete later), then retry: they apply."""
+    from .. import custom
+    from ..models import MediaType
+
+    key = key.strip().lower()
+    if p.session.get(MediaType, key) is None:
+        try:
+            custom.save_type(p.session, p.st.ctx, key, key.replace("_", " ").capitalize())
+        except AtlasError as exc:
+            p.session.rollback()
+            return peers(p, error=f"Could not create the media type: {exc}", tone="error")  # type: ignore[arg-type]
+        accounts.audit(p.session, p.me.id, "schema_type_save", key[:64], {"via": "media_type_not_adopted"})
+    result = sync.retry_failures(p.session, p.st.ctx, limit=100, due_only=False)
+    accounts.audit(p.session, p.me.id, "sync_failures_retry", "", result)
+    p.session.flush()
+    return peers(p, error=f"Created the media type {key}; retried {result['retried']} entr"  # type: ignore[arg-type]
+                 f"{'y' if result['retried'] == 1 else 'ies'}: {result['resolved']} applied.", tone="ok")
+
+
+@router.post("/admin/peers/failures/dismiss", response_class=HTMLResponse)
+def dismiss_failure(p: Annotated[Ctx, Depends(admin_form)], node_id: Annotated[str, Form(max_length=64)],
+                    seq: Annotated[int, Form(ge=1)]):
+    """C15 §2.2 "Dismiss": stop reporting an entry whose media type this node does not adopt (audited)."""
+    try:
+        sync.dismiss_not_adopted(p.session, node_id, seq, actor_id=p.me.id)
+    except ValueError as exc:
+        return peers(p, error=f"Could not dismiss: {exc}", tone="error")  # type: ignore[arg-type]
+    return go("/admin/peers", "saved")
 
 
 @router.post("/admin/peers/failures/retry", response_class=HTMLResponse)

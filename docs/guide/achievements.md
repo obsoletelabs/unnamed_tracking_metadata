@@ -130,6 +130,11 @@ node does not know comes back as `null`. `sets_elsewhere` names DLC sets on *oth
 so a client looking at a DLC finds the achievements its base game lists. Filters: `?set=<id or key>` and
 `?platform=<slug>` (sets without platforms always match).
 
+**Types without achievements.** Every response carries `applicable`. It is `false` when the record's media type has
+achievements switched off (Admin → Fields → the type, see [Administering](administering.md#media-types-and-custom-fields));
+`results`, `sets` and `sets_elsewhere` are then empty and a `PUT` is refused (400). The stored rows are kept and listed
+again when the type's switch is turned back on.
+
 **Same name, different achievement.** Inside one source an achievement is identified by its external id *and* name,
 so two entries called "Collector" with different external ids stay two entries (and two keys). An exact repeat in one
 list is dropped and counted (`ach_dup_identity` in the log). Different sources' rows merge into one entry only when

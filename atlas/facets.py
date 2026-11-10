@@ -443,6 +443,25 @@ def achievement_list(session: Session, cid: str, source: str) -> dict[str, Any]:
     return {"items": achievement_items(rows, session), "sets": set_items(session, cid, source)}
 
 
+class AchievementsNotApplicable(AtlasError):
+    """CONTRACT-C15 §2.7: the record's media type has `achievements = false`. Code `invalid`: the curator API answers
+    400, a follower quarantines the entry as `invalid` (it never waits), and an import skips the list."""
+
+    def __init__(self, media_type: str, label: str):
+        super().__init__(f"achievements do not apply to {label} records (media type {media_type!r})", "invalid",
+                         media_type=media_type)
+
+
+def require_achievements(session: Session, record: Canonical) -> None:
+    from .custom import achievements_apply
+
+    if not achievements_apply(session, record.media_type):
+        from .models import MediaType
+
+        row = session.get(MediaType, record.media_type)
+        raise AchievementsNotApplicable(record.media_type, (row.label if row is not None else record.media_type).lower())
+
+
 def _live(session: Session, cid: str) -> Canonical:
     row = session.get(Canonical, cid)
     if row is None or row.merged_into:
@@ -679,7 +698,8 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
     percent arrives without a date: a mirror passes the date of the signed entry's origin timestamp, so the
     authority and every mirror store the same date (§12.1.6)."""
     write_lock(session)
-    _live(session, cid)
+    record = _live(session, cid)
+    require_achievements(session, record)
     source = norm_namespace(source)
     items = clean_achievements(items)
     set_rows = clean_sets(sets)
@@ -1102,6 +1122,12 @@ def achievement_listing(session: Session, ctx: Ctx, cid: str, *, reveal: bool | 
     if order not in (None, *ORDERS):
         raise AtlasError(f"order must be one of {ORDERS}")
     want = clean_locale(lang, "lang") if lang else None
+    from .custom import achievements_apply
+
+    record = session.get(Canonical, cid)
+    if record is not None and not achievements_apply(session, record.media_type):
+        # C15 §2.7: the rows are kept (retyping back shows them again) but nothing is listed
+        return {"sets": [], "results": [], "lang": want, "revealed_any": False, "applicable": False}
     q = select(Achievement).where(Achievement.canonical_id == cid)
     if not include_retired:
         q = q.where(Achievement.retired_at.is_(None))
@@ -1254,7 +1280,7 @@ def achievement_listing(session: Session, ctx: Ctx, cid: str, *, reveal: bool | 
     for s in set_order:
         del s["_position"]
     return {"sets": set_order, "results": entries, "lang": want,
-            "revealed_any": any(e["revealed"] for e in entries)}
+            "revealed_any": any(e["revealed"] for e in entries), "applicable": True}
 
 
 def merged_achievements(session: Session, ctx: Ctx, cid: str, *, reveal: bool | set[str] = False,

@@ -82,7 +82,13 @@
 {% if waiting.count %}<section aria-labelledby="waiting-entries">
 <h2 id="waiting-entries">Entries waiting for their record</h2>
 <p>{{ waiting.count }} mirrored entr{{ 'y names' if waiting.count == 1 else 'ies name' }} {{ waiting.records }} record{{ '' if waiting.records == 1 else 's' }} the upstream feed has not published yet. They are kept, signed, and apply on their own as soon as the record arrives; nothing is lost and later entries keep applying. If they keep waiting, ask the upstream's operator to publish the records (Admin → Peers → <em>Publish them</em>, or <code>atlas feed introduce --missing</code>).</p>
-{% for g in waiting.groups %}<div class="card waiting-group" data-waiting-for="{{ g.canonical_id }}" data-waiting-subreason="{{ g.subreason }}">
+{% for g in waiting.groups %}{% if g.cause == 'waiting_for_media_type' %}<div class="card waiting-group" data-waiting-for="type:{{ g.media_type }}" data-waiting-subreason="{{ g.subreason }}">
+  <h3>Waiting for the media type <code>{{ g.media_type }}</code></h3>
+  <p>{% if g.title %}<strong>{{ g.title }}</strong> and {% endif %}{{ g.count }} entr{{ 'y' if g.count == 1 else 'ies' }} from {{ g.peer or 'the upstream' }} describe records of the type <code>{{ g.media_type }}</code>, which this node does not have yet. They are not filed as games: they apply on their own when {{ g.peer or 'the upstream' }} publishes its media types, or when you create the type here (Admin → Fields).</p>
+  <p class="small">{% for k, n in g.kinds.items() %}{{ k }}{% if n > 1 %} ×{{ n }}{% endif %}{{ ', ' if not loop.last }}{% endfor %} · entr{{ 'y ' ~ g.seqs[0] if g.seqs[0] == g.seqs[1] else 'ies ' ~ g.seqs[0] ~ '–' ~ g.seqs[1] }}</p>
+  <details><summary>Copy a note for {{ g.peer or 'the upstream' }}'s operator</summary><textarea class="small" readonly rows="3" id="note-{{ loop.index }}" aria-label="Note for the upstream's operator">{{ g.note }}</textarea> <button class="secondary small" type="button" data-copy="note-{{ loop.index }}">Copy</button></details>
+  <p class="small muted">From <code>{{ g.node_id[:16] }}</code>, waiting since {{ when(g.since_dt) }}.</p>
+</div>{% else %}<div class="card waiting-group" data-waiting-for="{{ g.canonical_id }}" data-waiting-subreason="{{ g.subreason }}">
   <h3>{{ g.label }}</h3>
   <p data-waiting-title="{{ g.title_provenance or 'none' }}"><strong>{% if g.title %}{{ g.title }}{% else %}A game {{ g.peer or 'the upstream' }} hasn't published yet{% endif %}</strong>{% if g.title_provenance == 'here' %} <span class="small muted">(this node already holds it from another source; these changes wait for {{ g.peer or 'this upstream' }} to publish it)</span>{% elif g.title_provenance %} <span class="small muted">(title from entry {{ g.blocked_by }}, which did not apply)</span>{% endif %}</p>
   <p><code class="small">{{ g.canonical_id }}</code> · {% for k, n in g.kinds.items() %}{{ k }}{% if n > 1 %} ×{{ n }}{% endif %}{{ ', ' if not loop.last }}{% endfor %} · entr{{ 'y ' ~ g.seqs[0] if g.seqs[0] == g.seqs[1] else 'ies ' ~ g.seqs[0] ~ '–' ~ g.seqs[1] }}</p>
@@ -91,7 +97,7 @@
   {% else %}{{ g.peer or 'The upstream' }} has not published this game's record yet, only changes to it. These changes will apply on their own when the game arrives.{% endif %}</p>
   <details><summary>Copy a note for {{ g.peer or 'the upstream' }}'s operator</summary><textarea class="small" readonly rows="3" id="note-{{ loop.index }}" aria-label="Note for the upstream's operator">{{ g.note }}</textarea> <button class="secondary small" type="button" data-copy="note-{{ loop.index }}">Copy</button></details>
   <p class="small muted">{{ g.count }} entr{{ 'y' if g.count == 1 else 'ies' }} from <code>{{ g.node_id[:16] }}</code>, waiting since {{ when(g.since_dt) }}.</p>
-</div>{% endfor %}
+</div>{% endif %}{% endfor %}
 {% if waiting.records > waiting.groups|length %}<p class="small muted">Showing the first {{ waiting.groups|length }} of {{ waiting.records }} records.</p>{% endif %}
 </section>{% endif %}
 {% if standalone and not failures %}<p class="small muted" data-failures-none>No failed entries. Every mirrored entry has been applied.</p>
@@ -105,7 +111,7 @@
 <div class="table-scroll"><table class="failures"><thead><tr><th scope="col">Origin node</th><th scope="col">Seq</th><th scope="col">Kind</th><th scope="col">Attempts</th><th scope="col">Last attempt</th><th scope="col">Reason</th></tr></thead><tbody>
 {% for f in failures %}<tr data-failure="{{ f.seq }}" data-disposition="{{ f.disposition }}"><td><code class="small">{{ f.node_id[:16] }}</code></td><td>{{ f.seq }}</td><td>{{ f.kind }}</td>
 <td>{{ f.attempts }}{% if f.disposition == 'quarantined' and next_retry(f) %} <span class="muted" title="Automatic retries back off up to every 6 hours; Retry now tries at once">next try {{ when(next_retry(f)) }}</span>{% endif %}</td>
-<td class="small">{{ when(f.last_attempt_at) }}</td><td class="small"><span class="badge {{ 'bad' if f.disposition == 'parked' else 'warn' }}">{{ f.disposition }}</span> <span class="muted">{{ f.reason|replace('_', ' ') }}</span><div class="error">{{ f.error }}</div></td></tr>{% endfor %}
+<td class="small">{{ when(f.last_attempt_at) }}</td><td class="small"><span class="badge {{ 'bad' if f.disposition == 'parked' else 'warn' }}">{{ f.disposition }}</span> <span class="muted">{{ f.reason|replace('_', ' ') }}</span><div class="error">{{ f.error }}</div>{% if f.reason == 'media_type_not_adopted' and (f.detail or {}).get('media_type') %}<div class="actions" data-not-adopted="{{ f.detail.media_type }}"><form class="inline" method="post" action="/admin/peers/failures/create-type">{{ csrf(p.csrf) }}<input type="hidden" name="key" value="{{ f.detail.media_type }}"><button class="small" type="submit">Create type locally</button></form> <form class="inline" method="post" action="/admin/peers/failures/dismiss">{{ csrf(p.csrf) }}<input type="hidden" name="node_id" value="{{ f.node_id }}"><input type="hidden" name="seq" value="{{ f.seq }}"><button class="secondary small" type="submit">Dismiss</button></form></div>{% endif %}</td></tr>{% endfor %}
 </tbody></table></div>
 {% if failures_open > failures|length %}<p class="small muted">Showing the first {{ failures|length }} of {{ failures_open }}.</p>{% endif %}
 <form method="post" action="/admin/peers/failures/retry">{{ csrf(p.csrf) }}<button type="submit">Retry failed entries now</button></form>
@@ -158,5 +164,6 @@
   <form class="inline" method="post" action="/admin/peers/introduce">{{ csrf(p.csrf) }}<input type="hidden" name="scope" value="missing"><button type="submit" data-confirm="Sign a record entry for each of these records? Followers will learn their titles and store ids.">Publish them now</button></form>
   {% else %}<p>{{ records.live }} live record{{ '' if records.live == 1 else 's' }}; {{ records.introduced }} published on this node's feed, <strong>{{ records.not_federated }} not federated</strong>.</p>
   <form class="inline" method="post" action="/admin/peers/introduce">{{ csrf(p.csrf) }}<input type="hidden" name="scope" value="all"><button class="secondary" type="submit" data-confirm="Sign a record entry for each of these records? Followers will learn their titles and store ids.">Publish every record</button></form>{% endif %}
+  {% if records.bridge_skipped %}<p class="small muted" data-bridge-skipped="{{ records.bridge_skipped }}">The compatibility bridge carries only {{ records.bridge_types|join(', ') }} records: {{ records.bridge_skipped }} record{{ '' if records.bridge_skipped == 1 else 's' }} of other media types {{ 'is' if records.bridge_skipped == 1 else 'are' }} not bridged, because a follower on an old release would file {{ 'it' if records.bridge_skipped == 1 else 'them' }} as {{ 'a game' if records.bridge_skipped == 1 else 'games' }} (ATLAS_FEDERATION_BRIDGE_MEDIA_TYPES).</p>{% endif %}
 </section>{% endif %}
 {% endblock %}

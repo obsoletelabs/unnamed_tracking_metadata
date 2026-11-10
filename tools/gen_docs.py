@@ -91,6 +91,10 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                                      "such records reach followers only once the emit protocol is 1.5 (`record` "
                                      "entries). See [Changes waiting for their game]"
                                      "(federation.md#changes-waiting-for-their-game)."),
+    "federation_bridge_media_types": ("Federation", "The media types the bridge introduces (JSON list). A 1.0 follower "
+                                      "files every bridged observation as a game, so other types get a `record` (emit "
+                                      "protocol 1.5) or are not introduced; Admin → Peers counts them. See [Changes "
+                                      "waiting for their game](federation.md#changes-waiting-for-their-game)."),
     "federation_introduce": ("Federation", "Authority: `referenced` introduces a record when a signed entry first names "
                              "it; `all` also introduces every record made from provider data alone as it is created."),
     "federation_snapshot_fields": ("Federation", "What a `record` (or bridge observation) carries besides the id and "

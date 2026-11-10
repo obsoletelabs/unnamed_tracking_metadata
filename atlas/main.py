@@ -243,6 +243,14 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st
         sync.startup_replay(maker, ctx)
     except Exception as exc:
         log.warning("startup replay failed: %s", exc)
+    try:  # C15 §2.2: once, count records an older release filed as games by mistake (`atlas doctor media-types`)
+        from . import doctor
+
+        with maker() as session:
+            doctor.startup_scan(session)
+            session.commit()
+    except Exception as exc:
+        log.warning("media type scan failed: %s", exc)
     with httpx.Client() as client:
         while not stop.is_set():
             wait = delay

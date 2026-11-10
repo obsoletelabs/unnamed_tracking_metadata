@@ -497,6 +497,35 @@ def cmd_feed(args) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    """`atlas doctor media-types [--retype NODE_ID]` (C15 §2.2): list records an older release filed as games
+    although their upstream named another media type this node now knows, grouped by peer feed; `--retype` gives the
+    records of one feed their named type (local only, audited). Exit 3 when misfiled records remain."""
+    from . import doctor
+
+    settings, maker = _maker()
+    if args.retype:
+        ctx = _ctx(settings, maker)
+        with maker() as session:
+            n = doctor.retype(session, ctx, args.retype)
+            session.commit()
+        print(json.dumps({"retyped": n, "node_id": args.retype}))
+    with maker() as session:
+        found = doctor.report(session)
+    if args.json:
+        print(json.dumps(found, indent=2))
+    elif not found["count"]:
+        print("no misfiled records")
+    else:
+        for group in found["peers"]:
+            types = ", ".join(f"{k} ×{n}" for k, n in sorted(group["types"].items()))
+            print(f"{group['peer'] or group['node_id'][:16]}: {group['count']} record(s) filed as game ({types}); "
+                  f"retype with `atlas doctor media-types --retype {group['node_id']}`")
+            for item in group["records"][:20]:
+                print(f"  {item['canonical_id']}  seq {item['seq']}  {item['named']}  {item['title'] or ''}")
+    return 3 if found["count"] and not args.retype else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="atlas")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -600,6 +629,12 @@ def main(argv: list[str] | None = None) -> int:
     intro.add_argument("--batch", type=int, default=500, help="records per transaction (default 500)")
     intro.add_argument("--limit", type=int, help="stop after about this many records (the next run continues)")
     intro.set_defaults(fn=cmd_feed)
+    dr = sub.add_parser("doctor", help="read-only diagnostics, with explicit repairs")
+    dra = dr.add_subparsers(dest="action", required=True)
+    dmt = dra.add_parser("media-types", help="records an older release filed as games by mistake (C15 §2.2)")
+    dmt.add_argument("--retype", metavar="NODE_ID", help="give one peer feed's misfiled records their named type")
+    dmt.add_argument("--json", action="store_true", help="machine-readable output")
+    dmt.set_defaults(fn=cmd_doctor)
     i = sub.add_parser("import-legacy")
     i.add_argument("path", help="path to the demo-1 SQLite database")
     i.set_defaults(fn=cmd_import_legacy)

@@ -1155,7 +1155,10 @@ def get_achievements(cid: str, st: St, session: Sess, principal: Annotated[auth.
     listed on another record that point at this one.
 
     Large catalogues can be read in pages: pass `limit` (at most 200) and `offset`, and follow `next_offset` until it
-    is null. The order is stable, so pages never overlap or skip. Without `limit` the whole list is returned."""
+    is null. The order is stable, so pages never overlap or skip. Without `limit` the whole list is returned.
+
+    C15 §2.7 (additive): `applicable` is false when achievements do not apply to the record's media type (the type's
+    `achievements` flag); the lists are then empty. Stored rows are kept and come back if the type changes."""
     row, redirected = service.get_canonical(session, cid)
     allowed = principal.personal or principal.allows("curate")
     wanted: bool | set[str] = False
@@ -1173,9 +1176,11 @@ def get_achievements(cid: str, st: St, session: Sess, principal: Annotated[auth.
         results = results[offset:offset + limit]
     if listing["revealed_any"]:
         response.headers["Cache-Control"] = "private, no-store"
-    return {"id": row.id, "redirected_from": redirected, "hidden_count": hidden_count, "total": total,
-            "next_offset": next_offset, "sets": listing["sets"], "lang": listing["lang"],
-            "sets_elsewhere": facets.sets_elsewhere(session, st.ctx, row.id), "results": results}
+    applicable = listing.get("applicable", True)
+    return {"id": row.id, "redirected_from": redirected, "applicable": applicable, "hidden_count": hidden_count,
+            "total": total, "next_offset": next_offset, "sets": listing["sets"], "lang": listing["lang"],
+            "sets_elsewhere": facets.sets_elsewhere(session, st.ctx, row.id) if applicable else [],
+            "results": results}
 
 
 @router.put("/games/{cid}/achievements", tags=["curate"])

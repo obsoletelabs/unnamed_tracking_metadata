@@ -335,6 +335,34 @@ never fetched; an id the provider would refuse is counted, not requested; at mos
 `ATLAS_SYNC_ENRICH_PER_PEER_PER_HOUR` (200) fetches run per upstream feed each hour, and the rest wait. A follower
 signs nothing for it. Leave it off until the owner decides (it calls the providers' APIs on every follower).
 
+**Records of a media type this node does not have (A20, CONTRACT-C15 §2.2).** An `obs` or `record` that brings a
+new record names its media type. If this node has no such type (a custom type the authority added, or a type a
+later release adds, such as books), the entry **waits for the type** instead of filing the record as a game, which
+earlier releases did: reason `waiting_for_media_type`, `waiting_for` = `type:<key>`, no attempt counted, nothing
+blocked. Entries that name the record wait for it as usual. When the **same feed's** `schema` entry brings the type,
+the waiting entries apply in feed order in that pull (another feed's schema does not wake them, as for records; the
+retry and startup safety net also wakes them once the type exists here as this node's own, for example after you
+create it). Admin → Peers shows them under **Waiting for the media type** with a note for the upstream's operator.
+Two cases cannot end by waiting, so the entry is quarantined `media_type_not_adopted` instead: this node does not
+adopt its upstream's media types (`ATLAS_INHERIT_SCHEMA=false`), or the feed's own schema names the type but its
+definition could not be adopted. The failed-entries table then offers **Create type locally** (an ordinary local type
+you can rename later; the entries apply at once) and **Dismiss** (audited; the signed entry stays retained). An entry
+that names no media type (a 1.0 emitter) still files its record as a game, so old feeds replay unchanged; a media
+type that is not a valid key is quarantined `invalid`.
+
+Records an earlier release already filed as games this way stay games until you act: **`atlas doctor media-types`**
+lists them per peer feed (a live `game` record whose first `obs`/`record` from that feed named another type this node
+knows now; exit 3 when there are some), and `--retype NODE_ID` gives that feed's records their named type (local
+only, audited). Nothing is retyped automatically, because a curator may have edited them; the first start of this
+release counts them once and logs a warning.
+
+**The bridge and other media types (A20, CONTRACT-C15 §4.1).** A 1.0 follower files every observation as a game,
+whatever its media type says, so the bridge introduces only the types in `ATLAS_FEDERATION_BRIDGE_MEDIA_TYPES`
+(default `["game"]`). A record of another type gets a `record` when the emit protocol is 1.5 (a 1.0–1.4 follower parks
+it, `unsupported_kind`, and applies it after upgrading), and is not introduced at all below 1.5; `atlas feed
+introduce` leaves those out instead of looping. Admin → Peers → *Records on this node's feed* counts the records the
+bridge does not carry.
+
 Older followers: a 1.1–1.4 follower quarantines such an entry and its own retry (at most 20 attempts) applies it
 once the bridge observation has arrived; the drill checks this against a real 1.1 release. A 1.0 follower drops it; after upgrading, `atlas sync replay --rescan` finds it (it waits
 if the game is still unknown, or is parked as `dropped_by_previous_release` if the game arrived later) and
@@ -388,6 +416,7 @@ atlas sync replay --historical [--node N] [--dry-run]  # re-apply retained entri
 atlas sync skip --node N --seq S --reason TEXT # give up on one parked entry (quarantined, audited)
 atlas sync reconcile --node N --dry-run        # compare this node's view with the upstream's /sync/digest
 atlas feed introduce --missing|--all [--dry-run] [--batch B] [--limit L]  # authority: introduce games (exit 2 refused)
+atlas doctor media-types [--retype NODE_ID] [--json]  # records an older release filed as games (exit 3 when some)
 ```
 
 `replay` exits 0 when converged, 3 while entries are still parked (the reason is printed), 4 when
