@@ -109,7 +109,7 @@ media_duration = REGISTRY.histogram(
     {"kind": MEDIA_KINDS, "operation": ("fetch", "store")}, SLOW_BUCKETS)
 media_bytes = REGISTRY.counter(
     "atlas_media_transfer_bytes_total", "Image bytes downloaded (validated or not), by where they came from",
-    {"source": ("origin", "peer")})
+    {"source": ("origin", "peer", "group")})
 media_cache = REGISTRY.counter(
     "atlas_media_cache_requests_total",
     "Image requests: hit (served from this node's cache), redirect (sent to the provider host), miss (not cached "
@@ -118,6 +118,25 @@ media_cache = REGISTRY.counter(
 media_evictions = REGISTRY.counter(
     "atlas_media_cache_evictions_total", "Cached images forgotten, by reason (Atlas has no automatic expiry)",
     {"reason": ("manual",)})
+
+# ---- asking the group (C14 Part A) -------------------------------------------------------------------------
+ASSIST_JOB_RESULTS = ("applied", "none_has_it", "merge_hint", "rejected", "error", "media_type_not_adopted")
+group_assist_jobs_total = REGISTRY.counter(
+    "atlas_group_assist_jobs_total",
+    "Records this node asked its group for, by result (applied: a verified bundle was applied; rejected: the answer "
+    "failed verification and the helper is suspect for an hour)", {"result": ASSIST_JOB_RESULTS})
+ASSIST_REJECT_REASONS = ("bad_signature", "wrong_requester", "hash_mismatch", "bad_image", "too_large")
+group_assist_rejected = REGISTRY.counter(
+    "atlas_group_assist_rejected_total", "Group answers refused before anything was applied, by closed reason",
+    {"reason": ASSIST_REJECT_REASONS})
+group_assist_bytes = REGISTRY.counter(
+    "atlas_group_assist_bytes_total",
+    "Image bytes moved by the group media fallback: served (this node answered assist.blob), asked (received)",
+    {"role": ("served", "asked")})
+group_assist_lookups = REGISTRY.counter(
+    "atlas_group_assist_lookups_total",
+    "Provider lookups made through the group (asked) or for a member (answered), by outcome",
+    {"role": ("asked", "answered"), "outcome": ("ok", "not_found", "throttled", "refused", "error")})
 
 # ---- database and search (#74) ------------------------------------------------------------------------------
 DB_OPERATIONS = ("select", "insert", "update", "delete", "other")

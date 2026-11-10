@@ -9,7 +9,11 @@ still be issued on the grants form by the root holder, with the typed confirmati
 the delegation of an invite (critic §4.2: a delegation to sign grants would let the new node mint admin grants).
 
 Local policy is never set from the group (runtime.py): each node applies the preset it chose to itself, when its
-enrolment becomes active (H-UI7). C14 §3.8 adds its own rows to the same preset (D14.5) when C14-2 lands.
+enrolment becomes active (H-UI7). C14 §3.8 adds its own rows to the same preset (D14.5): with "Same owner, full
+trust" the node asks and answers its other nodes with group data, shares provider data with them (H59), looks
+things up for them (H60), accepts what they already applied (H61), asks them for images before a third-party
+origin (H62), shows group data to visitors as the partial public projection (H64, D1) and shares contribution
+state (H67). None of these rows gives any right: assist ops only read, and what they bring stays `group`-scoped.
 """
 
 from __future__ import annotations
@@ -27,8 +31,17 @@ LABELS = {SAME_OWNER: "Same owner, full trust", CAUTIOUS: "Cautious (defaults)",
 #: The rows a preset decides (§4.2). Every other policy row (synced fields, freshness, hold timeout, denied
 #: accounts) is left as it is.
 KEYS = ("group_profile_sync", "group_signin", "group_signin_public", "group_auto_provision", "group_trust_remote_mfa",
-        "group_delegated_requires_mfa", "group_federated_privilege", "group_max_delegated_role")
-_FULL_TRUST = {"group_auto_provision": True, "group_trust_remote_mfa": True}
+        "group_delegated_requires_mfa", "group_federated_privilege", "group_max_delegated_role",
+        # CONTRACT-C14 §3.8 (C14-2)
+        "group_assist_ask", "group_assist_answer", "group_assist_share_provider_data", "group_assist_lookups",
+        "group_assist_lookup_reserve", "group_assist_auto_adopt", "group_assist_group_before_origin",
+        "group_data_public_pages", "group_share_contribution_state")
+#: C14 §3.8: the sharing rows of the full-trust preset (H59-H62, H64, H67). `group_assist_lookup_reserve`,
+#: `group_assist_ask` and `group_share_contribution_state` keep their defaults (0.5, on, on).
+ASSIST_FULL_TRUST = {"group_assist_answer": "group", "group_assist_share_provider_data": "fields+media+achievements",
+                     "group_assist_lookups": "answer+ask", "group_assist_auto_adopt": True,
+                     "group_assist_group_before_origin": True, "group_data_public_pages": True}
+_FULL_TRUST = {"group_auto_provision": True, "group_trust_remote_mfa": True, **ASSIST_FULL_TRUST}
 _WITH_ADMIN = {"group_federated_privilege": "local_mfa", "group_max_delegated_role": "admin"}
 #: The rows an enrolment's preset writes when the join completes (U3 review): the rows that tell the presets apart.
 #: The rows left out here (the public login buttons, local MFA for delegated rights) keep whatever the administrator

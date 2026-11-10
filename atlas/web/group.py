@@ -72,9 +72,13 @@ def _page(p: Page, error: str | None = None, status: int = 200, **extra):
             held_updates=groups.held_member_updates(p.session, group, identity.node_id)
             if group.root_state == "holder" else [],
             enrollers=_enrollers(p, group, tr, identity.node_id), **_grants_ctx(p, group, tr))
+        from .. import assist, contrib_state
         from .profile_pages import sync_strip
 
-        ctx.update(strip=sync_strip(p, group), link_invite=link_invite_on(p.session))
+        ctx.update(strip=sync_strip(p, group), link_invite=link_invite_on(p.session),
+                   assist_counts=assist.counts(p.session),
+                   contrib_states=contrib_state.received(p.session, identity.node_id),
+                   member_names={m.node_id: m.name for m in rows})
     else:
         ctx["joins"] = list(p.session.scalars(select(GroupEnrolment).where(GroupEnrolment.side == "joiner")
                                               .order_by(GroupEnrolment.created_at.desc()).limit(5)))
@@ -135,7 +139,13 @@ POLICY_GROUPS = (("Sign-in", ("group_signin", "group_signin_public", "group_auto
                  ("Rights", ("group_max_delegated_role", "group_federated_privilege", "group_delegated_requires_mfa",
                              "group_denied_accounts")),
                  ("Sync", ("group_profile_sync", "group_profile_fields", "group_view_max_age_hours",
-                           "group_hold_timeout_days")))
+                           "group_hold_timeout_days")),
+                 # CONTRACT-C14 §3.8 (C14-2)
+                 ("Asking your nodes", ("group_assist_ask", "group_assist_answer", "group_assist_share_provider_data",
+                                        "group_assist_lookups", "group_assist_lookup_reserve",
+                                        "group_assist_auto_adopt", "group_assist_group_before_origin",
+                                        "group_share_contribution_state")),
+                 ("Visitors", ("group_data_public_pages", "group_public_categories")))
 
 
 def _policy_groups(settings) -> list[tuple[str, list[dict]]]:

@@ -138,6 +138,33 @@ REGISTRY: tuple[Spec, ...] = (
     S("group_public_categories", "Field categories visitors may see", GROUP_POLICY, "str",
       "Space-separated category names (see Admin → Sharing). The rest is shown to signed-in accounts with the "
       "scope detail right only.", max_len=400),
+    # CONTRACT-C14 §3.8 (C14-2): asking your other nodes. Local administrators only, like every row above.
+    S("group_assist_ask", "Ask your other nodes for missing games and images", GROUP_POLICY, "bool",
+      "When a feed sends changes for a game this node does not have yet, or an image cannot be fetched, ask the "
+      "other nodes of your group first. What they send stays shared with your nodes only; it is never signed into "
+      "this node's public feed until you publish the game."),
+    S("group_assist_answer", "Answer your other nodes with", GROUP_POLICY, "choice",
+      "'off': answer nothing. 'public': only data that is already public (from feeds, or signed by this node). "
+      "'group': public data and data shared with your nodes. Data kept on this node only is never sent.",
+      choices=("off", "public", "group")),
+    S("group_assist_share_provider_data", "Share provider data with your other nodes", GROUP_POLICY, "choice",
+      "Store data (Steam, IGDB, RAWG fields, their images, achievement lists) travels to your other nodes only "
+      "under the store's terms for your own installation. It never becomes public and never goes upstream.",
+      choices=("none", "fields", "fields+media", "fields+media+achievements")),
+    S("group_assist_lookups", "Provider lookups for your other nodes", GROUP_POLICY, "choice",
+      "'answer': look a game up at a store for another node of your group, with this node's own keys (the keys "
+      "never leave this node). 'answer+ask': also ask them when this node cannot look something up itself.",
+      choices=("off", "answer", "answer+ask")),
+    S("group_assist_lookup_reserve", "Provider budget kept for this node (percent)", GROUP_POLICY, "int",
+      "Lookups for your other nodes never use this share of a store's request budget.", lo=0, hi=95),
+    S("group_assist_auto_adopt", "Accept what your other nodes already applied", GROUP_POLICY, "bool",
+      "When another node of yours already applied a feed's changes to a game, apply the same waiting changes here "
+      "without a click. Reversible with `atlas group assist forget`."),
+    S("group_assist_group_before_origin", "Ask your nodes for images before the original site", GROUP_POLICY,
+      "bool", "Fewer requests to third-party image hosts: your nodes fetch each image once between them."),
+    S("group_share_contribution_state", "Share contribution state with your other nodes", GROUP_POLICY, "bool",
+      "Edits proposed to a main Atlas show as waiting or applied on every node of your group. Only the state "
+      "travels: never the values, reviewer notes or account details."),
     S("inherit_schema", "Adopt the upstream media types and fields", "Federation", "bool",
       "Mirrors and local nodes copy the authority's custom fields; yours always take precedence."),
     S("media_cache_enabled", "Download and cache artwork", "Artwork", "bool"),

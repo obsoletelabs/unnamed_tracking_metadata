@@ -167,6 +167,20 @@ class Settings(BaseSettings):
     group_data_public_pages: bool = False
     group_public_categories: str = Field(
         default="identity release platforms classification credits series external_ids cover_art", max_length=400)
+    # CONTRACT-C14 §3.8 (C14-2): asking the group. Local policy of this node only (the /admin/group form); the
+    # "Same owner, full trust" preset turns the sharing rows on (H59-H62, H67).
+    group_assist_ask: bool = True  # ask your other nodes for records and images this node waits for
+    group_assist_answer: Literal["off", "public", "group"] = "public"  # what this node answers with
+    group_assist_share_provider_data: Literal["none", "fields", "fields+media", "fields+media+achievements"] = "none"
+    group_assist_lookups: Literal["off", "answer", "answer+ask"] = "off"  # provider lookups for another node (H60)
+    group_assist_lookup_reserve: int = Field(default=50, ge=0, le=95)  # percent of each provider budget kept here
+    group_assist_auto_adopt: bool = False  # class 2 wake (§3.5, H61)
+    group_assist_group_before_origin: bool = False  # images: ask your nodes before the third-party origin (H62)
+    group_share_contribution_state: bool = True  # H67: share contribution state with your other nodes
+    group_assist_max_jobs: int = Field(default=5000, ge=1, le=1_000_000)
+    group_assist_run_limit: int = Field(default=50, ge=1, le=1000)
+    group_assist_give_up_days: int = Field(default=30, ge=1, le=3650)
+    group_assist_max_answer: int = Field(default=512 * 1024, ge=16 * 1024, le=1024 * 1024)
     tagline: str = "Media metadata, merged and sourced"
     footer_text: str = "Community metadata. Contributions are CC0."
     accent_color: str = "#6aa8ff"  # dark theme accent
@@ -284,7 +298,13 @@ class Settings(BaseSettings):
     def trust(self, source: str) -> int:
         """`atlas-record` (C13 §3.3) ranks below every provider unless configured: its observation only carries a
         display title until real observations arrive."""
-        return self.source_trust.get(source, RECORD_TRUST if source == "atlas-record" else self.default_trust)
+        if source in self.source_trust:
+            return self.source_trust[source]
+        if source == "atlas-record":
+            return RECORD_TRUST
+        if source == GROUP_SOURCE:  # C14 §3.4 (H63): above `atlas-record`, below every provider
+            return GROUP_TRUST
+        return self.default_trust
 
 
 #: The sources this node's own provider adapters write (`providers.registry.build_registry`, plus the Wikidata
@@ -294,6 +314,12 @@ PROVIDER_SOURCES = frozenset({"steam", "rawg", "igdb", "tgdb", "openlibrary", "w
 
 #: The trust of the `atlas-record` source (C13 §3.3), below every listed provider (`rawg` 50 is the lowest).
 RECORD_TRUST = 1
+
+#: CONTRACT-C14 §3.4 (H63): what a member of the owner group said about a record (`atlas-group`), ranked above
+#: `atlas-record` and below every provider. A code constant, so ATLAS_SOURCE_TRUST (which replaces the whole dict)
+#: cannot drop it to `default_trust`. The source is reserved: only the group assist code writes it.
+GROUP_SOURCE = "atlas-group"
+GROUP_TRUST = 5
 
 
 @lru_cache
