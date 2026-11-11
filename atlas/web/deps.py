@@ -19,7 +19,10 @@ ANON_CSRF_COOKIE = "atlas_csrf"
 FLASH = {
     "saved": "Saved.", "nochange": "Nothing changed.", "proposed": "Thanks. Your proposal is waiting for review.",
     "applied": "Your change was applied immediately.", "approved": "Approved.", "rejected": "Rejected.",
-    "reverted": "Reverted.", "merged": "Merged.", "locked": "Field locked.", "unlocked": "Lock removed.",
+    "reverted": "Reverted.", "link_reverted": "Everything this link applied is reverted.",
+    "link_reverted_some": "Reverted what could be undone. The changes still listed under Applied have a newer "
+                          "change on top or cannot be reverted automatically: revert those by hand.",
+    "merged": "Merged.", "locked": "Field locked.", "unlocked": "Lock removed.",
     "withdrawn": "Proposal withdrawn.", "dismissed": "Dismissed.", "detached": "Split into its own record.",
     "token": "Token created. Copy it now; it will not be shown again.", "revoked": "Token revoked.",
     "password": "Password changed. Other sessions were signed out.", "bye": "Signed out.",

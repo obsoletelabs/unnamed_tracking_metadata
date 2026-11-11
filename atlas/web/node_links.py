@@ -84,13 +84,14 @@ def link_lookup(p: Annotated[Ctx, Depends(user_form)], code: Annotated[str, Form
     device = link.find_device(p.session, p.st.ctx.settings, code)
     if device is None:
         miss = link.code_miss(p.session, p.st.ctx.settings, p.me)
-        if miss["delay"]:
-            import time
-
-            time.sleep(miss["delay"])  # the main-wide alarm slows this account's misses; nobody is paused
         if miss["account_blocked"]:
             return _link_page(p, code=code, status=429,
                               error=f"Too many unknown codes. Try again in {miss['retry_after'] // 60 + 1} minutes.")
+        if miss["delay"]:  # the main-wide alarm slows misses with Retry-After; no worker waits, nobody is paused
+            page = _link_page(p, code=code, status=429, error="Many unknown codes are being tried on this site "
+                              "right now. Wait a few seconds, check the code on your node's screen, and try again.")
+            page.headers["Retry-After"] = str(miss["delay"])
+            return page
         return _link_page(p, code=code, status=400, error="That code is unknown or has expired. Check the code on "
                                                          "your node's screen, or start again there.")
     return _link_page(p, code=code, device=device)

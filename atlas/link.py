@@ -354,7 +354,7 @@ def find_device(session: Session, settings: Any, user_code: str) -> LinkDevice |
 
 def code_miss(session: Session, settings: Any, user: User) -> dict[str, Any]:
     """Count an unknown or expired user code (§6.3, Review #1 C14-7, critic of Review #1): per account (20 per hour,
-    then refused) and main-wide (300 per 10 minutes: an alarm for admins plus a 2 s delay for this account's later
+    then refused) and main-wide (300 per 10 minutes: an alarm for admins plus a 429 with `Retry-After: 2` for later
     misses; code entry is never paused for everyone)."""
     acct_ok, retry = ratelimit.take(session, [(f"link-ucode-miss-acct:{user.id}", UCODE_MISS_ACCOUNT[0],
                                                UCODE_MISS_ACCOUNT[1])])
@@ -738,6 +738,51 @@ def superseded_attempt(session: Session, ctx: Ctx, authorization: str | None, pr
     old = {dpop.jkt_of(link.root_public_key)} | {dpop.jkt_of(c["body"]["public_key"]) for c in link.rotations or []}
     old.discard(link.current_jkt)
     return link if proof.jkt in old else None
+
+
+def rotation_retry(session: Session, ctx: Ctx, authorization: str | None, proof_header: str | None, htm: str,
+                   htu: str, body: Any) -> dict[str, Any] | None:
+    """§6.7: the node repeats the rotation it already made here because it never saw the answer (a timeout, a lost
+    response, a grant it could not check). The repeat is recognised only when it is the IDENTICAL rotation: the
+    posted history equals the stored one, the proof is by the key immediately before the current one with a token
+    of the epoch just ended (expired rows are kept for an hour), and `new_key_pop` by the current key still
+    verifies for the current epoch. Then every token of the link is revoked again and fresh ones are issued, bound
+    to the CURRENT key only, so a replay by someone holding just the old key gains nothing. Anything else is not a
+    retry (the caller then checks `superseded_attempt`). Returns the token answer, or None."""
+    if not authorization or not authorization.startswith("DPoP ") or len(authorization) > 200 \
+            or not isinstance(body, dict) or not isinstance(body.get("rotations"), list) \
+            or not isinstance(body.get("new_key_pop"), str):
+        return None
+    access_token = authorization[5:].strip()
+    try:
+        proof = dpop.verify_proof(proof_header, htm=htm, htu=htu, access_token=access_token, require_ath=True)
+    except dpop.DpopError:
+        return None
+    row = session.get(OidcAccess, sha(access_token))
+    if row is None or row.client_id != CLIENT_ID or not row.link_id or not row.jkt:
+        return None
+    link = lock(session, row.link_id)
+    stored = list(link.rotations or []) if link is not None else []
+    if link is None or link.status != "active" or not stored or body["rotations"] != stored \
+            or row.key_epoch != link.key_epoch - 1 or not hmac.compare_digest(proof.jkt, row.jkt):
+        return None
+    before = stored[-2]["body"]["public_key"] if len(stored) > 1 else link.root_public_key
+    if not hmac.compare_digest(proof.jkt, dpop.jkt_of(before)):
+        return None
+    parts = lc.rotation_parts(ctx.settings.public_url, link.id, link.node_id, link.current_key_id, link.key_epoch)
+    if not lc.verify_pop(stored[-1]["body"]["public_key"], parts, body["new_key_pop"]):
+        return None
+    user = session.get(User, link.user_id)
+    if user is None or user.status != "active" or user.deleted_at is not None:
+        return None
+    try:
+        record_proof(session, proof)
+    except dpop.DpopError:
+        return None
+    _revoke_tokens(session, link.id)
+    accounts.audit(session, user.id, "link_rotation_retry", link.id,
+                   {"key_id": link.current_key_id, "key_epoch": link.key_epoch})
+    return _issue(session, ctx, link, user, row.scope, with_id_token=False)
 
 
 # ---- §6.7: rotation, freeze, revocation, bans -------------------------------------------------------------------

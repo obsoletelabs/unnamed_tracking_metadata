@@ -115,6 +115,16 @@ Proposals that were already waiting stay in the main's review queue. They are ma
 can check it from the first key. The node signs everything still queued again with the new key. Old tokens stop
 working at once.
 
+If the main's answer to a rotation is lost (a timeout, a dropped connection, an answer the node cannot check), the
+node keeps the new key and sends nothing else until the rotation is finished. Pressing **Rotate link key** again, or
+the next worker round, repeats exactly the same rotation. The main recognises the repeat for up to an hour and
+answers with tokens for the new key; the link is not frozen. After that hour the link has to be linked again.
+
+The node only treats the link as ended when the main says so: the link was revoked, frozen or banned, or the account
+is gone. An expired token is refreshed. A refused proof, for example because the node's clock is more than five
+minutes off, leaves the link and its queue as they are, and the node tries again later. Fix the clock if the error
+keeps coming back.
+
 If you think the node's key was **stolen**, unlink with *This node's key may have been stolen*. The main then marks
 the link's waiting proposals "node key may be stolen". A reviewer must tick *I checked this change* before approving
 one of them.
@@ -125,6 +135,12 @@ account*. The node makes a new key, you approve again on the main, and the link 
 
 A main's administrator can **ban** a node key under *Admin → Node links*. No key of that link's history can link
 again, under any account.
+
+On the main, *everything from this link* in the review queue lists what one link sent: the proposals still waiting,
+and under **Applied from this link** the ones already applied. A reviewer can revert one of them, or all of them at
+once with **Revert everything this link applied**. That reverts newest first. A change with a newer change from
+elsewhere on top of it is left applied and stays listed, so a reviewer can undo it by hand. Entries already published
+in the main's public feed stay there.
 
 ## Settings
 

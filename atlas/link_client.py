@@ -252,6 +252,10 @@ def start(session: Session, settings: Any, identity: Any, http: Any, url: str, *
     if resp.status_code != 200:
         raise LinkClientError(f"The main refused the link request: {_error(resp)}")
     out = resp.json()
+    uri, complete = str(out.get("verification_uri") or ""), str(out.get("verification_uri_complete") or "")
+    if not _own_link_page(issuer, uri) or not _own_link_page(issuer, complete):
+        # the admin's phone is sent to the QR code's address: never another origin than the pinned issuer
+        raise LinkClientError("The main's approval address is not its own /link page; nothing was started.")
     t = now()
     row.flow = {"device_code": _seal(settings, out["device_code"]), "user_code": str(out["user_code"])[:9],
                 "verification_uri": str(out["verification_uri"])[:300],
@@ -314,6 +318,12 @@ def poll(session: Session, settings: Any, http: Any, row: UpstreamLink, *, force
     except LinkClientError as exc:
         return _flow_failed(session, row, str(exc))
     return "linked"
+
+
+def _own_link_page(issuer: str, uri: str) -> bool:
+    """`uri` is the issuer's own `/link` page (optionally with a query), on the issuer's exact origin."""
+    base = f"{issuer.rstrip('/')}/link"
+    return uri == base or (uri.startswith(base + "?") and not any(c in uri for c in "\\\r\n\t #@"))
 
 
 def _flow_failed(session: Session, row: UpstreamLink, message: str) -> str:
@@ -400,23 +410,59 @@ def _gone(session: Session, row: UpstreamLink, message: str) -> None:
     raise LinkGone(message)
 
 
+# What a main's 401 `error_description` (or its own 403) means for the link. Only these end it; clock skew, a
+# replayed or malformed proof and other transient refusals leave the link and its queue alone and are retried.
+ENDED = ("link_revoked", "link_frozen", "link_banned", "account_unavailable")
+STALE_TOKEN = ("invalid_token", "key_mismatch")  # refresh once; a refused refresh (`invalid_grant`) ends the link
+
+
+def _reason(resp: httpx.Response) -> str:
+    try:
+        body = resp.json()
+    except ValueError:
+        return ""
+    return str(body.get("error_description") or "")[:64] if isinstance(body, dict) else ""
+
+
+def _request(settings: Any, http: Any, row: UpstreamLink, method: str, path: str, body: Any,
+             access: str) -> httpx.Response:
+    url = f"{row.issuer_url}{path}"
+    proof = dpop.make_proof(_key(settings, row.link_key), method, url, access_token=access)
+    return http.request(method, url, json=body, timeout=TIMEOUT,
+                        headers={"Authorization": f"DPoP {access}", "DPoP": proof})
+
+
 def call(session: Session, settings: Any, http: Any, row: UpstreamLink, method: str, path: str,
          body: Any = None) -> httpx.Response:
-    """One `/api/v2/link*` request with a fresh access token and a DPoP proof (with `ath`) by the current key."""
+    """One `/api/v2/link*` request with a fresh access token and a DPoP proof (with `ath`) by the current key.
+
+    A 401/403 ends the link (`remote_revoked`, the open queue `link_revoked`) only when the main says the link or
+    the account is gone (`ENDED`) or answers its own 403. An expired or superseded token is refreshed once and the
+    request repeated; a refused refresh ends the link. Any other 401 (a stale or replayed proof after clock drift,
+    a malformed proof, links switched off) raises a retryable `LinkClientError` and changes nothing."""
     if row.status not in ("linked", "revoked_locally", "pending_remote"):
         raise LinkClientError("This node is not linked.")
+    if pending_rotation(row) is not None:
+        raise LinkClientError("A key rotation is waiting for the main's answer; it is finished first.")
     expires = _utc(row.access_expires_at)
     if not row.access_enc or expires is None or expires <= now() + timedelta(seconds=60):
         _refresh(session, settings, http, row)
-    access = _open(settings, row.access_enc)
-    url = f"{row.issuer_url}{path}"
-    proof = dpop.make_proof(_key(settings, row.link_key), method, url, access_token=access)
-    resp = http.request(method, url, json=body, timeout=TIMEOUT,
-                        headers={"Authorization": f"DPoP {access}", "DPoP": proof})
+    resp = _request(settings, http, row, method, path, body, _open(settings, row.access_enc))
     row.last_used_at = now()
-    if resp.status_code in (401, 403) and row.status == "linked":
+    if resp.status_code not in (401, 403) or row.status != "linked":
+        return resp
+    reason = _reason(resp)
+    if resp.status_code == 403 or reason in ENDED:
         _gone(session, row, f"The main refused this link ({_error(resp)}).")
-    return resp
+    if reason in STALE_TOKEN:
+        _refresh(session, settings, http, row)  # ends the link itself when the main refuses the refresh
+        resp = _request(settings, http, row, method, path, body, _open(settings, row.access_enc))
+        reason = _reason(resp)
+        if resp.status_code == 403 or (resp.status_code == 401 and reason in ENDED + STALE_TOKEN):
+            _gone(session, row, f"The main refused this link ({_error(resp)}).")
+        if resp.status_code not in (401, 403):
+            return resp
+    raise LinkClientError(f"The main did not accept this request for now ({_error(resp)}); it is retried.")
 
 
 # ---- §7.1/§7.2: the queue -------------------------------------------------------------------------------------
@@ -721,34 +767,85 @@ def _local_rotation(row: UpstreamLink, settings: Any) -> tuple[Ed25519PrivateKey
     return previous, successor, rotations
 
 
+def pending_rotation(row: UpstreamLink) -> dict[str, Any] | None:
+    """The key rotation sent but not yet answered (kept in `flow` while linked), or None."""
+    flow = row.flow or {}
+    return flow.get("rotation") if row.status == "linked" and isinstance(flow.get("rotation"), dict) else None
+
+
+def _drop_rotation(row: UpstreamLink) -> None:
+    row.flow = {k: v for k, v in (row.flow or {}).items() if k != "rotation"} or None
+
+
 def rotate_key(session: Session, settings: Any, identity: Any, http: Any, row: UpstreamLink) -> None:
     """Rotate the link key (§6.7): the request is made with the CURRENT key and carries the new history and a
     proof by the new key; on success the main issues tokens for the new key, and what is still queued is
-    re-signed with it."""
+    re-signed with it.
+
+    The successor key, the history and the proof are stored (and committed) BEFORE the request, and kept until the
+    main's answer is known. A timeout, a lost answer or a grant that does not check out leaves them in place; the
+    next attempt (the admin's button again, or the worker, which finishes it before sending anything) repeats the
+    IDENTICAL rotation with the old key and token, without refreshing. The main recognises the repeat and issues
+    tokens for the new key (`link.rotation_retry`) instead of freezing the link. Only a definite answer drops the
+    stored rotation."""
     if row.status != "linked" or not row.link_id:
         raise LinkClientError("This node is not linked.")
-    old_key, old_rotations, old_previous = row.link_key, list(row.link_rotations or []), row.link_key_previous
-    previous_private = _key(settings, old_key)
-    successor = Ed25519PrivateKey.generate()
-    seq = len(old_rotations) + 1
-    cert = lc.rotation_certificate(previous_private, link_node_id(row), seq, lc.public_b64(successor))
-    rotations = [*old_rotations, cert]
-    pop = lc.sign_pop(successor, lc.rotation_parts(row.issuer_url, row.link_id, link_node_id(row),
-                                                    cert["body"]["key_id"], row.key_epoch + 1))
-    resp = call(session, settings, http, row, "POST", "/api/v2/link/rotation",
-                {"rotations": rotations, "new_key_pop": pop})
-    if resp.status_code != 200:
-        raise LinkClientError(f"The main refused the new link key: {_error(resp)}")
-    row.link_key, row.link_key_previous, row.link_rotations = _seal(settings, _raw(successor)), old_key, rotations
+    pending = pending_rotation(row)
+    if pending is None:
+        expires = _utc(row.access_expires_at)
+        if not row.access_enc or expires is None or expires <= now() + timedelta(seconds=60):
+            _refresh(session, settings, http, row)  # nothing is sent yet: a refresh is still safe
+        previous_private = _key(settings, row.link_key)
+        successor = Ed25519PrivateKey.generate()
+        rotations = [*(row.link_rotations or []), lc.rotation_certificate(
+            previous_private, link_node_id(row), len(row.link_rotations or []) + 1, lc.public_b64(successor))]
+        pop = lc.sign_pop(successor, lc.rotation_parts(row.issuer_url, row.link_id, link_node_id(row),
+                                                        rotations[-1]["body"]["key_id"], row.key_epoch + 1))
+        pending = {"key": _seal(settings, _raw(successor)), "rotations": rotations, "pop": pop,
+                   "started_at": now().isoformat()}
+        row.flow = {**(row.flow or {}), "rotation": pending}
+        session.commit()  # durable before the main can act on it
+    if not row.access_enc:
+        _drop_rotation(row)
+        _gone(session, row, "No token is left to repeat the key rotation with; relink this node.")
     try:
-        _accept(session, settings, http, row, resp.json(), first=False)
-    except LinkClientError:
-        row.link_key, row.link_key_previous, row.link_rotations = old_key, old_previous, old_rotations
-        raise
-    for c in session.scalars(select(UpstreamContribution).where(
-            UpstreamContribution.main_node_id == row.main_node_id, UpstreamContribution.state == "queued")):
-        _sign(settings, row, c)
+        resp = _request(settings, http, row, "POST", "/api/v2/link/rotation",
+                        {"rotations": pending["rotations"], "new_key_pop": pending["pop"]},
+                        _open(settings, row.access_enc))
+    except httpx.HTTPError as exc:
+        row.last_error = f"The main did not answer the key rotation ({type(exc).__name__}); it is retried."
+        session.flush()
+        raise LinkClientError(row.last_error) from exc
+    row.last_used_at = now()
+    if resp.status_code == 200:
+        old_key, old_previous, old_rotations = row.link_key, row.link_key_previous, row.link_rotations
+        row.link_key, row.link_key_previous, row.link_rotations = pending["key"], old_key, pending["rotations"]
+        try:
+            _accept(session, settings, http, row, resp.json(), first=False)
+        except (LinkClientError, ValueError, httpx.HTTPError) as exc:
+            # the main has most likely moved to the new key: keep the stored rotation and repeat it later
+            row.link_key, row.link_key_previous, row.link_rotations = old_key, old_previous, old_rotations
+            row.last_error = f"The main's answer to the key rotation did not check out ({exc}); it is retried."[:200]
+            session.flush()
+            raise LinkClientError(row.last_error) from exc
+        _drop_rotation(row)
+        for c in session.scalars(select(UpstreamContribution).where(
+                UpstreamContribution.main_node_id == row.main_node_id, UpstreamContribution.state == "queued")):
+            _sign(settings, row, c)
+        session.flush()
+        return
+    reason = _reason(resp)
+    if resp.status_code == 403 or (resp.status_code == 401 and reason in ENDED + STALE_TOKEN):
+        # the link or account is gone, or the old token is no longer known (a repeat after more than an hour)
+        _drop_rotation(row)
+        _gone(session, row, f"The main refused this link during a key rotation ({_error(resp)}); relink this node.")
+    if resp.status_code in (400, 409):  # a definite refusal (a fork also freezes the link on the main)
+        _drop_rotation(row)
+        session.flush()
+        raise LinkClientError(f"The main refused the new link key: {_error(resp)}")
+    row.last_error = f"The main did not take the key rotation yet ({_error(resp)}); it is retried."[:200]
     session.flush()
+    raise LinkClientError(row.last_error)
 
 
 # ---- §7.2: approved local proposals with `link_push = auto` --------------------------------------------------
@@ -792,6 +889,8 @@ def round_(maker: Any, ctx: Any, http: Any) -> dict[str, int]:
                     done["polled"] += 1
                 elif row.status in ("revoked_locally", "pending_remote"):
                     confirm_unlink(session, ctx.settings, http, row)
+                elif row.status == "linked" and pending_rotation(row) is not None:
+                    rotate_key(session, ctx.settings, ctx.identity, http, row)  # finished before anything else
                 elif row.status == "linked":
                     done["sent"] += send(session, ctx.settings, ctx.identity, http, row)["sent"]
                     done["pulled"] += pull(session, ctx.settings, ctx.identity, http, row)

@@ -233,11 +233,12 @@ def test_device_registration_challenge_and_atomic_consume(pair):
 
 def test_unknown_code_alarm_never_pauses_code_entry(pair, monkeypatch):
     monkeypatch.setattr(link, "UCODE_MISS_GLOBAL", (2, 600))
-    monkeypatch.setattr("time.sleep", lambda s: None)
     t = token(pair.main, "/link")
-    for _ in range(3):
+    for _ in range(2):
         r = pair.main.post("/link", data={"csrf": t, "code": "BBBB-BBBB"})
         assert r.status_code == 400
+    r = pair.main.post("/link", data={"csrf": t, "code": "BBBB-BBBB"})  # the alarm: a 429, no worker sleeps
+    assert r.status_code == 429 and r.headers["retry-after"] == "2"
     with pair.msession() as s:
         assert link.alarm(s) is not None
     view = pair.start()  # a real code still works for everyone
@@ -588,6 +589,43 @@ def test_revocation_is_immediate_and_pending_kept(pair):
         assert {c.state for c in s.scalars(select(UpstreamContribution))} >= {"link_revoked"}
 
 
+def test_review_lists_and_bulk_reverts_everything_a_link_applied(pair):
+    """C14 §6.7 / Review #1 C14-10: `/review?via_link=<id>` lists applied link contributions too, and one action
+    reverts all of them (newest first); a change that cannot be undone automatically stays listed."""
+    pair.link()
+    same_game_on_node(pair)
+    pair.propose({"developer": "Dev A"})
+    pair.propose({"publisher": "Pub B"})
+    assert pair.send()["sent"] == 2
+    _approve_all(pair)
+    with pair.msession() as s:
+        link_id = pair.link_row(s).id
+        applied = s.scalars(select(Proposal).where(Proposal.via_link_id == link_id)).all()
+        assert len(applied) == 2 and {p.status for p in applied} == {"approved"}
+    from .test_web import login
+
+    pair.main.cookies.clear()
+    login(pair.main, "boss")
+    page = pair.main.get(f"/review?via_link={link_id}")
+    assert page.status_code == 200 and "Applied from this link (2)" in page.text
+    assert f'action="/review/link/{link_id}/revert"' in page.text
+    t = token(pair.main, f"/review?via_link={link_id}")
+    r = pair.main.post(f"/review/link/{link_id}/revert", data={"csrf": t})
+    assert r.status_code == 303 and "m=link_reverted" in r.headers["location"]
+    with pair.msession() as s:
+        assert {p.status for p in s.scalars(select(Proposal).where(Proposal.via_link_id == link_id))} == {"reverted"}
+    page = pair.main.get(f"/review?via_link={link_id}")
+    assert "Applied from this link (0)" in page.text and "Nothing from this link is applied." in page.text
+
+
+def test_bulk_revert_needs_review_rights(pair):
+    pair.link()
+    with pair.msession() as s:
+        link_id = pair.link_row(s).id
+        with pytest.raises(Exception, match="review rights"):
+            proposals.revert_link(s, pair.mst.ctx, _user(s, "dave"), link_id)
+
+
 def test_admin_ban_flags_compromised_and_blocks_relink(pair):
     pair.link()
     same_game_on_node(pair)
@@ -752,6 +790,159 @@ def test_superseded_key_rotation_attempt_freezes(pair):
     assert r.status_code == 401
     with pair.msession() as s:
         assert pair.link_row(s).status == "frozen"
+
+
+class _LoseAnswer:
+    """Forwards a request to the main, then loses the answer (`times` times) for requests whose URL matches."""
+
+    def __init__(self, real, match, times=1, status=None, description=None):
+        self.real, self.match, self.left, self.status, self.description = real, match, times, status, description
+
+    def request(self, method, url, **kw):
+        import httpx
+
+        if self.match in url and self.left > 0:
+            self.left -= 1
+            if self.status is not None:  # answer with a canned refusal instead of forwarding
+                return httpx.Response(self.status, json={"error": "invalid_token",
+                                                         "error_description": self.description})
+            self.real.request(method, url, **kw)
+            raise httpx.ReadTimeout("answer lost")
+        return self.real.request(method, url, **kw)
+
+    def post(self, url, **kw):
+        return self.request("POST", url, **kw)
+
+    def get(self, url, **kw):
+        return self.request("GET", url, **kw)
+
+
+def test_lost_rotation_answer_is_retried_not_frozen(pair):
+    """Review fix: the main committed the rotation but the node never saw the answer. Pressing rotate again
+    repeats the identical rotation; the main recognises it and issues tokens for the new key, no freeze."""
+    pair.link()
+    same_game_on_node(pair)
+    pair.propose()
+    settings = pair.nst.ctx.settings
+    lossy = _LoseAnswer(pair.nst.http, "/api/v2/link/rotation")
+    with pair.nsession() as s:
+        with pytest.raises(link_client.LinkClientError, match="retried"):
+            link_client.rotate_key(s, settings, pair.nst.ctx.identity, lossy, pair.upstream(s))
+        s.commit()
+    with pair.msession() as s:
+        assert pair.link_row(s).key_epoch == 2  # the main moved
+    with pair.nsession() as s:
+        row = pair.upstream(s)
+        assert row.status == "linked" and link_client.pending_rotation(row) is not None and row.key_epoch == 1
+        with pytest.raises(link_client.LinkClientError, match="rotation is waiting"):
+            link_client.call(s, settings, pair.nst.http, row, "GET", "/api/v2/link")
+        # sending waits (nothing is sent with the old key, nothing is marked revoked)
+        assert link_client.send(s, settings, pair.nst.ctx.identity, pair.nst.http, row, force=True)["sent"] == 0
+        assert row.status == "linked"
+        s.rollback()
+    # the worker finishes the rotation before sending anything (the same as pressing the button again)
+    link_client.round_(pair.nst.maker, pair.nst.ctx, pair.nst.http)
+    with pair.nsession() as s:
+        row = pair.upstream(s)
+        assert row.status == "linked" and link_client.pending_rotation(row) is None and row.key_epoch == 2
+        assert len(row.link_rotations) == 1
+    with pair.msession() as s:
+        lr = pair.link_row(s)
+        assert lr.status == "active" and lr.key_epoch == 2
+    assert _api(pair, "GET", "/api/v2/link").status_code == 200
+    assert pair.send()["sent"] == 1  # the queue was re-signed with the new key and goes through
+
+
+def test_rotation_answer_that_does_not_check_out_is_retried(pair, monkeypatch):
+    pair.link()
+    settings = pair.nst.ctx.settings
+    real = link_client.main_key
+    calls = {"n": 0}
+
+    def flaky(http, row):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise link_client.LinkClientError("main key unavailable")
+        return real(http, row)
+
+    monkeypatch.setattr(link_client, "main_key", flaky)
+    with pair.nsession() as s:
+        with pytest.raises(link_client.LinkClientError, match="did not check out"):
+            link_client.rotate_key(s, settings, pair.nst.ctx.identity, pair.nst.http, pair.upstream(s))
+        s.commit()
+    with pair.nsession() as s:  # the admin presses the button again
+        link_client.rotate_key(s, settings, pair.nst.ctx.identity, pair.nst.http, pair.upstream(s))
+        s.commit()
+    with pair.msession() as s:
+        assert pair.link_row(s).status == "active"
+    assert _api(pair, "GET", "/api/v2/link").json()["key_epoch"] == 2
+
+
+def test_rotation_retry_needs_the_identical_rotation(pair):
+    """A repeat with another successor (what a thief holding the old key would send) still freezes."""
+    pair.link()
+    settings = pair.nst.ctx.settings
+    with pair.nsession() as s:
+        row = pair.upstream(s)
+        old_key = link_client._key(settings, row.link_key)
+        old_access = link_client._open(settings, row.access_enc)
+        root_id, link_id = link_client.link_node_id(row), row.link_id
+    with pair.nsession() as s:
+        link_client.rotate_key(s, settings, pair.nst.ctx.identity, pair.nst.http, pair.upstream(s))
+        s.commit()
+    other = Ed25519PrivateKey.generate()
+    cert = lc.rotation_certificate(old_key, root_id, 1, lc.public_b64(other))
+    parts = lc.rotation_parts(MAIN, link_id, root_id, cert["body"]["key_id"], 2)
+    r = _api(pair, "POST", "/api/v2/link/rotation", key=old_key, access=old_access,
+             body={"rotations": [cert], "new_key_pop": lc.sign_pop(other, parts)})
+    assert r.status_code == 401
+    with pair.msession() as s:
+        assert pair.link_row(s).status == "frozen"
+
+
+@pytest.mark.parametrize("description", ["stale_proof", "replayed_proof", "malformed_proof", "links_off"])
+def test_transient_401_keeps_the_link_and_queue(pair, description):
+    """Review fix: clock skew or a bad proof is retried; it never ends the link or the queue."""
+    pair.link()
+    same_game_on_node(pair)
+    cid = pair.propose()
+    canned = _LoseAnswer(pair.nst.http, "/api/v2/link", status=401, description=description)
+    with pair.nsession() as s:
+        with pytest.raises(link_client.LinkClientError):
+            link_client.call(s, pair.nst.ctx.settings, canned, pair.upstream(s), "GET", "/api/v2/link")
+        s.commit()
+    with pair.nsession() as s:
+        assert pair.upstream(s).status == "linked"
+        assert s.get(UpstreamContribution, cid).state == "queued"
+    assert pair.send()["sent"] == 1
+
+
+def test_link_refusal_ends_the_link(pair):
+    pair.link()
+    same_game_on_node(pair)
+    cid = pair.propose()
+    canned = _LoseAnswer(pair.nst.http, "/api/v2/link", status=401, description="link_revoked")
+    with pair.nsession() as s:
+        with pytest.raises(link_client.LinkGone):
+            link_client.call(s, pair.nst.ctx.settings, canned, pair.upstream(s), "GET", "/api/v2/link")
+        s.commit()
+    with pair.nsession() as s:
+        assert pair.upstream(s).status == "remote_revoked"
+        assert s.get(UpstreamContribution, cid).state == "link_revoked"
+
+
+def test_expired_token_is_refreshed_not_revoked(pair):
+    pair.link()
+    with pair.msession() as s:  # the main ended the access token early (the node still thinks it is fresh)
+        for row in s.scalars(select(OidcAccess).where(OidcAccess.link_id.is_not(None))):
+            row.expires_at = now() - timedelta(seconds=1)
+        s.commit()
+    with pair.nsession() as s:
+        r = link_client.call(s, pair.nst.ctx.settings, pair.nst.http, pair.upstream(s), "GET", "/api/v2/link")
+        s.commit()
+    assert r.status_code == 200
+    with pair.nsession() as s:
+        assert pair.upstream(s).status == "linked"
 
 
 # ---- §7.5 limits (T-K11, T-K25) -----------------------------------------------------------------------------
@@ -962,3 +1153,31 @@ def test_purge_keeps_revocation_record(pair):
 
 
 _ = base64
+
+
+def test_node_only_shows_the_issuers_own_link_page():
+    """Review fix: the QR code and link on /admin/main never send the admin's phone to another origin."""
+    ok = link_client._own_link_page
+    assert ok(MAIN, f"{MAIN}/link") and ok(MAIN, f"{MAIN}/link?code=BCDF-GHJK") and ok(MAIN + "/", f"{MAIN}/link")
+    for bad in ["https://evil.example/link", f"{MAIN}.evil.example/link", f"{MAIN}/linkx", f"{MAIN}/login",
+                f"{MAIN}@evil.example/link", f"{MAIN}/link?code=x#@evil", "javascript:alert(1)", "",
+                f"{MAIN}/link?code=a\nb"]:
+        assert not ok(MAIN, bad), bad
+
+
+def test_start_refuses_a_foreign_verification_uri(pair, monkeypatch):
+    real = pair.nst.http
+
+    class Rewrite(_LoseAnswer):
+        def request(self, method, url, **kw):
+            import httpx
+
+            resp = self.real.request(method, url, **kw)
+            if url.endswith("/oidc/device") and resp.status_code == 200:
+                body = {**resp.json(), "verification_uri_complete": "https://evil.example/link?code=X"}
+                return httpx.Response(200, json=body)
+            return resp
+
+    with pair.nsession() as s:
+        with pytest.raises(link_client.LinkClientError, match="not its own /link page"):
+            link_client.start(s, pair.nst.ctx.settings, pair.nst.ctx.identity, Rewrite(real, ""), MAIN)

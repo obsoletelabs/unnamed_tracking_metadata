@@ -520,6 +520,32 @@ def revert(session: Session, ctx: Ctx, reviewer: User, pid: str, note: str = "")
     return p
 
 
+def revert_link(session: Session, ctx: Ctx, reviewer: User, link_id: str, note: str = "") -> dict[str, Any]:
+    """C14 §6.7 (Review #1 C14-10): revert everything a node link applied here, newest first, one proposal at a
+    time through `revert` (same rights, same order rule). A proposal that cannot be reverted automatically (a
+    newer change from outside the link sits on top, a kind with no revert, the reviewer's own) is left applied and
+    listed, so a human reverts it by hand. Entries already signed into the public feed are not recalled."""
+    if not accounts.can_review(ctx.settings, reviewer):
+        raise AtlasError("review rights required", "forbidden")
+    write_lock(session)  # taken before the per-proposal savepoints
+    session.flush()
+    ids = list(session.scalars(select(Proposal.id).where(Proposal.via_link_id == link_id,
+                                                         Proposal.status == "approved")
+                               .order_by(Proposal.decided_at.desc(), Proposal.created_at.desc())))
+    done: list[str] = []
+    left: list[dict[str, str]] = []
+    for pid in ids:
+        try:
+            with session.begin_nested():
+                revert(session, ctx, reviewer, pid, note or "Reverted with everything from this node link.")
+            done.append(pid)
+        except AtlasError as exc:
+            left.append({"id": pid, "reason": str(exc)})
+    accounts.audit(session, reviewer.id, "link_bulk_revert", link_id[:64],
+                   {"reverted": len(done), "left": len(left)})
+    return {"reverted": done, "left": left}
+
+
 def withdraw(session: Session, user: User, pid: str) -> Proposal:
     write_lock(session)
     session.flush()
