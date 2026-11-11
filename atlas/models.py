@@ -566,9 +566,6 @@ class Token(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     user_id: Mapped[str | None] = mapped_column(ForeignKey("app_user.id"), nullable=True, index=True)
-    # CONTRACT-C14 §7.6 (H68, migration 0040): room to narrow a token later (per feed, media type, rate) without a
-    # schema change. Empty for every token today.
-    limits: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
 class RateCounter(Base):
@@ -823,12 +820,14 @@ class Proposal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # CONTRACT-C14 §6.6/§7.4 (migration 0040): a proposal that arrived as a node-signed contribution through a link.
-    via_link_id: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
-    contribution_id: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
-    stale_base: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # The node-link columns (migration 0040) are deferred and have no client default, so code that writes or reads
+    # proposals on an older schema (a downgrade, an upgrade test seeding old rows) never names them.
+    via_link_id: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True, deferred=True)
+    contribution_id: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True, deferred=True)
+    stale_base: Mapped[bool] = mapped_column(Boolean, server_default=false(), deferred=True)
     # `link_revoked` / `link_compromised` (§6.7, Review #1 C14-10): never auto-applied; a compromised one needs the
     # reviewer's "I checked this change".
-    link_flag: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    link_flag: Mapped[str | None] = mapped_column(String(20), nullable=True, deferred=True)
 
 
 class ReputationEvent(Base):

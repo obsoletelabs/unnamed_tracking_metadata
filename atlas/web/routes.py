@@ -1229,7 +1229,6 @@ def token_create(p: Annotated[Page, Depends(user_form)], name: Annotated[str, Fo
     days = auth.FEED_TOKEN_DAYS if "sync" in scopes else None  # feed tokens expire (C14 §7.6)
     row, secret = auth.create_token(p.session, name.strip() or "token", scopes, days)
     row.user_id = p.me.id
-    row.limits = {} if "sync" in scopes else None
     accounts.audit(p.session, p.me.id, "token_create", row.id, {"scopes": scopes})
     return render(p, "me.html", **_me_ctx(p, new_token=secret, new_token_sync=scope == "sync"))
 

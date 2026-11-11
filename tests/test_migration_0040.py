@@ -1,6 +1,6 @@
 """Migration 0040 (CONTRACT-C14 C14-3): node links. Main side `node_link`, `link_challenge`, `link_device`,
 `link_refresh`, `link_nonce`, `link_banned_key`, `link_contribution_answer` and the new `proposal`/`oidc_access`/
-`api_token` columns; node side `upstream_link`, `upstream_contribution`, `upstream_alias`. A downgrade is refused
+columns; node side `upstream_link`, `upstream_contribution`, `upstream_alias`. A downgrade is refused
 while a link is active or a contribution is undecided, unless ATLAS_DOWNGRADE_FORCE=1, and then also drops the
 `feed.access` grants and the pairwise-subject key.
 
@@ -49,7 +49,6 @@ def test_node_link_schema_up_and_down(url, monkeypatch):
         assert {"via_link_id", "contribution_id", "stale_base", "link_flag"} <= {
             c["name"] for c in insp.get_columns("proposal")}
         assert {"link_id", "key_epoch", "jkt"} <= {c["name"] for c in insp.get_columns("oidc_access")}
-        assert "limits" in {c["name"] for c in insp.get_columns("api_token")}
         assert set(insp.get_pk_constraint("link_nonce")["constrained_columns"]) == {"jkt", "jti"}
         uniques = {tuple(u["column_names"]) for u in insp.get_unique_constraints("upstream_contribution")}
         assert ("main_node_id", "seq") in uniques

@@ -41,10 +41,13 @@ def test_populated_upgrade_preserves_fields_values_proposals_and_signed_history(
         session.add_all([CustomValue(canonical_id=game.id, key="genres", source="manual", value=["Historical"],
                                     redistributable=True),
                          CustomValue(canonical_id=game.id, key="custom_genres", source="manual", value="Original")])
-        proposal = Proposal(kind="edit", canonical_id=game.id, proposer_id=user.id,
-                            payload={"custom": {"genres": ["New"]}}, previous={"custom": {"genres": ["Old"]}},
-                            status="approved")
-        session.add(proposal)
+        old_proposal = Table("proposal", metadata, autoload_with=session.connection())
+        proposal = SimpleNamespace(id="p" * 26)
+        values = {"id": proposal.id, "kind": "edit", "canonical_id": game.id, "proposer_id": user.id,
+                  "payload": {"custom": {"genres": ["New"]}}, "previous": {"custom": {"genres": ["Old"]}},
+                  "status": "approved", "note": "", "decision_note": "", "auto_applied": False,
+                  "created_at": now()}
+        session.execute(old_proposal.insert().values({k: v for k, v in values.items() if k in old_proposal.c}))
         session.flush()
         old_value_time = session.get(CustomValue, (game.id, "genres", "manual")).updated_at
         original_schema = {"types": [{"key": "game", "label": "Game", "enabled": True, "position": 0, "labels": {}}],
