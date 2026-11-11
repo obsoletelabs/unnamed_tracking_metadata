@@ -48,6 +48,14 @@ with node.state.maker() as s:
                                                          "format": "paperback"}]}}}]})
     node.state.ctx.settings.emit_protocol = "1.5"
     [res] = service.ingest(s, node.state.ctx, batch, curator=True, media_type="book")
+    # review fix: a series (invented) and a positioned series_member, for the relations page
+    series = ObservationBatchV1.model_validate({
+        "connection": {"source_kind": "manual", "source": "manual", "source_scope": "default"}, "media_type": "series",
+        "observations": [{"external_id": "lamp-cycle", "title": "The Lamp Cycle"}]})
+    [ser] = service.ingest(s, node.state.ctx, series, curator=True, media_type="series")
+    from atlas import relations
+
+    relations.add(s, node.state.ctx, res.canonical_id, ser.canonical_id, "series_member", position="1")
     s.commit()
 node.start()
 

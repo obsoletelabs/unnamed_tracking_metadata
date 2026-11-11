@@ -10,6 +10,9 @@ const SIZES = { desktop: { width: 1440, height: 900 }, mobile: { width: 390, hei
 const SHOTS = [
   ['media-types-adopted-notice', '/admin/schema', '[data-adopted-types]'],
   ['book-type-achievements-off', '/admin/schema/book', 'input[name=achievements]:not(:checked)'],
+  // review fix: the series position is shown in the list and can be set from the add form
+  ['relations-series-position', `/game/${lab.cid}/relations?q=Lamp&type=series_member`,
+    '[data-relation-position]'],
 ];
 
 (async () => {

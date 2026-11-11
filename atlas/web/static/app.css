@@ -319,6 +319,7 @@ table.releases { margin: 0 0 1em; }
 .relations h3 { margin-bottom: .25rem; }
 .rel-list { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .rel-table td, .rel-table th { vertical-align: top; }
+.rel-position { max-width: 9rem; display: inline-block; }
 .relation-search select { max-width: 100%; }
 @media (max-width: 640px) {
   .relation-search .row { flex-wrap: wrap; }
