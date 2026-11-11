@@ -6,7 +6,7 @@ import sys
 
 import httpx
 
-from . import auth, sync
+from . import accounts, auth, sync
 from .db import make_engine, make_sessionmaker, upgrade
 from .service import Ctx
 from .settings import get_settings
@@ -534,6 +534,10 @@ def cmd_seed(args) -> int:
     settings, maker = _maker()
     ctx = _ctx(settings, maker)
     with maker() as session:
+        if not args.force and (refusal := client_seed.refusal(session, ctx.settings)):
+            print(f"{refusal}; this seeds invented records into the change log (and an authority's signed feed). "
+                  "Use a throwaway database, or pass --force.", file=sys.stderr)
+            return 2
         try:
             ids, created = client_seed.seed(session, ctx, args.fixture)
         except ValueError as exc:
@@ -542,6 +546,8 @@ def cmd_seed(args) -> int:
         out = {"fixture": args.fixture, "created": created, "ids": ids}
         if args.token:
             row, secret = auth.create_token(session, f"{args.fixture}-read", ["read"])
+            accounts.audit(session, None, "token_create", row.id,
+                           {"scopes": row.scopes, "via": "cli_seed", "fixture": args.fixture})
             out.update(token=secret, token_id=row.id)
         session.commit()
     print(json.dumps(out, sort_keys=True))
@@ -660,6 +666,8 @@ def main(argv: list[str] | None = None) -> int:
     sd = sub.add_parser("seed", help="seed a synthetic test catalogue (CONTRACT-C15 §12: connectors-v1)")
     sd.add_argument("--fixture", required=True, help="the catalogue to seed: connectors-v1")
     sd.add_argument("--token", action="store_true", help="also mint a read token and print it")
+    sd.add_argument("--force", action="store_true",
+                    help="seed even an authority node or a database that already holds records")
     sd.set_defaults(fn=cmd_seed)
     i = sub.add_parser("import-legacy")
     i.add_argument("path", help="path to the demo-1 SQLite database")

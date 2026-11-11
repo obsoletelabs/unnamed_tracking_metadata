@@ -42,6 +42,11 @@ jobs:
           path: |
             tests/fixtures/resolve-contract-v1.json
             tests/fixtures/resolve-contract-v1.json.sha256
+      - name: Client fixtures archive, as the release builds it (package.yml, C15 section 9.3)
+        run: |
+          uv run python tools/export_client_fixtures.py --out "$RUNNER_TEMP/client-fixtures" --archive "$RUNNER_TEMP/client-dist" --version "0.0.0+${GITHUB_SHA::12}"
+          diff -r contracts/client-fixtures "$RUNNER_TEMP/client-fixtures"
+          ls -l "$RUNNER_TEMP/client-dist"
       - name: Client API contract (C15 section 9.3, copied by atlas-connectors into contract/)
         uses: actions/upload-artifact@v4
         with:

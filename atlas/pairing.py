@@ -44,6 +44,7 @@ POLL_TOKEN_BYTES = 32
 EXPIRES_IN = 600
 INTERVAL = 5
 MAX_OPEN = 20
+MAX_OPEN_PER_IP = 3  # so one address cannot hold every node-wide slot (A24 review)
 WRONG_LIMIT = 5
 LOCK_SECONDS = 600
 LABEL_MAX = 64
@@ -121,8 +122,12 @@ def start(session: Session, label: str, user_agent: str, ip: str) -> dict[str, A
     """Open a pairing. Returns the code and the poll token (the only time either exists in clear)."""
     t = clock()
     purge(session, t)
-    if len(_rows(session)) >= MAX_OPEN:
+    rows = _rows(session)
+    if len(rows) >= MAX_OPEN:
         raise PairingError("too many pairings are open on this node; try again in a few minutes", "too_many")
+    if sum(1 for r in rows if (d := _load(r)).get("ip") == ip[:64] and d.get("status") == "pending") >= MAX_OPEN_PER_IP:
+        raise PairingError("too many pairings are open from this address; finish or wait for one to expire",
+                           "too_many_from_address")
     code = "".join(secrets.choice(ALPHABET) for _ in range(CODE_LENGTH))
     poll_token = secrets.token_urlsafe(POLL_TOKEN_BYTES)
     pid = ulid()

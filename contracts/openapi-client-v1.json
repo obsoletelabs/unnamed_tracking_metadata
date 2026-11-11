@@ -89,6 +89,21 @@
             "title": "Deprecations",
             "type": "array"
           },
+          "limits": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`batch_items`: ids per batch call (200); `anonymous_items`: the cap on batch ids and resolve items for a call without a token under `public_read` (25). Absent on older nodes.",
+            "title": "Limits"
+          },
           "min_supported": {
             "description": "The oldest client-api version this node still answers for.",
             "title": "Min Supported",
@@ -2134,7 +2149,7 @@
     },
     "/api/v2/client/pair": {
       "post": {
-        "description": "Public. Start pairing a tool with a person's account (CONTRACT-C15 §10.1): show `code` and `qr_svg` to the\nperson, who approves at `verify_url` while signed in; then poll `POST /client/pair/poll` every `interval`\nseconds. The token minted on approval is a **personal read token** of the approving account (listed and\nrevocable on their profile, counted in their limit of 10). At most 20 pairings are open per node (429 beyond);\ncalls count on the anonymous per-address budget (60 a minute).",
+        "description": "Public. Start pairing a tool with a person's account (CONTRACT-C15 §10.1): show `code` and `qr_svg` to the\nperson, who approves at `verify_url` while signed in; then poll `POST /client/pair/poll` every `interval`\nseconds. The token minted on approval is a **personal read token** of the approving account (listed and\nrevocable on their profile, counted in their limit of 10). At most 20 pairings are open per node and 3 per\naddress (429 beyond); calls count on the anonymous per-address budget (60 a minute).",
         "operationId": "client_pair_api_v2_client_pair_post",
         "requestBody": {
           "content": {
@@ -2397,7 +2412,7 @@
     },
     "/api/v2/games/batch": {
       "post": {
-        "description": "Up to 200 records in one call (CONTRACT-C15 §10.1), in request order: each item is `{requested, status,\ngame}`, `status` `ok` with the record exactly as `GET /games/{id}` answers it (merge redirects followed,\n`redirected_from` set), or `not_found` with `game: null`. Read-only; one item never fails the batch.",
+        "description": "Up to 200 records in one call (CONTRACT-C15 §10.1), in request order: each item is `{requested, status,\ngame}`, `status` `ok` with the record exactly as `GET /games/{id}` answers it (merge redirects followed,\n`redirected_from` set), or `not_found` with `game: null`. Read-only; one item never fails the batch. An\nanonymous (`public_read`) caller sends at most `client_api.limits.anonymous_items` ids (413 beyond).",
         "operationId": "batch_games_api_v2_games_batch_post",
         "parameters": [
           {
@@ -3181,7 +3196,7 @@
     },
     "/api/v2/records/batch": {
       "post": {
-        "description": "Up to 200 records in one call (CONTRACT-C15 §10.1), in request order: each item is `{requested, status,\ngame}`, `status` `ok` with the record exactly as `GET /games/{id}` answers it (merge redirects followed,\n`redirected_from` set), or `not_found` with `game: null`. Read-only; one item never fails the batch.",
+        "description": "Up to 200 records in one call (CONTRACT-C15 §10.1), in request order: each item is `{requested, status,\ngame}`, `status` `ok` with the record exactly as `GET /games/{id}` answers it (merge redirects followed,\n`redirected_from` set), or `not_found` with `game: null`. Read-only; one item never fails the batch. An\nanonymous (`public_read`) caller sends at most `client_api.limits.anonymous_items` ids (413 beyond).",
         "operationId": "batch_games_api_v2_records_batch_post",
         "parameters": [
           {
@@ -3728,7 +3743,7 @@
     },
     "/api/v2/resolve": {
       "post": {
-        "description": "Read-only. Identity evidence wins over titles; conflicting identity evidence returns `canonical_id: null`\nwith `reason: conflict` (a behaviour change, H2: older Atlas returned the item's own id with `crosswalk`).",
+        "description": "Read-only. Identity evidence wins over titles; conflicting identity evidence returns `canonical_id: null`\nwith `reason: conflict` (a behaviour change, H2: older Atlas returned the item's own id with `crosswalk`).\nAn anonymous (`public_read`) caller sends at most `client_api.limits.anonymous_items` items (413 beyond).",
         "operationId": "resolve_api_v2_resolve_post",
         "parameters": [
           {

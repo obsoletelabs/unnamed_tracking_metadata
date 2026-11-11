@@ -25,6 +25,10 @@ from sqlalchemy.orm import Session
 VERSION = "1.0"
 MIN_SUPPORTED = "1.0"
 CLIENT_TAG = "client"
+#: Items per `POST /games/batch` (and `/records/batch`) call; `/resolve` follows the `max_resolve` setting.
+BATCH_ITEMS = 200
+#: The lower cap for anonymous (`public_read`) batch and resolve calls (A24 review: a call is one rate-limit hit).
+ANONYMOUS_ITEMS = 25
 #: Announced deprecations of client routes or members: `{"what", "since", "sunset", "replacement"}`. Empty in v1.
 DEPRECATIONS: list[dict[str, str]] = []
 
@@ -64,7 +68,8 @@ def site_block(session: Session, settings: Any) -> dict[str, Any]:
     """`/api/v2/site.client_api` (§9.1). Connectors refuse a node whose major version differs or which lacks a
     capability they need; `contract` (the general `/api/v2` marker) is independent and never read for this."""
     return {"version": VERSION, "min_supported": MIN_SUPPORTED, "capabilities": capabilities(session, settings),
-            "deprecations": list(DEPRECATIONS)}
+            "deprecations": list(DEPRECATIONS),
+            "limits": {"batch_items": BATCH_ITEMS, "anonymous_items": ANONYMOUS_ITEMS}}
 
 
 def cover_kinds(media_type: str | None) -> tuple[str, ...]:
@@ -93,6 +98,9 @@ class ClientApiInfo(_Open):
     capabilities: list[str] = Field(description="`books`, `pairing`, `etag`, `batch`, `public_read`; more may "
                                                 "appear. Unknown ones are ignored.")
     deprecations: list[dict[str, Any]] = Field(description="Announced deprecations; empty in v1.")
+    limits: dict[str, int] | None = Field(default=None, description=(
+        "`batch_items`: ids per batch call (200); `anonymous_items`: the cap on batch ids and resolve items for a "
+        "call without a token under `public_read` (25). Absent on older nodes."))
 
 
 class ClientSite(_Open):

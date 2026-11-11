@@ -32,12 +32,14 @@ No token is needed. The `client_api` member says what this node offers:
 
 ```json
 "client_api": {"version": "1.0", "min_supported": "1.0",
-               "capabilities": ["books", "pairing", "etag", "batch"], "deprecations": []}
+               "capabilities": ["books", "pairing", "etag", "batch"], "deprecations": [],
+               "limits": {"batch_items": 200, "anonymous_items": 25}}
 ```
 
 Read it once per session. Refuse a node whose `version` has a different major number than yours, or that lacks a
 capability you need, with a clear message. The separate `contract: 1` member is the general `/api/v2` marker;
-connectors do not read it.
+connectors do not read it. `limits` (absent on older nodes) gives the ids per batch call and the lower cap on
+batch ids and resolve items for a call made without a token.
 
 | Capability | Meaning |
 |---|---|
@@ -57,7 +59,8 @@ three ways to get one:
 * **An administrator's token** (`atlas token --name jellyfin --scopes read`).
 
 When the node lists `public_read`, the client API can also be read anonymously, at 60 requests a minute per
-address. Send no `Authorization` header at all in that case: a wrong token is always refused.
+address. Send no `Authorization` header at all in that case: a wrong token is always refused. Without a token a
+batch or resolve call carries at most 25 items (`limits.anonymous_items`; `413` beyond).
 
 ## Pairing
 
@@ -80,7 +83,7 @@ stops working if their account is closed.
    `pending`, `slow_down` (you polled too fast: wait the new, longer `interval`), `approved` (with `token`, shown
    once), `denied` or `expired` (start again).
 
-Limits: codes expire after 10 minutes and work once; at most 20 pairings are open on a node at a time; five wrong
+Limits: codes expire after 10 minutes and work once; at most 20 pairings are open on a node at a time, and 3 from one address; five wrong
 codes lock the person's approval form for 10 minutes. Both calls count on the anonymous per-address budget.
 
 ## Find and read records
@@ -132,8 +135,14 @@ Atlas generates the fixtures connectors test against; they are never written by 
   `MANIFEST.json` and `SHA256SUMS`, `python tools/export_client_fixtures.py`.
 * Each release attaches both as `client-fixtures-<version>.tar.gz` (+ `.sha256`), laid out like the connectors'
   `contract/` folder.
-* `atlas seed --fixture connectors-v1 [--token]` seeds the same synthetic catalogue into a real node (idempotent)
-  and prints the ids as JSON, for integration tests against a running Atlas.
+* `atlas seed --fixture connectors-v1 [--token]` seeds the same synthetic catalogue into a throwaway node
+  (idempotent) and prints the ids as JSON, for integration tests against a running Atlas. The records are invented
+  and enter the change log, so it refuses an authority node or a database that already holds records unless you
+  pass `--force`. The `--token` it mints is audited (`token_create`, `via: cli_seed`).
+* `contracts/client-api-baselines/openapi-client-<version>.json`: a frozen copy of the OpenAPI file of each
+  released client-api version, pinned by sha256 in `atlas/client_openapi.py`. The generated file must stay
+  additive against every baseline of the current major: `gen_docs.py --client-openapi` refuses to write a break,
+  and the tests fail on one, so regenerating cannot hide it. A break needs a new client-api major.
 
 The fixtures and the OpenAPI file are synthetic data and an interface description: CC0, like the rest of the data
 Atlas publishes.

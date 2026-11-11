@@ -7,6 +7,10 @@
       "batch"
     ],
     "deprecations": [],
+    "limits": {
+      "anonymous_items": 25,
+      "batch_items": 200
+    },
     "min_supported": "1.0",
     "version": "1.0"
   },

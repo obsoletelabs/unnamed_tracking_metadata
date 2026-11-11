@@ -74,6 +74,13 @@ ClientRead = Annotated[auth.Principal, Depends(require("read", public_read=True)
 COUNTED = [Depends(count_client)]
 
 
+def _anonymous_items(who: auth.Principal, count: int) -> None:
+    """An anonymous `public_read` caller's many-item reads are capped lower than a token holder's (A24 review): the
+    rate limiter counts a call once, so 200 full records a call would multiply the 60-a-minute address budget."""
+    if not who.token_id and count > client_api.ANONYMOUS_ITEMS:
+        raise HTTPException(413, f"at most {client_api.ANONYMOUS_ITEMS} items per request without a token")
+
+
 def _doc(model: Any) -> dict[int | str, dict[str, Any]]:
     """`responses=` for a client route: the answer's shape in the OpenAPI file only (it never filters the answer)."""
     return {200: {"model": model}}
@@ -335,11 +342,13 @@ def _resolution_out(r: Resolution, session: Session, st: AppState, include_view:
 
 @router.post("/resolve", tags=["read", CLIENT], response_model=ResolveResponse, response_model_exclude_unset=True,
              summary="Resolve client ids and titles to canonical Atlas ids (C4)", dependencies=COUNTED)
-def resolve(body: ResolveRequest, st: St, session: Sess, _: ClientRead):
+def resolve(body: ResolveRequest, st: St, session: Sess, who: ClientRead):
     """Read-only. Identity evidence wins over titles; conflicting identity evidence returns `canonical_id: null`
-    with `reason: conflict` (a behaviour change, H2: older Atlas returned the item's own id with `crosswalk`)."""
+    with `reason: conflict` (a behaviour change, H2: older Atlas returned the item's own id with `crosswalk`).
+    An anonymous (`public_read`) caller sends at most `client_api.limits.anonymous_items` items (413 beyond)."""
     if len(body.items) > st.ctx.settings.max_resolve:
         raise HTTPException(413, f"at most {st.ctx.settings.max_resolve} items per request")
+    _anonymous_items(who, len(body.items))
     out = []
     for it in body.items:
         r = classify(
@@ -421,10 +430,12 @@ NOT_MODIFIED = {304: {"description": "`If-None-Match` matched the current ETag: 
              summary="Read up to 200 records at once")
 @router.post("/records/batch", tags=["read", CLIENT], dependencies=COUNTED, responses=_doc(client_api.ClientBatch),
              summary="Read up to 200 records at once (alias of POST /games/batch)")
-def batch_games(body: BatchBody, session: Sess, st: St, _: ClientRead):
+def batch_games(body: BatchBody, session: Sess, st: St, who: ClientRead):
     """Up to 200 records in one call (CONTRACT-C15 §10.1), in request order: each item is `{requested, status,
     game}`, `status` `ok` with the record exactly as `GET /games/{id}` answers it (merge redirects followed,
-    `redirected_from` set), or `not_found` with `game: null`. Read-only; one item never fails the batch."""
+    `redirected_from` set), or `not_found` with `game: null`. Read-only; one item never fails the batch. An
+    anonymous (`public_read`) caller sends at most `client_api.limits.anonymous_items` ids (413 beyond)."""
+    _anonymous_items(who, len(body.ids))
     out = []
     for requested in body.ids:
         try:
@@ -1686,8 +1697,8 @@ def client_pair(body: PairBody, request: Request, st: St, session: Sess):
     """Public. Start pairing a tool with a person's account (CONTRACT-C15 §10.1): show `code` and `qr_svg` to the
     person, who approves at `verify_url` while signed in; then poll `POST /client/pair/poll` every `interval`
     seconds. The token minted on approval is a **personal read token** of the approving account (listed and
-    revocable on their profile, counted in their limit of 10). At most 20 pairings are open per node (429 beyond);
-    calls count on the anonymous per-address budget (60 a minute)."""
+    revocable on their profile, counted in their limit of 10). At most 20 pairings are open per node and 3 per
+    address (429 beyond); calls count on the anonymous per-address budget (60 a minute)."""
     from .. import qr
 
     ip = _anonymous_budget(request, st)

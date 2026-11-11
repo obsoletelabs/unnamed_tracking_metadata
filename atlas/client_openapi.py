@@ -23,6 +23,13 @@ from typing import Any
 
 from . import client_api
 
+#: Frozen baselines (`contracts/client-api-baselines/openapi-client-<version>.json`), pinned by the sha256 of their LF
+#: bytes. Every released client-api version adds one and none is ever edited: the generated file must stay additive
+#: against every baseline of the current major (`tools/gen_docs.py --client-openapi` refuses otherwise, and
+#: `tests/test_client_api_stability.py` checks it), so regenerating the working copy cannot launder a break. A break
+#: needs a new `client_api.VERSION` major; the old major's baselines then stop applying.
+BASELINES = {"1.0": "9f3e62392543f59f8ce1630909df9e7c15a2156fa7b27933ecf761a507945675"}
+
 HTTP_METHODS = ("get", "put", "post", "delete", "patch", "head", "options")
 _REF = re.compile(r"#/components/schemas/(.+)\Z")
 
@@ -219,3 +226,18 @@ class _Diff:
 def breaking_changes(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     """What `new` removes or narrows compared with `old` (see the module notes); empty when it is additive only."""
     return _Diff(old, new).run()
+
+
+def major(version: str) -> str:
+    return version.split(".", 1)[0]
+
+
+def baseline_breaks(baselines: dict[str, dict[str, Any]], new: dict[str, Any],
+                    version: str = client_api.VERSION) -> list[str]:
+    """What `new` breaks against the frozen baselines (`{version: spec}`) of `version`'s major, each problem
+    prefixed with the baseline it breaks; baselines of an older major do not apply (that is what a major bump is)."""
+    out = []
+    for name, old in sorted(baselines.items()):
+        if major(name) == major(version):
+            out += [f"client-api {name} baseline: {p}" for p in breaking_changes(old, new)]
+    return out

@@ -14,11 +14,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import custom, facets, relations, service
 from .contract import ObservationBatchV1
-from .models import NodeState
+from .models import Canonical, NodeState
 from .service import Ctx
 
 FIXTURE = "connectors-v1"
@@ -124,6 +125,19 @@ ACHIEVEMENTS = [
 def seeded(session: Session) -> dict[str, str] | None:
     row = session.get(NodeState, MARK)
     return json.loads(row.value) if row is not None else None
+
+
+def refusal(session: Session, settings: Any) -> str | None:
+    """Why `atlas seed` should not run here without `--force` (None when it may): the catalogue is invented, and
+    seeding writes it to the change log, so only a fresh, non-authority database is seeded by default. Re-running
+    on a database this seed already filled is fine (it is idempotent)."""
+    if seeded(session) is not None:
+        return None
+    if getattr(settings, "role", None) == "authority":
+        return "refusing to seed an authority node"
+    if session.scalar(select(Canonical.id).limit(1)) is not None:
+        return "refusing to seed a database that already holds records"
+    return None
 
 
 def seed(session: Session, ctx: Ctx, fixture: str = FIXTURE) -> tuple[dict[str, str], bool]:

@@ -236,6 +236,16 @@ def test_public_read_opens_the_client_reads_only(tmp_path):
                      f"/api/v2/games/{cid}/achievements"):
             assert c.get(path).status_code == 200, path
         assert c.post("/api/v2/games/batch", json={"ids": [cid]}).status_code == 200
+        # anonymous many-item reads are capped lower than a token holder's (one call is one rate-limit hit)
+        cap = client_api.ANONYMOUS_ITEMS
+        assert c.get("/api/v2/site").json()["client_api"]["limits"] == {"batch_items": 200, "anonymous_items": cap}
+        assert c.post("/api/v2/games/batch", json={"ids": [cid] * cap}).status_code == 200
+        assert c.post("/api/v2/games/batch", json={"ids": [cid] * (cap + 1)}).status_code == 413
+        assert c.post("/api/v2/records/batch", json={"ids": [cid] * (cap + 1)}).status_code == 413
+        assert c.post("/api/v2/resolve", json={"items": [{"title": "Highfield"}] * (cap + 1)}).status_code == 413
+        r = c.post("/api/v2/tokens", json={"name": "r", "scopes": ["read"]}, headers=H(ADMIN))
+        assert c.post("/api/v2/games/batch", json={"ids": [cid] * (cap + 1)},
+                      headers=H(r.json()["token"])).status_code == 200
         assert c.post("/api/v2/resolve", json={"items": [{"title": "Highfield"}]}).status_code == 200
         # outside the client subset a token is still needed, and a bad token is never treated as anonymous
         assert c.get(f"/api/v2/games/{cid}/explain").status_code == 401
@@ -394,7 +404,8 @@ def test_pairing_needs_a_signed_in_user(atlas):
     assert r.status_code in (302, 303) and "/login" in r.headers["location"]
 
 
-def test_pairing_limits(atlas, clock):
+def test_pairing_limits(atlas, clock, monkeypatch):
+    monkeypatch.setattr(pairing, "MAX_OPEN_PER_IP", pairing.MAX_OPEN)  # the node-wide cap alone
     for i in range(pairing.MAX_OPEN):
         pair(atlas, label=f"device {i}")
     r = atlas.post("/api/v2/client/pair", json={"label": "one too many"})
@@ -404,6 +415,18 @@ def test_pairing_limits(atlas, clock):
     # labels are bounded and printable
     assert atlas.post("/api/v2/client/pair", json={"label": "x" * 65}).status_code == 422
     assert atlas.post("/api/v2/client/pair", json={"label": "bad\nlabel"}).status_code == 422
+
+
+def test_one_address_cannot_hold_every_pairing_slot(atlas, clock):
+    for i in range(pairing.MAX_OPEN_PER_IP):
+        pair(atlas, label=f"device {i}")
+    r = atlas.post("/api/v2/client/pair", json={"label": "a fourth"})
+    assert r.status_code == 429 and "this address" in r.text
+    with atlas.st.maker() as s:  # another address still gets a slot
+        assert pairing.start(s, "elsewhere", "agent", "192.0.2.7")["code"]
+        s.rollback()
+    clock["t"] += 601
+    pair(atlas)
 
 
 def test_pair_is_on_the_anonymous_per_ip_budget(atlas, clock):

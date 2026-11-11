@@ -407,8 +407,36 @@ def client_openapi_text() -> str:
     return json.dumps(client_openapi(), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
+CLIENT_BASELINES = ROOT / "contracts" / "client-api-baselines"
+
+
+def client_baselines() -> dict[str, dict[str, Any]]:
+    """The frozen client-api baselines (`{version: spec}`), each checked against its pinned sha256
+    (`client_openapi.BASELINES`); a missing, unpinned or edited baseline raises."""
+    from atlas import client_openapi as subset
+
+    found = {p.name[len("openapi-client-"):-len(".json")]: p for p in CLIENT_BASELINES.glob("openapi-client-*.json")}
+    if set(found) != set(subset.BASELINES):
+        raise SystemExit(f"client-api baselines on disk {sorted(found)} differ from the pinned ones "
+                         f"{sorted(subset.BASELINES)} (atlas/client_openapi.py BASELINES)")
+    out = {}
+    for name, path in found.items():
+        raw = path.read_bytes().replace(b"\r\n", b"\n")
+        if hashlib.sha256(raw).hexdigest() != subset.BASELINES[name]:
+            raise SystemExit(f"contracts/client-api-baselines/{path.name} was edited: a released baseline is frozen")
+        out[name] = json.loads(raw)
+    return out
+
+
 def write_client_openapi(target: Path | None = None) -> Path:
-    """Write the client OpenAPI file and its `.sha256` sidecar (LF bytes, like `contracts/vocab-v1.json`)."""
+    """Write the client OpenAPI file and its `.sha256` sidecar (LF bytes, like `contracts/vocab-v1.json`). Refuses
+    output that breaks a frozen baseline of the current client-api major (C15 §9.2 item 6): a break needs a major."""
+    from atlas import client_openapi as subset
+
+    problems = subset.baseline_breaks(client_baselines(), client_openapi())
+    if problems:
+        raise SystemExit("refusing to write a breaking client OpenAPI (C15 §9.2 item 6; a break needs a new "
+                         "client_api.VERSION major):\n  " + "\n  ".join(problems))
     target = target or ROOT / "contracts" / "openapi-client-v1.json"
     data = client_openapi_text().encode("utf-8")
     target.write_bytes(data)
