@@ -180,10 +180,22 @@ def test_breaking_changes_are_reported(edit, words):
 
 # ---- the fixtures (§9.3) ------------------------------------------------------------------------------------------
 
+def clean_env(**extra: str) -> dict[str, str]:
+    """The environment of a subprocess run of the tools: no ATLAS_* variable of the test run leaks in."""
+    import os
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ATLAS_")}
+    return {**env, "PYTHONIOENCODING": "utf-8", **extra}
+
+
 @pytest.fixture(scope="module")
 def exported(tmp_path_factory) -> Path:
+    """A fresh export, in its own process exactly as a developer runs it: in-process, state left by earlier tests in
+    a full run (module caches, settings, ids) could make the export differ from the committed copy."""
     out = tmp_path_factory.mktemp("client-fixtures")
-    export_client_fixtures.export(out)
+    done = subprocess.run([sys.executable, "tools/export_client_fixtures.py", "--out", str(out)], cwd=ROOT,
+                          env=clean_env(), capture_output=True, text=True, timeout=600)
+    assert done.returncode == 0, done.stderr[-4000:]
     return out
 
 
@@ -195,8 +207,10 @@ def tree(root: Path) -> dict[str, bytes]:
 def test_committed_fixtures_are_what_the_exporter_writes(exported):
     got, committed = tree(exported), tree(FIXTURES)
     assert sorted(got) == sorted(committed), "run python tools/export_client_fixtures.py"
-    for name in got:
-        assert got[name] == committed[name], f"{name} differs: run python tools/export_client_fixtures.py"
+    differ = [name for name in got if got[name] != committed[name]]
+    detail = {name: (committed[name][:2000].decode("utf-8", "replace"), got[name][:2000].decode("utf-8", "replace"))
+              for name in differ if name != "SHA256SUMS"}
+    assert not differ, f"{differ} differ (committed, exported): {detail}; run python tools/export_client_fixtures.py"
 
 
 def test_fixture_sums_and_manifest(exported):
