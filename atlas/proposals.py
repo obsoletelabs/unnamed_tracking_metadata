@@ -169,6 +169,32 @@ def _community_obs(session: Session, cid: str) -> Observation | None:
         Observation.source == SOURCE, Observation.external_id == cid, Observation.is_current.is_(True))).first()
 
 
+def field_value(payload: dict[str, Any] | None, field: str) -> Any:
+    """The value of one edit-form field in a community observation's payload (the inverse of `_merge_edit`)."""
+    payload = payload or {}
+    release = ((payload.get("ext") or {}).get("release") or {})
+    if field == "title":
+        return payload.get("title")
+    if field == "release_date":
+        return payload.get("release_date") or (release.get("first") or {}).get("date")
+    if field == "releases":
+        return release.get("entries")
+    if field in ("platforms", "provider_ids"):
+        return payload.get(field)
+    return (payload.get("facts") or {}).get(field)
+
+
+def _replicate(session: Session, ctx: Ctx, p: Proposal, fields: dict[str, Any]) -> None:
+    """C14-4 (super group): an applied (or reverted) edit is written once here and synced to every member."""
+    from . import super_group
+
+    if not fields or p.canonical_id is None:
+        return
+    row = session.get(Canonical, p.canonical_id)
+    super_group.record_written(session, ctx, p.canonical_id, fields, row.media_type if row is not None else None,
+                               author=p.proposer_id)
+
+
 def _to_item(cid: str, reported: dict[str, Any]) -> dict[str, Any]:
     item = {k: v for k, v in reported.items() if k in ("title", "platform", "platforms", "edition", "release_date",
                                                        "provider_ids", "facts", "source_updated_at", "ext")}
@@ -251,6 +277,7 @@ def apply(session: Session, ctx: Ctx, p: Proposal) -> None:
             p.previous = {**p.previous, "custom": {k: old.get(k) for k in p.payload["custom"]}}
             custom.set_values(session, ctx, cid, SOURCE, p.payload["custom"],
                               redistributable=ctx.settings.role == "authority")
+        _replicate(session, ctx, p, core)
     elif p.kind == "new_game":
         reported = _merge_edit({}, {k: v for k, v in p.payload.items() if k not in ("provider_ids", "custom", "media_type")})
         if p.payload.get("provider_ids"):
@@ -261,6 +288,7 @@ def apply(session: Session, ctx: Ctx, p: Proposal) -> None:
             custom.set_values(session, ctx, p.canonical_id, SOURCE, p.payload["custom"],
                               redistributable=ctx.settings.role == "authority")
         p.previous = {"created": True}
+        _replicate(session, ctx, p, {k: v for k, v in p.payload.items() if k not in ("custom", "media_type")})
     elif p.kind in ("artwork", "achievements"):
         cid = p.canonical_id
         if cid is None or session.get(Canonical, cid) is None:
@@ -322,6 +350,12 @@ def revert_applied(session: Session, ctx: Ctx, p: Proposal) -> None:
         before = prev.get("payload")
         if not p.payload.keys() - {"custom"}:
             return
+        # C14-4: the reverted values are a write like any other, so every member of the super group reverts too
+        from . import super_group
+
+        _replicate(session, ctx, p, {k: super_group.value_before(session, p.canonical_id, k, v,  # type: ignore[arg-type]
+                                                                 field_value(before, k))
+                                     for k, v in p.payload.items() if k != "custom"})
         if before:
             _ingest_community(session, ctx, p.canonical_id, before)  # type: ignore[arg-type]
         else:  # there was no community observation: neutralise it by superseding with an empty claim

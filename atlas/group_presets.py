@@ -35,13 +35,17 @@ KEYS = ("group_profile_sync", "group_signin", "group_signin_public", "group_auto
         # CONTRACT-C14 §3.8 (C14-2)
         "group_assist_ask", "group_assist_answer", "group_assist_share_provider_data", "group_assist_lookups",
         "group_assist_lookup_reserve", "group_assist_auto_adopt", "group_assist_group_before_origin",
-        "group_data_public_pages", "group_share_contribution_state")
+        "group_data_public_pages", "group_share_contribution_state",
+        # C14-4 (super group)
+        "group_super")
 #: C14 §3.8: the sharing rows of the full-trust preset (H59-H62, H64, H67). `group_assist_lookup_reserve`,
 #: `group_assist_ask` and `group_share_contribution_state` keep their defaults (0.5, on, on).
 ASSIST_FULL_TRUST = {"group_assist_answer": "group", "group_assist_share_provider_data": "fields+media+achievements",
                      "group_assist_lookups": "answer+ask", "group_assist_auto_adopt": True,
                      "group_assist_group_before_origin": True, "group_data_public_pages": True}
-_FULL_TRUST = {"group_auto_provision": True, "group_trust_remote_mfa": True, **ASSIST_FULL_TRUST}
+#: C14-4: "Same owner, full trust" makes the group one node for its users (owner request 2026-11-10).
+SUPER_FULL_TRUST = {"group_super": True}
+_FULL_TRUST = {"group_auto_provision": True, "group_trust_remote_mfa": True, **ASSIST_FULL_TRUST, **SUPER_FULL_TRUST}
 _WITH_ADMIN = {"group_federated_privilege": "local_mfa", "group_max_delegated_role": "admin"}
 #: The rows an enrolment's preset writes when the join completes (U3 review): the rows that tell the presets apart.
 #: The rows left out here (the public login buttons, local MFA for delegated rights) keep whatever the administrator

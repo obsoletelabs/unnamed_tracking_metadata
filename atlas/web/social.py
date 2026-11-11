@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
-from .. import accounts, scope, social
+from .. import accounts, scope, social, super_group
 from ..models import Canonical, Comment, Follow, ListItem, Notification, Proposal, Report, User, UserList
 from ..service import AtlasError
 from . import release_year
@@ -149,6 +149,7 @@ def list_create(p: Annotated[Ctx, Depends(user_form)], name: Annotated[str, Form
         row = social.create_list(p.session, p.st.ctx, p.me, name, description, public == "on")
     except AtlasError as exc:
         raise fail(exc) from exc
+    super_group.list_written(p.session, p.st.ctx, p.me, row)  # C14-4: written once, synced to every node
     return go(f"/list/{row.id}", "saved")
 
 
@@ -188,12 +189,15 @@ def list_settings(lid: str, p: Annotated[Ctx, Depends(user_form)], name: Annotat
     if clash:
         raise HTTPException(409, "You already have a list with that name.")
     row.name, row.description, row.public = name, description.strip()[:300], public == "on"
+    super_group.list_written(p.session, p.st.ctx, p.me, row)
     return go(f"/list/{lid}", "saved")
 
 
 @router.post("/list/{lid}/delete")
 def list_delete(lid: str, p: Annotated[Ctx, Depends(user_form)]):
     try:
+        row = social.owned_list(p.session, lid, p.me)
+        super_group.list_written(p.session, p.st.ctx, p.me, row, deleted=True)
         social.delete_list(p.session, p.me, lid)
     except AtlasError as exc:
         raise fail(exc) from exc
@@ -205,6 +209,8 @@ def list_add(lid: str, p: Annotated[Ctx, Depends(user_form)], game: Annotated[st
              note: Annotated[str, Form(max_length=200)] = "", to: Annotated[str, Form()] = ""):
     try:
         social.add_to_list(p.session, p.st.ctx, p.me, lid, game, note, viewer=p.viewer)
+        super_group.list_item_written(p.session, p.st.ctx, p.me, social.owned_list(p.session, lid, p.me), game,
+                                      note.strip())
     except AtlasError as exc:
         raise fail(exc) from exc
     return go(back(f"/list/{lid}", to), "saved")
@@ -214,6 +220,8 @@ def list_add(lid: str, p: Annotated[Ctx, Depends(user_form)], game: Annotated[st
 def list_remove(lid: str, p: Annotated[Ctx, Depends(user_form)], game: Annotated[str, Form(max_length=40)]):
     try:
         social.remove_from_list(p.session, p.me, lid, game)
+        super_group.list_item_written(p.session, p.st.ctx, p.me, social.owned_list(p.session, lid, p.me), game,
+                                      deleted=True)
     except AtlasError as exc:
         raise fail(exc) from exc
     return go(f"/list/{lid}", "saved")

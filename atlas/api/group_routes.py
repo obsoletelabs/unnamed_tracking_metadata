@@ -32,7 +32,8 @@ CALL_OPS = ("hello", "state", "rotations", "heads", "changes", "snapshot", "noti
             "push", "member_update",  # P7 (#122): push signed state to a member; send this node's member update
             "assist.find", "assist.fetch", "assist.blob",  # C14 §3.3, §3.6: ask the group for records and images
             "assist.lookup", "assist.status",  # C14 §4.2, §4.4: provider lookups on behalf, shared headroom
-            "link.state")  # C14 §7.7 (H67): shared contribution state
+            "link.state",  # C14 §7.7 (H67): shared contribution state
+            "group.writes")  # C14-4 (super group): user writes replicated to every member
 #: Ops whose answer depends on this node's local policy; a member with the policy off answers `forbidden`.
 ASSIST_OPS = ("assist.find", "assist.fetch", "assist.blob", "assist.lookup", "assist.status")
 #: Client-side caps on a member's sealed answer (CONTRACT-C14 §3.10, fixes V2: `call()` used to read any answer
@@ -314,6 +315,13 @@ def _op(session, st: AppState, group: OwnerGroup, identity: NodeIdentity, inner:
         try:
             return contrib_state.serve(session, st.ctx.settings, identity, params)
         except contrib_state.StateError as exc:
+            raise _OpError(exc.code) from None
+    if op == "group.writes":
+        from .. import super_group
+
+        try:
+            return super_group.serve(session, st.ctx.settings, identity, tr, inner["n"], params)
+        except super_group.WriteError as exc:
             raise _OpError(exc.code) from None
     return None
 

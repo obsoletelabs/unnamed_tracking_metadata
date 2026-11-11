@@ -165,6 +165,12 @@ REGISTRY: tuple[Spec, ...] = (
     S("group_share_contribution_state", "Share contribution state with your other nodes", GROUP_POLICY, "bool",
       "Edits proposed to a main Atlas show as waiting or applied on every node of your group. Only the state "
       "travels: never the values, reviewer notes or account details."),
+    # C14-4 (super group, owner request 2026-11-10): the group presents as one node.
+    S("group_super", "Act as one node with your other nodes", GROUP_POLICY, "bool",
+      "Edits to games and people's lists made on any node of your group are signed and copied to every other node, "
+      "so each node shows the same thing. Concurrent edits are settled the same way everywhere (the latest wins) "
+      "and listed for administrators under Admin -> Node group. What arrives this way stays shared with your nodes "
+      "only: it is never signed into this node's public feed or sent to a main Atlas."),
     # CONTRACT-C14 Part C (C14-3, H73): linking local nodes to this node (authorities only).
     S("link_enabled", "Let local nodes link and propose edits", "Federation", "bool",
       "On an authority, people can link their own Atlas node to their account here (device code, QR and a "

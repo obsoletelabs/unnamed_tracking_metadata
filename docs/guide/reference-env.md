@@ -73,6 +73,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_GROUP_ASSIST_AUTO_ADOPT` | `false` | Asking your nodes: apply waiting changes a member reports it applied without the "Use what <member> has" click (same-owner preset). **live** |
 | `ATLAS_GROUP_ASSIST_GROUP_BEFORE_ORIGIN` | `false` | Asking your nodes: fetch images from a member before their origin (same-owner preset); otherwise only when the origin fails. **live** |
 | `ATLAS_GROUP_SHARE_CONTRIBUTION_STATE` | `true` | Share the state of this node's proposals to a main Atlas with the other members of the owner group, and show theirs (on by default). **live** |
+| `ATLAS_GROUP_SUPER` | `false` | Super group (C14-4): the owner group presents to its users as one node; user writes are synced to every member through the sealed `group.writes` op. **live** |
 | `ATLAS_GROUP_ASSIST_MAX_JOBS` | `5000` | Asking your nodes: the most games queued at once (5000). |
 | `ATLAS_GROUP_ASSIST_RUN_LIMIT` | `50` | Asking your nodes: games asked for per group round (50). |
 | `ATLAS_GROUP_ASSIST_GIVE_UP_DAYS` | `30` | Asking your nodes: days after which a game nobody has is no longer asked for automatically (30). |

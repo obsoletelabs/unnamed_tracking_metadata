@@ -23,7 +23,7 @@ NOW = datetime.now(UTC).replace(microsecond=0)
 STAMP = "2026-11-02 10:00:00"
 INDEXES = {"uq_price_dedup", "ix_price_latest", "ix_price_offer", "ix_price_purge"}
 KEPT = "price_observation_0033_kept"
-HEAD = "0040"  # C14-3 (node links) is the head now
+HEAD = "0041"  # C14-4 (super group) is the head now
 RECORDS = {"atlas:game": "Priced Game", "atlas:dlc": "Priced Game DLC", "atlas:dup": "Priced Game (dup)",
            "atlas:dup2": "Priced Game (dup 2)", "atlas:old": "Old Merged"}
 

@@ -1,0 +1,9 @@
+{# The admin group bar (C14-4): which member served this page and the group's health, on every page, for
+   administrators only (base.html includes it under `p.is_admin`). People never see the topology. #}
+<aside class="group-bar small" data-group-bar aria-label="Node group (administrators only)">
+  <span>Served by <strong data-group-bar-served>{{ sg_bar.served_by }}</strong></span>
+  <span>· One node of {{ sg_bar.members }}</span>
+  {% if sg_bar.unreached %}<span class="badge warn" data-group-bar-unreached="{{ sg_bar.unreached }}">{{ sg_bar.unreached }} not reached</span>{% endif %}
+  {% if sg_bar.conflicts %}<a class="badge warn" href="/admin/group#one-node" data-group-bar-conflicts="{{ sg_bar.conflicts }}">{{ sg_bar.conflicts }} conflict{{ '' if sg_bar.conflicts == 1 else 's' }}</a>{% endif %}
+  <a href="/admin/group#one-node">Group</a>
+</aside>

@@ -1,0 +1,24 @@
+{# Admin > Node group: the super group (C14-4). The topology people never see: which member wrote what, who is
+   behind, which writes wait and why, and the conflicts settled the same way on every node. `sg` from
+   super_group.overview. #}
+<section class="card inset" id="one-node" aria-labelledby="g-one-node" data-super-group="{{ 'on' if sg.enabled else 'off' }}">
+  <h3 id="g-one-node">One node for your users</h3>
+  {% if not sg.enabled %}<p class="small muted">Off on this node. Turn on "Act as one node with your other nodes" under <a href="#policy">Local policy</a> (the "Same owner, full trust" preset does) so edits and lists made on any node show on every node.</p>
+  {% else %}
+  <p class="small muted">{{ sg.writes }} write{{ '' if sg.writes == 1 else 's' }} held here, {{ sg.own }} made on this node. People see one site: none of this is shown to them.</p>
+  <table class="small" data-super-group-members><caption class="sr">Members</caption>
+    <thead><tr><th scope="col">Node</th><th scope="col">Last pulled</th><th scope="col">Behind this node</th><th scope="col">State</th></tr></thead><tbody>
+    {% for m in sg.members %}<tr data-sg-member="{{ m.node }}" data-sg-state="{{ m.error or 'ok' }}"><td><strong>{{ m.name }}</strong> <span class="mono">{{ m.node[:8] }}</span></td>
+      <td>{% if m.seen %}{{ when(m.seen, relative=True) }}{% else %}never{% endif %}</td><td>{{ m.behind }}</td>
+      <td>{% if m.error == 'unsupported' %}<span class="badge warn">degraded</span> runs a release without one-node sync{% elif m.error == 'off' %}<span class="badge warn">off there</span>{% elif m.error %}<span class="badge warn">{{ m.error }}</span>{% elif m.status == 'expired' %}<span class="badge warn">certificate expired: its writes are held</span>{% else %}<span class="badge ok">in step</span>{% endif %}</td></tr>
+    {% else %}<tr><td colspan="4" class="muted">No other member yet.</td></tr>{% endfor %}
+  </tbody></table>
+  {% if sg.held or sg.waiting %}<p class="small" data-sg-held>{% for r, n in sg.held.items() %}<span class="badge warn">{{ n }} held: {{ {'origin_expired': 'its node’s certificate expired', 'clock_ahead': 'dated ahead of this clock', 'unknown_kind': 'from a newer release'}.get(r, r) }}</span> {% endfor %}{% for r, n in sg.waiting.items() %}<span class="badge">{{ n }} waiting: {{ {'no_account': 'account not linked here', 'no_record': 'game asked from your nodes', 'no_list': 'list not here yet', 'media_type': 'media type not adopted', 'invalid': 'value refused here'}.get(r, r) }}</span> {% endfor %}</p>{% endif %}
+  <h4>Conflicts {% if sg.open_conflicts %}<span class="badge warn" data-sg-open-conflicts="{{ sg.open_conflicts }}">{{ sg.open_conflicts }}</span>{% endif %}</h4>
+  <p class="small muted">Two nodes changed the same thing before they heard of each other. Every node keeps the later change (the same one everywhere); the earlier one is listed here once.</p>
+  {% if sg.conflicts %}<table class="small" data-sg-conflicts><thead><tr><th scope="col">What</th><th scope="col">Kept</th><th scope="col">Overwritten</th><th scope="col">Seen</th></tr></thead><tbody>
+  {% for c in sg.conflicts %}<tr data-sg-conflict="{{ c.id }}"><td class="mono">{{ label(c.subject) }}</td><td>{{ sg.names.get(c.winner_node, c.winner_node[:8]) }}</td><td>{{ sg.names.get(c.loser_node, c.loser_node[:8]) }}</td>
+    <td>{% if c.seen_at %}{{ when(c.seen_at) }}{% else %}<form class="inline" method="post" action="/admin/group/conflicts/{{ c.id }}/seen">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Mark seen</button></form>{% endif %}</td></tr>{% endfor %}
+  </tbody></table>{% else %}<p class="small muted" data-sg-conflicts="0">None.</p>{% endif %}
+  {% endif %}
+</section>
