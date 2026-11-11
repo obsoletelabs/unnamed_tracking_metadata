@@ -87,5 +87,7 @@ Changing the categories recalculates what visitors see in the background. While 
 ## Upgrading
 
 Migration `0038` adds the ceiling columns and starts that background recalculation. Until it has reached a
-record, that record is shown as the previous release showed it. A downgrade is refused while any record has a
+record, that record is shown as the previous release showed it. The public feed does not wait: a record is
+recalculated on the spot before it is signed, so `atlas feed introduce` never signs a value from your libraries
+or your nodes and never introduces a record that exists only through them. A downgrade is refused while any record has a
 ceiling. With `ATLAS_DOWNGRADE_FORCE=1` the ceilings are kept aside and restored by the next upgrade.

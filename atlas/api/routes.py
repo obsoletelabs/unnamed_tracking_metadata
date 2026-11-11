@@ -1458,15 +1458,23 @@ def served_media(session: Session, st: AppState, digest: str, missing: str, *, v
 
 @router.get("/sync/media/{digest}", tags=["federation"])
 def sync_media(digest: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")], st: St, session: Sess,
-               _: Annotated[auth.Principal, Depends(require("sync"))]):
+               who: Annotated[auth.Principal, Depends(require("sync"))]):
     """C13 §6.2: the cached bytes of an image this node federates, for the followers that received its row. A blob is
     served only when a row referencing it may federate (C12 §12.5.5 applied to bytes): redistributable, not local-only,
     of a source whose policy federates, with the licence `cc0` or `owner_upload` (or `unknown` on a curated URL row
     when `federation_media_unknown_licence` is on, H58). Anything else is 404, so this never discloses provider,
     private or licence-withheld media. Content addressed: the follower checks the hash."""
+    from .. import scope
+
     settings = st.ctx.settings
-    rows = session.scalars(select(Artwork).where(
-        Artwork.blob_hash == digest, Artwork.redistributable.is_(True), Artwork.local_only.is_(False)).limit(20))
+    # C14 §5.4/§5.7: never the art of a record under a ceiling (the feed never carries it), never art the caller
+    # may not see (received from the group, of a hidden record): the same 404 as an unknown digest
+    ceilinged = select(Canonical.id).where(Canonical.scope_ceiling.is_not(None))
+    stmt = select(Artwork).where(Artwork.blob_hash == digest, Artwork.redistributable.is_(True),
+                                 Artwork.local_only.is_(False), Artwork.canonical_id.not_in(ceilinged))
+    if (clause := scope.artwork_clause(_viewer(session, st, who), settings)) is not None:
+        stmt = stmt.where(clause)
+    rows = session.scalars(stmt.limit(20))
     for row in rows:
         pol = media_policy.policy(settings, row.source)
         licence = row.licence or pol.licence or ("owner_upload" if media.is_upload(settings, row.url) else "unknown")

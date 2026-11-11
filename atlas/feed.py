@@ -276,6 +276,20 @@ def _identity_observation(session: Session, ctx: Any, body: dict[str, Any]) -> O
     return obs
 
 
+def project_now(session: Session, ctx: Any, record: Canonical) -> bool:
+    """C14 §5.7 (T-S11) while the post-upgrade reprojection is still running: a record that needs a projection but
+    has none yet gets it now, so `record_body` never signs a host/plugin or group value and `introduce` never
+    publishes a record a visitor may not see. Returns whether the record exists for a visitor."""
+    from . import scope
+    from .models import ScopeProjection
+
+    proj = session.get(ScopeProjection, (record.id, scope.ANON_OFF))
+    if proj is None and scope.needs_projection(session, record):
+        scope.reproject(session, ctx, record.id)
+        proj = session.get(ScopeProjection, (record.id, scope.ANON_OFF))
+    return proj is None or bool(proj.present)
+
+
 def ensure_introduced(session: Session, ctx: Any, cid: str, because: str) -> int | None:
     """Introduce `cid` on this feed unless it already is (C13 §4.1). Returns the seq signed, or None.
 
@@ -292,6 +306,7 @@ def ensure_introduced(session: Session, ctx: Any, cid: str, because: str) -> int
     if mode == VIA_LEGACY:
         mark(session, cid, None, VIA_LEGACY, because)
         return None
+    project_now(session, ctx, record)
     body = record_body(session, ctx.settings, record, because)
     obs = _identity_observation(session, ctx, body)
     if mode == VIA_BRIDGE:
@@ -382,6 +397,9 @@ def introduce_batch(session: Session, ctx: Any, scope: str, *, limit: int = INTR
     rows = candidates(session, scope, after, limit)
     signed = 0
     for row in rows:
+        if scope == "all" and not project_now(session, ctx, row):
+            after = row.id  # not projected yet when the batch was chosen: a record a visitor may not see
+            continue
         if ensure_introduced(session, ctx, row.id, "backfill") is not None:
             signed += 1
         after = row.id

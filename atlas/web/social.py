@@ -46,6 +46,11 @@ def game_title(p: Ctx, cid: str) -> str:
     return (row.view.get("title") if row and row.view else None) or cid
 
 
+def _hidden(p: Ctx, cid: str) -> bool:
+    row = p.session.get(Canonical, cid)
+    return row is not None and scope.visible(p.session, p.viewer, row) is None
+
+
 # ---- profiles -----------------------------------------------------------------------------------------
 
 @router.get("/u/{username}", response_class=HTMLResponse)
@@ -57,6 +62,8 @@ def profile(username: str, p: Annotated[Ctx, Depends(page)]):
     accepted = []
     for pr in p.session.scalars(select(Proposal).where(Proposal.proposer_id == u.id, Proposal.status == "approved")
                                 .order_by(Proposal.decided_at.desc()).limit(15)):
+        if pr.canonical_id and _hidden(p, pr.canonical_id):
+            continue  # C14 §5.7: a record the visitor may not see is not named, not even by its id
         accepted.append({"kind": pr.kind.replace("_", " "), "cid": pr.canonical_id, "when": pr.decided_at,
                          "title": game_title(p, pr.canonical_id) if pr.canonical_id else "(new game)"})
     lists = list(p.session.scalars(select(UserList).where(UserList.user_id == u.id, UserList.public.is_(True))))
@@ -197,7 +204,7 @@ def list_delete(lid: str, p: Annotated[Ctx, Depends(user_form)]):
 def list_add(lid: str, p: Annotated[Ctx, Depends(user_form)], game: Annotated[str, Form(max_length=40)],
              note: Annotated[str, Form(max_length=200)] = "", to: Annotated[str, Form()] = ""):
     try:
-        social.add_to_list(p.session, p.st.ctx, p.me, lid, game, note)
+        social.add_to_list(p.session, p.st.ctx, p.me, lid, game, note, viewer=p.viewer)
     except AtlasError as exc:
         raise fail(exc) from exc
     return go(back(f"/list/{lid}", to), "saved")
@@ -218,7 +225,7 @@ def list_remove(lid: str, p: Annotated[Ctx, Depends(user_form)], game: Annotated
 def follow(p: Annotated[Ctx, Depends(user_form)], type: Annotated[str, Form(max_length=8)],
            target: Annotated[str, Form(max_length=40)], to: Annotated[str, Form()] = ""):
     try:
-        social.follow(p.session, p.st.ctx, p.me, type, target)
+        social.follow(p.session, p.st.ctx, p.me, type, target, viewer=p.viewer)
     except AtlasError as exc:
         raise fail(exc) from exc
     return go(back("/me/following", to), "saved")
@@ -276,7 +283,8 @@ def comment_game(cid: str, p: Annotated[Ctx, Depends(user_form)], body: Annotate
                  parent: Annotated[str, Form(max_length=26)] = ""):
     throttle(p, f"comment:{p.me.id}", 6, 60, "You are commenting too quickly")
     try:
-        row = social.add_comment(p.session, p.st.ctx, p.me, body, canonical_id=cid, parent_id=parent or None)
+        row = social.add_comment(p.session, p.st.ctx, p.me, body, canonical_id=cid, parent_id=parent or None,
+                                 viewer=p.viewer)
     except AtlasError as exc:
         p.session.rollback()
         raise fail(exc) from exc

@@ -606,8 +606,11 @@ def test_standalone_node_public_pages_unchanged(node, monkeypatch):
 def _seed_wide(node):
     """Facets that must follow their record's visibility: a group observation (a withheld description) on the public
     record, relations from the public record to the hidden ones, an achievement on the group record, an image of
-    the host record, and a public list holding all three records."""
-    from atlas.models import Achievement, Artwork, ListItem, Relation, UserList
+    the host record, and a public list holding all three records. Third review: a group-received achievement on the
+    public record (the editor's "From other sources") and an accepted proposal on the host-only record (a profile)."""
+    from datetime import UTC, datetime
+
+    from atlas.models import Achievement, Artwork, ListItem, Proposal, Relation, UserList
 
     with node.st.maker() as s:
         _ingest(s, node.st.ctx, "igdb", [{"external_id": "w1", "title": "Webpublic Alpha",
@@ -617,10 +620,13 @@ def _seed_wide(node):
         ach = Achievement(canonical_id=node.grp, source="group:n1", external_id="a1", name=f"Ach {GROUP_MARK}",
                           norm_name="ach", description=f"Ach {GROUP_MARK}")
         art = Artwork(canonical_id=node.host, source="playnite", kind="cover", url=f"https://img.invalid/{HOST_MARK}.png")
-        s.add_all([ach, art])
+        s.add_all([ach, art, Achievement(canonical_id=node.pub, source="group:n1", external_id="a2",
+                                         name=f"Pubach {GROUP_MARK}", norm_name="pubach", tier="gold", points=90)])
         owner = User(username="lister", password_hash=accounts.hash_password(PW), role="user")
         s.add(owner)
         s.flush()
+        s.add(Proposal(kind="edit", canonical_id=node.host, proposer_id=owner.id, payload={"title": "x"},
+                       status="approved", decided_at=datetime.now(UTC)))
         lst = UserList(user_id=owner.id, name="Mixed shelf", public=True)
         s.add(lst)
         s.flush()
@@ -635,7 +641,8 @@ def _web_wide(client, node, ids, extra=()):
     paths = ["/", "/search?q=Web", "/search?q=Groupidentity", f"/game/{node.pub}", f"/game/{node.pub}/relations",
              f"/game/{node.pub}/links", f"/game/{node.host}/relations", f"/game/{node.host}/links",
              f"/game/{node.grp}/achievements/{ids['ach']}", f"/game/{node.host}/artwork/{ids['art']}",
-             f"/list/{ids['list']}", "/u/lister", *extra]
+             f"/list/{ids['list']}", "/u/lister", f"/game/{node.pub}/achievements/edit",
+             f"/game/{node.grp}/achievements/edit", *extra]
     for path in paths:
         r = client.get(path)
         parts.append(f"{path} {r.status_code} {r.text}")
@@ -682,7 +689,7 @@ def test_canaries_every_surface_every_viewer(node, switch):
 
     def check(blob):
         leaks = [chunk.split(" ", 2)[:2] for chunk in re.split(r"\n(?=/|resolve )", blob)
-                 if HOST_MARK in chunk or GROUP_MARK in chunk]
+                 if HOST_MARK in chunk or GROUP_MARK in chunk or "group:n1" in chunk]
         assert not leaks, f"a withheld value leaked on {leaks}"
         assert (GROUP_TITLE in blob) if switch else (GROUP_TITLE not in blob)
         assert "Your nodes" not in blob
@@ -733,3 +740,108 @@ def test_group_admin_cannot_change_scope_detail(node, monkeypatch):
     # a save that leaves the right as it is still changes role and status
     r = a.post(f"/admin/users/{sid}", data={"csrf": csrf, "role": "user", "status": "active"})
     assert r.status_code == 303
+
+
+@pytest.mark.parametrize("switch", [False, True])
+def test_hidden_record_actions_and_profile(node, switch):
+    """Third review (§5.7, identical 404): a profile never names a hidden record (not even by its id); following,
+    listing or commenting on one answers exactly like an unknown id; the achievement editor leaves out rows
+    received from the group."""
+    ids = _seed_wide(node)
+    _set_switch(node, switch)
+    signup(_fresh(node), "boss")
+    u = _fresh(node)
+    signup(u, "stranger")
+    for client in (_fresh(node), u):
+        r = client.get("/u/lister")
+        assert r.status_code == 200 and node.host not in r.text
+    for path in (f"/game/{node.pub}/achievements/edit", f"/game/{node.grp}/achievements/edit"):
+        r = u.get(path)
+        assert GROUP_MARK not in r.text and "group:n1" not in r.text
+    csrf = token(u, "/me/lists")
+    r = u.post("/me/lists", data={"csrf": csrf, "name": "Probe shelf"})
+    assert r.status_code == 303, r.text
+    with node.st.maker() as s:
+        from atlas.models import Follow, ListItem, UserList
+
+        lid = s.scalars(select(UserList.id).where(UserList.name == "Probe shelf")).one()
+    hidden = [node.host] if switch else [node.host, node.grp]
+    unknown = "0" * 26
+
+    def answers(target):
+        follow = u.post("/follow", data={"csrf": csrf, "type": "game", "target": target})
+        listed = u.post(f"/list/{lid}/add", data={"csrf": csrf, "game": target})
+        return (follow.status_code, follow.text.replace(target, "X"), listed.status_code,
+                listed.text.replace(target, "X"))
+
+    expected = answers(unknown)
+    assert expected[0] == 404 and expected[2] == 404
+    for cid in hidden:
+        assert answers(cid) == expected, f"{cid} answers unlike an unknown id"
+    with node.st.maker() as s:
+        assert not s.scalars(select(Follow).where(Follow.target_id.in_(hidden))).all()
+        assert not s.scalars(select(ListItem).where(ListItem.list_id == lid)).all()
+    # the visible record still works
+    assert u.post("/follow", data={"csrf": csrf, "type": "game", "target": node.pub}).status_code == 303
+    assert u.post(f"/list/{lid}/add", data={"csrf": csrf, "game": node.pub}).status_code == 303
+    assert ids
+
+
+def test_notifications_follow_the_projection(node):
+    """Third review: a follower without scope.detail is never told the title of a record that does not exist for
+    them (host-only), and a proposer is told the projected title, never a host/plugin value."""
+    from atlas import social
+    from atlas.models import Follow, Notification, Proposal
+
+    signup(_fresh(node), "boss")
+    signup(_fresh(node), "stranger")
+    with node.st.maker() as s:
+        sid = s.scalars(select(User.id).where(User.username == "stranger")).one()
+        bid = s.scalars(select(User.id).where(User.username == "boss")).one()
+        s.add_all([Follow(user_id=sid, target_type="game", target_id=node.host),
+                   Follow(user_id=sid, target_type="game", target_id=node.pub)])
+        s.flush()
+        for cid in (node.host, node.pub):
+            theirs = Proposal(kind="edit", canonical_id=cid, proposer_id=bid, payload={}, status="approved")
+            mine = Proposal(kind="edit", canonical_id=cid, proposer_id=sid, payload={}, status="approved")
+            s.add_all([theirs, mine])
+            s.flush()
+            social.on_proposal_applied(s, node.st.ctx, theirs, None)  # the follower is told
+            social.on_proposal_decided(s, node.st.ctx, mine, "approved", None)  # the proposer is told
+        s.commit()
+        texts = [n.title for n in s.scalars(select(Notification).where(Notification.user_id == sid))]
+    assert texts and not any(HOST_MARK in t for t in texts), texts
+    assert not any(node.host in t for t in texts)
+    assert any("Webpublic Alpha was updated" in t for t in texts)
+    assert any("for Webpublic Alpha was approved" in t for t in texts)
+    assert sum("was updated" in t for t in texts) == 1  # nothing about the host-only record
+
+
+def test_introduce_projects_before_signing(session):
+    """Third review (T-S11) while the post-upgrade reprojection is still running: a record with host data but no
+    projection row yet is projected before it is signed, so `introduce --all` neither signs a host value nor
+    introduces a host-only record."""
+    from atlas.service import Ctx
+    from atlas.signing import load_identity
+
+    identity = load_identity(session)
+    session.commit()
+    ctx = Ctx(settings=build_settings(role="authority", **MODES["record"]),
+              identity=identity)
+    [pub] = _ingest(session, ctx, "igdb", [{"external_id": "i1", "title": "Introduce Public"}])
+    [host] = _ingest(session, ctx, "playnite", [{"external_id": "i2", "title": f"Introhost {HOST_MARK}"}],
+                     kind="plugin")
+    session.commit()
+    session.execute(ScopeProjection.__table__.delete())  # as migration 0038 leaves it, before the worker ran
+    session.commit()
+    row = session.get(Canonical, host.canonical_id)
+    assert feed.project_now(session, ctx, row) is False
+    assert HOST_MARK not in repr(feed.record_body(session, ctx.settings, row, "t"))
+    session.execute(ScopeProjection.__table__.delete())
+    session.commit()
+    while not feed.introduce_batch(session, ctx, "all")["finished"]:
+        pass
+    session.commit()
+    assert session.get(FeedIntroduced, pub.canonical_id) is not None
+    assert session.get(FeedIntroduced, host.canonical_id) is None
+    assert HOST_MARK not in repr([e.body for e in session.scalars(select(ChangeLog))])
