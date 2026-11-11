@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import copy
+import difflib
 import hashlib
 import json
 import subprocess
@@ -208,9 +209,18 @@ def test_committed_fixtures_are_what_the_exporter_writes(exported):
     got, committed = tree(exported), tree(FIXTURES)
     assert sorted(got) == sorted(committed), "run python tools/export_client_fixtures.py"
     differ = [name for name in got if got[name] != committed[name]]
-    detail = {name: (committed[name][:2000].decode("utf-8", "replace"), got[name][:2000].decode("utf-8", "replace"))
-              for name in differ if name != "SHA256SUMS"}
-    assert not differ, f"{differ} differ (committed, exported): {detail}; run python tools/export_client_fixtures.py"
+    detail = "\n".join(fixture_diff(name, committed[name], got[name]) for name in differ if name != "SHA256SUMS")
+    assert not differ, f"{differ} differ; run python tools/export_client_fixtures.py\n{detail}"
+
+
+def fixture_diff(name: str, committed: bytes, exported: bytes, *, lines: int = 120) -> str:
+    """A unified diff of the committed and exported copy, from the first differing line on (the next CI failure
+    names the bytes that changed, wherever they are in the file)."""
+    diff = list(difflib.unified_diff(committed.decode("utf-8", "replace").splitlines(),
+                                     exported.decode("utf-8", "replace").splitlines(),
+                                     f"committed/{name}", f"exported/{name}", n=6, lineterm=""))
+    more = f"\n... {len(diff) - lines} more diff lines" if len(diff) > lines else ""
+    return "\n".join(diff[:lines]) + more
 
 
 def test_fixture_sums_and_manifest(exported):

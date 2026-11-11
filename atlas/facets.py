@@ -515,6 +515,9 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
         select(Artwork).where(Artwork.canonical_id == cid, Artwork.source == source))}
     wanted = {(i["kind"], i["url"]) for i in items}
     held: set[tuple[str, str]] = set()
+    # one age for every image this call adds: `legacy_art_rank` orders by age, and per-row clock reads would rank
+    # one batch by how fine the host clock is (equal on a coarse clock, insertion order on a fine one)
+    added_at = now()
     for key, art in existing.items():
         if key not in wanted:
             session.delete(art)
@@ -540,7 +543,7 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
             art = Artwork(canonical_id=cid, source=source, kind=i["kind"], url=i["url"],
                           priority=i["priority"], width=i.get("width"), height=i.get("height"),
                           declared_width=i.get("width"), declared_height=i.get("height"),
-                          redistributable=redistributable)
+                          redistributable=redistributable, created_at=added_at)
             adopt_local_blob(ctx, art)
             session.add(art)
         for field in _ART_FIELDS:
@@ -922,14 +925,14 @@ def _lang_match(have: str | None, want: str | None) -> int:
 def art_rank(settings: Any, a: Artwork, *, region: str | None = None, lang: str | None = None,
              with_duplicate: bool = True) -> tuple[Any, ...]:
     """§12.5.7, smaller is better: curator first, then the community's `preferred`, then not a duplicate, role fit,
-    class, trust, region and language match, priority, measured pixels; ties break on url and source only, values
-    that are the same on every node."""
+    class, trust, region and language match, priority, measured pixels; ties break on url, source and kind only,
+    values that are the same on every node."""
     cls = CLASS_RANK[source_class(a.source)]
     fit = role_fit(a)
     pixels = (a.width or 0) * (a.height or 0) if a.aspect is not None else 0
     return (cls != CLASS_RANK["curator"], not a.preferred, with_duplicate and a.duplicate_of is not None,
             fit is False, -cls, -settings.trust(a.source), -_region_match(a.region, region),
-            -_lang_match(a.locale, lang), a.priority, -pixels, a.url, a.source)
+            -_lang_match(a.locale, lang), a.priority, -pixels, a.url, a.source, a.kind)
 
 
 def dedupe(session: Session, settings: Any, cid: str) -> None:
@@ -972,8 +975,9 @@ def near_duplicates(rows: list[Artwork]) -> dict[str, str]:
 def legacy_art_rank(settings: Any, a: Artwork) -> tuple[Any, ...]:
     """The order `GET /games/{cid}/artwork` has always listed images in, across kinds (before C12): the community's
     `preferred` first, then trust, priority and age; url and source only break the remaining ties. Clients that
-    take the first image rely on it, so it stays the API default (C12 §12.5.7, amendment A18 #18)."""
-    return (not a.preferred, -settings.trust(a.source), a.priority, a.created_at, a.url, a.source)
+    take the first image rely on it, so it stays the API default (C12 §12.5.7, amendment A18 #18). The images one
+    `set_artwork` call adds share one age, so within a batch url, source and kind decide, whatever the host clock."""
+    return (not a.preferred, -settings.trust(a.source), a.priority, a.created_at, a.url, a.source, a.kind)
 
 
 ART_ORDERS = ("legacy", "quality")
