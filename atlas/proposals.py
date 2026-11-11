@@ -353,9 +353,11 @@ def revert_applied(session: Session, ctx: Ctx, p: Proposal) -> None:
         # C14-4: the reverted values are a write like any other, so every member of the super group reverts too
         from . import super_group
 
+        # (only the fields whose group state is still this edit: a later edit on any member stands, review C14-4)
         _replicate(session, ctx, p, {k: super_group.value_before(session, p.canonical_id, k, v,  # type: ignore[arg-type]
                                                                  field_value(before, k))
-                                     for k, v in p.payload.items() if k != "custom"})
+                                     for k, v in p.payload.items() if k != "custom"
+                                     and super_group.revert_allowed(session, ctx, p.canonical_id, k, v)})  # type: ignore[arg-type]
         if before:
             _ingest_community(session, ctx, p.canonical_id, before)  # type: ignore[arg-type]
         else:  # there was no community observation: neutralise it by superseding with an empty claim
@@ -364,6 +366,7 @@ def revert_applied(session: Session, ctx: Ctx, p: Proposal) -> None:
                 cur.is_current = False
                 from .service import rebuild
                 rebuild(session, ctx, p.canonical_id)  # type: ignore[arg-type]
+        super_group.refresh_record(session, ctx, p.canonical_id)  # type: ignore[arg-type]
     elif p.kind == "link_ids":
         for ns, ident in prev.get("added", []):
             row = session.get(Crosswalk, (ns, ident))
@@ -379,6 +382,9 @@ def revert_applied(session: Session, ctx: Ctx, p: Proposal) -> None:
                 cur.is_current = False
             from .service import rebuild
             rebuild(session, ctx, p.canonical_id)  # type: ignore[arg-type]
+        from . import super_group
+
+        super_group.refresh_record(session, ctx, p.canonical_id)  # type: ignore[arg-type]
     elif p.kind == "artwork_default":
         art = session.get(Artwork, p.payload["artwork_id"])
         if art is not None:

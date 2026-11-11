@@ -801,8 +801,10 @@ def resync_skip(p: Annotated[Page, Depends(local_admin_form)], password: PW = ""
 
 
 @router.post("/admin/group/conflicts/{conflict_id}/seen")
-def super_group_conflict_seen(conflict_id: str, p: Annotated[Page, Depends(admin_form)]):
-    """C14-4: an administrator acknowledges a super-group conflict on this node (it stays listed, marked seen)."""
+def super_group_conflict_seen(conflict_id: str, p: Annotated[Page, Depends(local_admin_form)]):
+    """C14-4: an administrator acknowledges a super-group conflict on this node (it stays listed, marked seen). A
+    local administrator only, like the other Node group changes of this page (an admin session opened through
+    another node cannot)."""
     from .. import super_group
 
     if super_group.acknowledge(p.session, conflict_id[:32], p.me.id):

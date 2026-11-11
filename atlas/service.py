@@ -445,7 +445,10 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
 
     move_facets(session, src, dst, ctx.settings)
     move_values(session, src, dst)
-    move_list_items(session, src, dst)
+    moved = move_list_items(session, src, dst)
+    from . import super_group
+
+    super_group.list_items_moved(session, ctx, src, dst, moved)
     move_prices(session, src, dst)  # C8: prices follow the record; they are not part of its view
     neighbours = move_relations(session, src, dst)  # C6.3: no active relation names a merged record
     s.merged_into = dst

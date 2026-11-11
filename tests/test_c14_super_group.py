@@ -314,7 +314,7 @@ def test_user_pages_show_no_node_identity(trio):
         anon = TestClient(node.app, base_url=node.settings.public_url, follow_redirects=False)
         assert login(client, "kim", PASSWORD).status_code == 303
         pages = ["/", "/search?q=Starfall", f"/game/{cid}", "/me", "/me/lists", f"/list/{lid}", "/me/settings",
-                 "/notifications", f"/game/{cid}/edit"]
+                 "/me/conflicts", "/notifications", f"/game/{cid}/edit"]
         game = client.get(f"/game/{cid}").text
         assert "Starfall Harbor" in game and "Old Lantern" in game
         for path in pages:
@@ -392,18 +392,37 @@ def test_writes_of_an_expired_member_are_held_until_renewal(trio, monkeypatch):
     assert states(a) == states(b)
 
 
-def test_replicated_writes_never_go_upstream_or_touch_links(trio):
-    """D2: links stay per node (a relink restarts probation there); a replicated write is never a contribution."""
+def test_replicated_writes_never_go_upstream_or_touch_links(trio, monkeypatch):
+    """D2: links stay per node (a relink restarts probation there); a replicated write is never a contribution. The
+    upstream hook is the one a reviewer's approval runs (`link_client.on_local_approved`): it runs once, on the
+    member where the edit was approved, and never on a member that applied the replicated write."""
+    from atlas import link_client
+    from atlas.models import Proposal
+
     a, b, c = trio
     cid = new_game(a, boss(a), "Starfall Harbor")
     rounds(b, c)
+    pushed: list[str] = []
+    real = link_client.on_local_approved
+    monkeypatch.setattr(link_client, "on_local_approved",
+                        lambda session, ctx, p: pushed.append(ctx.identity.node_id) or real(session, ctx, p))
+    kim = user(a, "kim")  # an ordinary person: the edit waits for a reviewer, whose approval is the upstream path
+    with a.session() as s:
+        p = proposals.create(s, Ctx(a.settings, a.identity), s.get(User, kim), "edit", cid, {"developer": "Tidy"}, "")
+        assert not p.auto_applied
+        proposals.review(s, Ctx(a.settings, a.identity), s.get(User, boss(a)), p.id, approve=True)
+        s.commit()
+    rounds(b, c)
+    assert view(b, cid)["developer"] == view(c, cid)["developer"] == "Tidy"
+    assert pushed == [a.node_id]
     for node in (b, c):
         with node.session() as s:
+            assert s.scalar(select(func.count()).select_from(Proposal)) == 0  # no proposal, so nothing to push
             assert s.scalar(select(func.count()).select_from(UpstreamContribution)) == 0
     import inspect
 
     src = inspect.getsource(super_group)
-    assert "link_client" not in src and "UpstreamLink" not in src and cid
+    assert "link_client" not in src and "UpstreamLink" not in src
 
 
 def test_unknown_kind_is_kept_and_relayed_not_applied(trio):
@@ -738,3 +757,365 @@ def test_serve_clamps_the_acknowledgement(trio):
         head = s.scalar(select(func.max(GroupWrite.id)))
         super_group.serve(s, a.settings, a.identity, tr, b.node_id, {"since": head + 10_000})
         assert super_group._int(s, super_group.ACK + b.node_id) == head
+
+
+# ---- review findings (C14-4 fix pass) ---------------------------------------------------------------------------
+
+def _forge(node, cid: str, field: str, value) -> dict:
+    """A write signed by `node` itself (a buggy or hostile member), stored there as applied so it is served."""
+    with node.session() as s:
+        group = groups.active(s)
+        seq = super_group._own_seq(s, node.node_id)
+        body = {"v": 1, "op_id": f"{node.node_id}:{seq}", "origin": node.node_id, "seq": seq, "kind": "record.field",
+                "subject": f"rec:{cid}/{field}", "hlc": super_group.tick(s, node.node_id), "base": None,
+                "value": value, "deleted": False, "target": {"cid": cid, "field": field, "media_type": "game"}}
+        obj = gc.make_object("group.write", group.group_id, body["op_id"], body,
+                             {"kind": "node", "id": node.node_id, "key_id": node.identity.key_id}, node.identity.private)
+        s.add(GroupWrite(op_id=body["op_id"], origin_node=node.node_id, seq=seq, kind="record.field",
+                         subject=body["subject"], hlc=body["hlc"], status="applied", envelope=obj))
+        s.commit()
+    return body
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("title", {"x": 1}), ("title", 7), ("developer", ["Two"]), ("genres", "Puzzle"), ("genres", [1]),
+    ("release_date", "not a date"), ("website", "http://plain.example"), ("description", "x" * 20001),
+    ("provider_ids", {"Not A Key": "1"}), ("provider_ids", {"steam": 5}),
+])
+def test_values_are_checked_by_their_field_rule(field, value):
+    """Review (high): a value no member could apply is refused at the door, by the rule an edit made here passes."""
+    cid = "atlas:" + "0" * 26
+    body = {"v": 1, "op_id": "ab" * 8 + ":1", "origin": "ab" * 8, "seq": 1, "kind": "record.field",
+            "subject": f"rec:{cid}/{field}", "hlc": "0000000000001.00000." + "ab" * 8, "base": None, "value": value,
+            "deleted": False, "target": {"cid": cid, "field": field, "media_type": "game"}}
+    assert super_group.body_ok(body) == "invalid"
+    good = {"title": "Fine", "developer": "Two", "genres": ["Puzzle"], "release_date": "2021-05",
+            "website": "https://fine.example", "description": "short", "provider_ids": {"steam": "5"}}[field]
+    assert super_group.body_ok({**body, "value": good}) is None
+    later = {**body, "subject": f"rec:{cid}/mood", "target": {**body["target"], "field": "mood"}}
+    assert super_group.body_ok(later) == "unknown_kind"  # a field of a later release: kept and relayed, not applied
+
+
+def test_one_malformed_write_never_stops_replication(trio):
+    """Review (high), the reviewer's probe: a write with title={"x": 1} used to roll back every round of every
+    member, so A's later legitimate edit never reached B. Now it is refused on arrival and the rest arrives."""
+    a, b, _c = trio
+    cid = new_game(a, boss(a), "Quiet Orchard", developer="One")
+    rnd(b)
+    bad = _forge(a, cid, "title", {"x": 1})
+    edit(a, boss(a), cid, developer="Two")
+    rnd(b)
+    assert view(b, cid)["developer"] == "Two" and view(b, cid)["title"] == "Quiet Orchard"
+    with a.session() as s:
+        head = s.scalar(select(func.max(GroupWrite.id)))
+    with b.session() as s:
+        assert s.scalars(select(GroupWrite).where(GroupWrite.op_id == bad["op_id"])).first() is None
+        assert super_group._state(s, super_group.ERROR + a.node_id) is None
+        assert super_group._int(s, super_group.CURSOR + a.node_id) == head
+
+
+def test_a_write_that_fails_to_apply_is_held_and_the_round_goes_on(trio, monkeypatch):
+    """Review (high): an apply that raises is isolated in its own savepoint: that write is held (`failed`, counted
+    for administrators), every other write is applied, the cursor moves on, and a later round applies it."""
+    a, b, _c = trio
+    cid = new_game(a, boss(a), "Quiet Orchard", developer="One")
+    rnd(b)
+    edit(a, boss(a), cid, developer="Two")
+    edit(a, boss(a), cid, publisher="North")
+    real = super_group._settle
+
+    def broken(session, ctx, row, body):
+        if ctx.identity.node_id == b.node_id and row.subject.endswith("/developer"):
+            raise TypeError("synthetic failure")
+        return real(session, ctx, row, body)
+
+    monkeypatch.setattr(super_group, "_settle", broken)
+    rnd(b)
+    assert view(b, cid)["publisher"] == "North" and view(b, cid)["developer"] == "One"
+    with b.session() as s:
+        held = s.scalars(select(GroupWrite).where(GroupWrite.subject == f"rec:{cid}/developer",
+                                                  GroupWrite.status == "held")).all()
+        assert [w.reason for w in held] == ["failed"]
+        assert super_group._state(s, super_group.ERROR + a.node_id) is None
+        assert super_group.overview(s, b.settings, b.identity)["held"] == {"failed": 1}
+    monkeypatch.setattr(super_group, "_settle", real)
+    rnd(b)
+    assert view(b, cid)["developer"] == "Two"
+    subject = f"rec:{cid}/developer"
+    assert states(a)[subject] == states(b)[subject]
+
+
+def test_a_record_that_cannot_be_shown_waits_without_breaking_the_round(trio, monkeypatch):
+    """Review (high): a failure while showing a settled state (here the view rebuild) rolls back to a savepoint;
+    the state waits (`invalid`) and is retried, and the round commits everything else."""
+    from atlas import service
+
+    a, b, _c = trio
+    cid = new_game(a, boss(a), "Quiet Orchard", developer="One")
+    other = new_game(a, boss(a), "Loud Orchard")
+    rnd(b)
+    real = service.rebuild
+
+    def broken(session, ctx, target, **kw):
+        if ctx.identity.node_id == b.node_id and target == cid:
+            raise TypeError("synthetic failure")
+        return real(session, ctx, target, **kw)
+
+    edit(a, boss(a), cid, developer="Two")
+    edit(a, boss(a), other, developer="Fine")
+    monkeypatch.setattr(service, "rebuild", broken)
+    rnd(b)
+    assert view(b, other)["developer"] == "Fine"
+    with b.session() as s:
+        assert s.get(GroupWriteState, f"rec:{cid}/developer").waiting == "invalid"
+        assert super_group._state(s, super_group.ERROR + a.node_id) is None
+    monkeypatch.setattr(service, "rebuild", real)
+    rnd(b)
+    assert view(b, cid)["developer"] == "Two"
+    with b.session() as s:
+        assert s.get(GroupWriteState, f"rec:{cid}/developer").waiting is None
+
+
+def _propose(node, user_id: str, cid: str, **fields) -> str:
+    with node.session() as s:
+        p = proposals.create(s, Ctx(node.settings, node.identity), s.get(User, user_id), "edit", cid, fields, "")
+        assert p.auto_applied
+        s.commit()
+        return p.id
+
+
+def _revert(node, user_id: str, pid: str) -> None:
+    with node.session() as s:
+        proposals.revert(s, Ctx(node.settings, node.identity), s.get(User, user_id), pid)
+        s.commit()
+
+
+def test_revert_after_a_later_edit_elsewhere_keeps_the_later_edit(trio):
+    """Review (high), the reviewer's probe: A edits X, B then edits Y, A reverts X. The revert no longer writes the
+    value from before X over B's later edit: every member keeps Y, and no conflict is invented."""
+    a, b, c = trio
+    ua = boss(a)
+    cid = new_game(a, ua, "Hollow Pines")
+    rounds(b, c)
+    pid = _propose(a, ua, cid, developer="X")
+    rounds(b, c)
+    edit(b, boss(b), cid, developer="Y")
+    rounds(a, b, c)
+    _revert(a, ua, pid)
+    rounds(a, b, c)
+    assert {n.name: view(n, cid).get("developer") for n in (a, b, c)} == {"na": "Y", "nb": "Y", "nc": "Y"}
+    assert states(a) == states(b) == states(c)
+    assert conflict_ids(a) == conflict_ids(b) == conflict_ids(c) == set()
+
+
+def test_a_cleared_field_shows_the_same_on_every_member(trio):
+    """Review (high): B held a local `community` value from before the super group. A's edit and its revert to "no
+    value" (a tombstone) used to leave B alone showing its local value. Once the group holds a state for a field,
+    each member's own community value of that field is retired, so all members show the same."""
+    a, b, c = trio
+    ua = boss(a)
+    cid = new_game(a, ua, "Hollow Pines")
+    rounds(b, c)
+    configure(b, group_super=False)
+    edit(b, boss(b), cid, developer="Local before", genres=["Local genre"])  # made before the super group
+    configure(b, group_super=True)
+    assert view(b, cid)["developer"] == "Local before" and view(a, cid).get("developer") is None
+    pid = _propose(a, ua, cid, developer="X", genres=["Group genre"])
+    rounds(a, b, c)
+    assert {view(n, cid)["developer"] for n in (a, b, c)} == {"X"}
+    assert {tuple(view(n, cid).get("genres") or ()) for n in (a, b, c)} == {("Group genre",)}  # no local union
+    _revert(a, ua, pid)
+    rounds(a, b, c)
+    assert {n.name: view(n, cid).get("developer") for n in (a, b, c)} == {"na": None, "nb": None, "nc": None}
+    assert len({tuple(view(n, cid).get("genres") or ()) for n in (a, b, c)}) == 1
+    assert states(a) == states(b) == states(c)
+
+
+def test_clashing_list_names_stay_within_the_name_limit():
+    """Review (low): the suffixed name of a clashing list was 81 characters, so its next write was refused."""
+    name = super_group._suffixed("L" * 80, "01JABCDEFGHJKMNPQRSTVWXYZ0")
+    assert len(name) == super_group.LIST_NAME_MAX and name.endswith(" (VWXYZ0)")
+    assert super_group._value_ok("list.meta", {}, {"name": name, "description": "", "public": False,
+                                                   "kind": "custom"}, False)
+
+
+def test_long_clashing_list_names_keep_replicating(trio):
+    a, b, _c = trio
+    kim_a, kim_b = user(a, "kim"), user(b, "kim")
+    long = "Backlog " + "x" * 72
+    ids = {}
+    for node, kim in ((a, kim_a), (b, kim_b)):
+        with node.session() as s:
+            ids[node.name] = social.create_list(s, Ctx(node.settings, node.identity), s.get(User, kim), long, "",
+                                                public=False).id
+            s.commit()
+    link(a, kim_a, b, kim_b)
+    rounds(a, b, a, b)
+    for node, kim in ((a, kim_a), (b, kim_b)):  # a later change of either list still replicates
+        with node.session() as s:
+            for lid in ids.values():
+                row = s.get(UserList, lid)
+                assert len(row.name) <= 80
+                row.description = f"changed on {node.name}"
+                assert super_group.list_written(s, Ctx(node.settings, node.identity), s.get(User, kim), row)
+            s.commit()
+
+
+def test_lists_follow_a_merge_on_every_member(trio):
+    """Review (low): a merge on one member moved list entries there without a write. It is now written once."""
+    from atlas import service
+
+    a, b, _c = trio
+    ua = boss(a)
+    x, y = new_game(a, ua, "Twin One"), new_game(a, ua, "Twin Two")
+    rnd(b)
+    kim_a, kim_b = user(a, "kim"), user(b, "kim")
+    link(a, kim_a, b, kim_b)
+    ctx = Ctx(a.settings, a.identity)
+    with a.session() as s:
+        me = s.get(User, kim_a)
+        lst = social.create_list(s, ctx, me, "Twins", "", public=False)
+        super_group.list_written(s, ctx, me, lst)
+        social.add_to_list(s, ctx, me, lst.id, x, "kept note")
+        super_group.list_item_written(s, ctx, me, lst, x)
+        lid = lst.id
+        s.commit()
+    rnd(b)
+    with b.session() as s:
+        assert s.get(ListItem, (lid, x)) is not None
+    with a.session() as s:
+        service.merge_canonicals(s, ctx, x, y, actor="test")
+        s.commit()
+    rnd(b)
+    with b.session() as s:
+        assert s.get(ListItem, (lid, x)) is None and s.get(ListItem, (lid, y)).note == "kept note"
+
+
+def test_a_list_entry_for_a_record_merged_here_lands_on_the_survivor(trio):
+    """Review (low): an entry for a record this member merged away is stored on the survivor, as `add_to_list`
+    would, never as an entry for the merged-away record."""
+    from atlas import service
+
+    a, b, _c = trio
+    ua = boss(a)
+    x, y = new_game(a, ua, "Twin One"), new_game(a, ua, "Twin Two")
+    rnd(b)
+    configure(b, group_super=False)  # merged on B alone (A keeps both)
+    with b.session() as s:
+        service.merge_canonicals(s, Ctx(b.settings, b.identity), x, y, actor="test")
+        s.commit()
+    configure(b, group_super=True)
+    kim_a, kim_b = user(a, "kim"), user(b, "kim")
+    link(a, kim_a, b, kim_b)
+    ctx = Ctx(a.settings, a.identity)
+    with a.session() as s:
+        me = s.get(User, kim_a)
+        lst = social.create_list(s, ctx, me, "Twins", "", public=False)
+        super_group.list_written(s, ctx, me, lst)
+        social.add_to_list(s, ctx, me, lst.id, x, "on x")
+        super_group.list_item_written(s, ctx, me, lst, x)
+        lid = lst.id
+        s.commit()
+    rnd(b)
+    with b.session() as s:
+        assert s.get(ListItem, (lid, x)) is None and s.get(ListItem, (lid, y)).note == "on x"
+
+
+def test_standing_has_a_lower_bound_and_a_removal_is_not_bridged():
+    """Review (low): D7 covers a lapse only. A write dated before the origin's first certificate waits (it is not
+    accepted because a later certificate exists), and one dated in the gap between a removal and a re-enrolment is
+    refused."""
+    from datetime import UTC, datetime, timedelta
+
+    node = "cd" * 8
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def hlc(at):
+        return super_group._hlc(int(at.timestamp() * 1000), 0, node)
+
+    tr = _FakeTrust([_cert("s1", node, t0, t0 + timedelta(days=90))])
+    assert super_group.standing(tr, node, hlc(t0 - timedelta(days=5))) == "origin_expired"
+    removed = t0 + timedelta(days=10)
+    tr2 = _FakeTrust([_cert("s1", node, t0, t0 + timedelta(days=20)),
+                      _cert("s2", node, t0 + timedelta(days=40), t0 + timedelta(days=130))],
+                     revoked={"s1": _Rev("removed", removed)})
+    assert super_group.standing(tr2, node, hlc(t0 + timedelta(days=30))) == "origin_removed"  # the gap
+    assert super_group.standing(tr2, node, hlc(t0 + timedelta(days=50))) is None  # covered by the re-enrolment
+    assert super_group.standing(tr2, node, hlc(t0 + timedelta(days=5))) is None  # before the removal
+
+
+def test_a_real_revocation_withdraws_writes_a_member_applied_before_it_heard(trio):
+    """Review (low): the same as the monkeypatched test above, with a real signed revocation: A removes C; C (not
+    told) writes; B takes that write from C before it hears of the removal, then withdraws it."""
+    from .group_harness import ROOT_PW
+
+    a, b, c = trio
+    cid = new_game(a, boss(a), "Starfall Harbor", developer="Old Lantern")
+    rounds(b, c)
+    edit(c, boss(c), cid, developer="Before removal")
+    rounds(a, b)
+    assert view(b, cid)["developer"] == "Before removal"
+    a.net.down.add("na.test")  # nobody hears of the removal yet
+    with a.session() as s:
+        group = groups.load(s)
+        groups.revoke_node(s, a.settings, group, a.identity, c.node_id, "removed",
+                           root=groups.unlock_root(s, a.settings, group, ROOT_PW))
+        s.commit()
+    edit(c, boss(c), cid, developer="After removal")
+    with c.session() as s:
+        late_op = s.scalars(select(GroupWrite.op_id).where(GroupWrite.subject == f"rec:{cid}/developer")
+                            .order_by(GroupWrite.id.desc())).first()
+    rnd(b)
+    assert view(b, cid)["developer"] == "After removal"  # B has not heard of the removal yet
+    a.net.down.discard("na.test")
+    c.net.down.add("nc.test")
+    rounds(a, b, n=3)
+    for node in (a, b):
+        with node.session() as s:
+            row = s.scalars(select(GroupWrite).where(GroupWrite.op_id == late_op)).first()
+            assert row is None or row.status == "refused", node.name
+        assert view(node, cid)["developer"] == "Before removal", node.name
+    assert states(a)[f"rec:{cid}/developer"] == states(b)[f"rec:{cid}/developer"]
+
+
+def test_conflict_acknowledgement_needs_a_local_administrator():
+    """Review (low): like the other Node group changes, only a local administrator acknowledges a conflict (an
+    admin session opened through another node cannot)."""
+    from atlas.web import deps
+    from atlas.web import group as group_web
+
+    route = next(r for r in group_web.router.routes
+                 if getattr(r, "path", "").endswith("/admin/group/conflicts/{conflict_id}/seen"))
+    calls = {d.call for d in route.dependant.dependencies}
+    assert deps.local_admin_form in calls and deps.admin_form not in calls
+
+
+def test_synced_preferences_and_their_conflicts_name_no_node(trio):
+    """Review (medium): with the super group on, `/me/settings` no longer says "set on <node>" and `/me/conflicts`
+    names no node or fingerprint, for a linked person with a synced preference and an open conflict."""
+    from atlas.models import ProfileConflict
+
+    from .channel_harness import edit as pref_edit
+
+    a, b, c = trio
+    boss(a), boss(b)  # the first account on a node is its administrator; kim is an ordinary person
+    kim_a, kim_b = user(a, "kim"), user(b, "kim")
+    link(a, kim_a, b, kim_b)
+    rounds(a, b)
+    pref_edit(b, kim_b, "display_name", "Kim from elsewhere")  # synced to A: its origin is B
+    rounds(a, b)
+    pref_edit(a, kim_a, "theme", "dark")  # changed on both before either heard: a conflict
+    pref_edit(b, kim_b, "theme", "light")
+    rounds(a, b, n=3)
+    with a.session() as s:
+        assert s.scalar(select(func.count()).select_from(ProfileConflict).where(
+            ProfileConflict.user_id == kim_a, ProfileConflict.status == "open")) >= 1
+    client = TestClient(a.app, base_url=a.settings.public_url, follow_redirects=False)
+    assert login(client, "kim", PASSWORD).status_code == 303
+    settings_page = client.get("/me/settings").text
+    assert "Kim from elsewhere" in settings_page and "set on" not in settings_page
+    conflicts_page = client.get("/me/conflicts").text
+    assert "Changed in two places at once" in conflicts_page
+    for path, text in (("/me/settings", settings_page), ("/me/conflicts", conflicts_page)):
+        for marker in identity_markers(a, b, c):
+            assert marker not in text, f"{path} shows {marker!r}"

@@ -133,14 +133,19 @@ def delete_list(session: Session, user: User, lid: str) -> None:
     session.delete(row)
 
 
-def move_list_items(session: Session, src: str, dst: str) -> None:
-    """On merge of two games: lists follow the surviving record, without duplicates."""
+def move_list_items(session: Session, src: str, dst: str) -> list[tuple[str, str | None]]:
+    """On merge of two games: lists follow the surviving record, without duplicates. Returns each list touched with
+    the note the survivor's entry now carries, or None when the list already held the survivor (C14-4: the super
+    group writes the move once, so every member's lists show the same entries)."""
+    moved: list[tuple[str, str | None]] = []
     have = {(i.list_id) for i in session.scalars(select(ListItem).where(ListItem.canonical_id == dst))}
     for item in session.scalars(select(ListItem).where(ListItem.canonical_id == src)).all():
         if item.list_id in have:
             session.delete(item)
+            moved.append((item.list_id, None))
         else:
             item.canonical_id = dst
+            moved.append((item.list_id, item.note))
     mine = session.scalars(select(Follow).where(Follow.target_type == "game", Follow.target_id == src)).all()
     for f in mine:
         if session.get(Follow, (f.user_id, "game", dst)):
@@ -148,6 +153,7 @@ def move_list_items(session: Session, src: str, dst: str) -> None:
         else:
             f.target_id = dst
     session.flush()
+    return moved
 
 
 # ---- follows ------------------------------------------------------------------------------------------
