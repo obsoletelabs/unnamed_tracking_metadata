@@ -10,6 +10,9 @@ H39 (approve pending a licence review of each provider's terms).
   not redistributable); curated rows do unless their licence keeps them out (§12.5.5, H47).
 * `licence`, `attribution`: defaults for rows that state none.
 * `redirect_hosts`: the only hosts `/api/v2/artwork/{id}/image` may redirect to for this source (H50).
+* `follow_hosts`: when set, the only hosts (or their subdomains) this node's own download may be redirected to for
+  this source, each hop still through the SSRF guard (C15 §2.7: Open Library covers redirect to archive.org storage).
+  Empty: any public host, as before. It never widens `redirect_hosts` for browsers.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ class MediaPolicy:
     licence: str | None = None
     attribution: str | None = None
     redirect_hosts: tuple[str, ...] = ()
+    follow_hosts: tuple[str, ...] = ()
 
 
 _STEAM_HOSTS = ("cdn.akamai.steamstatic.com", "shared.akamai.steamstatic.com", "cdn.cloudflare.steamstatic.com",
@@ -40,8 +44,13 @@ POLICIES: dict[str, MediaPolicy] = {
                         redirect_hosts=("images.igdb.com",)),
     "rawg": MediaPolicy(federate=False, licence="provider_terms", attribution="RAWG",
                         redirect_hosts=("media.rawg.io",)),
+    # C15 §2.7: covers belong to their publishers; cached here, never federated. covers.openlibrary.org answers
+    # 302 -> archive.org -> <node>.us.archive.org (checked live 2026-11-11), so the download follows those hosts only.
+    "openlibrary": MediaPolicy(federate=False, licence="provider_terms", attribution="Open Library",
+                               redirect_hosts=("covers.openlibrary.org",),
+                               follow_hosts=("covers.openlibrary.org", "archive.org")),
 }
-_FIELDS = {"fetch", "federate", "licence", "attribution", "redirect_hosts"}
+_FIELDS = {"fetch", "federate", "licence", "attribution", "redirect_hosts", "follow_hosts"}
 
 
 def check_overrides(overrides: dict[str, Any]) -> None:
@@ -59,10 +68,11 @@ def check_overrides(overrides: dict[str, Any]) -> None:
             raise ValueError(f"media_policy[{source[:40]!r}].federate must be true or false")
         if fields.get("licence") is not None and fields["licence"] not in LICENCES:
             raise ValueError(f"media_policy[{source[:40]!r}].licence must be one of {LICENCES}")
-        hosts = fields.get("redirect_hosts", [])
-        if not isinstance(hosts, list) or len(hosts) > 32 or not all(isinstance(h, str) and 0 < len(h) <= 253
-                                                                   for h in hosts):
-            raise ValueError(f"media_policy[{source[:40]!r}].redirect_hosts must be a list of host names")
+        for name in ("redirect_hosts", "follow_hosts"):
+            hosts = fields.get(name, [])
+            if not isinstance(hosts, list) or len(hosts) > 32 or not all(isinstance(h, str) and 0 < len(h) <= 253
+                                                                       for h in hosts):
+                raise ValueError(f"media_policy[{source[:40]!r}].{name} must be a list of host names")
 
 
 def policy(settings: Any, source: str) -> MediaPolicy:
@@ -72,6 +82,7 @@ def policy(settings: Any, source: str) -> MediaPolicy:
     if not override:
         return base
     fields = dict(override)
-    if "redirect_hosts" in fields:
-        fields["redirect_hosts"] = tuple(h.lower() for h in fields["redirect_hosts"])
+    for name in ("redirect_hosts", "follow_hosts"):
+        if name in fields:
+            fields[name] = tuple(h.lower() for h in fields[name])
     return replace(base, **fields)

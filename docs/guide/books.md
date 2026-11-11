@@ -2,8 +2,8 @@
 
 Atlas knows **books** as a built-in media type (contract C15 §2). A book record is a **work**: "Dune", not "the
 2005 Ace paperback of Dune". Its printings, translations and audiobooks are its **editions**, an entry list on the
-record (`editions` in the API), never records of their own. This page describes the data model; the book pages,
-ISBN search and the Open Library provider come in later releases of the same programme.
+record (`editions` in the API), never records of their own. This page describes the data model and the Open
+Library provider; the book pages and ISBN search come in a later release of the same programme.
 
 | Concept | In Atlas |
 | --- | --- |
@@ -118,6 +118,42 @@ Book data is registered under the **one release version** of this release, not u
   `book_creator_role` and the relation member `position` are registered under the same version.
 * Book records travel on the public feed like games, and never on the private group channel. Reading history is not
   in Atlas at all.
+
+## Open Library
+
+Open Library is the built-in, keyless book provider (contract C15 §3). It is **on by default**, so a fresh node,
+even a local one with no upstream and no keys, can import a book: **Admin → Import**, provider *Open Library*, then
+a title, an Open Library work id (`OL…W`), an edition id (`OL…M`) or an ISBN-10/13 (hyphens allowed). An ISBN is
+always looked up as an identifier, never searched as a title.
+
+What an import brings: the title and subtitle; the **authors** in order (at most 30, each with its Open Library id;
+Open Library states no roles, so each is an `author`); the first publication as `ext.release.first`, at the
+precision the text proves ("March 1987" is a month, "c1972" or "Spring 1999" a year, a date before 1950 is left
+out, a day is never invented); subjects as **Subjects**; the description; up to 50 **editions** (editions with an
+ISBN first, then newest first) with ISBNs, format, publisher, date, pages and language; and the cover as a `poster`
+image, by cover id. A work Open Library has merged into another is followed once: the record gets the surviving id
+and keeps the old one as an alias, so a link or a job that still names it lands on the same record.
+
+**Being a good client.** Atlas sends `User-Agent: atlas-metadata/<version> (+<project URL>[; <contact>])` with every
+request to Open Library and covers.openlibrary.org. The contact is **empty unless you set it**: Admin →
+Integrations → Open Library, or `ATLAS_PROVIDER_CONTACT` (an e-mail address or an `https://` URL). Your
+`ATLAS_NODE_OPERATOR` is never sent. Atlas makes at most one request a second per process whatever the contact
+(with several workers each paces itself), caches every answer for `ATLAS_PROVIDER_TTL_SECONDS`, and never walks the
+catalogue: imports, searches and follower enrichment are always about one book a person or a record asked for. A
+work costs three or four requests (the work, its author list, its editions, and a redirect when there is one); an
+ISBN two more.
+
+**Open Library data stays on this node** (decision D15.2). A book imported from Open Library reaches followers as a
+`record` (its id, title, Open Library id and one ISBN). A follower with `ATLAS_SYNC_ENRICH_FROM_OWN_PROVIDERS=true`
+then fetches the work from its own Open Library access and builds the same editions, authors and cover itself;
+only Open Library work, edition and ISBN ids are fetched (an `isbn` key alone is not a provider). Covers are cached
+on each node and attributed to Open Library. The download follows covers.openlibrary.org's redirect to the
+archive.org storage hosts and no other host.
+
+**Checking it against the live service.** CI never calls Open Library: the tests use synthetic fixtures
+(`tests/fixtures/openlibrary/`, written by `python -m tools.record_openlibrary_fixtures`). By hand,
+`python -m tools.openlibrary_live_smoke [--contact you@example.org]` makes about six requests and prints counts and
+ids only; the *Live Open Library* workflow runs it on manual dispatch.
 
 ## Upgrading and rolling back
 

@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from .. import integrations, media, pages, runtime, secrets_box
 from ..models import AuditEntry, Page, Setting
+from ..settings import check_contact
 from .deps import Page as Ctx
 from .deps import admin_form, admin_page, go, page
 from .routes import render
@@ -199,8 +200,11 @@ CATALOGUE = (
     {"name": "tgdb", "label": "TheGamesDB", "gives": "Overviews, alternate titles, player counts, box art "
      "(official API; a key has a monthly allowance; data kept on this node only)",
      "needs": ["ATLAS_TGDB_API_KEY"], "optional": []},
-    {"name": "openlibrary", "label": "Open Library", "gives": "Books: descriptions, authors, subjects, covers "
-     "(keyless, CC0; needs a `book` media type)", "needs": ["ATLAS_OPENLIBRARY_ENABLED"], "optional": []},
+    {"name": "openlibrary", "label": "Open Library", "gives": "Books: authors, editions and ISBNs, subjects, "
+     "descriptions, covers (keyless; at most one request a second; kept on this node)",
+     "needs": ["ATLAS_OPENLIBRARY_ENABLED"], "optional": ["ATLAS_PROVIDER_CONTACT"],
+     "explain": "Open Library asks programs that use its API to identify themselves. This contact is sent with "
+                "every request to Open Library; leave it empty to send none."},
     {"name": "wikidata", "label": "Wikidata", "gives": "Store link suggestions: GOG, Epic, itch.io, TheGamesDB and "
      "Steam ids for a game from an id it already has (keyless, CC0)", "needs": ["ATLAS_WIKIDATA_ENABLED"],
      "optional": []},
@@ -248,7 +252,10 @@ def integrations_page(p: Annotated[Ctx, Depends(admin_page)]):
         fields = [{"key": f, "label": label, **_field_state(p, f)} for f, label in (spec[1] if spec else ())]
         toggle = integrations.TOGGLE_OF.get(item["name"])
         is_active = item["name"] in active or (item["name"] == "wikidata" and p.st.providers.crossref_source is not None)
-        rows.append({**item, "active": is_active, "available": bool(item["needs"]), "fields": fields,
+        plain = [{"key": f, "label": label, "value": getattr(p.st.ctx.settings, f, "") or "",
+                  "stored": p.session.get(Setting, integrations.PREFIX + f) is not None}
+                 for f, label in integrations.PLAIN_OF.get(item["name"], ())]
+        rows.append({**item, "active": is_active, "available": bool(item["needs"]), "fields": fields, "plain": plain,
                      "failures": failures.get(item["name"], 0), "editable": spec is not None,
                      "toggle": {"key": toggle[0], "label": toggle[1], "on": bool(getattr(p.st.ctx.settings, toggle[0]))}
                      if toggle else None, "importable": item["name"] in active})
@@ -286,6 +293,25 @@ async def integrations_save(name: str, request: Request, p: Annotated[Ctx, Depen
         else:
             row.value, row.updated_by = token, p.me.id
         changed.append(field)
+    for field, _label in integrations.PLAIN_OF.get(name, ()):
+        if field not in form:  # a form without the box (an older page) keeps the current value
+            continue
+        key = integrations.PREFIX + field
+        try:
+            value = check_contact(str(form.get(field, "")))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        row = p.session.get(Setting, key)
+        current = row.value if row is not None else getattr(p.st.base, field, "")
+        if value == getattr(p.st.base, field, "") and row is not None:  # back to the environment's value
+            p.session.delete(row)
+            changed.append(field)
+        elif value != current:
+            if row is None:
+                p.session.add(Setting(key=key, value=value, updated_by=p.me.id))
+            else:
+                row.value, row.updated_by = value, p.me.id
+            changed.append(field)
     if name in integrations.TOGGLE_OF:
         field = integrations.TOGGLE_OF[name][0]
         key = integrations.PREFIX + field

@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # Merge: higher wins. Unlisted sources get default_trust.
     source_trust: dict[str, int] = Field(
         default_factory=lambda: {"curator": 100, "manual": 90, "community": 85, "igdb": 70, "steam": 65,
-                                 "gog": 60, "rawg": 50}
+                                 "gog": 60, "openlibrary": 55, "rawg": 50}
     )
     default_trust: int = 40
     # Sources whose observations may be published on the change feed.
@@ -107,8 +107,13 @@ class Settings(BaseSettings):
     igdb_client_secret: str | None = None
     # TheGamesDB API v1 key (issue #54): keyed official API, requested from the TheGamesDB forum.
     tgdb_api_key: str | None = None
-    # Open Library (books, issue #54): keyless, data CC0. Off by default: a node opts in to the outbound calls.
-    openlibrary_enabled: bool = False
+    # Open Library (books, CONTRACT-C15 §3): keyless. On by default (D15.7), so a fresh node finds and imports books
+    # with no configuration; at most one request a second per process, never a bulk crawl.
+    openlibrary_enabled: bool = True
+    # C15 §3.2 / D15.7: an e-mail or https URL sent in the User-Agent to providers that ask clients to identify
+    # themselves (Open Library). Empty by default: nothing about the operator leaves the node unless set here (or
+    # in Admin -> Integrations). Never taken from node_operator.
+    provider_contact: str = ""
     # Wikidata cross-store ids (issue #63): keyless, CC0. Off by default for the same reason.
     wikidata_enabled: bool = False
     # Price sources `atlas prices fetch` may query (issue #38), comma-separated, e.g. "steam". Empty: off.
@@ -226,6 +231,11 @@ class Settings(BaseSettings):
     def strip_slash(cls, v: str) -> str:
         return v.rstrip("/")
 
+    @field_validator("provider_contact")
+    @classmethod
+    def contact(cls, v: str) -> str:
+        return check_contact(v)
+
     @field_validator("federation_bridge_media_types")
     @classmethod
     def bridge_media_types(cls, v: list[str]) -> list[str]:
@@ -294,6 +304,26 @@ class Settings(BaseSettings):
         """`atlas-record` (C13 §3.3) ranks below every provider unless configured: its observation only carries a
         display title until real observations arrive."""
         return self.source_trust.get(source, RECORD_TRUST if source == "atlas-record" else self.default_trust)
+
+
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+_CONTACT_EMAIL = r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@" + _LABEL + r"(?:\." + _LABEL + r")+"
+_CONTACT_URL = r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~!$&'*+,=:@%/-]*)?"
+
+
+def check_contact(value: str) -> str:
+    """`provider_contact`: empty, an e-mail address or an https URL; visible ASCII only, without `"();<>` or spaces,
+    at most 200 characters. It goes into an HTTP header, so anything else is refused, never cleaned."""
+    import re
+
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if len(value) > 200 or not (re.fullmatch(_CONTACT_EMAIL, value, re.ASCII)
+                                or re.fullmatch(_CONTACT_URL, value, re.ASCII)):
+        raise ValueError("provider_contact must be an e-mail address or an https:// URL (visible ASCII, at most 200 "
+                         "characters, no spaces, quotes, brackets or semicolons)")
+    return value
 
 
 #: The sources this node's own provider adapters write (`providers.registry.build_registry`, plus the Wikidata

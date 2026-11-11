@@ -1,0 +1,29 @@
+{
+ "edition_name": "First edition",
+ "isbn_10": [
+  "0099001209"
+ ],
+ "key": "/books/OL9900000012M",
+ "languages": [
+  {
+   "key": "/languages/eng"
+  }
+ ],
+ "latest_revision": 2,
+ "number_of_pages": 398,
+ "physical_format": "Hardcover",
+ "publish_date": "1987",
+ "publishers": [
+  "Harrow & Vane"
+ ],
+ "revision": 2,
+ "title": "The Salt Cartographer",
+ "type": {
+  "key": "/type/edition"
+ },
+ "works": [
+  {
+   "key": "/works/OL9900000001W"
+  }
+ ]
+}

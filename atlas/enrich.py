@@ -75,6 +75,10 @@ def providers_here(settings: Any) -> frozenset[str]:
 
 def valid_id(namespace: str, external_id: str) -> bool:
     rule = _PROVIDER_ID.get(namespace)
+    if namespace == "openlibrary":  # a work, an edition or an ISBN (C15 §3.3); never an author id
+        from .providers.openlibrary import OpenLibrary
+
+        return bool(_SAFE_ID.match(external_id)) and OpenLibrary.valid_id(external_id)
     return bool(_SAFE_ID.match(external_id)) and (rule is None or bool(rule.match(external_id)))
 
 

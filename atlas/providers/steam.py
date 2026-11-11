@@ -8,6 +8,7 @@ class Steam:
     redistributable = False
     media_types = ("game",)
     requests_per_minute = 40  # appdetails is aggressively throttled by Valve
+    media_types = ("game",)
 
     def search(self, client, query):
         data = get_json(client, "GET", "https://store.steampowered.com/api/storesearch/",

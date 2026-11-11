@@ -66,6 +66,7 @@ def _import(st: AppState, session: Session, provider: str, external_id: str,
     res = service.ingest(session, st.ctx, batch, system=True, force_canonical=force_canonical,
                          media_type=None if kind == "game" else kind)[0]
     row, _redirect = service.get_canonical(session, res.canonical_id)  # type: ignore[arg-type]
+    _keep_alias(session, source, provider, external_id, results[0].external_id, row, res.review)
     art = ach = 0
     if row.id == res.canonical_id and not res.review:  # an uncertain match must not attach media to a guess
         got = results[0]
@@ -93,6 +94,21 @@ def _import(st: AppState, session: Session, provider: str, external_id: str,
             if stats:
                 facets.store_stats(session, row.id, provider, stats, as_of=today)
     return Imported(row, res.method, res.confidence, res.review, art, ach)
+
+
+def _keep_alias(session: Session, source, provider: str, requested: str, answered: str, row: Canonical,
+                review: bool) -> None:
+    """C15 §3.3: a provider that merged a record answers the surviving id. The id asked for is kept as an alias of
+    the same record (`crosswalk`), so a job or a link that still names it lands on this record. Never over another
+    record's key, and not for an uncertain match."""
+    from .models import Crosswalk
+
+    alias = getattr(source, "alias_of", None)
+    if review or requested == answered or alias is None or not alias(requested):
+        return
+    if session.get(Crosswalk, (provider, requested)) is None:
+        session.add(Crosswalk(namespace=provider, external_id=requested, canonical_id=row.id))
+        session.flush()
 
 
 def _apply_custom(st: AppState, session: Session, row: Canonical, provider: str, got) -> None:

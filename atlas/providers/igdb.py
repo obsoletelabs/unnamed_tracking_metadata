@@ -67,6 +67,7 @@ class Igdb:
     redistributable = False
     media_types = ("game",)
     requests_per_minute = 240  # IGDB allows 4 req/s
+    media_types = ("game",)
 
     def __init__(self, client_id: str, client_secret: str) -> None:
         self.client_id, self.client_secret = client_id, client_secret

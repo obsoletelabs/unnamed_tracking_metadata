@@ -1,0 +1,34 @@
+{
+ "covers": [
+  9900001
+ ],
+ "isbn_10": [
+  "123456789X"
+ ],
+ "isbn_13": [
+  "9780009900112"
+ ],
+ "key": "/books/OL9900000011M",
+ "languages": [
+  {
+   "key": "/languages/eng"
+  }
+ ],
+ "latest_revision": 2,
+ "number_of_pages": 412,
+ "physical_format": "Mass Market Paperback",
+ "publish_date": "Aug 01, 2005",
+ "publishers": [
+  "Gullwing Press"
+ ],
+ "revision": 2,
+ "title": "The Salt Cartographer",
+ "type": {
+  "key": "/type/edition"
+ },
+ "works": [
+  {
+   "key": "/works/OL9900000001W"
+  }
+ ]
+}
