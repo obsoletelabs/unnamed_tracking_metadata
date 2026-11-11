@@ -97,6 +97,16 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                                          "origin (same-owner preset); otherwise only when the origin fails."),
     "group_share_contribution_state": ("Federation", "Share the state of this node's proposals to a main Atlas with "
                                        "the other members of the owner group, and show theirs (on by default)."),
+    "link_enabled": ("Federation", "Node links (authority only): let local nodes link to accounts here with the "
+                     "device grant and send edits as proposals. On by default; every new link starts on probation."),
+    "link_review_default": ("Federation", "Node links: `standard` follows the normal auto-apply rules after the "
+                            "link's probation; `always` reviews every proposal from a linked node."),
+    "link_main_daily": ("Federation", "Node links: proposals accepted from all linked nodes together per day (5000)."),
+    "link_main_new_daily": ("Federation", "Node links: new links accepted per day across this node (50)."),
+    "link_federated_approval": ("Federation", "Node links: a session opened through another node of the group may "
+                                "approve a link (off)."),
+    "link_push": ("Federation", "On a linked node: `manual` sends only the edits you propose to the main Atlas; "
+                  "`auto` also queues local proposals approved here."),
     "group_assist_max_jobs": ("Federation", "Asking your nodes: the most games queued at once (5000)."),
     "group_assist_run_limit": ("Federation", "Asking your nodes: games asked for per group round (50)."),
     "group_assist_give_up_days": ("Federation", "Asking your nodes: days after which a game nobody has is no longer "
@@ -317,6 +327,12 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("post", "/providers/{name}/fetch"): "Fetch full details from a provider (cached), merge, return the record.",
     ("get", "/group/assist"): "Counts of this node's questions to its owner group (CONTRACT-C14 §3): due, backing off, given up, dropped because the queue was full, and kept evidence items. See [Node groups](node-groups.md#asking-your-nodes).",
     ("post", "/group/assist/ask"): "Ask the owner group now for records this node lacks (`{ids: [...]}`, \"Ask my nodes\"), also ones it gave up on. Answers arrive in a later group round. 409 when the node is in no group or asking is off; 429 past 60 forced asks per token per hour. Audited as `group_assist_ask`.",
+    ("get", "/link"): "A linked node's view of its link (CONTRACT-C14 §7.3): link id, pairwise subject, limits, use today, pending count, review mode, trust (`probation` until the link earns it) and key epoch. See [Linking to a main Atlas](linking-to-a-main-atlas.md).",
+    ("delete", "/link"): "The linked node unlinks itself (`?reason=compromised` when it reports its own key as possibly stolen: pending proposals are then flagged for a careful review).",
+    ("post", "/link/contributions"): "Up to 20 node-signed contribution envelopes; each becomes a proposal under this node's review rules, or is refused with a reason (`retry_after` for limits). Replays get their stored answer.",
+    ("get", "/link/contributions"): "Decisions on this link's contributions since a cursor (`since`), in the order they happened.",
+    ("post", "/link/contributions/{contribution_id}/withdraw"): "Withdraw one pending contribution.",
+    ("post", "/link/rotation"): "Rotate the link key: the new append-only key history and a proof by the new key, with a DPoP proof by the current key. A diverging history freezes the link.",
     ("post", "/group/assist/lookup"): "A provider lookup through a member of the owner group (CONTRACT-C14 §4), for a provider this node has no key or budget for. With `record`, the result is kept on that record as group data (never public, never in this node's feed). Needs `group_assist_lookups = answer+ask`.",
     ("get", "/providers/{name}/search"): "Lightweight provider search; nothing is stored.",
     ("get", "/sync/changes"): "Signed entries after `since`; optional `node_id` selects a retained original authority feed.",
@@ -431,7 +447,7 @@ def reference_api() -> str:
     for tag in sorted(by_tag, key=lambda t: order.index(t) if t in order else 99):
         lines += [f"## {tag}", "", "| Method | Path | Scope | What it does |", "| --- | --- | --- | --- |"]
         for method, path, op in sorted(by_tag[tag], key=lambda x: (x[1], x[0])):
-            scope = scope_of.get((method, path), "public")
+            scope = "link (DPoP)" if path.startswith("/api/v2/link") else scope_of.get((method, path), "public")
             what = md_escape(SUMMARIES.get((method, path[7:]), "(undocumented)"))
             lines.append(f"| `{method.upper()}` | `{path[7:] or '/'}` | {scope} | {what} |")
         lines.append("")

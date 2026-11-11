@@ -102,6 +102,13 @@ How accounts are connected:
 * A person with an existing local account **links** it from **Profile settings → Linked sign-ins** (needs permission, above). Email addresses are **never** used to take over an existing account; if auto-create is on and the username is taken, a new account with a suffix is made.
 * Accounts created this way have no password. They can add one with *Forgot password* if they have an email, and cannot unlink their only way in.
 
+## Linked local nodes
+
+An authority also uses its sign-in provider for **node links**: a member's own Atlas node gets a key-bound,
+pseudonymous link to their account and proposes edits through it. This works even with the general provider
+off (`link_enabled`, on by default on an authority), and needs no application registration. See
+[Linking to a main Atlas](linking-to-a-main-atlas.md).
+
 ## Troubleshooting
 
 | Symptom | Cause |

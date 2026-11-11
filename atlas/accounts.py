@@ -353,4 +353,11 @@ def set_status(session: Session, actor: User, target: User, status: str) -> None
         end_all_sessions(session, target.id)
         for tok in session.scalars(select(Token).where(Token.user_id == target.id, Token.revoked_at.is_(None))):
             tok.revoked_at = now()
+        from .models import NodeLink  # CONTRACT-C14 §6.7: a suspended account's node links are revoked
+
+        for link in session.scalars(select(NodeLink).where(NodeLink.user_id == target.id,
+                                                           NodeLink.status.in_(("active", "frozen")))):
+            from . import link as links
+
+            links.revoke(session, None, link, by=actor.id, reason="account_suspended")  # type: ignore[arg-type]
     audit(session, actor.id, "set_status", target.id, {"status": status})

@@ -52,16 +52,24 @@ _KEY_DOC_CACHE = {"Cache-Control": "no-cache"}
 
 # ---- provider -----------------------------------------------------------------------------------------
 
+def _provider_or_link(st: AppState) -> bool:
+    """Discovery and keys are served while this node is an OpenID provider, or while node links are active
+    (CONTRACT-C14 §6.2, H73: on by default on an authority, even with the general provider off)."""
+    from .. import link
+
+    return st.ctx.settings.oidc_provider_enabled or link.active(st.ctx.settings)
+
+
 @router.get("/.well-known/openid-configuration")
 def discovery(st: St, session: Sess):
-    if not st.ctx.settings.oidc_provider_enabled:
+    if not _provider_or_link(st):
         raise HTTPException(404, "This server is not an OpenID provider.")
     return JSONResponse(oidc.discovery(st.ctx, session), headers=_KEY_DOC_CACHE)
 
 
 @router.get("/oidc/jwks")
 def jwks(st: St, session: Sess):
-    if not st.ctx.settings.oidc_provider_enabled:
+    if not _provider_or_link(st):
         raise HTTPException(404, "This server is not an OpenID provider.")
     return JSONResponse(oidc.jwks(session, st.ctx), headers=_KEY_DOC_CACHE)
 
@@ -166,6 +174,12 @@ def _client_credentials(request: Request, form) -> tuple[str, str]:
 @router.post("/oidc/token")
 async def token(request: Request, st: St, session: Sess):
     headers = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+    from .. import link
+
+    form = await request.form()
+    if form.get("client_id") == link.CLIENT_ID:  # CONTRACT-C14 §6.3 step 4 and §6.5: the node link's grants
+        return _link_token(st, session, {k: str(v)[:2000] for k, v in form.items()}, request.headers.get("dpop"),
+                           headers)
     if not st.ctx.settings.oidc_provider_enabled:
         return JSONResponse({"error": "unsupported"}, status_code=404, headers=headers)
     started, outcome = time.monotonic(), "invalid"
@@ -177,6 +191,22 @@ async def token(request: Request, st: St, session: Sess):
             instruments.token_operations.inc(token="authorization_code", operation="exchange", outcome=outcome)
         instruments.oidc_stage.observe(time.monotonic() - started, stage="token",
                                        outcome="ok" if outcome == "ok" else "error")
+
+
+def _link_token(st: AppState, session: Session, form: dict[str, str], proof: str | None, headers: dict[str, str]):
+    from .. import link
+
+    if not link.active(st.ctx.settings):
+        return JSONResponse({"error": "invalid_client"}, status_code=401, headers=headers)
+    try:
+        out = link.token(session, st.ctx, form, proof)
+    except link.LinkError as exc:
+        extra = {"Retry-After": str(exc.retry_after)} if exc.retry_after else {}
+        instruments.link_requests.inc(endpoint="token", result=exc.error if exc.error in instruments.LINK_RESULTS
+                                      else "invalid")
+        return JSONResponse(exc.body(), status_code=exc.status, headers={**headers, **extra})
+    instruments.link_requests.inc(endpoint="token", result="ok")
+    return JSONResponse(out, headers=headers)
 
 
 async def _token(request: Request, st: AppState, session: Session, headers: dict[str, str]):

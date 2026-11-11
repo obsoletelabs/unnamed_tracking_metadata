@@ -201,7 +201,8 @@ def verify(path: Path) -> dict[str, Any]:
 # table -> column holding a secrets_box token (the signing key and integration settings are handled apart)
 _SECRET_COLUMNS = {"peer": "token_enc", "oidc_issuer": "client_secret_enc", "user_mfa": "secret_enc"}
 _GROUP_SECRETS = {"owner_group": ("root_sealed", "box_sealed", "box_previous_sealed", "box_pending_sealed"),
-                  "group_enrolment": ("secret_enc",)}
+                  "group_enrolment": ("secret_enc",),
+                  "upstream_link": ("link_key", "link_key_previous", "access_enc", "refresh_enc")}  # C14 §6.6
 
 
 def _rows(path: Path, table: str) -> Iterator[dict[str, Any]]:
@@ -235,6 +236,8 @@ def secret_check(settings: Settings, path: Path) -> dict[str, Any]:
     tokens = [(table, row.get(column)) for table, column in _SECRET_COLUMNS.items() for row in _rows(path, table)]
     keys = {integrations.PREFIX + field for field in integrations.SECRET_FIELDS}
     tokens += [("setting", row.get("value")) for row in _rows(path, "setting") if row.get("key") in keys]
+    tokens += [("node_state", r["value"][len(signing.ENC_PREFIX):]) for r in _rows(path, "node_state")
+               if r.get("key") == "link_pairwise_key" and str(r.get("value", "")).startswith(signing.ENC_PREFIX)]
     for table, columns in _GROUP_SECRETS.items():  # owner-group secrets are stored as enc:v1:<token>
         for row in _rows(path, table):
             for column in columns:

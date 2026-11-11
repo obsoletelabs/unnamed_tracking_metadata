@@ -57,6 +57,7 @@ nav:
       - Administering: administering.md
       - Federation: federation.md
       - Node groups: node-groups.md
+      - Linking to a main Atlas: linking-to-a-main-atlas.md
       - Scopes and sharing: scopes.md
       - Sign-in sharing (OIDC): sso.md
       - Security: security.md

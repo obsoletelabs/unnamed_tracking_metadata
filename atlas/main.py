@@ -40,6 +40,7 @@ from . import (
 )
 from .api.deps import AppState, get_session, require
 from .api.group_routes import router as group_router
+from .api.link_routes import router as link_api_router
 from .api.routes import router
 from .db import instrument as instrument_engine
 from .db import make_engine, make_sessionmaker, upgrade
@@ -60,6 +61,7 @@ from .web.group import router as group_web_router
 from .web.group_link import router as group_link_router
 from .web.importing import router as import_router
 from .web.mfa import router as mfa_router
+from .web.node_links import router as node_links_router
 from .web.oidc import router as oidc_router
 from .web.profile_pages import router as profile_router
 from .web.routes import router as web_router
@@ -353,6 +355,19 @@ def _group_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -
                                                                         "error_type": type(exc).__name__}})
 
 
+def _link_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
+    """C14 §6.3/§7.2: poll open link flows, send the contribution queue, pull decisions, confirm unlinks."""
+    from . import link_client
+
+    with httpx.Client(timeout=15, trust_env=False) as client:
+        while not background.wait(stop, "link", 30):
+            try:
+                with background.operation("link_round"):
+                    link_client.round_(maker, ctx, client)
+            except Exception as exc:  # noqa: BLE001 - the next round retries
+                log.warning("link round failed: %s", type(exc).__name__)
+
+
 def _warn_key_at_rest(settings: Settings, at_rest: str | None) -> None:
     """Warn on every start while the signing key is plaintext (C9.1). Decision H4: a production authority will
     refuse to start in this state in the release after signed updates (A10); this release only warns."""
@@ -412,6 +427,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             threading.Thread(target=_sync_loop, args=(maker, ctx, stop, app.state.atlas), daemon=True,
                              name="atlas-sync").start()
         threading.Thread(target=_group_loop, args=(maker, ctx, stop), daemon=True, name="atlas-group").start()
+        if ctx.settings.role != "authority":  # C14 §7.2: the node-link queue (a no-op until linked)
+            threading.Thread(target=_link_loop, args=(maker, ctx, stop), daemon=True, name="atlas-link").start()
         stats = getattr(app.state, "observability", None)
         if stats is not None and settings.metrics_enabled and settings.metrics_dir:
             threading.Thread(target=_metrics_flush, args=(stats, stop), daemon=True, name="atlas-metrics").start()
@@ -460,6 +477,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(group_web_router)
     app.include_router(profile_router)
     app.include_router(group_link_router)
+    app.include_router(link_api_router)
+    app.include_router(node_links_router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.middleware("http")

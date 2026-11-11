@@ -32,6 +32,10 @@ FLASH = {
     "peer_not_contacted": "Peer added. It did not answer in time, so it shows Not contacted yet; the next sync tries "
                           "again.",
     "peer_failed": "Peer added, but its first sync failed: the reason is next to it below.",
+    # C14 §6.3, §6.6: node links
+    "link_approved": "Node linked. It starts on probation: a reviewer checks its proposals until it earns trust.",
+    "link_denied": "Link request refused. Nothing was linked.",
+    "link_removed": "Node unlinked. Its pending proposals stay in the review queue, marked as from a removed link.",
 }
 
 

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Main Atlas · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+{% if refusal %}<section class="card"><h2>Main Atlas</h2><p class="muted">{{ refusal }}</p></section>
+{% else %}
+{% for x in ups %}{% set u = x.u %}
+<section class="card" data-upstream="{{ u.main_node_id }}" data-upstream-status="{{ u.status }}">
+  <h2>{{ u.main_name or u.issuer_url }} <span class="badge{% if u.status == 'linked' %} ok{% elif u.status in ('remote_revoked', 'failed') %} danger{% endif %}">{{ {'starting': 'waiting for approval', 'linked': 'linked', 'revoked_locally': 'unlinking', 'pending_remote': 'unlinked here, main not told yet', 'confirmed': 'unlinked', 'remote_revoked': 'refused by the main', 'failed': 'not linked'}.get(u.status, u.status) }}</span></h2>
+  <dl class="facts link-facts">
+    <dt>Main address</dt><dd><code>{{ u.issuer_url }}</code></dd>
+    <dt>Main fingerprint</dt><dd><code class="mono">{{ x.main_fp }}</code></dd>
+    {% if x.link_fp %}<dt>This node's key for this main</dt><dd><code class="mono">{{ x.link_fp }}</code>{% if x.key_fp != x.link_fp %} (current key <code class="mono">{{ x.key_fp }}</code>){% endif %}</dd>{% endif %}
+    {% if u.status == 'linked' %}<dt>Account there</dt><dd>{{ u.display_name or 'pseudonymous' }} <span class="small muted">({{ (u.subject or '')[:4] }}…)</span>{% if u.grant %}, {{ 'on probation' if u.grant.body.trust == 'probation' else 'trusted' }}{% endif %}</dd>{% endif %}
+  </dl>
+  {% if u.last_error %}<p class="error" role="alert">{{ u.last_error }}</p>{% endif %}
+  {% if x.flow %}
+  <div class="link-flow" data-link-flow>
+    <p><strong>Approve this link on the main Atlas.</strong> Scan the QR code with a phone that is signed in there, or open <a href="{{ x.flow.verification_uri }}" rel="noopener noreferrer" target="_blank">{{ x.flow.verification_uri }}</a> and type the code.</p>
+    <figure class="qr-plate">{{ x.flow.qr|safe }}<figcaption class="small">Scan to approve</figcaption></figure>
+    <dl class="facts link-facts"><dt>Code</dt><dd><code class="big" data-user-code>{{ x.flow.user_code }}</code></dd>
+      <dt>Confirmation code</dt><dd><code class="big" data-confirm-code>{{ x.flow.confirm }}</code> <span class="small muted">type it on the main when it asks; it is only shown here</span></dd>
+      <dt>Expires</dt><dd>{{ x.flow.expires_at[:16].replace('T', ' ') }} UTC</dd></dl>
+    <p class="small muted">Check that the main shows fingerprint <code class="mono">{{ x.link_fp }}</code> for this node.</p>
+    <form class="inline" method="post" action="/admin/main/{{ u.main_node_id }}/poll">{{ csrf(p.csrf) }}<button type="submit">I approved it</button></form>
+    <form class="inline" method="post" action="/admin/main/{{ u.main_node_id }}/cancel">{{ csrf(p.csrf) }}<button class="secondary" type="submit">Cancel</button></form>
+  </div>
+  {% endif %}
+  {% if u.status == 'linked' %}
+  {% set c = x.counts %}
+  <p data-queue-counts>{% for k in ('queued', 'pending', 'approved', 'rejected', 'failed') %}<span class="chip">{{ k }} {{ c.get(k, 0) }}</span> {% endfor %}</p>
+  <p class="small muted">{% if push == 'auto' %}Proposals approved on this node are queued for the main automatically.{% else %}Only edits you mark <em>Also propose it to {{ u.main_name or 'the main' }}</em> are queued.{% endif %} The queue is sent every 30 seconds.</p>
+  <form class="inline" method="post" action="/admin/main/{{ u.main_node_id }}/send">{{ csrf(p.csrf) }}<button class="secondary" type="submit">Send and check now</button></form>
+  <form class="inline" method="post" action="/admin/main/{{ u.main_node_id }}/rotate">{{ csrf(p.csrf) }}<button class="secondary" data-confirm="Make a new key for this link?" type="submit">Rotate link key</button></form>
+  <details><summary>Unlink</summary>
+    <form method="post" action="/admin/main/{{ u.main_node_id }}/unlink">{{ csrf(p.csrf) }}
+      <label><input type="checkbox" name="compromised"> This node's key may have been stolen (the main marks its waiting proposals for a careful review)</label>
+      <p><button class="danger" data-confirm="Unlink? Nothing more is sent." type="submit">Unlink</button></p></form>
+  </details>
+  {% if x.recent %}
+  <div class="table-scroll"><table><thead><tr><th>#</th><th>Kind</th><th>Record</th><th>State</th><th></th></tr></thead><tbody>
+  {% for r in x.recent %}<tr data-contribution="{{ r.id }}"><td>{{ r.seq }}</td><td>{{ r.kind }}</td><td>{% if r.local_cid %}<a href="/game/{{ r.local_cid }}">{{ r.local_cid[-6:] }}</a>{% else %}new{% endif %}</td><td>{{ r.state }}{% if r.last_error and r.state in ('failed', 'queued') %} <span class="small muted">({{ r.last_error }})</span>{% endif %}{% if r.reviewer_note %} <span class="small muted">“{{ r.reviewer_note }}”</span>{% endif %}</td>
+  <td>{% if r.state in ('queued', 'pending') %}<form class="inline" method="post" action="/admin/main/{{ u.main_node_id }}/withdraw/{{ r.id }}">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Withdraw</button></form>{% endif %}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% endif %}
+  {% elif u.status in ('remote_revoked', 'failed', 'confirmed') %}
+  <form method="post" action="/admin/main/start">{{ csrf(p.csrf) }}<input type="hidden" name="url" value="{{ u.issuer_url }}"><input type="hidden" name="node_id" value="{{ u.main_node_id }}">
+    {% if u.status == 'remote_revoked' and u.link_id %}<label><input type="checkbox" name="relink" checked> Relink the same account (a new key; the link starts on probation again)</label>{% endif %}
+    <p><button type="submit">Link again</button></p></form>
+  {% endif %}
+</section>
+{% endfor %}
+{% if not ups or probe %}
+<section class="card" id="link-main"><h2>Link to a main Atlas</h2>
+{% if probe %}
+  <p>Found <strong>{{ probe.name }}</strong> at <code>{{ probe.issuer }}</code>.</p>
+  <dl class="facts link-facts"><dt>Its fingerprint</dt><dd><code class="mono" data-main-fingerprint>{{ probe.fp }}</code></dd></dl>
+  <p class="small muted">Compare it with the fingerprint the main shows on its own pages (Admin → Signing keys). This node keeps it and refuses another key later.</p>
+  <form method="post" action="/admin/main/start">{{ csrf(p.csrf) }}<input type="hidden" name="url" value="{{ probe.issuer }}"><input type="hidden" name="node_id" value="{{ probe.node_id }}">
+    <p><button type="submit">Link to {{ probe.name }}</button></p></form>
+{% else %}
+  <p class="muted">Propose this node's edits to a main Atlas where you have an account. You approve the link on the main, signed in there; this node gets its own key for that main only.</p>
+  <form method="post" action="/admin/main/probe">{{ csrf(p.csrf) }}
+    <label for="main-url">Main Atlas address</label><input id="main-url" name="url" type="url" placeholder="https://atlas.example.org" maxlength="300" required>
+    <p><button type="submit">Check</button></p></form>
+{% endif %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

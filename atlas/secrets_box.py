@@ -152,6 +152,32 @@ def rewrap(session: Any, settings: Settings) -> dict[str, int]:
         held = json.loads(successor.value)
         held["sealed"] = group_secret("the root key of a pending succession", held.get("sealed"))
         successor.value = json.dumps(held)
+    # node links (CONTRACT-C14 §6.4, §6.6): the main's pairwise-subject key and, on a linked node, the per-main link
+    # keys, their tokens and an open flow's confirmation code. A plaintext value (written before a secret was set)
+    # is encrypted now.
+    from .models import UpstreamLink
+
+    counts["link_secrets"] = 0
+
+    def link_secret(where: str, value: str | None) -> str | None:
+        if not value:
+            return value
+        counts["link_secrets"] += 1
+        if value.startswith(prefix):
+            return prefix + again(where, value[len(prefix):])
+        return prefix + encrypt(settings, value)
+
+    pairwise = session.get(NodeState, "link_pairwise_key")
+    if pairwise is not None:
+        pairwise.value = link_secret("the node link pairwise key", pairwise.value)
+    for up in session.scalars(select(UpstreamLink)):
+        for column in ("link_key", "link_key_previous", "access_enc", "refresh_enc"):
+            setattr(up, column, link_secret(f"the {column} of the link to {up.main_node_id}", getattr(up, column)))
+        if up.flow:
+            flow = dict(up.flow)
+            for field in ("device_code", "confirm"):
+                flow[field] = link_secret(f"the open link flow to {up.main_node_id}", flow.get(field))
+            up.flow = flow
     session.add(AuditEntry(actor_id=None, action="secrets_rewrapped", target="", detail=counts))
     session.flush()
     return counts

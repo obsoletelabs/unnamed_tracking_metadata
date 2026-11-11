@@ -181,6 +181,19 @@ class Settings(BaseSettings):
     group_assist_run_limit: int = Field(default=50, ge=1, le=1000)
     group_assist_give_up_days: int = Field(default=30, ge=1, le=3650)
     group_assist_max_answer: int = Field(default=512 * 1024, ge=16 * 1024, le=1024 * 1024)
+    # CONTRACT-C14 Part C (C14-3, owner decision H73 final): local nodes may link to this node and propose edits
+    # through the device grant. ON by default; it only takes effect on an authority (mirror and local nodes have
+    # nothing to link to). Every new link and every relink starts on probation (all its contributions reviewed).
+    link_enabled: bool = True
+    # H67: `standard` = the main's normal auto-apply rules (reputation only, after probation); `always` = review
+    # every link contribution.
+    link_review_default: Literal["standard", "always"] = "standard"
+    link_main_daily: int = Field(default=5000, ge=1, le=10_000_000)  # §7.5 `link-main`, contributions per day
+    link_main_new_daily: int = Field(default=50, ge=0, le=100_000)  # §7.5 new links per day across the main
+    link_federated_approval: bool = False  # §6.3 step 3: a session opened through another node may approve
+    # Node side (C14-3n): `manual` queues only edits the linking admin sends; `auto` also queues local proposals
+    # approved here. Never changes what the main does with them.
+    link_push: Literal["manual", "auto"] = "manual"
     tagline: str = "Media metadata, merged and sourced"
     footer_text: str = "Community metadata. Contributions are CC0."
     accent_color: str = "#6aa8ff"  # dark theme accent

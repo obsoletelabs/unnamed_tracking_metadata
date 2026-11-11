@@ -67,7 +67,9 @@ SUPPORTED_VERSION = 1
 
 
 def all_domains() -> list[bytes]:
-    return [FEED_DOMAIN, PRICE_DOMAIN, *DOMAINS.values()]
+    from .link_crypto import domains as link_domains  # CONTRACT-C14 §1.4: the node link's own domains
+
+    return [FEED_DOMAIN, PRICE_DOMAIN, *DOMAINS.values(), *link_domains()]
 
 
 def prefix_free(domains: list[bytes]) -> bool:

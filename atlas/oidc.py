@@ -199,6 +199,13 @@ def discovery(ctx: Ctx, session: Session | None = None) -> dict[str, Any]:
         "grant_types_supported": ["authorization_code"],
         "claims_supported": ["sub", "preferred_username", "email", "email_verified", "atlas_reputation"],
     }
+    from . import link
+
+    if link.active(ctx.settings):  # CONTRACT-C14 §6.2: additive, only while node links are active (H73)
+        doc.update(link.discovery_members(ctx))
+        doc["grant_types_supported"] = ["authorization_code", link.DEVICE_GRANT, "refresh_token"]
+        doc["subject_types_supported"] = ["public", "pairwise"]
+        doc["token_endpoint_auth_methods_supported"] = [*doc["token_endpoint_auth_methods_supported"], "none"]
     if session is not None:
         doc["atlas_node"] = node_keys(session, ctx)
     return doc
@@ -343,6 +350,9 @@ def _userinfo(session: Session, access_token: str) -> tuple[dict[str, Any] | Non
 
 
 def purge(session: Session) -> None:
+    from . import link
+
+    link.purge(session)  # CONTRACT-C14 §6.4 retention (Review #1 C14-11)
     cutoff = now() - timedelta(hours=1)
     session.execute(delete(OidcCode).where(OidcCode.expires_at < cutoff))
     session.execute(delete(OidcAccess).where(OidcAccess.expires_at < cutoff))
