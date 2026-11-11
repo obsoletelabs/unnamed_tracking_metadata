@@ -49,6 +49,8 @@
 {% if p.rights and p.rights.federated %}<p class="flash group-session" role="status">Signed in through another node of your group.{% if p.rights.banner %} {{ p.rights.banner }}{% endif %}</p>
 {% elif p.rights and p.rights.banner %}<p class="flash group-session" role="status">{{ p.rights.banner }}</p>{% endif %}
   {% if p.flash %}<div class="flash" role="status">{{ p.flash }}</div>{% endif %}
+  {% if p.is_admin and sg_bar %}{% include "_admin_group_bar.html" %}{% endif %}
+  {% if sg_status and sg_status.syncing %}<p class="sync-state small muted" role="status" data-syncing>Syncing your changes…</p>{% endif %}
   {% if link_notice %}<aside class="offer" data-link-notice aria-labelledby="link-notice-q"><p id="link-notice-q"><strong>Link your account with your other nodes?</strong> <span class="small muted">This node is in a group. Once you link, your preferences follow you between the nodes. Only you can link your account.</span></p><div class="offer-actions"><a class="btn" href="/me/linked-nodes#link">Link now</a></div></aside>{% endif %}
   {% if date_offer %}{# §7.4: shown by app.js only to en-US browsers in a US time zone; nothing without scripts #}
   <aside class="offer" data-date-offer hidden aria-labelledby="date-offer-q">

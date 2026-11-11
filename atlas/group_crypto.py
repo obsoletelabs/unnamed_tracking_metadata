@@ -57,10 +57,13 @@ DOMAINS: dict[str, bytes] = {
     # owner group (H67, §7.7). Both use the C10 envelope; no consumer of group state accepts either type.
     "group.assist": b"atlas-grp-assist-v1\n",
     "group.contrib_state": b"atlas-grp-contrib-v1\n",
+    # C14-4 (super group): one user write made on a member, replicated to every member. No consumer of group state
+    # accepts this type; only `atlas.super_group` reads it.
+    "group.write": b"atlas-grp-write-v1\n",
 }
 SAS_INFO = b"atlas-grp-sas-v1"  # HKDF info only, never signed
 OBJECT_TYPES = ("group.genesis", "group.succession", "group.succession_cancel", "group.root_moved", "group.cert",
-                "group.crl", "group.grant", "group.view", "group.assist", "group.contrib_state")
+                "group.crl", "group.grant", "group.view", "group.assist", "group.contrib_state", "group.write")
 SEAL_SUITE = "x25519-chacha20poly1305-v1"
 SKEW = 300  # seconds (§1.3)
 SUPPORTED_VERSION = 1

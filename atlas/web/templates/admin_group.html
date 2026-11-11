@@ -113,6 +113,8 @@
 
 {# Group sync (addendum items 3-4): the shared view of the members, and the people who have not linked yet. #}
 {% set admin = true %}{% include "_group_sync.html" %}
+{# C14-4: the super group, for administrators only. #}
+{% if sg %}{% include "_admin_super_group.html" %}{% endif %}
 {# C14 Part A and §7.7: what this node asked its group, and the contribution states the other members share. #}
 <section class="card inset" aria-labelledby="g-assist" data-group-assist>
   <h3 id="g-assist">Asking your nodes</h3>

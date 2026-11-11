@@ -72,9 +72,10 @@ def _page(p: Page, error: str | None = None, status: int = 200, **extra):
             held_updates=groups.held_member_updates(p.session, group, identity.node_id)
             if group.root_state == "holder" else [],
             enrollers=_enrollers(p, group, tr, identity.node_id), **_grants_ctx(p, group, tr))
-        from .. import assist, contrib_state
+        from .. import assist, contrib_state, super_group
         from .profile_pages import sync_strip
 
+        ctx.update(sg=super_group.overview(p.session, settings, identity), label=super_group.subject_label)
         ctx.update(strip=sync_strip(p, group), link_invite=link_invite_on(p.session),
                    assist_counts=assist.counts(p.session),
                    contrib_states=contrib_state.received(p.session, identity.node_id),
@@ -797,3 +798,13 @@ def resync_skip(p: Annotated[Page, Depends(local_admin_form)], password: PW = ""
     if group is not None and group.status == "resyncing":
         groups.skip_resync(p.session, group, p.me.id)  # a new trust epoch (C10 R1-3)
     return go("/admin/group", "saved")
+
+
+@router.post("/admin/group/conflicts/{conflict_id}/seen")
+def super_group_conflict_seen(conflict_id: str, p: Annotated[Page, Depends(admin_form)]):
+    """C14-4: an administrator acknowledges a super-group conflict on this node (it stays listed, marked seen)."""
+    from .. import super_group
+
+    if super_group.acknowledge(p.session, conflict_id[:32], p.me.id):
+        groups.audit(p.session, p.me.id, "super_group_conflict_seen", conflict_id[:32], {})
+    return go("/admin/group#one-node", "saved")

@@ -476,3 +476,60 @@ had shared.
 `atlas group assist status` shows the queue; `atlas group assist run` asks now. Migration `0039` adds the tables;
 downgrading below it is refused while answers from the group are kept, until each member is forgotten or
 `ATLAS_DOWNGRADE_FORCE=1` is set.
+
+## One node for your users (super group)
+
+With **Act as one node with your other nodes** (`group_super`, turned on by the "Same owner, full trust" preset)
+the whole group presents to its users as one site. Ordinary users do not need to know which node holds or served
+anything, and they are never shown it:
+
+- **Write once, synced to all.** An edit or a new game applied on any node, a list created, renamed or deleted,
+  and a game added to or removed from a list (favourites and wishlist included) is saved where the user made it,
+  shown at once, and written as one signed `group.write` that every member pulls in its group round (sealed op
+  `group.writes`). A member relays every write it holds, so a write reaches a node that was offline even if the
+  node it was made on is offline by then.
+- **Same result everywhere.** Each write carries a hybrid logical clock. For every field, list and list entry the
+  write with the highest clock wins (last writer wins; a removal is a tombstone that wins the same way), so all
+  members that hold the same writes show the same thing, whatever order the writes arrived in. When two nodes
+  changed the same thing without seeing each other's change and the values differ, every member records the same
+  **conflict entry**. Conflicts are listed on Admin → Node group → *One node for your users*, where an
+  administrator can mark them seen. Users never see them.
+- **Invisible topology.** User pages show no "served by", no "also on", no node name, id or fingerprint. A
+  person's own pages show only a generic *Syncing your changes…* line while one of their writes has not reached
+  every member yet, and how fresh the sync is. Administrators see a small group bar on every page (which node
+  served it, how many members, unreached members, open conflicts) and the full view on Admin → Node group. The
+  account-link and group sign-in ceremonies still name the node the person chooses to trust. That is an
+  anti-phishing check, not topology. A template lint test (`tests/test_c14_template_lint.py`) fails when a user
+  template starts naming nodes. It keeps an allowlist of admin templates and ceremonies, each with a reason.
+- **Which writes count.** Whether a write is accepted depends only on the write and the group's signed trust
+  state, never on when a node happened to receive it. A write is refused if it is dated at or after its node was
+  revoked, banned or left the group. If a revocation arrives after a node already applied such a write, the node
+  withdraws the write and recomputes the subject, so it ends where the other members are. A write dated while its
+  node's certificate had lapsed is **held** until the node renews (D7). A write dated more than 24 hours ahead
+  waits until the clock reaches it. A write of a kind a later release introduced is kept and relayed, not applied.
+- **What never travels.** Records under a `private` or `local` ceiling keep their edits and list entries on the
+  node. Replicated record edits are stored as group data (`group-write` observations under the `group:write`
+  scope): never signed into a public feed and never sent to a main Atlas. Anonymous visitors see them only through
+  the partial public projection (D1). Account links stay per node: a replicated write never touches a node link,
+  its queue or its probation, so relinking still restarts probation (D2). A member that does not offer
+  `group.writes` (an older release) is shown to administrators as degraded and skipped. Users see no error (D8).
+- **Lists follow the account link.** List writes are applied for the local account linked to the same group
+  account. A write for an account not linked here waits and is applied once the person links. Lists, favourites
+  and entries the account already had are written once when the super group is turned on or the account is
+  linked (backfill). Favourites and wishlist are one per account, so their entries merge. Two lists of one account
+  that carry the same name get the same names on every node (the one with the smaller key keeps the plain name).
+  Replicated lists follow the node's own list rules: with lists turned off, or a user at the list or item limit,
+  the write waits on that node and is applied when the rule allows it.
+
+**Not replicated yet:** comments, votes, follows, artwork and achievement edits, custom fields, curator API
+writes and record edits made before the super group was turned on. The records themselves still reach every node
+through the feeds and [Asking your nodes](#asking-your-nodes).
+
+| Setting | Values | Default | Same owner preset |
+|---|---|---|---|
+| `group_super` | on / off | off | on |
+
+Migration `0041` adds `group_write`, `group_write_state` and `group_write_conflict`. Downgrading below it is
+refused while replicated edits exist, unless `ATLAS_DOWNGRADE_FORCE=1` is set. With the flag, those observations
+are dropped. Records first created from a replicated write keep their `group` ceiling. Every view is re-derived
+once the schema is current again.

@@ -31,7 +31,9 @@ CLASS_RANK = {"curator": 4, "publisher": 3, "community": 2, "provider": 1, "deri
 CLASS_NAME = {rank: name for name, rank in CLASS_RANK.items()}
 #: Sources of the `curator` class: reserved namespaces that need the curate scope to ingest.
 CURATOR_SOURCES = frozenset({"curator", "manual"})
-COMMUNITY_SOURCES = frozenset({"community"})
+#: `group-write` (C14-4): a user's edit replicated across the owner group (the same class as the `community` edit it
+#: carries, so every member ranks it the same way). Reserved: ingest refuses it from any client.
+COMMUNITY_SOURCES = frozenset({"community", "group-write"})
 # `publisher` (rank 3) is reserved for verified publisher identities (#36); no source maps to it yet.
 
 

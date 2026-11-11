@@ -117,6 +117,12 @@ def render(p: Page, name: str, status: int = 200, anon_csrf: bool = False, **ctx
         from .group import link_invite_banner
 
         ctx["link_notice"] = link_invite_banner(p)  # addendum item 4: the administrator's "Invite users to link"
+    if p.user and getattr(s, "group_super", False):  # C14-4: the super group, invisible to people
+        from .. import super_group
+
+        ctx.setdefault("sg_status", super_group.user_status(p.session, s, p.user.id))
+        if p.is_admin:  # the topology, for administrators only
+            ctx.setdefault("sg_bar", super_group.admin_bar(p.session, s, p.st.ctx.identity))
     unread = social.unread_count(p.session, p.user.id) if p.user else 0
     prefs = profile.values(p.session, s, p.user) if p.user else anonymous_prefs(p.request)
     resp = templates.TemplateResponse(p.request, name, {

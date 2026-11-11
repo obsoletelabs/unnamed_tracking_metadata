@@ -335,6 +335,21 @@ def group_round(maker: sessionmaker[Session], ctx: Ctx, client) -> dict[str, str
             assist.purge(session)
             assist_lookup.purge(session)
         session.commit()
+    # C14-4 (super group): pull the members' user writes, apply them, retry what waits, announce our own.
+    from . import super_group
+
+    with maker() as session:
+        group = groups.active(session)
+        if group is not None and super_group.enabled(ctx.settings):
+            try:
+                tr = groups.trust(session, group, own_node=ctx.identity.node_id)
+                summary = super_group.pull(session, ctx, group, tr, client, group_routes.call)
+                session.commit()
+                if summary.get("applied") or summary.get("held"):
+                    log.info("super group: %s", {k: v for k, v in summary.items() if k != "members"})
+            except Exception as exc:  # noqa: BLE001 - the next round retries
+                session.rollback()
+                log.warning("super group round failed: %s", type(exc).__name__)
     return outcomes
 
 

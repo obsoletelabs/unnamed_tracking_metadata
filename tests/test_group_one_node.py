@@ -147,8 +147,9 @@ def test_group_sync_strip_on_linked_nodes_and_admin_page(ui):  # noqa: F811
     link_from_enrolment(a, b, ca, cb, eid)
     rounds(a, b)
     me = cb.get("/me/linked-nodes").text
-    assert re.search(f'data-sync-member="{a.node_id}" data-sync-state="ok"', me)
-    assert "last sync" in me and "Theme" in me[me.index("data-group-sync-shared"):]
+    # C14-4 (invisible topology): the person's summary has the group's freshness, never a per-member line
+    assert "data-sync-member" not in me and "Last synced" in me
+    assert "Theme" in me[me.index("data-group-sync-shared"):]
     assert 'data-group-sync-conflicts="0"' in me
     admin = cb.get("/admin/group").text
     assert 'data-group-sync="admin"' in admin and 'data-group-sync-accounts="1/1"' in admin
@@ -316,7 +317,8 @@ def test_enrolment_consent_saved_only_when_the_link_completes(ui):  # noqa: F811
 
 
 def test_user_sync_strip_hides_raw_member_errors(ui):  # noqa: F811
-    """U3 review: the raw transport error of a member is an admin matter; the person's page shows only the badge."""
+    """U3 review: the raw transport error of a member is an admin matter. C14-4 (invisible topology): the person's
+    page shows no per-member state at all, only the group's freshness."""
     from atlas.models import GroupMember
 
     a, b, ca, cb = ui
@@ -326,5 +328,5 @@ def test_user_sync_strip_hides_raw_member_errors(ui):  # noqa: F811
             m.last_error = "ConnectError: 10.0.0.7:8443 refused"
         s.commit()
     me = cb.get("/me/linked-nodes").text
-    assert "not reached" in me and "10.0.0.7" not in me
+    assert "not reached" not in me and "10.0.0.7" not in me and "data-group-sync-fresh" in me
     assert "10.0.0.7" in cb.get("/admin/group").text

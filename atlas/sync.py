@@ -243,6 +243,10 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
                 from . import assist  # C14 §3.4 step 9: this node's own pull now introduced a group record
 
                 assist.on_feed_introduced(session, ctx, node_id, created)
+            elif held is not None and held.scope_ceiling_by == "write":
+                from . import super_group  # C14-4: a record first written in the group now comes from a feed
+
+                super_group.on_feed_introduced(session, ctx, created)
             trigger = kind
             if kind == "obs" and isinstance(body.get("observation"), dict) \
                     and body["observation"].get("source") == feed_schema.RECORD_SOURCE:
