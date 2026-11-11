@@ -297,7 +297,7 @@ def test_sync_info_advertises_versions_and_records_follower_protocol(net):
     info = authority.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {authority.token}"}).json()
     assert info["contract"] == 1  # kept for pre-1.1 readers
     assert (info["protocol"], info["min_follower_protocol"], info["emit_protocol"]) == ("1.5", "1.0", "1.0")
-    assert info["observation_schema"] == 1 and info["capabilities"] == ["ext-v1", "dates-v1"]
+    assert info["observation_schema"] == 1 and info["capabilities"] == ["ext-v1", "dates-v1", "book-v1"]
     assert info["kinds"]["achievements"] == {"emit": 1, "apply": 1}
     with authority.st.maker() as session:
         assert session.get(FollowerSeen, authority.token_row.id) is None  # a plain reader is not a follower

@@ -1417,10 +1417,14 @@ def _relation_change(p: Page, cid: str, change, kind: str = "") -> Any:
 
 @router.post("/game/{cid}/relations/add")
 def relations_add(cid: str, p: Annotated[Page, Depends(review_form)], to: Annotated[str, Form(max_length=40)],
-                  type: Annotated[str, Form(max_length=32)], q: Annotated[str, Form(max_length=200)] = ""):
+                  type: Annotated[str, Form(max_length=32)], q: Annotated[str, Form(max_length=200)] = "",
+                  position: Annotated[str, Form(max_length=64)] = ""):
     local = p.st.ctx.settings.role != "authority"
+    # C15 §2.4: a blank position keeps the one an existing series_member already has (never clears it)
+    pos = position.strip() or None
     failed = _relation_change(p, cid, lambda g: relations.add(p.session, p.st.ctx, g.id, to.strip(), type,
-                                                              actor=p.me.username, local_only=local), type)
+                                                              actor=p.me.username, local_only=local,
+                                                              position=pos, keep_position=True), type)
     if failed is not None:
         return failed
     return go(f"/game/{cid}/relations" + (f"?{urlencode({'q': q, 'type': type})}" if q else ""), "relation-added")

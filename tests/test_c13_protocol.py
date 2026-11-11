@@ -34,8 +34,10 @@ def test_check_emit_since_maps():
     assert feed_schema.RESERVED_KINDS == shifted
     assert feed_schema.TOKEN_SINCE == {"tier-platinum": "1.2", "dates-v1": "1.3", "relation-v1": "1.4",
                                        "price-channel-v1": "1.6", "field-clear-v1": "1.7", "merge-guard-v1": "1.7",
-                                       "ach-v2": "1.8", "art-v2": "1.9"}
-    assert feed_schema.RESERVED_TOKENS == feed_schema.TOKEN_SINCE
+                                       "ach-v2": "1.8", "art-v2": "1.9",
+                                       "book-v1": feed_schema.UNIFIED}
+    # book-v1 (A21) joins the one release (UNIFIED), not the C13 reserved list
+    assert feed_schema.RESERVED_TOKENS == {k: v for k, v in feed_schema.TOKEN_SINCE.items() if k != "book-v1"}
     assert feed_schema.VALUE_SINCE[("lock_field", "_no_merge")] == "1.7"
     assert feed_schema.VALUE_SINCE[("artwork_kind", "trailer")] == "1.9"
     assert feed_schema.BODY_SINCE == {("lock", 2): "1.7", ("unlock", 2): "1.7", ("achievements", 2): "1.8",

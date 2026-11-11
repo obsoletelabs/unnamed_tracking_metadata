@@ -487,3 +487,34 @@ def test_t_b11_relations_without_position_are_signed_as_before(tmp_path):
         s.commit()
         body = s.scalars(select(ChangeLog.body).where(ChangeLog.kind == "relation")).one()
     assert body == {"op": "add", "from": book, "to": series, "type": "series_member", "source": "curator"}
+
+
+def test_web_add_keeps_a_series_position_and_can_set_one(tmp_path):
+    """Review fix: re-adding a positioned series_member from the web form (position left blank) keeps its position
+    instead of silently clearing it; the form can set one, and the list shows it."""
+    from .test_relations import _reviewer_site
+    from .test_web import token
+
+    site = _reviewer_site(tmp_path)
+    ids = site.ids
+    member, series = ids["Web Game"], ids["Web Series"]
+    try:
+        t = token(site, f"/game/{member}/relations")
+        r = site.post(f"/game/{member}/relations/add",
+                      data={"csrf": t, "to": series, "type": "series_member", "position": "3"})
+        assert r.status_code == 303, r.text
+        page = site.get(f"/game/{member}/relations").text
+        assert "data-relation-position>#3<" in page
+        r = site.post(f"/game/{member}/relations/add", data={"csrf": t, "to": series, "type": "series_member"})
+        assert r.status_code == 303, r.text
+        with site.st.maker() as s:
+            rows = s.scalars(select(Relation).where(Relation.from_id == member)).all()
+            assert [(row.position, row.ended_at is None) for row in rows] == [("3", True)]  # kept, nothing ended
+        r = site.post(f"/game/{member}/relations/add",
+                      data={"csrf": t, "to": series, "type": "series_member", "position": "4"})
+        assert r.status_code == 303
+        with site.st.maker() as s:
+            active = s.scalars(select(Relation).where(Relation.from_id == member, Relation.ended_at.is_(None))).all()
+            assert [row.position for row in active] == ["4"]
+    finally:
+        site.__exit__(None, None, None)

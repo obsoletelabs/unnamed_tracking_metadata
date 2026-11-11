@@ -372,7 +372,8 @@ def _body(op: str, src: str, dst: str, kind: str, source: str | None = None,
 
 def add(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, source: str = "curator",
         actor: str = "", local_only: bool = False, log: bool = True,
-        origin: tuple[str, int] | None = None, position: str | None = None) -> tuple[Relation, bool]:
+        origin: tuple[str, int] | None = None, position: str | None = None,
+        keep_position: bool = False) -> tuple[Relation, bool]:
     """Add a relation. Returns (row, created): an identical active relation is returned unchanged (idempotent).
 
     `log=False` is a feed apply (`origin` = upstream node and seq): it is stored as redistributable and never
@@ -381,7 +382,8 @@ def add(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, sour
 
     `position` (C15 §2.4, `series_member` only): an active relation of the same pair with another position is
     ended (`repositioned`) and a new row added in the same transaction; an authority signs that as `end` + `add`
-    (no new op), so a follower's history shows both."""
+    (no new op), so a follower's history shows both. `keep_position=True` (the web form, whose position field may
+    be left blank) makes a missing position mean "keep the active relation's position" instead of "clear it"."""
     write_lock(session)
     if kind not in TYPES:
         raise AtlasError(f"unknown relation type {kind!r}; use one of {', '.join(TYPES)}")
@@ -390,12 +392,16 @@ def add(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, sour
     position = clean_position(kind, position)
     src, dst = _live(session, from_id, "from"), _live(session, to_id, "to")
     existing = active_between(session, src.id, dst.id, kind)
+    if keep_position and position is None and existing is not None:
+        position = existing.position
     if existing is not None and existing.position != position and origin is None:
         end(session, ctx, src.id, dst.id, kind, actor=actor, log=log, reason="repositioned")
         existing = active_between(session, src.id, dst.id, kind)
     elif existing is not None and existing.position != position and is_replicated(existing):
         existing.position = position  # an upstream that re-adds the pair without an `end` moves the position
         session.flush()
+        bump_version(session, src.id, "feed")
+        bump_version(session, dst.id, "feed")
     if existing is not None and origin is not None and not is_replicated(existing):
         # an identical local row: the upstream's entry takes it over, so its `end` and a rescan find it
         existing.redistributable, existing.origin_node, existing.origin_seq = True, origin[0], origin[1]

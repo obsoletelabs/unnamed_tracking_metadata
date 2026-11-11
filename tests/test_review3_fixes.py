@@ -158,7 +158,7 @@ def test_hostile_schema_snapshots_are_filtered_not_applied(session, ctx):
                    {"media_type": "movie", "key": "ok_field", "label": "OK\x00 field", "kind": "text"}, 5]})
     session.commit()
     types = {t.key: t for t in session.scalars(select(MediaType))}
-    assert set(types) == {"game", "legacy", "anime", "movie", "tv_show", "series", "collection"}
+    assert set(types) == {"game", "legacy", "anime", "movie", "tv_show", "series", "collection", "book"}
     assert types["movie"].labels == {"developer": "Director", "publisher": "Studio", "series": "Series"}
     fields = {f.key: f for f in session.scalars(select(FieldDef))}
     assert fields["ok_field"].label == "OK field"

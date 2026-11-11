@@ -451,7 +451,7 @@ node. The upstream caches its answer for up to 60 seconds (`cached_seconds`). Pl
 | `lock` | 1.0 | 1 / 1 | `canonical_id`, `field`, `value` |
 | `unlock` | 1.0 | 1 / 1 | `canonical_id`, `field` |
 | `key_rotation` | 1.0 | 1 / 1 | `key_id`, `public_key` |
-| `relation` | 1.4 | 1 / 1 | `from`, `op`, `source`, `to`, `type` |
+| `relation` | 1.4 | 1 / 1 | `from`, `op`, `position`, `source`, `to`, `type` |
 | `record` | 1.5 | 1 / 1 | `because`, `canonical_id`, `media_type`, `provider_ids`, `title` |
 | `price` | 1.6 (reserved) | not in this release | parked by this release |
 | `unmerge` | 1.7 (reserved) | not in this release | parked by this release |

@@ -160,6 +160,36 @@ def test_record_carries_the_first_edition_isbn_only(session, ctx):
     assert sum(1 for k in body["provider_ids"] if k == "isbn") == 1 and body["provider_ids"]["igdb"] == "w1"
 
 
+def test_record_never_signs_an_isbn_it_does_not_hold(session, ctx):
+    """Review fix: the `record` ISBN comes from the record's own `isbn` edition rows, never from the view. A
+    conflicting ISBN (held by another work) or one only a user's report names is not signed."""
+    from atlas import feed
+    from atlas.models import Canonical
+
+    [first] = _ingest(session, ctx, "igdb", [_book("w1", "The Lantern Keeper", THREE[1:2])])  # holds ISBN13_B
+    # the second work names ISBN13_B (refused: isbn_conflict) and, through a host report, ISBN13_979
+    [second] = _ingest(session, ctx, "rawg", [_book("w9", "Tides of an Unlit Sea",
+                                                    [{"name": "Omnibus", "isbn_13": ISBN13_B}],
+                                                    authors=[{"name": "Ione Marsh"}])])
+    service.ingest(session, ctx, batch("someone", [_book("copy", "Tides of an Unlit Sea",
+                                                         [{"name": "My copy", "isbn_13": ISBN13_979}])],
+                                       kind="host"), media_type="book")
+    session.commit()
+    row = session.get(Canonical, second.canonical_id)
+    if row.merged_into is None:
+        assert ISBN13_B in {e.get("isbn_13") for e in row.view.get("editions") or []}  # the view shows it ...
+        assert "isbn" not in feed.record_body(session, ctx.settings, row, "publish")["provider_ids"]  # ... unsigned
+    # once the second work holds an ISBN of its own, that one is signed
+    _ingest(session, ctx, "rawg", [_book("w9", "Tides of an Unlit Sea",
+                                         [{"name": "Omnibus", "isbn_13": ISBN13_B},
+                                          {"name": "Omnibus paperback", "isbn_13": ISBN13_A}],
+                                         authors=[{"name": "Ione Marsh"}])])
+    row = session.get(Canonical, second.canonical_id)
+    assert feed.record_body(session, ctx.settings, row, "publish")["provider_ids"]["isbn"] == ISBN13_A
+    held_by_first = session.get(Canonical, first.canonical_id)
+    assert feed.record_body(session, ctx.settings, held_by_first, "publish")["provider_ids"]["isbn"] == ISBN13_B
+
+
 def test_resolve_endpoint_answers_the_work_for_any_edition_isbn(tmp_path):
     """T-B2 through the HTTP contract: `POST /resolve` with `provider_ids: {"isbn": ...}` (hyphens normalised by the
     caller or not) answers the work."""

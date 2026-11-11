@@ -12,7 +12,7 @@
 <h2 id="own-h">This record’s relations</h2>
 {% if own %}
 <table class="rel-table"><thead><tr><th>Relation</th><th>Record</th><th>Source</th><th></th></tr></thead><tbody>
-{% for r in own %}<tr data-relation="{{ r.type }}:{{ r.to_id }}"><td>{{ rel_labels[r.type][0] }}</td><td><a href="/game/{{ r.to_id }}">{{ titles[r.to_id] }}</a> <code class="small">{{ r.to_id }}</code></td>
+{% for r in own %}<tr data-relation="{{ r.type }}:{{ r.to_id }}"><td>{{ rel_labels[r.type][0] }}{% if r.position is not none %} <span class="badge" data-relation-position>#{{ r.position }}</span>{% endif %}</td><td><a href="/game/{{ r.to_id }}">{{ titles[r.to_id] }}</a> <code class="small">{{ r.to_id }}</code></td>
 <td class="small muted">{{ r.source }}{% if r.origin_node %} <span class="badge">from upstream</span>{% elif r.feed_seq %} <span class="badge ok">published</span>{% elif not local %} <span class="badge">not published</span>{% endif %}</td>
 <td>{% if not r.origin_node %}<form class="inline" method="post" action="/game/{{ g.id }}/relations/remove">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ r.to_id }}"><input type="hidden" name="type" value="{{ r.type }}"><button class="secondary small" type="submit" data-confirm="Remove this relation?">Remove</button></form>{% endif %}</td></tr>
 {% endfor %}</tbody></table>
@@ -35,6 +35,7 @@
 <ul class="data-list" data-relation-results>{% for r in results %}<li><form method="post" action="/game/{{ g.id }}/relations/add?{{ {'q': q}|urlencode }}">{{ csrf(p.csrf) }}<input type="hidden" name="to" value="{{ r.id }}"><input type="hidden" name="q" value="{{ q }}">
 <strong>{{ r.view.get('title') }}</strong> <span class="muted small">{% if r.media_type != 'game' %}{{ r.media_type|replace('_', ' ') }} · {% endif %}{% if r.view.get('release_year') %}{{ r.view.release_year }} · {% endif %}<code>{{ r.id }}</code></span>
 <label class="visually-hidden" for="t-{{ loop.index }}">Relation</label><select id="t-{{ loop.index }}" name="type">{% for t in types %}<option value="{{ t }}" {{ 'selected' if t == (kind or ('series_member' if r.media_type == 'series' else 'collection_member' if r.media_type == 'collection' else 'dlc_of')) }}>{{ rel_labels[t][0] }}</option>{% endfor %}</select>
+<label class="visually-hidden" for="pos-{{ loop.index }}">Position in the series (optional)</label><input id="pos-{{ loop.index }}" class="rel-position" type="text" name="position" maxlength="16" placeholder="Position" title="Series position, such as 1 or 2.5 (series membership only; blank keeps the current one)" size="8">
 <button type="submit">Add</button></form></li>{% endfor %}</ul>
 {% else %}<p class="muted">No other record matches.</p>{% endif %}
 {% endif %}
