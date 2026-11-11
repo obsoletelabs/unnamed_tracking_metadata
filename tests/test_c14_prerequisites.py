@@ -318,8 +318,8 @@ def test_qr_svg_escapes_and_limits_input():
 def test_response_caps_are_per_op():
     assert group_routes.response_cap("assist.find") == 1024 * 1024
     assert group_routes.response_cap("assist.fetch") == 1024 * 1024
-    for op in group_routes.CALL_OPS:
-        assert group_routes.response_cap(op) == 8 * 1024 * 1024
+    for op in group_routes.CALL_OPS:  # C14-2 adds the assist ops: 1 MiB; every other op keeps 8 MiB
+        assert group_routes.response_cap(op) == (1024 * 1024 if op.startswith("assist.") else 8 * 1024 * 1024)
 
 
 @pytest.fixture

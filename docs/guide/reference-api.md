@@ -110,6 +110,6 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
-| `GET` | `/group/assist` | admin | (undocumented) |
-| `POST` | `/group/assist/ask` | read | (undocumented) |
-| `POST` | `/group/assist/lookup` | contribute | (undocumented) |
+| `GET` | `/group/assist` | admin | Counts of this node's questions to its owner group (CONTRACT-C14 §3): due, backing off, given up, dropped because the queue was full, and kept evidence items. See [Node groups](node-groups.md#asking-your-nodes). |
+| `POST` | `/group/assist/ask` | read | Ask the owner group now for records this node lacks (`{ids: [...]}`, "Ask my nodes"), also ones it gave up on. Answers arrive in a later group round. 409 when the node is in no group or asking is off. |
+| `POST` | `/group/assist/lookup` | contribute | A provider lookup through a member of the owner group (CONTRACT-C14 §4), for a provider this node has no key or budget for. With `record`, the result is kept on that record as group data (never public, never in this node's feed). Needs `group_assist_lookups = answer+ask`. |

@@ -469,7 +469,7 @@ def test_storage_problem_detects_unwritable_directory(tmp_path):
 def test_worker_logs_an_actionable_storage_message(monkeypatch, maker, ctx, caplog):
     from .test_media_worker import StopAfterWaits
 
-    def broken(*_):
+    def broken(*_, **__):
         raise media.MediaStorageError("cannot write to ATLAS_MEDIA_DIR (/media)")
 
     monkeypatch.setattr(media, "cache_pending", broken)
