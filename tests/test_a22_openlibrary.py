@@ -319,6 +319,23 @@ def test_imported_redirect_keeps_the_old_id_as_an_alias(site):
         assert s.get(Crosswalk, ("openlibrary", W1)).canonical_id == first.row.id
 
 
+def test_the_signed_record_names_the_live_id_not_an_alias(site):
+    """Review of #139: an alias that sorts before the live id (`OL1000W` < `OL9900000001W`) is never the id the
+    authority signs in `record.provider_ids`, or a follower holding the live id could not match the record."""
+    from atlas import feed
+
+    st = site.st
+    st.providers.client = fixture_client()
+    st.providers.providers["openlibrary"] = ol()
+    with st.maker() as s:
+        first = importer.import_from_provider(st, s, "openlibrary", W1)
+        importer._keep_alias(s, ol(), "openlibrary", "OL1000W", W1, first.row, False)
+        s.commit()
+        assert s.get(Crosswalk, ("openlibrary", "OL1000W")).canonical_id == first.row.id
+        body = feed.record_body(s, st.ctx.settings, first.row, "test")
+        assert body["provider_ids"]["openlibrary"] == W1
+
+
 # ---- T-B13: budget, pacing, identification ------------------------------------------------------------------------
 
 def test_budget_is_sixty_a_minute():
@@ -477,10 +494,11 @@ def test_cover_fetch_follows_archive_org_and_identifies_itself(resolver):
     assert ua.endswith("; ops@example.org)") and follow == ("covers.openlibrary.org", "archive.org")
     seen: list[tuple[str, str]] = []
     data = media._request(_cover_client(seen), "https://covers.openlibrary.org/b/id/9900001-L.jpg", settings,
-                          user_agent=ua, follow_hosts=follow)
+                          user_agent=ua, follow_hosts=follow, agent_hosts=media.CONTACT_HOSTS["openlibrary"])
     assert data.startswith(b"\x89PNG")
     assert [h for h, _ in seen] == ["covers.openlibrary.org", "archive.org", "ia800505.us.archive.org"]
-    assert {u for _, u in seen} == {ua}
+    # review of #139: the contact goes to Open Library only; the archive.org hops get the plain versioned agent
+    assert [u for _, u in seen] == [ua, user_agent(), user_agent()]
     assert media.fetch_options(settings, "steam") == (user_agent(), ())  # no contact for other sources
 
 

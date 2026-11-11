@@ -137,7 +137,8 @@ and keeps the old one as an alias, so a link or a job that still names it lands 
 **Being a good client.** Atlas sends `User-Agent: atlas-metadata/<version> (+<project URL>[; <contact>])` with every
 request to Open Library and covers.openlibrary.org. The contact is **empty unless you set it**: Admin →
 Integrations → Open Library, or `ATLAS_PROVIDER_CONTACT` (an e-mail address or an `https://` URL). Your
-`ATLAS_NODE_OPERATOR` is never sent. Atlas makes at most one request a second per process whatever the contact
+`ATLAS_NODE_OPERATOR` is never sent. When a cover download is redirected from covers.openlibrary.org to the
+Internet Archive's storage hosts (archive.org), those hops get the same User-Agent **without** the contact. Atlas makes at most one request a second per process whatever the contact
 (with several workers each paces itself), caches every answer for `ATLAS_PROVIDER_TTL_SECONDS`, and never walks the
 catalogue: imports, searches and follower enrichment are always about one book a person or a record asked for. A
 work costs three or four requests (the work, its author list, its editions, and a redirect when there is one); an
@@ -160,3 +161,9 @@ ids only; the *Live Open Library* workflow runs it on manual dispatch.
 Migration 0061 adds `relation.position` and the derived `book_creator` table, adopts an existing `book` type as
 described above and recomputes book title keys. Rolling back drops the column and the table; the achievements flag
 and the recomputed keys stay (the next rebuild of each record writes its key again).
+
+**Open Library is on after the upgrade** (D15.7). A node that never set `ATLAS_OPENLIBRARY_ENABLED` starts making
+outbound requests to Open Library once it runs this release: when someone searches or imports a book, when follower
+enrichment (H56) meets an `openlibrary` key, and when it caches an Open Library cover. Nothing is fetched on its own
+at start-up. To keep the node from calling Open Library, set `ATLAS_OPENLIBRARY_ENABLED=false` (or switch it off in
+Admin → Integrations) before upgrading.

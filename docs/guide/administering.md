@@ -102,6 +102,9 @@ Reviewers handle proposals, duplicates and reported comments ([Reviewing](review
 
 * Back up the database **and** the media volume ([Deployment](deployment.md#backups)).
 * After upgrades, check **Admin → Overview** shows the feed head and no peer errors.
+* The release that adds books turns the **Open Library** provider on by default (D15.7): a node that never set
+  `ATLAS_OPENLIBRARY_ENABLED` starts calling Open Library for book searches, imports, follower enrichment and covers.
+  Set it to `false` before upgrading if the node must not (see [Books](books.md#upgrading-and-rolling-back)).
 * After upgrading to the release with partial and regional release dates (migration 0031), run
   `atlas dates rebuild` once to re-derive every record with the new merge. It works in batches
   (`--batch`, default 500), can stop after `--limit` records, resumes where it stopped, and starts over

@@ -198,6 +198,9 @@ def run(maker: sessionmaker[Session], st: Any, *, limit: int = RUN_LIMIT, now: d
                 session.commit()
                 out["deferred"] += 1
                 continue
+            # the allowance taken stays taken; commit it now so the write lock is not held while the provider is
+            # fetched (Open Library's pacer may wait several seconds before each request; review of #139)
+            session.commit()
             done += 1
             try:
                 with session.begin_nested():
