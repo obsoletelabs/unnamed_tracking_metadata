@@ -722,7 +722,8 @@ def search(session: Session, q: str, limit: int = 25, offset: int = 0,
     mode = "title" if norm_title(q or "") else "filter" if (released_from or released_to or author) else "browse"
     started, outcome = time.monotonic(), "error"
     try:
-        hit = _isbn_hit(session, q, media_type)
+        low, high, who, media_type = _search_params(media_type, released_from, released_to, sort, author)
+        hit = _isbn_hit(session, q, media_type, low=low, high=high, who=who)
         if hit is not None:
             rows = hit[max(offset, 0):max(offset, 0) + max(limit, 0)]
         else:
@@ -738,10 +739,32 @@ def search(session: Session, q: str, limit: int = 25, offset: int = 0,
         instruments.search_duration.observe(time.monotonic() - started, mode=mode, outcome=outcome)
 
 
-def _isbn_hit(session: Session, q: str | None, media_type: str | None) -> list[Canonical] | None:
+def _search_params(media_type: str | None, released_from: str | None, released_to: str | None, sort: str,
+                   author: str | None) -> tuple[Any, Any, str, str | None]:
+    """Validate the search parameters (AtlasError on a bad one) before any lookup, the ISBN short-circuit included:
+    the release bounds, the normalised author prefix, and the media type (`book` when only an author is given)."""
+    if sort not in SORTS:
+        raise AtlasError(f"sort must be one of {', '.join(SORTS)}")
+    try:
+        low = dates.parse_bound(released_from, "released_from")
+        high = dates.parse_bound(released_to, "released_to")
+    except dates.DateError as exc:
+        raise AtlasError(str(exc)) from exc
+    if low and high and low.start() > high.end():
+        raise AtlasError("released_from is after released_to")
+    who = books.norm_name(author or "")
+    if who:
+        if media_type and media_type != books.BOOK:
+            raise AtlasError("the author filter is for books: use it with type=book")
+        media_type = books.BOOK
+    return low, high, who, media_type
+
+
+def _isbn_hit(session: Session, q: str | None, media_type: str | None, *, low: Any = None, high: Any = None,
+              who: str = "") -> list[Canonical] | None:
     """C15 §5: the work an ISBN names, through the `isbn` crosswalk (edition rows and work keys alike), merges
     followed. None when `q` is not a valid ISBN or no record holds it, so the ordinary title search runs; an empty
-    list when the work is of another type than the one asked for."""
+    list when the work fails a filter (another type, a release outside the range, no creator matching `who`)."""
     isbn = isbn13((q or "").strip())
     if isbn is None:
         return None
@@ -751,7 +774,15 @@ def _isbn_hit(session: Session, q: str | None, media_type: str | None) -> list[C
     work = session.get(Canonical, follow(session, row.canonical_id))
     if work is None or work.merged_into is not None or not work.norm_title:
         return None
-    return [work] if not media_type or work.media_type == media_type else []
+    if media_type and work.media_type != media_type:
+        return []
+    if low is not None and (work.release_start is None or work.release_start < low.start()):
+        return []
+    if high is not None and (work.release_end is None or work.release_end > high.end()):
+        return []
+    if who and not session.scalar(select(Canonical.id).where(Canonical.id == work.id, _creator_match(who))):
+        return []
+    return [work]
 
 
 def _creator_match(prefix: str) -> Any:
@@ -770,20 +801,7 @@ def _search(session: Session, q: str, limit: int = 25, offset: int = 0,
     matches when its first release lies entirely inside the range, so a year-only "2011" matches 2011..2011
     but not April 2011 (it might be any month). `sort=release` orders by the start of the first release, then
     by precision (year before month before day), unknown dates last; `-release` reverses the dates."""
-    if sort not in SORTS:
-        raise AtlasError(f"sort must be one of {', '.join(SORTS)}")
-    try:
-        low = dates.parse_bound(released_from, "released_from")
-        high = dates.parse_bound(released_to, "released_to")
-    except dates.DateError as exc:
-        raise AtlasError(str(exc)) from exc
-    if low and high and low.start() > high.end():
-        raise AtlasError("released_from is after released_to")
-    who = books.norm_name(author or "")
-    if who:
-        if media_type and media_type != books.BOOK:
-            raise AtlasError("the author filter is for books: use it with type=book")
-        media_type = books.BOOK
+    low, high, who, media_type = _search_params(media_type, released_from, released_to, sort, author)
     norm = norm_title(q, media_type)
     stmt = (
         select(Canonical)

@@ -416,6 +416,7 @@ table.peers .peer-actions form { margin: 0; }
   table.peers td[data-label]::before, table.data-cards td[data-label]::before { content: attr(data-label); display: block;
     color: var(--muted); font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
   table.peers .peer-actions { justify-content: flex-start; }
+  table.data-cards td.empty { display: none; } /* a card shows no label for a value it does not have */
 }
 
 /* Game page: breadcrumb, in-page navigation, relations and editions */

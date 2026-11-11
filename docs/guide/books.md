@@ -98,7 +98,8 @@ others from their own providers.
 * **By ISBN.** Type an ISBN-10 or ISBN-13 into any search box (hyphens and spaces are fine, `x` or `X` as the last
   digit of an ISBN-10). Atlas looks it up among the ISBNs of every edition it knows and shows that one book. An ISBN
   with a wrong check digit is not an ISBN, so it is searched as ordinary text. The API does the same:
-  `GET /api/v2/games?q=978-1-234-56789-7`.
+  `GET /api/v2/games?q=978-1-234-56789-7`. Other filters still apply to that book (type, author, release dates), and a
+  bad parameter is refused as in any search.
 * **By author.** On the **Book** tab of the catalogue an **Author** box finds books by anyone credited (authors,
   editors, translators, illustrators, narrators): it matches the start of any part of a name, ignoring case and
   accents, so `herb` finds "Maren Hérbertsdóttir" and `maren h` finds her too, while `erb` does not. In the API,

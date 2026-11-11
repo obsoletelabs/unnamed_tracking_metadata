@@ -122,6 +122,17 @@ def test_isbn_search_and_author_filter(books):
         assert ids_of(service.search(s, ISBN_A, media_type="book")) == [cid]
         assert service.search(s, ISBN_A, media_type="game") == []  # the type filter still applies
         assert service.search(s, ISBN_A, offset=1) == []  # one work, one page
+        # the ISBN short-circuit validates like any search and applies the author and release filters (A23 fix pass)
+        with pytest.raises(service.AtlasError, match="type=book"):
+            service.search(s, ISBN_A, media_type="game", author="herb")
+        with pytest.raises(service.AtlasError, match="sort"):
+            service.search(s, ISBN_A, sort="nonsense")
+        with pytest.raises(service.AtlasError):
+            service.search(s, ISBN_A, released_from="not-a-date")
+        assert ids_of(service.search(s, ISBN_A, author="herb")) == [cid]
+        assert service.search(s, ISBN_A, author="pell") == []  # the author does not match
+        assert ids_of(service.search(s, ISBN_A, released_from="2005", released_to="2005")) == [cid]
+        assert service.search(s, ISBN_A, released_from="2010") == []
         # an invalid check digit is not an ISBN: an ordinary title search (which finds nothing here)
         assert service.search(s, "9781234567898") == []
         # author= prefix-matches any word of a creator's name, casefold, without diacritics
@@ -151,6 +162,8 @@ def test_isbn_search_and_author_filter(books):
     assert [g["id"] for g in books.get("/api/v2/games", params={"type": "book", "author": "herb"}, headers=h)
             .json()["results"]] == [cid]
     assert books.get("/api/v2/games", params={"type": "game", "author": "herb"}, headers=h).status_code == 400
+    assert books.get("/api/v2/games", params={"q": ISBN_A, "type": "game", "author": "x"}, headers=h).status_code == 400
+    assert books.get("/api/v2/games", params={"q": ISBN_A, "author": "pell"}, headers=h).json()["results"] == []
     # web: the author box appears on the Books listing and filters it
     page = books.get("/search", params={"type": "book", "author": "varn"})
     assert page.status_code == 200 and 'name="author"' in page.text and "The Lantern Keeper" in page.text
@@ -233,6 +246,12 @@ def test_book_record_page(books):
     assert "Paperback" in table and "Hardcover" in table and "Harbour Press" in table and "528" in table
     assert f'id="isbn-{ISBN_A}"' in table and f'data-copy="isbn-{ISBN_A}"' in table
     assert ISBN_A in table and ISBN_B in table
+    # mobile cards show no label for a value an edition does not have: the empty cell is marked and hidden
+    assert '<td data-label="Language" class="empty">' in table  # the hardcover has no language
+    paperback = next(row for row in table.split("<tr ") if "528" in row)
+    assert '<td data-label="Language" class="empty">' not in paperback and 'class="empty"' not in paperback
+    # the header search box on every page advertises author and ISBN search
+    assert 'placeholder="Search by title, author or ISBN"' in html
     # attribution, linked to the work page
     assert "Book data from" in page and 'href="https://openlibrary.org/works/OL9100001W"' in html
     # no achievements for books

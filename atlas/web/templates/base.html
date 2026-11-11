@@ -22,7 +22,7 @@
   </div>
   <form class="search" action="/search" method="get" role="search">
     <label class="sr" for="q">Search media</label>
-    <input id="q" type="search" name="q" placeholder="Search games, films, anime, or shows" value="{{ q|default('') }}" maxlength="200">
+    <input id="q" type="search" name="q" placeholder="Search by title, author or ISBN" value="{{ q|default('') }}" maxlength="200">
     <button class="secondary" type="submit">Search</button>
   </form>
   <nav id="site-nav" aria-label="Main">
