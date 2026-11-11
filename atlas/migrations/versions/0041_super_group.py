@@ -89,7 +89,8 @@ def downgrade() -> None:
         raise RuntimeError(
             f"{used} observation(s) hold edits replicated from your other nodes (super group). The previous release "
             "does not know them and would rank them as provider data. Turn `group_super` off and set "
-            "ATLAS_DOWNGRADE_FORCE=1 to drop them.")
+            "ATLAS_DOWNGRADE_FORCE=1 to drop them. Every record edit made while the super group was on is held in "
+            "them, including those made on this node, so this node loses them (the other nodes keep them).")
     bind.execute(sa.text("DELETE FROM observation WHERE source = 'group-write'"))
     # A record first created here from a replicated write keeps its `group` ceiling (never public, never upstream),
     # now under the operator's name, which the previous release knows; it is not deleted (other rows may refer to it).

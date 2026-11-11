@@ -23,15 +23,20 @@ Acceptance
     revocation, ban or leave (a member that applied it before hearing of the removal withdraws it, `_recheck_removed`);
     held while no certificate of its origin covers its date, until a renewal exists (D7). Records under a `private`
     or `local` ceiling never emit writes. Lists an account had before the super group or its link are written once
-    (`backfill`).
+    (`backfill`). A value is checked by its field's own rule (`_field_ok`), so a write no member could apply is
+    refused on arrival; one that still fails to apply on one member is held there (`failed`) in its own savepoint and
+    retried, and the round goes on (one bad write never stops the others). `group_write` rows are inserted under one
+    lock (`_serialise`), so their id order is their commit order and a puller's cursor never skips one.
 
 Materialisation
     Record fields become one observation per record, source `group-write` (community class, trust 86) under the
     `group:write` scope: group data, so never signed into this node's feed and never sent to a main Atlas (H59,
     C14 §2.2), shown to visitors only through the partial public projection (D1, §5.7). A record a member lacks is
     created with the `group` ceiling when the write carries its title, or asked from the group (C14-2) and retried.
-    Lists follow the group account link (C10 §5.1): a write for an account not linked here waits, and is applied
-    when it is linked.
+    Once a record field has a group state, this node's own `community` value of it is retired (`_retire_community`),
+    so a tombstone or a group list value shows the same on every member. A revert is replicated only while the
+    reverted write is still the field's state (`revert_allowed`). Lists follow the group account link (C10 §5.1): a
+    write for an account not linked here waits, and is applied when it is linked.
 
 Invisible topology
     Nothing in this module is shown on a user page except a generic "syncing" state for the user's own writes and
@@ -102,6 +107,17 @@ LIST_KEY_RE = re.compile(r"^(?:[0-9A-Z]{26}|[0-9A-Z]{26}\.(?:favourites|wishlist
 OP_ID_RE = re.compile(rf"^{NODE_HEX}:\d{{1,12}}\Z")
 #: fields a record write may not carry (they are not values of the record view)
 NOT_FIELDS = frozenset({"custom", "media_type", "note", "upstream"})
+#: the record fields this release writes and applies: the edit form's fields (`proposals.clean_edit`) and a new
+#: game's provider ids. A well-formed write of another field is a later release's (kept and relayed, not applied).
+TEXT_FIELDS = {"title": 500, "description": 20000, "developer": 200, "publisher": 200, "series": 200,
+               "age_rating": 50, "website": 500}
+LIST_FIELDS = ("genres", "themes", "tags", "features", "platforms", "languages", "aliases")
+RECORD_FIELDS = frozenset({*TEXT_FIELDS, *LIST_FIELDS, "release_date", "releases", "provider_ids"})
+#: a provider id map (the `proposals._validate` rule for a new game, with room for a later release's keys)
+PROVIDER_KEY_RE = re.compile(r"^[a-z0-9._-]{1,50}\Z")
+#: record fields kept in this node's own `community` observation that a group state replaces there (`title` and
+#: `provider_ids` stay: a record always keeps its title, and provider ids are crosswalk evidence, not a view value)
+RETIRED_FIELDS = RECORD_FIELDS - {"title", "provider_ids"}
 
 #: NodeState keys (all start with `super_group_`, which the 0041 downgrade removes)
 CLOCK = "super_group_clock"
@@ -261,15 +277,7 @@ def _value_ok(kind: str, target: dict, value: Any, deleted: bool) -> bool:
     if _size(value) > MAX_VALUE:
         return False
     if kind == "record.field":
-        field = target["field"]
-        if field == "provider_ids":
-            return isinstance(value, dict) and len(value) <= 32 and all(
-                isinstance(k, str) and isinstance(v, str) and len(k) <= 40 and len(v) <= 200 for k, v in value.items())
-        if isinstance(value, str):
-            return len(value) <= 20000
-        if isinstance(value, list):
-            return len(value) <= 500 and all(isinstance(v, (str, dict)) for v in value)
-        return isinstance(value, (bool, int, dict))
+        return _field_ok(target["field"], value)
     if kind == "list.meta":
         return (isinstance(value, dict) and set(value) == {"name", "description", "public", "kind"}
                 and isinstance(value["name"], str) and 0 < len(value["name"].strip()) <= 80
@@ -280,6 +288,25 @@ def _value_ok(kind: str, target: dict, value: Any, deleted: bool) -> bool:
         return isinstance(value, dict) and set(value) == {"note"} and isinstance(value["note"], str) \
             and len(value["note"]) <= 200
     return False
+
+
+def _field_ok(field: str, value: Any) -> bool:
+    """A record field's value by that field's own rule, the one an edit made on this node passes
+    (`proposals.clean_edit`): a write any member could not apply is refused at the door, so one bad write can never
+    break a member's round (review C14-4, high)."""
+    if field == "provider_ids":
+        return isinstance(value, dict) and 0 < len(value) <= 32 and all(
+            isinstance(k, str) and PROVIDER_KEY_RE.match(k) is not None and isinstance(v, str) and 0 < len(v) <= 256
+            for k, v in value.items())
+    if field not in RECORD_FIELDS:
+        return False
+    from . import proposals
+
+    try:
+        clean = proposals.clean_edit({field: value})
+    except Exception:  # noqa: BLE001 - AtlasError for a refused value; anything else is refused the same way
+        return False
+    return field in clean
 
 
 def body_ok(body: Any) -> str | None:
@@ -312,12 +339,30 @@ def body_ok(body: Any) -> str | None:
         return "invalid"
     if subject_of(body["kind"], body["target"]) != body["subject"]:
         return "invalid"
+    if body["kind"] == "record.field" and body["target"]["field"] not in RECORD_FIELDS:
+        return "unknown_kind"  # a field of a later release: kept and relayed, applied by the release that knows it
     if not _value_ok(body["kind"], body["target"], body["value"], body["deleted"]):
         return "invalid"
     return None
 
 
 # ---- writing (the origin) -----------------------------------------------------------------------------------------
+
+#: the PostgreSQL advisory lock that orders `group_write` inserts (any constant no other lock of Atlas uses)
+INSERT_LOCK = 727_404
+
+
+def _serialise(session: Session) -> None:
+    """Hold, until this transaction ends, the lock under which every `group_write` row is inserted, so a row's id
+    order is its commit order. `serve` pages by id and a puller moves its cursor to the highest id it got: without
+    this, on PostgreSQL a transaction holding an uncommitted lower id while a later one commits a higher id would
+    let a member move past the lower one for good (review C14-4, medium; `feed.append` holds a row lock for the
+    same reason). SQLite already has one writer at a time, and the writer holds it until it commits."""
+    if session.get_bind().dialect.name == "postgresql":
+        from sqlalchemy import text
+
+        session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": INSERT_LOCK})
+
 
 def _own_seq(session: Session, node: str) -> int:
     held = session.scalar(select(func.max(GroupWrite.seq)).where(GroupWrite.origin_node == node)) or 0
@@ -348,6 +393,7 @@ def emit(session: Session, ctx: Any, kind: str, target: dict, value: Any, *, del
     if not _target_ok(kind, target) or not _value_ok(kind, target, value, deleted):
         raise WriteError("invalid")
     subject = subject_of(kind, target)
+    _serialise(session)
     session.flush()
     state = session.get(GroupWriteState, subject)
     seq = _own_seq(session, identity.node_id)
@@ -389,7 +435,7 @@ def _guarded(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 def record_fields(payload: dict[str, Any]) -> dict[str, Any]:
     """The record fields of an edit or new-game payload (custom fields and form-only keys left out)."""
-    return {k: v for k, v in payload.items() if isinstance(k, str) and FIELD_RE.match(k) and k not in NOT_FIELDS}
+    return {k: v for k, v in payload.items() if isinstance(k, str) and k in RECORD_FIELDS}
 
 
 @_guarded
@@ -443,6 +489,19 @@ def value_before(session: Session, cid: str, field: str, written: Any, fallback:
     return fallback
 
 
+def revert_allowed(session: Session, ctx: Any, cid: str, field: str, written: Any) -> bool:
+    """A revert of the value this node wrote to a field is replicated only while that write is still the field's
+    group state. Once another write (any member's) replaced it, writing the old value with a new clock would
+    overwrite that later edit everywhere, without a conflict entry (review C14-4, high); the later edit stands, and
+    the revert only restores this node's own edit history. True when the field has no group state at all."""
+    state = session.get(GroupWriteState, f"rec:{cid}/{field}")
+    if state is None:
+        return True
+    row = session.scalars(select(GroupWrite).where(GroupWrite.op_id == state.op_id)).first()
+    return (row is not None and row.origin_node == ctx.identity.node_id and not state.deleted
+            and state.value == _canon(written))
+
+
 def account_of(session: Session, user_id: str) -> str | None:
     """The group account uid of a local user (C10 §5.1), or None when the account is not linked."""
     group = _active_group(session)
@@ -489,6 +548,25 @@ def list_item_written(session: Session, ctx: Any, user: User, lst: UserList, cid
             note = stored.note
     return emit(session, ctx, "list.item", {"list": list_key(session, lst, uid), "account": uid, "cid": cid},
                 None if deleted else {"note": (note or "")[:200]}, deleted=deleted, author=user.id) is not None
+
+
+def list_items_moved(session: Session, ctx: Any, src: str, dst: str, moved: list[tuple[str, str | None]]) -> int:
+    """Two records were merged here and the lists followed the survivor (`social.move_list_items`): the move is
+    written once like any list change (the merged-away entry removed, the survivor's added with its note), so every
+    member's lists hold the same entries (review C14-4, low). Returns the number of lists written."""
+    if not enabled(ctx.settings) or not moved:
+        return 0
+    n = 0
+    for list_id, note in moved:
+        lst = session.get(UserList, list_id)
+        user = session.get(User, lst.user_id) if lst is not None else None
+        if user is None:
+            continue
+        list_item_written(session, ctx, user, lst, src, deleted=True)
+        if note is not None:
+            list_item_written(session, ctx, user, lst, dst, note)
+        n += 1
+    return n
 
 
 # ---- settling: state, conflicts, materialisation ------------------------------------------------------------------
@@ -556,9 +634,18 @@ def _wait(session: Session, subjects: list[GroupWriteState], reason: str | None)
 
 
 def materialize(session: Session, ctx: Any, subject: str) -> str | None:
-    """Make what users see on this node match the state of `subject`. Returns why it must wait, or None."""
+    """Make what users see on this node match the state of `subject`. Returns why it must wait, or None. Whatever
+    fails here rolls back to a savepoint and leaves the state waiting (`invalid`, counted on Admin > Node group):
+    the state itself stays settled, and the round goes on (review C14-4, high)."""
     if subject.startswith("rec:"):
-        return _materialize_record(session, ctx, subject[4:].split("/", 1)[0])
+        cid = subject[4:].split("/", 1)[0]
+        try:
+            with session.begin_nested():
+                return _materialize_record(session, ctx, cid)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("super group: a record write could not be applied: %s", type(exc).__name__)
+            return _wait(session, list(session.scalars(select(GroupWriteState).where(
+                GroupWriteState.subject.like(f"rec:{cid}/%")))), "invalid")
     state = session.get(GroupWriteState, subject)
     if state is None:
         return None
@@ -569,6 +656,64 @@ def materialize(session: Session, ctx: Any, subject: str) -> str | None:
         log.warning("super group: %s could not be applied: %s", subject.split(":", 1)[0], type(exc).__name__)
         reason = "invalid"
     return _wait(session, [state], reason)
+
+
+def _without(payload: dict[str, Any], fields: set[str]) -> dict[str, Any]:
+    """`payload` (a `community` observation's) without the record fields `fields` (the inverse of
+    `proposals._merge_edit`)."""
+    out = dict(payload)
+    facts = dict(out.get("facts") or {})
+    ext = dict(out.get("ext") or {})
+    release = dict(ext.get("release") or {})
+    for field in fields:
+        if field == "release_date":
+            out.pop("release_date", None)
+            release.pop("first", None)
+        elif field == "releases":
+            release.pop("entries", None)
+        elif field == "platforms":
+            out.pop("platforms", None)
+            out.pop("platform", None)
+        else:
+            facts.pop(field, None)
+    for key, value in (("facts", facts), ("ext", {**ext, "release": release} if release else
+                                          {k: v for k, v in ext.items() if k != "release"})):
+        if value:
+            out[key] = value
+        else:
+            out.pop(key, None)
+    return out
+
+
+def _retire_community(session: Session, record: str, fields: set[str]) -> bool:
+    """Write once, synced to all: once the group holds a state for a record field, that state is the field's whole
+    community layer on every member. This node's own `community` observation (an edit applied here, or one made
+    before the super group) gives the field up, so a local value can neither outrank a group tombstone nor be unioned
+    into a group list on one member only (review C14-4, high: a revert to "no value" left the other member's local
+    edit showing there alone). Returns whether anything changed."""
+    from . import proposals
+
+    fields = fields & RETIRED_FIELDS
+    if not fields:
+        return False
+    changed = False
+    for obs in session.scalars(select(Observation).where(
+            Observation.canonical_id == record, Observation.source == proposals.SOURCE,
+            Observation.is_current.is_(True))):
+        slim = _without(obs.payload or {}, fields)
+        if slim != obs.payload:
+            obs.payload, obs.payload_hash = slim, None  # the hash is recomputed lazily (migration 0034)
+            changed = True
+    if changed:
+        session.flush()
+    return changed
+
+
+def refresh_record(session: Session, ctx: Any, cid: str) -> None:
+    """After this node rewrote its own `community` observation of a record (a revert), show the group's states of
+    that record again (nothing when the record has none)."""
+    if enabled(ctx.settings) and CID_RE.match(cid or ""):
+        materialize(session, ctx, f"rec:{cid}/")
 
 
 def _materialize_record(session: Session, ctx: Any, cid: str) -> str | None:
@@ -599,10 +744,13 @@ def _materialize_record(session: Session, ctx: Any, cid: str) -> str | None:
         return _wait(session, states, "invalid")
     if fields.get("provider_ids"):
         payload["provider_ids"] = fields["provider_ids"]
+    retired = _retire_community(session, row.id, {s.subject.split("/", 1)[1] for s in states})
     current = list(session.scalars(select(Observation).where(
         Observation.source == GROUP_WRITE_SOURCE, Observation.source_scope == SCOPE, Observation.external_id == cid,
         Observation.is_current.is_(True))))
     if len(current) == 1 and current[0].payload == payload and current[0].canonical_id == row.id:
+        if retired:
+            service.rebuild(session, ctx, row.id, cause="local")
         return _wait(session, states, None)
     for o in current:
         o.is_current = False
@@ -637,8 +785,13 @@ def _find_list(session: Session, user_id: str, key: str) -> UserList | None:
     return row if row is not None and row.user_id == user_id else None
 
 
+LIST_NAME_MAX = 80  # `social.create_list` and `_value_ok`
+
+
 def _suffixed(name: str, key: str) -> str:
-    return f"{name[:72]} ({key[-6:]})"
+    """A clashing list name with the end of its key, never longer than a list name may be (review C14-4, low)."""
+    tail = f" ({key[-6:]})"
+    return f"{name[:LIST_NAME_MAX - len(tail)]}{tail}"
 
 
 def _key_of_row(session: Session, row: UserList) -> str:
@@ -726,24 +879,40 @@ def _materialize_item(session: Session, ctx: Any, state: GroupWriteState) -> str
                                        None))
         session.add(lst)
         session.flush()
-    existing = session.get(ListItem, (lst.id, cid))
+    live = _live(session, session.get(Canonical, cid))
+    held = live.id if live is not None else cid  # merged here: the entry is the survivor's, as `add_to_list` makes it
+    if held != cid:
+        stale = session.get(ListItem, (lst.id, cid))
+        if stale is not None:
+            session.delete(stale)
+    existing = session.get(ListItem, (lst.id, held))
     if state.deleted:
-        if existing is not None:
+        if existing is not None and held == cid:
             session.delete(existing)
-        return None
-    game = session.get(Canonical, cid)
-    if game is None:
+        return None  # a survivor's own entry is its own subject (review C14-4, low)
+    if live is None:
         assist.note_missing(session, ctx.settings, cid, reason="user")
         return "no_record"
+    if held != cid and existing is not None:
+        return None
     note = ((state.value or {}).get("note") or "")[:200]
     if existing is None:
         count = session.scalar(select(func.count()).select_from(ListItem).where(ListItem.list_id == lst.id)) or 0
         if count >= ctx.settings.max_list_items:
             return "limit"
-        session.add(ListItem(list_id=lst.id, canonical_id=cid, note=note))
+        session.add(ListItem(list_id=lst.id, canonical_id=held, note=note))
     else:
         existing.note = note
     return None
+
+
+def _live(session: Session, row: Canonical | None) -> Canonical | None:
+    """The record a merged-away record now lives on (itself when it was not merged; None when unknown here)."""
+    seen = 0
+    while row is not None and row.merged_into and seen < 16:
+        row = session.get(Canonical, row.merged_into)
+        seen += 1
+    return None if row is not None and row.merged_into else row
 
 
 def on_feed_introduced(session: Session, ctx: Any, cid: str) -> bool:
@@ -816,13 +985,34 @@ def standing(tr: Any, origin: str, hlc: str) -> str | None:
         return None
     if removed:
         return "origin_removed"
-    if any(start > at and revoked is None for start, _end, revoked in windows):
-        return None  # D7: written while its certificate had lapsed, and the member renewed afterwards
+    # Not covered by any certificate. In the gap after a removal: a later re-enrolment never reaches back over it.
+    if any(revoked is not None and revoked <= at for _start, _end, revoked in windows):
+        return "origin_removed"
+    # D7 covers a lapse only: a certificate had ended before the write and an unrevoked one starts after it. A write
+    # dated before the origin's first certificate (before it joined) is not one: it stays held (review C14-4, low).
+    lapsed = any(end < at for _start, end, _revoked in windows)
+    if lapsed and any(start > at and revoked is None for start, _end, revoked in windows):
+        return None
     return "origin_expired"
 
 
 def _clock_ahead(hlc: str) -> bool:
     return int(hlc[:13]) > int((datetime.now(UTC) + CLOCK_AHEAD).timestamp() * 1000)
+
+
+def _verified(ctx: Any, tr: Any, obj: dict) -> bool:
+    """The write is signed by its origin's key (from the group's key history; this node's own current key too)."""
+    body, signer = obj.get("body") or {}, obj.get("signer") or {}
+    origin = body.get("origin")
+    if not isinstance(origin, str) or signer.get("kind") != "node" or signer.get("id") != origin:
+        return False
+    if origin == ctx.identity.node_id:
+        pub = {ctx.identity.key_id: ctx.identity.public_b64} if hasattr(ctx.identity, "public_b64") else {}
+        pub.update(_origin_keys(tr, origin))
+    else:
+        pub = _origin_keys(tr, origin)
+    key = pub.get(signer.get("key_id") or "")
+    return key is not None and gc.verify_object(obj, key)
 
 
 def receive(session: Session, ctx: Any, group: Any, tr: Any, obj: Any) -> str:
@@ -841,13 +1031,7 @@ def receive(session: Session, ctx: Any, group: Any, tr: Any, obj: Any) -> str:
     stand = standing(tr, body["origin"], body["hlc"])
     if stand == "origin_removed":
         return "refused"  # written after its origin was removed: never taken, on any member
-    if body["origin"] == own:
-        pub = {ctx.identity.key_id: ctx.identity.public_b64} if hasattr(ctx.identity, "public_b64") else {}
-        pub.update(_origin_keys(tr, own))
-    else:
-        pub = _origin_keys(tr, body["origin"])
-    key = pub.get(signer.get("key_id") or "")
-    if key is None or not gc.verify_object(obj, key):
+    if not _verified(ctx, tr, obj):
         return "invalid"
     held_reason = None
     if why == "unknown_kind":
@@ -870,13 +1054,40 @@ def receive(session: Session, ctx: Any, group: Any, tr: Any, obj: Any) -> str:
     return "applied"
 
 
+def _receive_one(session: Session, ctx: Any, group: Any, tr: Any, obj: Any) -> str:
+    """`receive` in its own savepoint: a write that fails to apply here is kept, held as `failed` (counted on Admin
+    > Node group, served onward like any write this node holds, never applied here), and the round goes on, so the
+    cursor moves past it and every other write still arrives (review C14-4, high: one bad write had rolled back the
+    whole round, every round)."""
+    try:
+        with session.begin_nested():
+            return receive(session, ctx, group, tr, obj)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("super group: a write could not be applied here: %s", type(exc).__name__)
+    body = obj.get("body") if isinstance(obj, dict) else None
+    try:
+        if (body_ok(body) == "invalid" or obj.get("group_id") != group.group_id or obj.get("id") != body["op_id"]
+                or not _verified(ctx, tr, obj)):
+            return "invalid"
+        with session.begin_nested():
+            if session.scalars(select(GroupWrite.id).where(GroupWrite.op_id == body["op_id"])).first() is None:
+                session.add(GroupWrite(op_id=body["op_id"], origin_node=body["origin"], seq=body["seq"],
+                                       kind=str(body["kind"])[:24], subject=body["subject"], hlc=body["hlc"],
+                                       status="held", reason="failed", envelope=obj, received_at=now()))
+                session.flush()
+    except Exception as exc:  # noqa: BLE001 - not even storable: counted, skipped
+        log.warning("super group: a write could not be kept: %s", type(exc).__name__)
+        return "invalid"
+    return "failed"
+
+
 def retry(session: Session, ctx: Any, tr: Any) -> dict[str, int]:
     """Each round: writes held for their origin's certificate (D7) or a clock ahead, and states waiting for an
     account link, a list or a record."""
     out = {"released": 0, "refused": 0, "withdrawn": 0, "materialized": 0}
-    for row in list(session.scalars(select(GroupWrite).where(GroupWrite.status == "held",
-                                                             GroupWrite.reason.in_(("origin_expired",
-                                                                                    "clock_ahead"))))):
+    for row in list(session.scalars(select(GroupWrite).where(
+            GroupWrite.status == "held", GroupWrite.reason.in_(("origin_expired", "clock_ahead", "failed")))
+            .order_by(GroupWrite.id))):
         body = (row.envelope or {}).get("body") or {}
         stand = standing(tr, row.origin_node, row.hlc)
         if stand == "origin_removed":
@@ -886,10 +1097,16 @@ def retry(session: Session, ctx: Any, tr: Any) -> dict[str, int]:
         if stand is not None or _clock_ahead(row.hlc):
             row.reason = stand or "clock_ahead"
             continue
-        row.status, row.reason = "applied", None
-        session.flush()
-        observe(session, row.hlc)
-        _settle(session, ctx, row, body)
+        try:
+            with session.begin_nested():  # a write that still fails stays held (`failed`): the round goes on
+                row.status, row.reason = "applied", None
+                session.flush()
+                observe(session, row.hlc)
+                _settle(session, ctx, row, body)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("super group: a held write still cannot be applied: %s", type(exc).__name__)
+            row.status, row.reason = "held", "failed"
+            continue
         out["released"] += 1
     out["withdrawn"] = _recheck_removed(session, ctx, tr)
     # states waiting to be shown here: oldest attempt first, so a few that wait for good (an account never linked
@@ -1011,27 +1228,38 @@ def backfill(session: Session, ctx: Any, tr: Any) -> int:
         user = session.get(User, user_id)
         if user is None:
             continue
-        for lst in list(session.scalars(select(UserList).where(UserList.user_id == user_id)
-                                        .order_by(UserList.created_at, UserList.id))):
-            key = list_key(session, lst, uid)
-            if session.get(GroupWriteState, f"list:{key}") is None:
-                value = {"name": lst.name, "description": lst.description or "", "public": bool(lst.public),
-                         "kind": lst.kind if lst.kind in LIST_KINDS else "custom"}
-                if emit(session, ctx, "list.meta", {"list": key, "account": uid}, value, author=user_id,
-                        tr=tr) is not None:
-                    made += 1
-            for item in list(session.scalars(select(ListItem).where(ListItem.list_id == lst.id)
-                                             .order_by(ListItem.canonical_id))):
-                cid = item.canonical_id
-                if not CID_RE.match(cid or "") or kept_here(session, cid):
-                    continue
-                if session.get(GroupWriteState, f"item:{key}/{cid}") is not None:
-                    continue
-                if emit(session, ctx, "list.item", {"list": key, "account": uid, "cid": cid},
-                        {"note": (item.note or "")[:200]}, author=user_id, tr=tr) is not None:
-                    made += 1
+        try:
+            with session.begin_nested():  # one account that cannot be written never stops the round
+                made += _backfill_account(session, ctx, tr, uid, user_id)
+        except Exception as exc:  # noqa: BLE001 - tried again next round
+            log.warning("super group: an account's lists could not be written: %s", type(exc).__name__)
+            continue
         _put(session, BACKFILLED + uid, _iso(datetime.now(UTC)))
     session.flush()
+    return made
+
+
+def _backfill_account(session: Session, ctx: Any, tr: Any, uid: str, user_id: str) -> int:
+    made = 0
+    for lst in list(session.scalars(select(UserList).where(UserList.user_id == user_id)
+                                    .order_by(UserList.created_at, UserList.id))):
+        key = list_key(session, lst, uid)
+        if session.get(GroupWriteState, f"list:{key}") is None:
+            value = {"name": lst.name, "description": lst.description or "", "public": bool(lst.public),
+                     "kind": lst.kind if lst.kind in LIST_KINDS else "custom"}
+            if emit(session, ctx, "list.meta", {"list": key, "account": uid}, value, author=user_id,
+                    tr=tr) is not None:
+                made += 1
+        for item in list(session.scalars(select(ListItem).where(ListItem.list_id == lst.id)
+                                         .order_by(ListItem.canonical_id))):
+            cid = item.canonical_id
+            if not CID_RE.match(cid or "") or kept_here(session, cid):
+                continue
+            if session.get(GroupWriteState, f"item:{key}/{cid}") is not None:
+                continue
+            if emit(session, ctx, "list.item", {"list": key, "account": uid, "cid": cid},
+                    {"note": (item.note or "")[:200]}, author=user_id, tr=tr) is not None:
+                made += 1
     return made
 
 
@@ -1131,12 +1359,14 @@ def pull(session: Session, ctx: Any, group: Any, tr: Any, http: Any, call: Calla
     # 2. this node's database
     for node, ops in learned.items():
         assist._put(session, "assist_hello:" + node, {"ops": ops})
+    if any(items for _outcome, items, _cursor in fetched.values()):
+        _serialise(session)
     for node, (outcome, items, cursor) in fetched.items():
         for obj in items:
-            res = receive(session, ctx, group, tr, obj)
+            res = _receive_one(session, ctx, group, tr, obj)
             out["received"] += 1
-            if res in ("applied", "held", "invalid"):
-                out[res] += 1
+            if res in ("applied", "held", "invalid", "failed"):
+                out[res] = out.get(res, 0) + 1
         out["members"][node] = outcome
         if outcome == "unsupported":
             _put(session, ERROR + node, outcome)

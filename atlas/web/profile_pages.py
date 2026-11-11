@@ -34,6 +34,19 @@ def node_names(session, group) -> dict[str, str]:
         groups.GroupMember.group_id == group.group_id))}
 
 
+#: C14-4 (super group, "invisible topology"): the same review cards without naming any node
+HIDDEN_TITLES = {"concurrent": "Changed in two places at once", "privacy_widen": "Made public elsewhere",
+                 "suspect": "Set by a removed device", "suspect_link": "Linked with the help of a removed device",
+                 "missing_base": "Arrived without its history"}
+
+
+def topology_hidden(p: Ctx) -> bool:
+    """In a super group (C14-4) user pages never name a node, its fingerprint or which node set a value."""
+    from .. import super_group
+
+    return super_group.enabled(p.st.ctx.settings)
+
+
 def describe(value: Any) -> str:
     if value is None:
         return "the default"
@@ -55,6 +68,7 @@ def preference_rows(p: Ctx) -> list[dict]:
     accepted = set(profile.accept(s, settings, me.id, group.group_id)) if linked else set()
     policy = set(profile.policy_fields(settings))
     names = node_names(s, group)
+    hidden = topology_hidden(p)
     values = profile.values(s, settings, me)
     shown = {r.field: r for r in s.scalars(select(profile.ProfileField).where(profile.ProfileField.user_id == me.id))}
     open_rows = {r.field: r for r in profile.open_conflicts(s, me.id)}
@@ -73,7 +87,8 @@ def preference_rows(p: Ctx) -> list[dict]:
                      "why": None if name in accepted else ("not shared by this node's administrator"
                                                            if name not in policy else "you chose not to share it"),
                      "stored": row is not None and row.value is not None,
-                     "origin": None if origin in (None, own) else names.get(origin, groups.gc_fp(origin)),
+                     # C14-4: in a super group no user page names a node (the value is simply synced)
+                     "origin": None if origin in (None, own) or hidden else names.get(origin, groups.gc_fp(origin)),
                      "conflict": conflict, "competing": competing, "editable": name in EDITABLE})
     return rows
 
@@ -130,8 +145,12 @@ def conflict_cards(p: Ctx) -> list[dict]:
     s, me = p.session, p.me
     group = groups.load(s)
     names = node_names(s, group)
+    hidden = topology_hidden(p)
+    titles = HIDDEN_TITLES if hidden else KIND_TITLES
 
     def where(node):
+        if hidden:
+            return None
         if node is None:
             return "unknown"
         if node == p.st.ctx.identity.node_id:
@@ -141,8 +160,8 @@ def conflict_cards(p: Ctx) -> list[dict]:
     cards = []
     for row in profile.open_conflicts(s, me.id):
         spec = profile_schema.REGISTRY.get(row.field)
-        card = {"row": row, "label": spec.label if spec else "Linked nodes", "title": KIND_TITLES.get(row.kind, row.kind),
-                "spec": spec, "options": []}
+        card = {"row": row, "label": spec.label if spec else ("Linked sign-ins" if hidden else "Linked nodes"),
+                "title": titles.get(row.kind, row.kind), "spec": spec, "options": []}
         if row.kind == "concurrent":
             for choice, hlc in (("winner", row.winner_hlc), ("loser", row.loser_hlc)):
                 v = profile.version(s, me.id, row.field, hlc)
@@ -151,14 +170,19 @@ def conflict_cards(p: Ctx) -> list[dict]:
                                             "where": where(v.origin_node), "at": profile.hlc_time(v.hlc),
                                             "shown": choice == "winner"})
         elif row.kind == "privacy_widen":
-            card["note"] = (f"{where((row.detail or {}).get('origin'))} set your profile to public. This node keeps "
+            card["note"] = ("Your profile was set to public elsewhere. It stays private here until you decide."
+                            if hidden else
+                            f"{where((row.detail or {}).get('origin'))} set your profile to public. This node keeps "
                             "it private until you decide.")
         elif row.kind in ("suspect", "missing_base"):
             v = profile.version(s, me.id, row.field, row.loser_hlc)
-            card["note"] = (f"The current value ({describe(None if v is None or v.cleared else v.value)}) came from "
-                            f"{where((row.detail or {}).get('origin'))}.")
+            shown = describe(None if v is None or v.cleared else v.value)
+            card["note"] = (f"The current value ({shown}) needs your confirmation." if hidden else
+                            f"The current value ({shown}) came from {where((row.detail or {}).get('origin'))}.")
         elif row.kind == "suspect_link":
-            card["note"] = (f"{where(row.loser_hlc)} was linked to your account with the help of "
+            card["note"] = ("A sign-in was linked to your account with the help of a device that was later removed "
+                            "as compromised. Nothing is synced with it until you decide." if hidden else
+                            f"{where(row.loser_hlc)} was linked to your account with the help of "
                             f"{where((row.detail or {}).get('evidenced_by'))}, which was later revoked as "
                             "compromised. Nothing is synced with it until you decide.")
         cards.append(card)
@@ -170,7 +194,8 @@ def conflicts_page(p: Annotated[Ctx, Depends(user_page)]):
     resolved = list(p.session.scalars(select(ProfileConflict).where(
         ProfileConflict.user_id == p.me.id, ProfileConflict.status != "open")
         .order_by(ProfileConflict.resolved_at.desc()).limit(10)))
-    return render(p, "me_conflicts.html", cards=conflict_cards(p), resolved=resolved, titles=KIND_TITLES,
+    return render(p, "me_conflicts.html", cards=conflict_cards(p), resolved=resolved,
+                  titles=HIDDEN_TITLES if topology_hidden(p) else KIND_TITLES,
                   labels={n: f.label for n, f in profile_schema.REGISTRY.items()})
 
 

@@ -506,9 +506,22 @@ anything, and they are never shown it:
   revoked, banned or left the group. If a revocation arrives after a node already applied such a write, the node
   withdraws the write and recomputes the subject, so it ends where the other members are. A write dated while its
   node's certificate had lapsed is **held** until the node renews (D7). A write dated more than 24 hours ahead
-  waits until the clock reaches it. A write of a kind a later release introduced is kept and relayed, not applied.
+  waits until the clock reaches it. A write of a kind or record field a later release introduced is kept and
+  relayed, not applied. A write dated in the gap between a node's removal and its re-enrolment is refused, and one
+  dated before the node's first certificate waits (D7 covers a lapse only).
+- **One bad write never stops the others.** Every value is checked against the rule an edit made on the node
+  itself must pass, and a write that breaks it is refused on arrival. If a write still fails to apply on one node,
+  that node holds it (`failed`, counted under *Held* on Admin → Node group), retries it each round and goes on
+  with every other write. A record or list that cannot be shown yet waits (`invalid` under *Waiting*).
+- **A field the group writes belongs to the group.** Once the group holds a value for a record field, each node's
+  own community value of that field (an edit made before the super group, for example) gives way to it, so a
+  cleared field and a list field such as genres show the same on every node. Reverting an edit writes the value
+  from before it only while that edit is still the field's group value. If someone on any node has changed the
+  field since, their later edit stands everywhere.
 - **What never travels.** Records under a `private` or `local` ceiling keep their edits and list entries on the
-  node. Replicated record edits are stored as group data (`group-write` observations under the `group:write`
+  node. Lowering a record's ceiling to `private` or `local` stops new writes for it, but does not take back what
+  the other nodes already received: they keep the record and the edits written before the change. To withdraw a
+  record from the group, remove it on each node. Replicated record edits are stored as group data (`group-write` observations under the `group:write`
   scope): never signed into a public feed and never sent to a main Atlas. Anonymous visitors see them only through
   the partial public projection (D1). Account links stay per node: a replicated write never touches a node link,
   its queue or its probation, so relinking still restarts probation (D2). A member that does not offer
@@ -519,7 +532,12 @@ anything, and they are never shown it:
   linked (backfill). Favourites and wishlist are one per account, so their entries merge. Two lists of one account
   that carry the same name get the same names on every node (the one with the smaller key keeps the plain name).
   Replicated lists follow the node's own list rules: with lists turned off, or a user at the list or item limit,
-  the write waits on that node and is applied when the rule allows it.
+  the write waits on that node and is applied when the rule allows it. When two games are merged on a node, their
+  list entries move to the surviving game on every node, and an entry for a game a node has merged away is kept
+  on the survivor there.
+- **Preferences without node names.** With the super group on, *Settings* no longer says which node set a synced
+  preference, and *Needs your decision* describes a preference conflict without naming a node. *Linked nodes* is
+  the account-link ceremony itself, so it still names the nodes the person linked and chooses to trust.
 
 **Not replicated yet:** comments, votes, follows, artwork and achievement edits, custom fields, curator API
 writes and record edits made before the super group was turned on. The records themselves still reach every node
@@ -531,5 +549,6 @@ through the feeds and [Asking your nodes](#asking-your-nodes).
 
 Migration `0041` adds `group_write`, `group_write_state` and `group_write_conflict`. Downgrading below it is
 refused while replicated edits exist, unless `ATLAS_DOWNGRADE_FORCE=1` is set. With the flag, those observations
-are dropped. Records first created from a replicated write keep their `group` ceiling. Every view is re-derived
+are dropped. They hold every record edit made while the super group was on, including the node's own, so the
+node loses those edits (the other nodes keep them). Records first created from a replicated write keep their `group` ceiling. Every view is re-derived
 once the schema is current again.
