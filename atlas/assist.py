@@ -104,6 +104,8 @@ DROPPED = "assist_jobs_dropped"
 ANSWER_PER_MIN = 120
 FETCH_PER_HOUR = 600
 BYTES_PER_HOUR = 512 * 1024 * 1024
+#: forced asks (`POST /group/assist/ask`, which skips the backoff and wakes the round) per API token per hour
+ASK_PER_HOUR = 60
 
 
 class AssistError(Exception):
@@ -364,8 +366,21 @@ def serve_find(session: Session, settings: Any, params: dict) -> dict:
 
 # ---- helper: assist.fetch, the bundle -----------------------------------------------------------------------------
 
+def _shared_view(session: Session, settings: Any, held: dict) -> dict:
+    """The identity a helper may tell a member: merged from the observations it shares only (§3.7), with no field
+    lock (a `local_only` lock is the operator's local decision) and no host, plugin, group or unshared provider
+    observation. Never `row.view`, which is the full local merge."""
+    from . import provenance
+    from .merge import merge
+
+    authorities = provenance.authority_origins(session, settings)
+    obs = [provenance.obs_of(settings, o, authorities) for o in held["public"] + held["provider"]]
+    view, _explain = merge(obs, {}, prefs=getattr(settings, "field_source_preference", None))
+    return view
+
+
 def _record_body(session: Session, settings: Any, row: Canonical, held: dict, want: list[str]) -> dict:
-    view = row.view or {}
+    view = _shared_view(session, settings, held)
     from . import feed
 
     observations: list[dict] = []
@@ -1038,7 +1053,7 @@ def forget(session: Session, ctx: Any, helper: str, *, dry_run: bool = False, re
     created are removed (their waiting entries wait again). `dry_run` counts without changing anything."""
     from . import groups, scope, service
 
-    counts = {"rewaited": 0, "observations": 0, "artwork": 0, "records": 0, "items": 0, "offers": 0}
+    counts = {"rewaited": 0, "observations": 0, "artwork": 0, "records": 0, "items": 0, "offers": 0, "crosswalk": 0}
     items = list(session.scalars(select(GroupAssistItem).where(GroupAssistItem.helper == helper,
                                                                GroupAssistItem.superseded_at.is_(None))))
     touched: set[str] = set()
@@ -1077,7 +1092,20 @@ def forget(session: Session, ctx: Any, helper: str, *, dry_run: bool = False, re
     if dry_run:
         counts["records"] = sum(1 for cid in touched if _only_from_group(session, cid, set(obs_ids)))
         return counts
+    claimed: dict[str, set[tuple[str, str]]] = {}  # §3.4 step 5 keys the helper's observations may have taken
+    for o in session.scalars(select(Observation).where(Observation.id.in_(obs_ids))):
+        claimed.setdefault(o.canonical_id, set()).update(service.keys_of(o))
     session.execute(delete(Observation).where(Observation.id.in_(obs_ids)))
+    session.flush()
+    for cid, keys in claimed.items():  # a key no remaining observation of the record names stops routing to it
+        still: set[tuple[str, str]] = set()
+        for o in session.scalars(select(Observation).where(Observation.canonical_id == cid)):
+            still.update(service.keys_of(o))
+        for key in keys - still:
+            xw = session.get(Crosswalk, key)
+            if xw is not None and xw.canonical_id == cid:
+                session.delete(xw)
+                counts["crosswalk"] += 1
     for a in art_rows:
         session.delete(a)
     for item in items:
@@ -1335,6 +1363,8 @@ def run(maker: Any, ctx: Any, http: Any, call: Callable[..., Any] | None = None)
             for node in _order(s, helpers, job):
                 if node not in order:
                     order.append(node)
+        # a suspect helper is asked last, so a sound helper's answer is the one fetched (setdefault below)
+        order.sort(key=lambda n: is_suspect(s, n))
         for node in order:
             ids = [cid for cid in pending if cid not in answers]
             if not ids:
@@ -1376,7 +1406,12 @@ def run(maker: Any, ctx: Any, http: Any, call: Callable[..., Any] | None = None)
                               {"id": cid, "want": ["record", "artwork"], "signed_entries": True,
                                "on_behalf": None}, http, nonce=nonce)
             except Exception as exc:  # noqa: BLE001
+                # the helper said it had the record but the fetch failed (unreachable, too large, gone,
+                # throttled): the job backs off like an unanswered one, or it would stay due and lead every round
                 _note_call_error(s, node, exc)
+                group_assist_jobs_total.inc(result="error")
+                _backoff(s, settings, job)
+                summary["none"] += 1
                 continue
             fetched.append((job, node, gc.b64(nonce), result if isinstance(result, dict) else {}))
         for cid, job in pending.items():
@@ -1399,6 +1434,8 @@ def run(maker: Any, ctx: Any, http: Any, call: Callable[..., Any] | None = None)
                 s.rollback()
                 with maker() as s2:
                     suspect(s2, node, exc.code)
+                    if _state(s2, JOB + _hash(job["cid"])) is not None:
+                        _backoff(s2, settings, job)  # a rejected answer backs the job off, never a retry loop
                     s2.commit()
                 summary["rejected"] += 1
                 continue

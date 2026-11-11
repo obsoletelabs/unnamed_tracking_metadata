@@ -1075,18 +1075,25 @@ class AssistAskBody(BaseModel):
 
 @router.post("/group/assist/ask", tags=["group"])
 def group_assist_ask(body: AssistAskBody, st: St, session: Sess,
-                     _: Annotated[auth.Principal, Depends(require("read"))]):
+                     principal: Annotated[auth.Principal, Depends(require("read"))]):
     """Ask this node's owner group for records it lacks ("Ask my nodes", C14 §3.2), also ones it gave up on. The
     answer arrives in a later group round; nothing is fetched in this request. Reading a record is the right this
-    needs (§3.9). 409 when the node is in no group or asking is off."""
-    from .. import assist, group_channel
+    needs (§3.9). 409 when the node is in no group or asking is off; 429 past `ASK_PER_HOUR` forced asks per token
+    (a forced ask skips the backoff and wakes the group round). Audited as `group_assist_ask`."""
+    from .. import assist, group_channel, ratelimit
 
     if any(not assist.ID_RE.match(cid) for cid in body.ids):
         raise AtlasError("ids must be atlas record ids", "invalid")
+    ok, retry = ratelimit.hit(st.maker, f"assist-ask:{principal.token_id}", assist.ASK_PER_HOUR, 3600)
+    if not ok:
+        raise HTTPException(429, "too many group asks from this token; try later",
+                            headers={"Retry-After": str(max(1, int(retry)))})
     queued = [cid for cid in dict.fromkeys(body.ids) if assist.note_missing(session, st.ctx.settings, cid, "user",
                                                                              force=True)]
     if not queued:
         raise HTTPException(409, "this node is not asking an owner group (no group, or group_assist_ask is off)")
+    accounts.audit(session, None, "group_assist_ask", queued[0],
+                   {"via": "api", "by_token": principal.token_id, "ids": queued})
     group_channel.WAKE.set()
     return {"queued": queued}
 

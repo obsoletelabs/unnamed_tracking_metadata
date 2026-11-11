@@ -635,3 +635,106 @@ def test_full_round_runs_the_assist(world):
     u, n1, _n2, cid = world
     full_round(n1)
     assert waiting(n1, u.node_id) == []
+
+
+# ---- review fixes (C14-2): no retry loop, no free re-asks, no budget theft, forget drops claimed keys ------------
+
+def _due(node, cid) -> bool:
+    with node.session() as s:
+        job = assist.job_of(s, cid)
+        return job is not None and (assist._parse(job.get("next_at")) or assist.now()) <= assist.now()
+
+
+def test_failed_fetch_and_rejected_bundle_back_the_job_off(world):
+    """A helper that says `live` but whose fetch then fails, or whose bundle is rejected, backs the job off: it is
+    no longer due, so it cannot lead every round and starve the others."""
+    _u, n1, n2, cid = world
+
+    def failing(session, settings, identity, group, member, op, params, http, now=None, nonce=None):
+        if op == "assist.fetch":
+            raise group_routes.CallError("too_large")
+        return group_routes.call(session, settings, identity, group, member, op, params, http, now=now, nonce=nonce)
+
+    assert _due(n1, cid)
+    out = run(n1, failing)
+    assert out["applied"] == 0 and out["none"] == 1
+    [job] = jobs(n1)
+    assert job["tries"] == 1 and not _due(n1, cid)
+    with n1.session() as s:  # due again
+        job["next_at"] = "2000-01-01T00:00:00+00:00"
+        assist._put(s, assist.JOB + assist._hash(cid), job)
+        s.commit()
+
+    def forged(session, settings, identity, group, member, op, params, http, now=None, nonce=None):
+        got = group_routes.call(session, settings, identity, group, member, op, params, http, now=now, nonce=nonce)
+        if op == "assist.fetch":
+            got["bundle"]["body"]["record"]["title"] = "Forged"
+        return got
+
+    assert run(n1, forged)["rejected"] == 1
+    [job] = jobs(n1)
+    assert job["tries"] == 2 and not _due(n1, cid)
+    with n1.session() as s:
+        assert assist.is_suspect(s, n2.node_id)
+
+
+def test_suspect_helper_is_asked_last(world, tmp_path):
+    _u, n1, n2, _cid = world
+    with n1.session() as s:
+        assist.suspect(s, n2.node_id, "bad_signature")
+        s.commit()
+        assert assist.is_suspect(s, n2.node_id)
+        order = sorted(["a" * 16, n2.node_id, "b" * 16], key=lambda n: assist.is_suspect(s, n))
+    assert order[-1] == n2.node_id
+
+
+def test_replayed_request_spends_no_asker_budget(world, monkeypatch):
+    """A captured sealed request replayed by an observer is refused as `replay` and takes nothing from the real
+    asker's per-asker assist budget."""
+    _u, n1, n2, cid = world
+    taken = []
+    real = assist.limit_call
+    monkeypatch.setattr(assist, "limit_call", lambda *a, **kw: (taken.append(a[2]), real(*a, **kw))[1])
+    sent = []
+    real_post = n1.net.post
+
+    def post(url, *args, **kw):
+        sent.append((url, args, kw))
+        return real_post(url, *args, **kw)
+
+    monkeypatch.setattr(n1.net, "post", post)
+    with n1.session() as s:
+        group = groups.active(s)
+        tr = groups.trust(s, group, own_node=n1.node_id)
+        member = tr.members()[n2.node_id]["body"]["member"]
+        group_routes.call(s, n1.settings, n1.identity, group, member, "assist.find",
+                          {"ids": [cid], "want": ["record"], "reason": "user", "on_behalf": None}, n1.net)
+    assert taken == ["assist.find"] and sent
+    url, args, kw = sent[-1]
+    real_post(url, *args, **kw)  # the replay
+    assert taken == ["assist.find"]
+
+
+def test_forget_drops_crosswalk_keys_only_the_helper_claimed(world):
+    """A record that survives `forget` (here: a list item keeps it) loses the crosswalk keys the helper's answer
+    took, so later own-provider imports of those ids are not routed into the group record."""
+    from atlas.models import ListItem, UserList
+
+    from .channel_harness import user
+
+    _u, n1, n2, cid = world
+    run(n1)
+    uid = user(n1, "keeper")
+    with n1.session() as s:
+        assert s.get(Crosswalk, ("steam", "1962700")) is not None
+        lst = UserList(user_id=uid, name="keep")
+        s.add(lst)
+        s.flush()
+        s.add(ListItem(list_id=lst.id, canonical_id=cid))
+        s.flush()
+        counts = assist.forget(s, ctx(n1), n2.node_id)
+        s.commit()
+    with n1.session() as s:
+        assert s.get(Canonical, cid) is not None
+        assert counts["crosswalk"] >= 1
+        assert s.get(Crosswalk, ("steam", "1962700")) is None

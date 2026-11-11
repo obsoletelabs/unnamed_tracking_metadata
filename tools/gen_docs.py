@@ -316,7 +316,7 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/providers"): "Providers configured on this node and their request budgets.",
     ("post", "/providers/{name}/fetch"): "Fetch full details from a provider (cached), merge, return the record.",
     ("get", "/group/assist"): "Counts of this node's questions to its owner group (CONTRACT-C14 §3): due, backing off, given up, dropped because the queue was full, and kept evidence items. See [Node groups](node-groups.md#asking-your-nodes).",
-    ("post", "/group/assist/ask"): "Ask the owner group now for records this node lacks (`{ids: [...]}`, \"Ask my nodes\"), also ones it gave up on. Answers arrive in a later group round. 409 when the node is in no group or asking is off.",
+    ("post", "/group/assist/ask"): "Ask the owner group now for records this node lacks (`{ids: [...]}`, \"Ask my nodes\"), also ones it gave up on. Answers arrive in a later group round. 409 when the node is in no group or asking is off; 429 past 60 forced asks per token per hour. Audited as `group_assist_ask`.",
     ("post", "/group/assist/lookup"): "A provider lookup through a member of the owner group (CONTRACT-C14 §4), for a provider this node has no key or budget for. With `record`, the result is kept on that record as group data (never public, never in this node's feed). Needs `group_assist_lookups = answer+ask`.",
     ("get", "/providers/{name}/search"): "Lightweight provider search; nothing is stored.",
     ("get", "/sync/changes"): "Signed entries after `since`; optional `node_id` selects a retained original authority feed.",
