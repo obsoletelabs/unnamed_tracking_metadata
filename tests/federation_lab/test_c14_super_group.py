@@ -3,7 +3,7 @@
 * A = `local`, B = `local2`, C = `indie` (an authority, so the test also shows that grouping publishes nothing).
   Every server runs with `ATLAS_GROUP_SUPER=true`; the group is formed by real enrolment over HTTP.
 * Add on A: a game created through A's web form appears on B and C under the same id after their group rounds.
-* Conflict: B and C edit the same field through their web forms before hearing of each other. After the rounds
+* Conflict: B's and C's administrators edit the same field before either hears of the other's edit. After the rounds
   all three show the same value, hold the same subject state and the same single conflict entry, which the admin
   group page lists; no user page mentions it.
 * User pages show no node identity: the pages a signed-in person and a visitor open on every node carry no node
@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -77,7 +77,7 @@ def rnd(m: Member) -> None:
                 super_group.pull(s, Ctx(m.settings, m.identity), group, tr, m.net, group_routes.call)
                 s.commit()
                 return
-            except OperationalError as exc:
+            except (OperationalError, sqlite3.OperationalError) as exc:  # raw from BEGIN IMMEDIATE, or wrapped
                 s.rollback()
                 if "locked" not in str(exc) or attempt == 7:
                     raise
@@ -128,6 +128,37 @@ def edit_form(node, cid: str, **fields) -> None:
     post_form(node, f"/game/{cid}/edit", data)
 
 
+def concurrent_edits(cid: str, *edits) -> None:
+    """Apply one developer edit on each member, each in a transaction left open until every edit is written."""
+    from sqlalchemy.exc import OperationalError
+
+    from atlas import proposals
+
+    open_sessions = []
+    try:
+        for m, value in edits:
+            for attempt in range(8):
+                s = m.st.maker()
+                try:
+                    admin = s.scalars(select(User).where(User.role == "admin").order_by(User.created_at)).first()
+                    p = proposals.create(s, Ctx(m.settings, m.identity), admin, "edit", cid, {"developer": value}, "")
+                    assert p.auto_applied
+                    s.flush()
+                    break
+                except (OperationalError, sqlite3.OperationalError) as exc:  # the server's worker holds the lock
+                    s.rollback()
+                    s.close()
+                    if "locked" not in str(exc) or attempt == 7:
+                        raise
+                    time.sleep(0.5 + attempt * 0.5)
+            open_sessions.append(s)
+        for s in open_sessions:
+            s.commit()
+    finally:
+        for s in open_sessions:
+            s.close()
+
+
 def markers(network) -> list[str]:
     out = ["served by", "Served by", "also on", "Also on", "available on"]
     for name, node in network.nodes.items():
@@ -137,10 +168,20 @@ def markers(network) -> list[str]:
 
 def person(node) -> httpx.Client:
     """An ordinary account of the owner's household (holds `scope.detail`, as admin-created accounts do)."""
-    with node.state.maker() as s:
-        u = s.scalars(select(User).where(User.username == "drill-user")).one()
-        scope.grant(s, u, scope.DETAIL, None)
-        s.commit()
+    from sqlalchemy.exc import OperationalError
+
+    for attempt in range(8):  # SQLite: the server's own worker may hold the write lock for a while
+        with node.state.maker() as s:
+            try:
+                u = s.scalars(select(User).where(User.username == "drill-user")).one()
+                scope.grant(s, u, scope.DETAIL, None)
+                s.commit()
+                break
+            except (OperationalError, sqlite3.OperationalError) as exc:
+                s.rollback()
+                if "locked" not in str(exc) or attempt == 7:
+                    raise
+        time.sleep(0.5 + attempt * 0.5)
     return node.signin("drill-user")
 
 
@@ -167,12 +208,12 @@ def test_the_group_is_one_node_for_its_users(network):
         assert len(s.scalars(select(ChangeLog.seq)).all()) == c_feed
 
     # 2. concurrent edits on B and C -> one result everywhere, one admin-visible conflict entry
-    # Both forms are submitted at once: each server's own worker announces its write to the others (`notify`), so
-    # edits made seconds apart would be sequential (the second one has seen the first), which is not a conflict.
-    with ThreadPoolExecutor(2) as pool:
-        for job in [pool.submit(edit_form, b, cid, developer="Lantern Works"),
-                    pool.submit(edit_form, c, cid, developer="Tin Kite Studio")]:
-            job.result()
+    # Each server's own worker announces a write to the others at once (`notify`), so two edits submitted through
+    # the forms even a second apart can be sequential (the second one has already seen the first), which is not a
+    # conflict. The two edits are therefore made by each node's administrator in-process, each in its own open
+    # transaction on its own database, and committed only after both are written: neither node can have seen the
+    # other's edit, whatever the machine's speed (CI runs the authorities on PostgreSQL).
+    concurrent_edits(cid, (mb, "Lantern Works"), (mc, "Tin Kite Studio"))
     rounds(ma, mb, mc)
     devs = {n.name: view(n, cid).get("developer") for n in (a, b, c)}
     assert len(set(devs.values())) == 1, devs
