@@ -30,7 +30,7 @@ notice on **Admin → Media types** ("Media types that became built-in"), also w
 ## What a book observation carries (`ext.book`)
 
 A provider, curator or client sends book data in the optional `ext.book` member of an observation (see
-[the observation contract](../v2/observation-contract.md)). Subjects travel as `facts.features` and the first
+the observation contract (`docs/v2/observation-contract.md` in the repository)). Subjects travel as `facts.features` and the first
 publication as `ext.release.first`, exactly as for any other record.
 
 ```json
