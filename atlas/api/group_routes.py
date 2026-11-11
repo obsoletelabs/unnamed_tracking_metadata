@@ -215,9 +215,13 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
         # SQLite write lock is never held across two sessions.
         throttled = not ratelimit.hit(st.maker, f"group-node:{inner['n']}", 600, 60)[0]
         retry_after = None
-        if not throttled and inner["op"] in ASSIST_OPS:
+        fresh = abs(now - inner["t"]) <= gc.SKEW and \
+            session.get(GroupNonce, (inner["n"], inner["r"][:32])) is None
+        if not throttled and fresh and inner["op"] in ASSIST_OPS:
             # C14 §3.10: the per-asker assist limits, counted before this transaction writes (a refused take
-            # counts nothing); `throttled` carries `retry_after` so the asker backs off this helper only.
+            # counts nothing); `throttled` carries `retry_after` so the asker backs off this helper only. Only a
+            # fresh request (in the skew window, nonce not seen; read without a write lock) takes from the asker's
+            # budget, so an observer replaying a captured sealed request cannot spend it.
             ok, retry = assist.limit_call(st.maker, inner["n"], inner["op"])
             if not ok:
                 throttled, retry_after = True, retry

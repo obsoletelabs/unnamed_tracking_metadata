@@ -91,6 +91,44 @@ def test_assist_helper_never_shares_host_or_plugin_or_group_data(world):
         s.rollback()
 
 
+def test_assist_bundle_carries_no_local_lock_or_host_ids(world):
+    """§3.7 (review C14-2): the identity in the fetched bundle (and the `find` bundle hash) is merged from the
+    shared observations only: a `local_only` title lock and a host observation's provider ids never travel."""
+    from atlas import service
+    from atlas.models import Lock
+
+    from .test_c14_assist import ctx
+
+    _u, n1, n2, cid = world
+    with n2.session() as s:
+        before = assist.find_one(s, n2.settings, cid)["bundle_hash"]
+        s.add(Lock(canonical_id=cid, field="title", value="SECRET LOCAL TITLE", local_only=True))
+        s.add(Observation(canonical_id=cid, source_kind="host", source="playnite", source_scope="pc",
+                          external_id="host-1", payload={"title": "Host title", "provider_ids": {"gog": "999111"}},
+                          redistributable=False))
+        s.flush()
+        service.rebuild(s, ctx(n2), cid)
+        assert s.get(Canonical, cid).view["title"] == "SECRET LOCAL TITLE"  # the local view does change
+        s.commit()
+    nonce = b"\x05" * 16
+    with n1.session() as s:
+        group = groups.active(s)
+        tr = groups.trust(s, group, own_node=n1.node_id)
+        member = tr.members()[n2.node_id]["body"]["member"]
+        got = group_routes.call(s, n1.settings, n1.identity, group, member, "assist.fetch",
+                                {"id": cid, "want": ["record", "artwork"], "signed_entries": True,
+                                 "on_behalf": None}, n1.net, nonce=nonce)
+        found = group_routes.call(s, n1.settings, n1.identity, group, member, "assist.find",
+                                  {"ids": [cid], "want": ["record", "artwork"], "reason": "waiting_for_record",
+                                   "on_behalf": None}, n1.net)
+    text = repr(got) + repr(found)
+    for secret in ("SECRET LOCAL TITLE", "Host title", "999111", "playnite", "host-1"):
+        assert secret not in text, secret
+    record = got["bundle"]["body"]["record"]
+    assert record["title"] == "Subnautica 2" and record["provider_ids"] == {"steam": "1962700"}
+    assert found["items"][0]["bundle_hash"] == before  # the hash ignores the local-only changes too
+
+
 def test_assist_apply_never_writes_privileged_tables(world):
     """T-A-AUTHZ1 (asker half): applying an answer writes no lock, merge, review, proposal, grant, user, session,
     relation or own-feed row, and no curator or community observation."""
@@ -371,3 +409,23 @@ def test_lookup_results_scrubbed_and_urls_untrusted(world, resolver, tmp_path):
         assert not media.cache_one(s, settings, art, client, None)
         assert art.last_error == "not_public" and seen == []
         s.rollback()
+
+
+def test_api_ask_is_audited_and_rate_limited_per_token(world, monkeypatch):
+    """Review C14-2: a forced ask through the API writes a `group_assist_ask` audit entry and is limited per
+    token (it skips the backoff and wakes the group round)."""
+    from fastapi.testclient import TestClient
+
+    from atlas.models import AuditEntry
+
+    _u, n1, _n2, cid = world
+    monkeypatch.setattr(assist, "ASK_PER_HOUR", 2)
+    client = TestClient(n1.app)
+    headers = _token(n1, ["read"])
+    for _ in range(2):
+        assert client.post("/api/v2/group/assist/ask", json={"ids": [cid]}, headers=headers).status_code == 200
+    refused = client.post("/api/v2/group/assist/ask", json={"ids": [cid]}, headers=headers)
+    assert refused.status_code == 429 and int(refused.headers["Retry-After"]) >= 1
+    with n1.session() as s:
+        rows = s.scalars(select(AuditEntry).where(AuditEntry.action == "group_assist_ask")).all()
+        assert len(rows) == 2 and rows[0].detail["via"] == "api" and rows[0].detail["ids"] == [cid]
