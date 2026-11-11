@@ -231,6 +231,8 @@ def test_fixture_sums_and_manifest(exported):
             sums[name] = value
     files = {p.relative_to(exported).as_posix() for p in exported.rglob("*") if p.is_file()} - {"SHA256SUMS"}
     assert set(sums) == files
+    # code point order of the posix path, as on Linux: sorting Path objects is case-insensitive on Windows only
+    assert list(sums) == sorted(sums) and list(sums).index("MANIFEST.json") < list(sums).index("books/search-isbn.json")
     for name, value in sums.items():
         assert lf_sha256(exported / name) == value, name
     manifest = json.loads((exported / "MANIFEST.json").read_text(encoding="utf-8"))

@@ -278,11 +278,16 @@ def export(out: Path = OUT) -> Path:
                 "seed_ids": {name: ids[name] for name in client_seed.NAMES},
                 "files": rec.files}
     (out / "MANIFEST.json").write_bytes(dumps(manifest).encode("utf-8"))
-    sums = [f"{lf_sha256(p.read_bytes())}  {p.relative_to(out).as_posix()}\n"
-            for p in sorted(out.rglob("*")) if p.is_file() and p.name != "SHA256SUMS"]
+    sums = [f"{lf_sha256(p.read_bytes())}  {name}\n" for name, p in files_in(out) if name != "SHA256SUMS"]
     (out / "SHA256SUMS").write_bytes(("# sha256 of LF-normalised bytes (tools/export_client_fixtures.py)\n"
                                       + "".join(sums)).encode("utf-8"))
     return out
+
+
+def files_in(root: Path) -> list[tuple[str, Path]]:
+    """Every file under `root` as (posix relative path, path), in code point order of that path: the same on every
+    OS (sorting `Path`s is case-insensitive on Windows only, so `MANIFEST.json` and `README.md` moved)."""
+    return sorted((p.relative_to(root).as_posix(), p) for p in root.rglob("*") if p.is_file())
 
 
 def archive(fixtures: Path, dist: Path, version: str, openapi: Path = OPENAPI) -> Path:
@@ -294,7 +299,7 @@ def archive(fixtures: Path, dist: Path, version: str, openapi: Path = OPENAPI) -
     dist.mkdir(parents=True, exist_ok=True)
     target = dist / f"client-fixtures-{version}.tar.gz"
     members = [("openapi-client-v1.json", openapi)] + [
-        ("fixtures/" + p.relative_to(fixtures).as_posix(), p) for p in sorted(Path(fixtures).rglob("*")) if p.is_file()]
+        ("fixtures/" + name, p) for name, p in files_in(Path(fixtures))]
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar:
         for name, path in members:
