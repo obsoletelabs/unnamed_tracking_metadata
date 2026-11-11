@@ -376,6 +376,9 @@ class RelationItem(BaseModel):
     to: str = Field(max_length=40, description="The parent, base work, series or collection (an Atlas id; merge "
                                                 "redirects are followed).")
     type: Literal[vocab.RELATION_TYPES] = Field(description="C6.2 relation type.")  # type: ignore[valid-type]
+    position: str | None = Field(default=None, min_length=1, max_length=16, description=(
+        "C15 §2.4: the record's place in the series (\"1\", \"2.5\"). Only on `series_member`; changing it ends the "
+        "relation and adds a new one."))
 
 
 class RelationsBody(BaseModel):
@@ -520,11 +523,14 @@ class LockBody(BaseModel):
     value: (
         Annotated[str, Field(max_length=20000)]
         | Annotated[list[Annotated[str, Field(max_length=128)]], Field(max_length=100)]
-        # `releases` (C5.2, protocol 1.3): at most five entries; more are refused, not truncated
-        | Annotated[list[dict[str, Any]], Field(max_length=5)]
+        # `releases` (C5.2, protocol 1.3): at most five entries, more are refused (not truncated) by the release rules;
+        # `authors` (C15 §2.3): at most 30 authors `{name, role, ids}`
+        | Annotated[list[dict[str, Any]], Field(max_length=30)]
+        | int  # `page_count` (C15 §2.3)
     ) | None = Field(None, description="A string, a list of strings, or for `releases` a list of release entries. "
-                                     "`release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Required unless "
-                                     "`clear` is true.")
+                                     "`release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Book fields: "
+                                     "`authors` takes an ordered list of `{name, role, ids}`, `page_count` a number, "
+                                     "`subtitle` and `original_language` a string. Required unless `clear` is true.")
     clear: bool = Field(False, description="Mark the field deliberately empty (C11 §11.8); give no `value`.")
 
 

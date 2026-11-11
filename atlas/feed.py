@@ -205,6 +205,14 @@ def record_body(session: Session, settings: Any, row: Canonical, because: str) -
         for cw in session.scalars(select(Crosswalk).where(Crosswalk.canonical_id == row.id, Crosswalk.variant == "")
                                   .order_by(Crosswalk.namespace, Crosswalk.external_id)):
             keys.setdefault(cw.namespace, cw.external_id)
+        if "isbn" not in keys:
+            # C15 §2.5: `provider_ids` holds one value per namespace, so a book's `record` carries at most one ISBN:
+            # the ISBN-13 of the first edition (in `editions[]` order) that has one. Followers get the others from
+            # their own enrichment (H56).
+            first = next((e["isbn_13"] for e in (row.view or {}).get("editions") or []
+                          if isinstance(e, dict) and isinstance(e.get("isbn_13"), str)), None)
+            if first is not None:
+                keys["isbn"] = first
     return {"canonical_id": row.id, "media_type": row.media_type or "game",
             "title": title[:feed_schema.RECORD_TITLE_MAX] if isinstance(title, str) else "",
             "provider_ids": strip_ids(keys), "because": because}

@@ -25,6 +25,7 @@ from typing import Any
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
+from . import dates
 from .models import (
     AuditEntry,
     Canonical,
@@ -49,6 +50,8 @@ MAX_EVIDENCE_VALUE = 200  # characters of an evidence value as JSON
 MAX_KEYS_PER_RECORD = 200  # crosswalk rows read per record for a consistency test
 MARGIN = 0.1
 ATLAS_NAMESPACE = "atlas"
+#: The built-in book type (C15 §2.5): its titles keep edition words and its platform is no evidence.
+BOOK_TYPE = "book"
 #: Store namespaces whose ids name one platform's version of a work (§11.2.4, H51).
 PLATFORM_SCOPED_NAMESPACES = frozenset({"psn", "xbox", "nintendo"})
 
@@ -108,10 +111,22 @@ class Facts:
     def of_payload(cls, namespace: str, external_id: str, payload: dict[str, Any],
                    media_type: str | None) -> Facts:
         facts = payload.get("facts") or {}
+        developer, released = facts.get("developer"), payload.get("release_date")
+        if media_type == BOOK_TYPE:
+            # C15 §2.5: a book's soft evidence is its title, its first author and its first publication year (±1),
+            # which is usually known to the year only (`ext.release.first`)
+            from .merge import book_of
+
+            authors = book_of(payload).get("authors") or []
+            if not developer and authors and isinstance(authors[0], dict):
+                developer = authors[0].get("name")
+            if not released:
+                first = dates.observation_first(payload)
+                released = first.value if first is not None else None
         return cls(namespace=namespace, external_id=external_id,
                    provider_ids=dict(payload.get("provider_ids") or {}), title=payload.get("title"),
-                   release_date=payload.get("release_date"), platform=payload.get("platform"),
-                   platforms=list(payload.get("platforms") or []), developer=facts.get("developer"),
+                   release_date=released, platform=payload.get("platform"),
+                   platforms=list(payload.get("platforms") or []), developer=developer,
                    publisher=facts.get("publisher"), aliases=list(facts.get("aliases") or [])[:20],
                    edition=payload.get("edition"), media_type=media_type)
 
@@ -401,19 +416,19 @@ def _iso(dt: Any) -> str | None:
 
 # ---- title evidence (§11.2.2) ----------------------------------------------------------------------------
 
-def _aliases_of(view: dict[str, Any]) -> set[str]:
-    return {n for a in (view.get("aliases") or [])[:100] if isinstance(a, str) and (n := norm_title(a))}
+def _aliases_of(view: dict[str, Any], media_type: str | None = None) -> set[str]:
+    return {n for a in (view.get("aliases") or [])[:100] if isinstance(a, str) and (n := norm_title(a, media_type))}
 
 
 def title_candidates(session: Session, settings: Settings, facts: Facts, *, exclude: str | None = None) -> list[Candidate]:
     """Scored title candidates, best first (ties by id), each with its evidence items; at most MAX_TITLE_ROWS rows
     are read and only scores >= review_threshold are kept. Vetoes are applied by the caller."""
-    norm = norm_title(facts.title)
+    norm = norm_title(facts.title, facts.media_type)
     if not norm:
         return []
     year = year_of(facts.release_date)
     first = norm.split()[0]
-    obs_aliases = {n for a in facts.aliases if isinstance(a, str) and (n := norm_title(a))} - {norm}
+    obs_aliases = {n for a in facts.aliases if isinstance(a, str) and (n := norm_title(a, facts.media_type))} - {norm}
     cond = (Canonical.norm_title == norm) | Canonical.norm_title.like(f"{first}%")
     if obs_aliases:
         cond = cond | Canonical.norm_title.in_(sorted(obs_aliases)[:20])
@@ -421,7 +436,9 @@ def title_candidates(session: Session, settings: Settings, facts: Facts, *, excl
         Canonical.merged_into.is_(None), Canonical.norm_title != "",
         *([Canonical.media_type == facts.media_type] if facts.media_type else []), cond,
     ).order_by(Canonical.id).limit(MAX_TITLE_ROWS)
-    platforms = {p.casefold() for p in ([facts.platform] if facts.platform else []) + facts.platforms if p}
+    # C15 §2.5: a book's platform (its format) is no evidence that two works are one
+    platforms = set() if facts.media_type == BOOK_TYPE else \
+        {p.casefold() for p in ([facts.platform] if facts.platform else []) + facts.platforms if p}
     dev, pub = norm_company(facts.developer), norm_company(facts.publisher)
     out: list[Candidate] = []
     for cand in session.scalars(stmt):
@@ -432,7 +449,7 @@ def title_candidates(session: Session, settings: Settings, facts: Facts, *, excl
         if cand.norm_title == norm:
             base, score = "title_equal", 0.70
             items.append(ev("title_equal", norm, 0.70))
-        elif norm in _aliases_of(view) or cand.norm_title in obs_aliases:
+        elif norm in _aliases_of(view, cand.media_type) or cand.norm_title in obs_aliases:
             base, score = "alias_equal", 0.65
             items.append(ev("alias_equal", cand.norm_title, 0.65))
         else:

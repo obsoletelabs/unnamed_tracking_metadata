@@ -53,7 +53,9 @@ def test_seeded_types_default_on(tmp_path):
     node = Node(tmp_path, "n", "authority")
     with node.st.maker() as s:
         types = {t.key: t.achievements for t in s.scalars(select(MediaType))}
-    assert types and all(types.values()), types  # game, anime, movie, tv_show, series, collection
+    # game, anime, movie, tv_show, series, collection; only A21's built-in `book` is seeded off (C15 §2.7)
+    assert types.pop("book") is False
+    assert types and all(types.values()), types
 
 
 def test_curator_api_refuses_and_listing_says_not_applicable(tmp_path):

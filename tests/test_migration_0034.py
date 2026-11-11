@@ -20,7 +20,7 @@ from atlas.signing import load_identity
 from .conftest import batch, build_settings
 from .test_postgres import pg_url  # noqa: F401  (module-scoped PostgreSQL fixture)
 
-HEAD = "0060"  # A20 (media_type.achievements) is the head now; renumbered when the chain is restacked
+HEAD = "0061"  # A21 (the book model) is the head now; renumbered when the chain is restacked
 STAMP = "2026-11-02 10:00:00"
 NEW_TABLES = {"match_decision", "match_rejection", "merge_record", "merge_record_item", "record_live", "field_conflict",
               "review_candidate"}

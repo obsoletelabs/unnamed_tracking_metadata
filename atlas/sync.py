@@ -996,6 +996,17 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
                 # else: both are authoritative; the authority left the key where it was (and opened a
                 # review), so the mirror does too.
         session.flush()
+        from .merge import book_of
+
+        isbn_records = [cid] if book_of(o["payload"]).get("editions") else []
+        isbn_records += [p.canonical_id for p in priors if p.canonical_id and book_of(p.payload or {}).get("editions")]
+        if isbn_records:
+            from . import books
+
+            # C15 §2.5: one isbn row per edition ISBN of the current observations (a superseded one's rows go); an
+            # ISBN another work holds opens a review, never a merge
+            for rec in dict.fromkeys(isbn_records):
+                books.sync_isbn_keys(session, ctx.settings, rec)
         for t in touched:
             if session.get(Canonical, t) and session.get(Canonical, t).merged_into is None:  # type: ignore[union-attr]
                 service.rebuild(session, ctx, t)

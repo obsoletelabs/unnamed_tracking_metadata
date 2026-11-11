@@ -360,6 +360,12 @@ logs a warning at its first start on this release and again whenever the set of 
 later release seeds, one a schema brings, one an administrator creates), since a misfile is only reportable once
 its named type exists here.
 
+**Books (A21, CONTRACT-C15 §2, §4.1).** Every node of this release seeds the media type `book`, so a book record
+never waits for its type between nodes of this release. Book data is registered under the one release version: an
+`obs` with `ext.book` is always signed with the `_requires` token `book-v1` (a follower that cannot apply it parks
+the entry rather than keeping a bare record), and the book lock fields, the `book_format` and `book_creator_role`
+vocabularies and the `series_member` `position` are registered under the same version. See [Books](books.md).
+
 **The bridge and other media types (A20, CONTRACT-C15 §4.1).** A 1.0 follower files every observation as a game,
 whatever its media type says, so the bridge introduces only the types in `ATLAS_FEDERATION_BRIDGE_MEDIA_TYPES`
 (default `["game"]`; an empty list is refused at startup). A record of another type gets a `record` when the emit protocol is 1.5 (a 1.0–1.4 follower parks
