@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import case, select, text, update
+from sqlalchemy import case, exists, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from . import books, client_changes, dates, feed, feed_schema, matching, provenance
@@ -17,7 +17,7 @@ from .ids import canonical_id as new_canonical_id
 from .ids import ulid
 from .merge import merge
 from .models import AuditEntry, Canonical, Crosswalk, Lock, Observation, ReviewItem, now
-from .normalize import norm_namespace, norm_title
+from .normalize import isbn13, norm_namespace, norm_title
 from .resolve import follow
 from .settings import PROVIDER_SOURCES, Settings
 from .signing import NodeIdentity, canonical_json
@@ -708,17 +708,26 @@ SORTS = ("relevance", "title", "release", "-release")
 
 def search(session: Session, q: str, limit: int = 25, offset: int = 0,
            media_type: str | None = None, *, released_from: str | None = None, released_to: str | None = None,
-           sort: str = "relevance") -> list[Canonical]:
-    """`_search`, timed by mode (`title`, `filter`, `browse`) and outcome; never labelled by the query (#74)."""
+           sort: str = "relevance", author: str | None = None) -> list[Canonical]:
+    """`_search`, timed by mode (`title`, `filter`, `browse`) and outcome; never labelled by the query (#74).
+
+    C15 §5 (A23): a `q` that is a valid ISBN-10 or ISBN-13 (hyphens and spaces allowed) is looked up in the `isbn`
+    crosswalk first and answers that work alone; `author` prefix-matches the words of a book's creators (books only:
+    no `media_type` means `book`, another type is refused); and a free `q` with `media_type="book"` also matches
+    authors."""
     import time
 
     from . import instruments
 
-    mode = "title" if norm_title(q or "") else "filter" if (released_from or released_to) else "browse"
+    mode = "title" if norm_title(q or "") else "filter" if (released_from or released_to or author) else "browse"
     started, outcome = time.monotonic(), "error"
     try:
-        rows = _search(session, q, limit, offset, media_type, released_from=released_from,
-                       released_to=released_to, sort=sort)
+        hit = _isbn_hit(session, q, media_type)
+        if hit is not None:
+            rows = hit[max(offset, 0):max(offset, 0) + max(limit, 0)]
+        else:
+            rows = _search(session, q, limit, offset, media_type, released_from=released_from,
+                           released_to=released_to, sort=sort, author=author)
         outcome = "ok"
         instruments.search_results.observe(len(rows), mode=mode)
         return rows
@@ -729,9 +738,34 @@ def search(session: Session, q: str, limit: int = 25, offset: int = 0,
         instruments.search_duration.observe(time.monotonic() - started, mode=mode, outcome=outcome)
 
 
+def _isbn_hit(session: Session, q: str | None, media_type: str | None) -> list[Canonical] | None:
+    """C15 §5: the work an ISBN names, through the `isbn` crosswalk (edition rows and work keys alike), merges
+    followed. None when `q` is not a valid ISBN or no record holds it, so the ordinary title search runs; an empty
+    list when the work is of another type than the one asked for."""
+    isbn = isbn13((q or "").strip())
+    if isbn is None:
+        return None
+    row = session.get(Crosswalk, (books.ISBN_NAMESPACE, isbn))
+    if row is None:
+        return None
+    work = session.get(Canonical, follow(session, row.canonical_id))
+    if work is None or work.merged_into is not None or not work.norm_title:
+        return None
+    return [work] if not media_type or work.media_type == media_type else []
+
+
+def _creator_match(prefix: str) -> Any:
+    """Records with a `book_creator` row whose name has a word starting with `prefix` (already `books.norm_name`)."""
+    from .models import BookCreator
+
+    pattern = prefix.replace("_", " ").strip()
+    return exists().where(BookCreator.canonical_id == Canonical.id,
+                          or_(BookCreator.norm_name.like(pattern + "%"), BookCreator.norm_name.like("% " + pattern + "%")))
+
+
 def _search(session: Session, q: str, limit: int = 25, offset: int = 0,
             media_type: str | None = None, *, released_from: str | None = None, released_to: str | None = None,
-            sort: str = "relevance") -> list[Canonical]:
+            sort: str = "relevance", author: str | None = None) -> list[Canonical]:
     """Records by title. `released_from`/`released_to` are PartialDates ("2011" = the whole year): a record
     matches when its first release lies entirely inside the range, so a year-only "2011" matches 2011..2011
     but not April 2011 (it might be any month). `sort=release` orders by the start of the first release, then
@@ -745,6 +779,11 @@ def _search(session: Session, q: str, limit: int = 25, offset: int = 0,
         raise AtlasError(str(exc)) from exc
     if low and high and low.start() > high.end():
         raise AtlasError("released_from is after released_to")
+    who = books.norm_name(author or "")
+    if who:
+        if media_type and media_type != books.BOOK:
+            raise AtlasError("the author filter is for books: use it with type=book")
+        media_type = books.BOOK
     norm = norm_title(q, media_type)
     stmt = (
         select(Canonical)
@@ -757,9 +796,15 @@ def _search(session: Session, q: str, limit: int = 25, offset: int = 0,
         stmt = stmt.where(Canonical.release_start >= low.start())
     if high is not None:
         stmt = stmt.where(Canonical.release_end <= high.end())
+    if who:
+        stmt = stmt.where(_creator_match(who))
     if norm:
         like = "%" + "%".join(norm.split()) + "%"
-        stmt = stmt.where(Canonical.norm_title.like(like))
+        by_title = Canonical.norm_title.like(like)
+        named = books.norm_name(q) if media_type == books.BOOK else ""
+        if named:  # C15 §5: for books a free q also matches the creators' names
+            by_title = or_(by_title, _creator_match(named))
+        stmt = stmt.where(by_title)
     rank = case((Canonical.release_precision == "year", 0), (Canonical.release_precision == "month", 1), else_=2)
     unknown_last = case((Canonical.release_start.is_(None), 1), else_=0)
     if sort == "release":

@@ -333,8 +333,14 @@ def resolve(body: ResolveRequest, st: St, session: Sess, _: Annotated[auth.Princ
 
 @router.get("/games", tags=["read"])
 def list_games(session: Sess, st: St, _: Annotated[auth.Principal, Depends(require("read"))],
-               q: Annotated[str, Query(max_length=200, description="Title search. Required unless a release "
-                                       "filter is given.")] = "",
+               q: Annotated[str, Query(max_length=200, description=(
+                   "Title search. Required unless a release or author filter is given. A valid ISBN-10 or ISBN-13 "
+                   "(hyphens allowed) answers the book that edition belongs to, alone. With `type=book` the words "
+                   "of the authors' names match too."))] = "",
+               author: Annotated[str | None, Query(max_length=200, description=(
+                   "Books only (C15 §5): records with a creator whose name has a word starting with this text "
+                   "(casefold, accents ignored). Without `type` it means `type=book`; another type is refused "
+                   "(400)."))] = None,
                limit: Annotated[int, Query(ge=1, le=100)] = 25,
                type: Annotated[str | None, Query(max_length=32)] = None,
                released_from: Annotated[str | None, Query(max_length=10, description=(
@@ -351,10 +357,10 @@ def list_games(session: Sess, st: St, _: Annotated[auth.Principal, Depends(requi
                    "`title` or `release` for a stable order across pages."))] = "relevance",
                offset: Annotated[int, Query(ge=0, le=100_000)] = 0):
     # Only a missing q needs a filter: a blank q (`q=%20`) lists recent records, as it always did.
-    if q == "" and not released_from and not released_to:
-        raise HTTPException(422, "give q (a title search) or a release filter")
+    if q == "" and not released_from and not released_to and not (author or "").strip():
+        raise HTTPException(422, "give q (a title search), a release filter or an author")
     rows = service.search(session, q, limit, offset, media_type=type, released_from=released_from,
-                          released_to=released_to, sort=sort)
+                          released_to=released_to, sort=sort, author=author)
     return {"results": [game_out(r, None, session, st.ctx) for r in rows]}
 
 

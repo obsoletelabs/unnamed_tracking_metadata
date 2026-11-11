@@ -11,13 +11,14 @@
 {% for kind, items in rel[name]|groupby('type') %}
 <div class="rel-group" data-rel-list="{{ name }}" data-rel-type="{{ kind }}">
 <h3>{{ rel_labels[kind][side] }} <span class="muted small">{{ items|length }}</span></h3>
-<ul class="rel-list">{% for r in items %}<li><a href="/game/{{ r.id }}">{{ r.title or r.id }}</a>{% if r.media_type and r.media_type != 'game' %} <span class="badge">{{ r.media_type|replace('_', ' ') }}</span>{% endif %}</li>{% endfor %}</ul>
+<ul class="rel-list">{% for r in items %}<li>{% if r.position %}<span class="badge" data-series-position>#{{ r.position }}</span> {% endif %}<a href="/game/{{ r.id }}">{{ r.title or r.id }}</a>{% if r.media_type and r.media_type != 'game' %} <span class="badge">{{ r.media_type|replace('_', ' ') }}</span>{% endif %}</li>{% endfor %}</ul>
 {% if rel.counts[name] > rel[name]|length and loop.last %}<p class="small muted">Showing {{ rel[name]|length }} of {{ rel.counts[name] }}. The API lists up to 200 (<code>GET /api/v2/games/{{ g.id }}/relations</code>).</p>{% endif %}
 </div>
 {% endfor %}
 {% endif %}{% endfor %}
 </div>{% endif %}
-{% if v.get('editions') %}
+{% if v.get('editions') and g.media_type == 'book' %}{% include "_book_editions.html" %}
+{% elif v.get('editions') %}
 <div class="rel-group" data-editions id="editions">
 <h3>Editions <span class="muted small">{{ v.editions|length }}</span></h3>
 <ul class="edition-cards">{% for e in v.editions %}{% set dated = (v.get('releases') or [])|selectattr('edition', 'equalto', e.name)|list %}
