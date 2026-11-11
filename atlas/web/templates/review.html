@@ -23,4 +23,25 @@
   </form>{% endif %}
 </article>
 {% else %}<p class="muted">Nothing is waiting. Nice.</p>{% endfor %}
+{% if via_link %}
+<section class="link-applied" data-link-applied="{{ via_link }}">
+<h2>Applied from this link ({{ applied_total }})</h2>
+<p class="small muted">Changes this node link already applied here. Reverting puts back what each one replaced, newest first. Entries already signed into the public feed stay there; a newer change on top of one is not undone automatically.</p>
+{% if applied %}
+<form method="post" action="/review/link/{{ via_link }}/revert">{{ csrf(p.csrf) }}
+  <label for="bulk-note">Reviewer note <span class="hint">shown to the contributor</span></label><input id="bulk-note" type="text" name="note" maxlength="500">
+  <p><button class="danger" type="submit">Revert everything this link applied ({{ applied_total }})</button></p>
+</form>
+{% for r in applied %}
+<article class="card">
+  <h3>{{ r.kind|replace('_', ' ')|capitalize }}: {% if r.cid %}<a href="/game/{{ r.cid }}">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}</h3>
+  <p class="small muted">by <strong>{{ r.user }}</strong>{% if r.decided %} · applied {{ when(r.decided) }}{% endif %}{% if r.flag == 'link_compromised' %} <span class="badge danger">node key may be stolen</span>{% endif %}</p>
+  {% if r.entries %}<ul>{% for i in r.entries %}<li>{{ i }}</li>{% endfor %}</ul>{% endif %}
+  {% if r.rows %}<ul>{% for f, old, new in r.rows %}<li>{{ f }}: {{ new }}</li>{% endfor %}</ul>{% endif %}
+  <form method="post" action="/review/{{ r.id }}/revert">{{ csrf(p.csrf) }}<button type="submit">Revert this change</button></form>
+</article>
+{% endfor %}
+{% else %}<p class="muted">Nothing from this link is applied.</p>{% endif %}
+</section>
+{% endif %}
 {% endblock %}

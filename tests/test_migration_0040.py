@@ -89,3 +89,32 @@ def test_node_link_schema_up_and_down(url, monkeypatch):
         assert version(engine) == HEAD
     finally:
         engine.dispose()
+
+
+def test_downgrade_refuses_pending_compromised_link_proposals(url, monkeypatch):
+    """Review fix: after an unlink/freeze/ban no link is active, but a pending proposal flagged `link_compromised`
+    would lose its flag (and its "I checked this change" gate) on a downgrade: refused without the force flag."""
+    db.upgrade(url, HEAD)
+    engine = create_engine(url)
+    try:
+        with engine.begin() as c:
+            c.execute(text("INSERT INTO app_user (id, username, password_hash, role, reputation, status, created_at) "
+                           "VALUES ('01M70000000000000000000001', 'dave', '!', 'user', 0, 'active', "
+                           "CURRENT_TIMESTAMP)"))
+            c.execute(text("INSERT INTO proposal (id, kind, proposer_id, payload, note, status, auto_applied, "
+                           "decision_note, created_at, via_link_id, stale_base, link_flag) VALUES "
+                           "('01M70000000000000000000003', 'edit', '01M70000000000000000000001', '{}', '', "
+                           "'pending', false, '', CURRENT_TIMESTAMP, '01M70000000000000000000002', false, "
+                           "'link_compromised')"))
+        monkeypatch.delenv("ATLAS_DOWNGRADE_FORCE", raising=False)
+        with pytest.raises(Exception, match="key may have been stolen"):
+            db.downgrade(url, PREVIOUS)
+        engine.dispose()
+        assert version(engine) == HEAD
+        with engine.begin() as c:  # decided: the downgrade goes ahead
+            c.execute(text("UPDATE proposal SET status = 'rejected'"))
+        db.downgrade(url, PREVIOUS)
+        engine.dispose()
+        assert version(engine) == PREVIOUS
+    finally:
+        engine.dispose()

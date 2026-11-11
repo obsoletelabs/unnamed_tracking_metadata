@@ -118,6 +118,8 @@ def main_() -> int:
     # 1. the node: check the main and start the link
     t = csrf(admin, "/admin/main")
     shot("node-main-empty", admin, NODE, "/admin/main")
+    run(out, plan)  # photographed now, before the link starts (the empty state, not the open flow)
+    plan.clear()
     admin.post("/admin/main/probe", data={"csrf": t, "url": MAIN})
     main_id = m_app.state.atlas.ctx.identity.node_id
     r = admin.post("/admin/main/start", data={"csrf": t, "url": MAIN, "node_id": main_id})
@@ -165,6 +167,12 @@ def main_() -> int:
         s.commit()
     admin.post(f"/admin/main/{main_id}/send", data={"csrf": csrf(admin, "/admin/main")})
     shot("node-main-linked", admin, NODE, "/admin/main")
+    # the main's review queue for one link: pending and applied contributions, with the bulk revert (C14 §6.7)
+    from atlas.models import NodeLink
+
+    with m_app.state.atlas.maker() as s:
+        link_id = s.scalars(select(NodeLink)).one().id
+    shot("main-review-link", boss, MAIN, f"/review?via_link={link_id}")
     shot("main-me-links", dave, MAIN, "/me/links")
     shot("main-admin-links", boss, MAIN, "/admin/links")
     run(out, plan)

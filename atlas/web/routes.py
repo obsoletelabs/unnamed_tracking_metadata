@@ -1338,8 +1338,29 @@ def review_queue(p: Annotated[Page, Depends(review_page)]):
         q = q.where(Proposal.via_link_id == via[:26])
     rows = p.session.scalars(q.order_by(Proposal.created_at).limit(50)).all()
     dups = p.session.scalar(select(func.count()).select_from(ReviewItem).where(ReviewItem.status == "open")) or 0
+    applied: list[dict[str, Any]] = []
+    applied_total = 0
+    if via and via != "any":  # C14 §6.7 (C14-10): everything one link produced, for review and bulk revert
+        aq = select(Proposal).where(Proposal.via_link_id == via[:26], Proposal.status == "approved")
+        applied_total = p.session.scalar(select(func.count()).select_from(aq.subquery())) or 0
+        for r in p.session.scalars(aq.order_by(Proposal.decided_at.desc()).limit(50)):
+            card = _proposal_card(p, r)
+            card["decided"] = r.decided_at
+            applied.append(card)
     return render(p, "review.html", items=[_proposal_card(p, r) for r in rows], dup_count=dups,
-                  pending_badge=scope.badge("local"))
+                  pending_badge=scope.badge("local"), via_link=via[:26] if via and via != "any" else "",
+                  applied=applied, applied_total=applied_total)
+
+
+@router.post("/review/link/{link_id}/revert")
+def review_link_revert(link_id: str, p: Annotated[Page, Depends(review_form)],
+                       note: Annotated[str, Form(max_length=500)] = ""):
+    """C14 §6.7: revert everything a node link applied (newest first); what cannot be undone stays listed."""
+    try:
+        out = proposals.revert_link(p.session, p.st.ctx, p.me, link_id[:26], note)
+    except AtlasError as exc:
+        raise HTTPException(403 if exc.code == "forbidden" else 400, str(exc)) from exc
+    return go(f"/review?via_link={link_id[:26]}", "link_reverted" if not out["left"] else "link_reverted_some")
 
 
 @router.post("/review/{pid}")

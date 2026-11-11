@@ -143,7 +143,7 @@ LINK_ENDPOINTS = ("challenge", "device", "approve", "token", "link", "contributi
                   "rotation", "unlink", "revoke")
 LINK_RESULTS = ("ok", "invalid", "invalid_request", "invalid_scope", "invalid_client", "invalid_grant",
                 "invalid_dpop_proof", "authorization_pending", "slow_down", "access_denied", "expired_token",
-                "unsupported_grant_type", "unauthorized", "refused", "rate_limited", "frozen", "off")
+                "unsupported_grant_type", "unauthorized", "refused", "rate_limited", "frozen", "off", "retry")
 link_requests = REGISTRY.counter(
     "atlas_link_requests_total", "Node link requests on this main, by endpoint and closed result",
     {"endpoint": LINK_ENDPOINTS, "result": LINK_RESULTS})

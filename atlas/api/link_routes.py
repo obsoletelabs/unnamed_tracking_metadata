@@ -90,7 +90,8 @@ async def revoke(request: Request, st: St, session: Sess):
 
 # ---- the DPoP-bound link API -----------------------------------------------------------------------------------
 
-def _caller(request: Request, st: AppState, session: Session, endpoint: str) -> link.Caller | JSONResponse:
+def _caller(request: Request, st: AppState, session: Session, endpoint: str, body: Any = None
+            ) -> link.Caller | JSONResponse:
     if not link.active(st.ctx.settings):
         return _off()
     htu = st.ctx.settings.public_url + request.url.path
@@ -99,7 +100,14 @@ def _caller(request: Request, st: AppState, session: Session, endpoint: str) -> 
                                  request.method, htu)
     except link.Unauthorized as exc:
         if endpoint == "rotation" and exc.reason in ("key_mismatch", "invalid_token"):
-            # §6.7: a rotation by an already superseded key of an active link means someone else rotated it
+            # §6.7: the node repeating the identical rotation it already made (it lost the answer) gets fresh
+            # tokens for the new key; any other rotation by an already superseded key of an active link means
+            # someone else rotated it, and freezes the link
+            again = link.rotation_retry(session, st.ctx, request.headers.get("authorization"),
+                                        request.headers.get("dpop"), request.method, htu, body)
+            if again is not None:
+                _metric(endpoint, "retry")
+                return JSONResponse(again, headers=NO_STORE)
             target = link.superseded_attempt(session, st.ctx, request.headers.get("authorization"),
                                              request.headers.get("dpop"), request.method, htu)
             if target is not None:
@@ -184,13 +192,13 @@ def contribution_withdraw(contribution_id: str, request: Request, st: St, sessio
 
 @router.post("/api/v2/link/rotation", tags=["link"])
 async def rotation(request: Request, st: St, session: Sess):
-    caller = _caller(request, st, session, "rotation")
-    if isinstance(caller, JSONResponse):
-        return caller
     try:
         body = await request.json()
     except ValueError:
         body = None
+    caller = _caller(request, st, session, "rotation", body)
+    if isinstance(caller, JSONResponse):
+        return caller
     try:
         out = link.rotate(session, st.ctx, caller, body)
     except AtlasError as exc:

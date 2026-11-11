@@ -204,11 +204,17 @@ def downgrade() -> None:
     links = bind.execute(sa.text("SELECT COUNT(*) FROM node_link WHERE status = 'active'")).scalar() or 0
     queued = bind.execute(sa.text("SELECT COUNT(*) FROM upstream_contribution WHERE state IN "
                                   "('queued', 'sent', 'pending')")).scalar() or 0
-    if (links or queued) and os.environ.get("ATLAS_DOWNGRADE_FORCE") != "1":
+    # pending proposals from a link whose key may have been stolen: the previous release has no `link_flag`, so
+    # they would turn into ordinary proposals approvable without the "I checked this change" step
+    flagged = bind.execute(sa.text("SELECT COUNT(*) FROM proposal WHERE status = 'pending' AND "
+                                   "link_flag = 'link_compromised'")).scalar() or 0
+    if (links or queued or flagged) and os.environ.get("ATLAS_DOWNGRADE_FORCE") != "1":
         raise RuntimeError(
-            f"{links} node link(s) are active on this node and {queued} contribution(s) to a main Atlas are not "
-            "decided yet. The previous release has no node links: the links would stop working and the queue would "
-            "be lost. Unlink first, or set ATLAS_DOWNGRADE_FORCE=1 to drop them.")
+            f"{links} node link(s) are active on this node, {queued} contribution(s) to a main Atlas are not "
+            f"decided yet and {flagged} pending proposal(s) came from a node link whose key may have been stolen. "
+            "The previous release has no node links: the links would stop working, the queue would be lost and the "
+            "flagged proposals could be approved without a check. Unlink and decide the flagged proposals first, or "
+            "set ATLAS_DOWNGRADE_FORCE=1 to drop them.")
     op.drop_index("ix_upstream_alias_main_cid", table_name="upstream_alias")
     op.drop_table("upstream_alias")
     for name in ("state", "local_cid", "main_node_id"):
