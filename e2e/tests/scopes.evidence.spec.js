@@ -4,12 +4,21 @@
 // stored under a `group:` source scope.
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { test, expect } = require('./fixtures');
 
 const DIR = process.env.E2E_EVIDENCE_DIR;
 const BOOTSTRAP = process.env.E2E_BOOTSTRAP_TOKEN || 'e2e-synthetic-bootstrap-token-0123456789abcdef';
 const AUTH = { Authorization: `Bearer ${BOOTSTRAP}` };
 const enc = encodeURIComponent;
+const ROOT = path.resolve(__dirname, '..', '..');
+
+// e2e/scopes_seed.py writes synthetic achievement rows (one from a provider, one under the `atlas-group` source).
+function py(script, ...args) {
+  const out = execFileSync('uv', ['run', '--frozen', 'python', script, ...args],
+    { cwd: ROOT, env: { ...process.env, PYTHONPATH: ROOT, PYTHONUTF8: '1' }, encoding: 'utf8' });
+  return JSON.parse(out.trim().split('\n').pop());
+}
 
 test.describe.configure({ mode: 'serial' });
 test.use({ allowedStatuses: [404] });
@@ -115,5 +124,34 @@ test('evidence: a self-registered account proposes an edit; the proposal page sh
     await expect(page.locator('main')).toContainText('A short synthetic description written by a visitor.');
     await expect(page.locator('body')).not.toContainText('received from your other node');
     await shoot(page, 'proposal-visitor', info);
+    await ctx.close();
+  });
+
+test('evidence: the achievement editor shows other sources as each account may see them',
+  async ({ page, browser, request }, info) => {
+    // Third review: "From other sources" leaves out rows received from your other node for an account that does
+    // not see data from your nodes (no name, tier, points or source).
+    const ids = await seedScopes(request);
+    py('e2e/scopes_seed.py', 'achievements', ids.mixed);
+    await page.goto(`/game/${enc(ids.mixed)}/achievements/edit`);
+    await expect(page.locator('main')).toContainText('Tidewatch Beacon');
+    await expect(page.locator('main')).toContainText('First Light');
+    await page.locator('[data-ach-others]').evaluate((d) => { d.open = true; });
+    await page.locator('[data-ach-others]').scrollIntoViewIfNeeded();
+    await shoot(page, 'ach-editor-admin', info);
+    const ctx = await browser.newContext({ ...info.project.use, storageState: { cookies: [], origins: [] } });
+    const visitor = await ctx.newPage();
+    const name = `achvisitor${info.project.name}${Date.now() % 100000}`;
+    await visitor.goto('/register');
+    await visitor.fill('input[name=username]', name);
+    await visitor.fill('input[name=password]', 'e2e-Synthetic-Pass-12345');
+    await Promise.all([visitor.waitForURL((u) => !u.pathname.startsWith('/register')),
+      visitor.click('form[action="/register"] button[type=submit]')]);
+    await visitor.goto(`/game/${enc(ids.mixed)}/achievements/edit`);
+    await expect(visitor.locator('main')).toContainText('First Light');
+    await expect(visitor.locator('body')).not.toContainText('Tidewatch Beacon');
+    await expect(visitor.locator('body')).not.toContainText('atlas-group');
+    await visitor.locator('[data-ach-others]').evaluate((d) => { d.open = true; });
+    await shoot(visitor, 'ach-editor-visitor', info);
     await ctx.close();
   });

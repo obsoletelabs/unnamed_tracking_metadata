@@ -274,3 +274,22 @@ def test_own_provider_rows_never_fetched_from_peer(pair):
     art = cache_with(mirror, http)
     assert seen == [] and art.blob_hash is None  # the origin cannot resolve; the peer was never contacted
     assert [e["source"] for e in art.sources_tried] == ["origin"]
+
+
+def test_sync_media_follows_the_c14_ceiling_and_group_rule(pair):
+    """C14 §5.4/§5.7 (third review): the bytes of a record under a ceiling, or of a row received from the group,
+    are the same 404 as an unknown digest on `/sync/media`."""
+    from atlas.models import Canonical
+
+    authority, mirror, cid, digest, data = pair
+    auth = {"Authorization": f"Bearer {authority.token}"}
+    assert authority.client.get(f"/api/v2/sync/media/{digest}", headers=auth).status_code == 200
+    with authority.st.maker() as s:
+        s.scalars(select(Artwork)).one().fetched_from = "group:n1"
+        s.commit()
+    assert authority.client.get(f"/api/v2/sync/media/{digest}", headers=auth).status_code == 404
+    with authority.st.maker() as s:
+        s.scalars(select(Artwork)).one().fetched_from = None
+        s.get(Canonical, cid).scope_ceiling = "group"
+        s.commit()
+    assert authority.client.get(f"/api/v2/sync/media/{digest}", headers=auth).status_code == 404
