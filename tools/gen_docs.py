@@ -2,10 +2,13 @@
 
     python tools/gen_docs.py          # rewrite docs/guide/reference-*.md
     python tools/gen_docs.py --check  # exit 1 if they are out of date (used by the test suite)
+    python tools/gen_docs.py --client-openapi  # rewrite contracts/openapi-client-v1.json (+ .sha256), C15 §10.3
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -161,6 +164,9 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "provider_negative_ttl_seconds": ("Providers", "How long “not found” is cached."),
     "media_dir": ("Artwork", "Directory for cached images (content-addressed). Mount a volume here; it must be writable by the user Atlas runs as "
                   "(uid 10001 in the official image). See [Troubleshooting](troubleshooting.md#artwork-doesnt-show)."),
+    "public_read": ("Limits", "Let anonymous clients read the client API subset (`/site`, search, records, batch, "
+                    "relations, artwork, achievements, resolve, changes) without a token, 60 requests a minute per "
+                    "address. Off by default (CONTRACT-C15 D15.15); editable in Admin → Settings."),
     "self_service_sync_tokens": ("Federation", "Let members create their own read-only tokens with the `sync` scope "
                                  "(Profile → API tokens), to follow this node from their own node or app. Off by "
                                  "default; turning it off stops those tokens' sync access at once. Editable in "
@@ -242,9 +248,9 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/health"): "Liveness: the process is up.",
     ("get", "/ready"): "Readiness: 503 when the database does not answer or migrations are pending; `degraded` (200) when only artwork storage is unwritable.",
     ("get", "/schema"): "Media types and custom fields this node describes (public ones only).",
-    ("get", "/site"): "Name, theme, navigation, role, registration and email policy of this node.",
+    ("get", "/site"): "Name, theme, navigation, role, registration and email policy of this node, and `client_api` (CONTRACT-C15 §9.1): the client API `version` (`1.0`), `min_supported`, `capabilities` (`books`, `pairing`, `etag`, `batch`, `public_read`) and `deprecations`. See [Client API](client-api.md).",
     ("get", "/games"): "Search records by title (`q`, optional `type`, `limit`, `offset`) and/or by first release (`released_from`, `released_to`: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; a record matches when its whole release period is inside the range). `sort`: `relevance`, `title`, `release` or `-release` (year before month before day, unknown last); `relevance` re-ranks exact and prefix matches within each page of the title order, so page with `title` or `release` for a stable order. `q` is required unless a release filter is given (a blank `q` lists recent records, as before). Includes `custom` values.",
-    ("get", "/games/{cid}"): "One record. Follows merge redirects (`redirected_from`). ETag = id-version. Release dates: `first_release` (`{date, precision}`), `release_year`, `releases` (up to five `{date, precision, platform?, region?, edition?, category}`) and the unchanged day-only `release_date`, present only when the first release is known to the day. `relations`: `parents`, `children`, `members_of`, `members` (each `{id, type, title, media_type}`, ordered by type then id, at most 200) with `counts` and `truncated`; `editions` when known. See [Relationships](relations.md).",
+    ("get", "/games/{cid}"): "One record. Follows merge redirects (`redirected_from`). ETag = id-version; a matching `If-None-Match` answers `304` with no body. Release dates: `first_release` (`{date, precision}`), `release_year`, `releases` (up to five `{date, precision, platform?, region?, edition?, category}`) and the unchanged day-only `release_date`, present only when the first release is known to the day. `relations`: `parents`, `children`, `members_of`, `members` (each `{id, type, title, media_type}`, ordered by type then id, at most 200) with `counts` and `truncated`; `editions` when known. See [Relationships](relations.md).",
     ("get", "/games/{cid}/relations"): "The relation graph around a record: `depth` hops (1-4) in both directions, at most `limit` (200) records, deterministic order, `truncated` when more exists; plus the record's `editions`. See [Relationships](relations.md).",
     ("put", "/games/{cid}/relations"): "Replace the record's own outgoing relations (`{relations: [{to, type}]}`, at most 200). Self relations, cycles, a second parent of the same kind and memberships that do not point at a series or collection are refused and nothing changes. Published at `emit_protocol` 1.4, kept local below: the answer says `published: false` with `reason` (`emit_protocol` with `pending`, or `local_node`), and `changed.published` counts relations stored while gated that this call signed.",
     ("get", "/games/{cid}/prices"): "The newest observed price of every offer of a record, one per provider, product, package, edition, platform, region and currency (optional `region`, `currency`, `provider`). Integer minor units with the ISO 4217 `exponent`, exact decimal strings, `sale`, `stale`. Non-redistributable prices only for curator tokens. Not part of the record's view; never in the feed. See [Prices](prices.md).",
@@ -256,7 +262,9 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/games/{cid}/achievements"): "Merged achievement list: name, description, kind, tier, points, icons, global percent, and a stable `key` (`ak1:…`) with `keys` and `key_identity`. Hidden ones are redacted unless `reveal=all` or `reveal=<id or key>,…` is sent with a signed-in user's token or a curator token. No per-user progress. See [Achievements](achievements.md).",
     ("get", "/games/{cid}/artwork"): ("Artwork in its long-standing order (community choice, trust, priority) with `primary`, the first image "
                                        "per kind in it, as before; `best`, the C12 quality pick per kind; `?order=quality` sorts the list (and "
-                                       "`primary`) by the C12 ranking. `media_url` once cached, and `image_url` always."),
+                                       "`primary`) by the C12 ranking. `media_url` once cached, and `image_url` always. "
+                                       "`primary_by_role`: one artwork id per role (`cover`, `background`, `icon`, `logo`) from the C12 ranking, "
+                                       "or null (CONTRACT-C15 §10.1)."),
     ("get", "/artwork/{art_id}/image"): "One image: its cached bytes, or a redirect to the original public address while it is not cached.",
     ("get", "/games/{cid}/explain"): "Which source and rule produced each field (provenance).",
     ("get", "/media/{digest}"): "A cached, verified image. Immutable; `nosniff`.",
@@ -283,6 +291,15 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("post", "/review/{rid}/distinct"): "Resolve a review item as different works.",
     ("post", "/review/{rid}/detach"): "Resolve a review item by splitting one observation off its record.",
     ("get", "/games/{cid}/observations"): "Raw source records behind a record (current and superseded).",
+    ("post", "/games/batch"): "Up to 200 records by id in one call (`{ids}`), in request order: `{requested, status: ok|not_found, game}`, each `game` exactly as `GET /games/{cid}` answers it (redirects followed). See [Client API](client-api.md).",
+    ("get", "/records"): "Alias of `GET /games` (same handler, same answer). `/games` is not deprecated.",
+    ("get", "/records/{cid}"): "Alias of `GET /games/{cid}`, `If-None-Match` included.",
+    ("post", "/records/batch"): "Alias of `POST /games/batch`.",
+    ("get", "/records/{cid}/relations"): "Alias of `GET /games/{cid}/relations`.",
+    ("get", "/records/{cid}/artwork"): "Alias of `GET /games/{cid}/artwork`.",
+    ("get", "/records/{cid}/achievements"): "Alias of `GET /games/{cid}/achievements`.",
+    ("post", "/client/pair"): "Start pairing a device (no token): a user code (`XXXX-XXXX`), `verify_url` (+ `verify_url_complete` and a `qr_svg` of it), a `poll_token`, `expires_in` (600) and `interval` (5). At most 20 open per node; anonymous per-address budget. See [Client API](client-api.md#pairing).",
+    ("post", "/client/pair/poll"): "Poll a pairing (no token): `status` `pending`, `slow_down` (interval +5 s), `approved` (with a personal read `token`, once), `denied` or `expired`.",
     ("get", "/changes"): "Bounded client change page: canonical ids, current versions and merge redirects. `feed=local` pages this node's local change log (every change, provider imports included); the default is the signed feed.",
     ("post", "/observations/{oid}/detach"): "Split one source record off onto its own record.",
     ("get", "/review"): "Open possible-duplicate and id-conflict items with reason, evidence and priority (`order=priority`, `kind`).",
@@ -365,17 +382,43 @@ def reference_settings() -> str:
     return "\n".join(lines)
 
 
-def reference_api() -> str:
+def app_openapi() -> dict[str, Any]:
+    """The whole OpenAPI document of a throwaway app (no network, a temporary SQLite file)."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
         app = create_app(Settings(_env_file=None, database_url=f"sqlite:///{tmp}/docs.db", role="authority",
                                   media_dir=f"{tmp}/media"))
         try:
-            spec = app.openapi()
+            return app.openapi()
         finally:  # release the SQLite file before the temp dir is removed (Windows cannot delete an open file)
             app.state.atlas.maker.kw["bind"].dispose()
             app.state.atlas.http.close()
+
+
+def client_openapi() -> dict[str, Any]:
+    """CONTRACT-C15 §10.3: the operations tagged `client`, as `contracts/openapi-client-v1.json`."""
+    from atlas import client_openapi as subset
+
+    return subset.subset(app_openapi())
+
+
+def client_openapi_text() -> str:
+    return json.dumps(client_openapi(), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def write_client_openapi(target: Path | None = None) -> Path:
+    """Write the client OpenAPI file and its `.sha256` sidecar (LF bytes, like `contracts/vocab-v1.json`)."""
+    target = target or ROOT / "contracts" / "openapi-client-v1.json"
+    data = client_openapi_text().encode("utf-8")
+    target.write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    target.with_name(target.name + ".sha256").write_bytes(f"{digest}  {target.name}\n".encode())
+    return target
+
+
+def reference_api() -> str:
+    spec = app_openapi()
     scope_of: dict[tuple[str, str], str] = {}
     from atlas.api.routes import router as api_router
 
@@ -399,7 +442,7 @@ def reference_api() -> str:
             continue
         for method, op in ops.items():
             by_tag.setdefault((op.get("tags") or ["other"])[0], []).append((method, path, op))
-    order = ["ops", "read", "write", "curate", "providers", "federation", "admin"]
+    order = ["ops", "read", "client", "write", "curate", "providers", "federation", "admin"]
     for tag in sorted(by_tag, key=lambda t: order.index(t) if t in order else 99):
         lines += [f"## {tag}", "", "| Method | Path | Scope | What it does |", "| --- | --- | --- | --- |"]
         for method, path, op in sorted(by_tag[tag], key=lambda x: (x[1], x[0])):
@@ -418,6 +461,9 @@ PAGES = {
 
 
 def main(argv: list[str]) -> int:
+    if "--client-openapi" in argv:
+        print(write_client_openapi().relative_to(ROOT).as_posix())
+        return 0
     out = ROOT / "docs" / "guide"
     out.mkdir(parents=True, exist_ok=True)
     stale = []

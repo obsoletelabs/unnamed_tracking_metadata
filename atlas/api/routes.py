@@ -5,8 +5,8 @@ import time
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -15,6 +15,7 @@ from .. import (
     __version__,
     accounts,
     auth,
+    client_api,
     custom,
     facets,
     feed,
@@ -25,6 +26,7 @@ from .. import (
     media,
     merges,
     money,
+    pairing,
     prices,
     provenance,
     readiness,
@@ -57,12 +59,24 @@ from ..providers import ProviderError, media_policy
 from ..resolve import Resolution, classify, conflict_review
 from ..service import AtlasError
 from ..signing import load_identity, signing_key_at_rest
-from .deps import AppState, get_session, require, state
+from .deps import AppState, count_client, get_session, require, state
 
 router = APIRouter(prefix="/api/v2")
 
 Sess = Annotated[Session, Depends(get_session, scope="function")]
 St = Annotated[AppState, Depends(state)]
+
+# ---- the client API subset (CONTRACT-C15 §9-§10, A24) -------------------------------------------------------------
+# Routes tagged `client` form client-api v1: documented in contracts/openapi-client-v1.json, never narrowed within v1
+# (tests/test_client_api_stability.py), readable anonymously while `public_read` is on, counted per connector.
+CLIENT = client_api.CLIENT_TAG
+ClientRead = Annotated[auth.Principal, Depends(require("read", public_read=True))]
+COUNTED = [Depends(count_client)]
+
+
+def _doc(model: Any) -> dict[int | str, dict[str, Any]]:
+    """`responses=` for a client route: the answer's shape in the OpenAPI file only (it never filters the answer)."""
+    return {200: {"model": model}}
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -204,16 +218,22 @@ def retry_sync_failures(st: St, session: Sess, _: Annotated[auth.Principal, Depe
     return {**result, "open": sync.open_failures(session)}
 
 
-@router.get("/site", tags=["ops"])
+@router.get("/site", tags=["ops", CLIENT], dependencies=COUNTED, responses=_doc(client_api.ClientSite),
+            response_model=None)
 def site(st: St, session: Sess) -> dict[str, Any]:
-    """Public, non-sensitive description of this node: what a client or mirror needs to present it."""
+    """Public, non-sensitive description of this node: what a client or mirror needs to present it.
+
+    `client_api` (CONTRACT-C15 §9.1): the client API version (`1.0`), the oldest one still answered, the node's
+    client capabilities (`books`, `pairing`, `etag`, `batch`, `public_read`) and announced deprecations. A client
+    refuses a node whose major version differs from its own. `contract` is the general `/api/v2` marker and changes
+    independently."""
     s = st.ctx.settings
     return {"name": s.app_name, "tagline": s.tagline, "role": s.role, "kind": s.kind(), "operator": s.node_operator, "node_id": st.ctx.identity.node_id,  # noqa: E501
             "theme": {"default": s.default_theme, "accent": s.accent_color, "accent_light": s.accent_color_light,
                       "logo": f"/media/{s.logo_hash}" if s.logo_hash else None},
             "nav_links": s.nav_links, "media_types": [t.key for t in custom.types(session, enabled_only=True)],
             "registration": s.registration, "email_verification": s.verification_mode(),
-            "contract": 1}
+            "contract": 1, "client_api": client_api.site_block(session, s)}
 
 
 # ---- reading ------------------------------------------------------------------------------------------
@@ -313,9 +333,9 @@ def _resolution_out(r: Resolution, session: Session, st: AppState, include_view:
     return entry
 
 
-@router.post("/resolve", tags=["read"], response_model=ResolveResponse, response_model_exclude_unset=True,
-             summary="Resolve client ids and titles to canonical Atlas ids (C4)")
-def resolve(body: ResolveRequest, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+@router.post("/resolve", tags=["read", CLIENT], response_model=ResolveResponse, response_model_exclude_unset=True,
+             summary="Resolve client ids and titles to canonical Atlas ids (C4)", dependencies=COUNTED)
+def resolve(body: ResolveRequest, st: St, session: Sess, _: ClientRead):
     """Read-only. Identity evidence wins over titles; conflicting identity evidence returns `canonical_id: null`
     with `reason: conflict` (a behaviour change, H2: older Atlas returned the item's own id with `crosswalk`)."""
     if len(body.items) > st.ctx.settings.max_resolve:
@@ -331,8 +351,10 @@ def resolve(body: ResolveRequest, st: St, session: Sess, _: Annotated[auth.Princ
     return {"results": out}
 
 
-@router.get("/games", tags=["read"])
-def list_games(session: Sess, st: St, _: Annotated[auth.Principal, Depends(require("read"))],
+@router.get("/games", tags=["read", CLIENT], dependencies=COUNTED, responses=_doc(client_api.ClientSearch))
+@router.get("/records", tags=["read", CLIENT], dependencies=COUNTED, responses=_doc(client_api.ClientSearch),
+            summary="Search records (alias of GET /games)")
+def list_games(session: Sess, st: St, _: ClientRead,
                q: Annotated[str, Query(max_length=200, description=(
                    "Title search. Required unless a release or author filter is given. A valid ISBN-10 or ISBN-13 "
                    "(hyphens allowed) answers the book that edition belongs to, alone. With `type=book` the words "
@@ -364,17 +386,80 @@ def list_games(session: Sess, st: St, _: Annotated[auth.Principal, Depends(requi
     return {"results": [game_out(r, None, session, st.ctx) for r in rows]}
 
 
-@router.get("/games/{cid}", tags=["read"])
-def get_game(cid: str, response: Response, session: Sess, st: St,
-             _: Annotated[auth.Principal, Depends(require("read"))]):
+class BatchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
+        min_length=1, max_length=200, description="Atlas ids (merged ids are followed). Duplicates are answered twice.")
+
+
+def record_out(session: Session, st: AppState, row: Canonical, redirected: str | None) -> dict[str, Any]:
+    """`GET /games/{id}` and every `game` of `POST /games/batch`: one shape."""
+    return {**game_out(row, redirected, session, st.ctx), "relations": relations.of(session, row.id),
+            "unmerged": merges.unmerged_recently(session, row.id)}
+
+
+def etag_of(row: Canonical) -> str:
+    return f'"{row.id}-{row.version}"'
+
+
+def etag_matches(header: str | None, etag: str) -> bool:
+    """RFC 9110 §13.1.2 weak comparison for `If-None-Match`: `*`, or any listed tag equal to ours once `W/` is
+    dropped."""
+    if not header:
+        return False
+    for item in header.split(","):
+        tag = item.strip()
+        if tag == "*" or (tag[2:] if tag.startswith("W/") else tag) == etag:
+            return True
+    return False
+
+
+NOT_MODIFIED = {304: {"description": "`If-None-Match` matched the current ETag: no body."}}
+
+
+@router.post("/games/batch", tags=["read", CLIENT], dependencies=COUNTED, responses=_doc(client_api.ClientBatch),
+             summary="Read up to 200 records at once")
+@router.post("/records/batch", tags=["read", CLIENT], dependencies=COUNTED, responses=_doc(client_api.ClientBatch),
+             summary="Read up to 200 records at once (alias of POST /games/batch)")
+def batch_games(body: BatchBody, session: Sess, st: St, _: ClientRead):
+    """Up to 200 records in one call (CONTRACT-C15 §10.1), in request order: each item is `{requested, status,
+    game}`, `status` `ok` with the record exactly as `GET /games/{id}` answers it (merge redirects followed,
+    `redirected_from` set), or `not_found` with `game: null`. Read-only; one item never fails the batch."""
+    out = []
+    for requested in body.ids:
+        try:
+            row, redirected = service.get_canonical(session, requested)
+        except AtlasError as exc:
+            if exc.code != "not_found":
+                raise
+            out.append({"requested": requested, "status": "not_found", "game": None})
+            continue
+        out.append({"requested": requested, "status": "ok", "game": record_out(session, st, row, redirected)})
+    return {"results": out}
+
+
+@router.get("/games/{cid}", tags=["read", CLIENT], dependencies=COUNTED,
+            responses={**_doc(client_api.ClientRecord), **NOT_MODIFIED})
+@router.get("/records/{cid}", tags=["read", CLIENT], dependencies=COUNTED,
+            responses={**_doc(client_api.ClientRecord), **NOT_MODIFIED}, summary="One record (alias of GET /games/{cid})")
+def get_game(cid: str, response: Response, session: Sess, st: St, _: ClientRead,
+             if_none_match: Annotated[str | None, Header(max_length=2000, description=(
+                 "An ETag from an earlier answer: `304 Not Modified` (no body) while the record is unchanged."))] = None):
     """One record. `relations` (C6.3) lists its active relations: `parents` (this record is a DLC, port,
     remake... of them), `children` (theirs to this one), `members_of` (the series and collections it is in) and
     `members` (when this record is a series or collection). Each list is ordered by type, then id, and holds
-    at most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions."""
+    at most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions.
+
+    The `ETag` is `"<id>-<version>"`. With a matching `If-None-Match` (weak comparison, `*` too) the answer is `304`
+    with no body (CONTRACT-C15 §10.1). The version moves with every change of this record's own data (fields,
+    custom values, artwork, achievements, its relations); a title change of a *related* record moves that record's
+    version, not this one, so a client showing related titles refreshes them from those records."""
     row, redirected = service.get_canonical(session, cid)
-    response.headers["ETag"] = f'"{row.id}-{row.version}"'
-    return {**game_out(row, redirected, session, st.ctx), "relations": relations.of(session, row.id),
-            "unmerged": merges.unmerged_recently(session, row.id)}
+    etag = etag_of(row)
+    if etag_matches(if_none_match, etag):
+        return Response(status_code=304, headers={"ETag": etag})
+    response.headers["ETag"] = etag
+    return record_out(session, st, row, redirected)
 
 
 class RelationItem(BaseModel):
@@ -393,8 +478,11 @@ class RelationsBody(BaseModel):
         "The record's own outgoing relations after the call: missing ones are ended, new ones added."))
 
 
-@router.get("/games/{cid}/relations", tags=["read"])
-def get_relations(cid: str, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))],
+@router.get("/games/{cid}/relations", tags=["read", CLIENT], dependencies=COUNTED,
+            responses=_doc(client_api.ClientRelationGraph))
+@router.get("/records/{cid}/relations", tags=["read", CLIENT], dependencies=COUNTED,
+            responses=_doc(client_api.ClientRelationGraph), summary="Relation graph (alias of /games/{cid}/relations)")
+def get_relations(cid: str, session: Sess, _: ClientRead,
                   depth: Annotated[int, Query(ge=1, le=relations.MAX_EXPAND_DEPTH, description=(
                       "Hops to follow in both directions."))] = 1,
                   limit: Annotated[int, Query(ge=1, le=relations.MAX_EXPAND_NODES, description=(
@@ -722,7 +810,8 @@ def _client_changed_ids(kind: str, body: dict[str, Any]) -> list[str]:
 
 @router.get(
     "/changes",
-    tags=["games"],
+    tags=["games", CLIENT],
+    dependencies=COUNTED,
     response_model=ChangesPage,
     summary="List canonical records changed since a client cursor",
     responses={
@@ -758,7 +847,7 @@ def _client_changed_ids(kind: str, body: dict[str, Any]) -> list[str]:
 def client_changes(
     st: St,
     session: Sess,
-    _: Annotated[auth.Principal, Depends(require("read"))],
+    _: ClientRead,
     since: Annotated[int, Query(ge=0, description="Last `next_cursor` stored by the client.")] = 0,
     limit: Annotated[int, Query(ge=1, le=500, description="Maximum feed events in this page.")] = 100,
     node_id: Annotated[
@@ -1067,8 +1156,11 @@ ArtOrder = Annotated[Literal["legacy", "quality"], Query(description=(
     "and language, priority, measured size); `results` and `primary` both follow it."))]
 
 
-@router.get("/games/{cid}/artwork", tags=["read"])
-def get_artwork(cid: str, st: St, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
+@router.get("/games/{cid}/artwork", tags=["read", CLIENT], dependencies=COUNTED,
+            responses=_doc(client_api.ClientArtworkList))
+@router.get("/records/{cid}/artwork", tags=["read", CLIENT], dependencies=COUNTED,
+            responses=_doc(client_api.ClientArtworkList), summary="Artwork (alias of /games/{cid}/artwork)")
+def get_artwork(cid: str, st: St, session: Sess, principal: ClientRead,
                 region: ArtRegion = None, lang: ArtLang = None, include_duplicates: bool = False,
                 order: ArtOrder = "legacy"):
     """Every image of a record. By default `results` keeps its pre-C12 order (community choice, trust, priority,
@@ -1076,7 +1168,11 @@ def get_artwork(cid: str, st: St, session: Sess, principal: Annotated[auth.Princ
     kind (curator, community choice, role fit, class, trust, region and language match, priority, measured size);
     `order=quality` sorts `results` (and so `primary`) by that ranking too. `region` and `lang` only steer the
     C12 ranking. Exact duplicates are left out unless `include_duplicates=1`. Curator tokens also see
-    `near_duplicate_of` (a perceptual match, reported and never hidden)."""
+    `near_duplicate_of` (a perceptual match, reported and never hidden).
+
+    `primary_by_role` (CONTRACT-C15 §10.1) names one artwork id per display role, from the C12 ranking whatever
+    `order` says: `cover` (`key_art` then `poster` for games, `poster` first for every other type, so a book's
+    cover), `background` (`hero`, `banner`, `screenshot`), `icon` and `logo`; null when the record has none."""
     from ..dates import REGION_RE
 
     if region is not None and not REGION_RE.fullmatch(region):
@@ -1101,7 +1197,7 @@ def get_artwork(cid: str, st: St, session: Sess, principal: Annotated[auth.Princ
         if it["duplicate_of"] is None:
             primary.setdefault(it["kind"], it)
     return {"id": row.id, "redirected_from": redirected, "order": order, "primary": primary, "best": best,
-            "results": items}
+            "primary_by_role": client_api.primary_by_role(row.media_type, best), "results": items}
 
 
 @router.put("/games/{cid}/artwork", tags=["curate"])
@@ -1146,8 +1242,11 @@ OrderQuery = Annotated[str | None, Query(max_length=10, description=(
     "`rarity` (default), `source` (the provider's list order) or `name`."))]
 
 
-@router.get("/games/{cid}/achievements", tags=["read"])
-def get_achievements(cid: str, st: St, session: Sess, principal: Annotated[auth.Principal, Depends(require("read"))],
+@router.get("/games/{cid}/achievements", tags=["read", CLIENT], dependencies=COUNTED,
+            responses=_doc(client_api.ClientAchievements))
+@router.get("/records/{cid}/achievements", tags=["read", CLIENT], dependencies=COUNTED,
+            responses=_doc(client_api.ClientAchievements), summary="Achievements (alias of /games/{cid}/achievements)")
+def get_achievements(cid: str, st: St, session: Sess, principal: ClientRead,
                      response: Response,
                      reveal: Annotated[str | None, Query(max_length=2000)] = None,
                      limit: Annotated[int | None, Query(ge=1, le=ACHIEVEMENT_PAGE_MAX)] = None,
@@ -1281,8 +1380,10 @@ def price_status(session: Sess, _: Annotated[auth.Principal, Depends(require("ad
     return prices.status(session)
 
 
-@router.get("/artwork/{art_id}/image", tags=["read"])
-def get_artwork_image(art_id: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+@router.get("/artwork/{art_id}/image", tags=["read", CLIENT], dependencies=COUNTED,
+            responses={200: {"description": "The image bytes.", "content": {"image/*": {}}},
+                       307: {"description": "To the provider's host. Follow it once, without Authorization."}})
+def get_artwork_image(art_id: str, st: St, session: Sess, _: ClientRead):
     """The image of one artwork row (C12 §12.5.5, §12.5.8, §12.7.2, H50).
 
     * the cached bytes of a `proxy` source (`public, max-age=300`, digest as ETag);
@@ -1341,8 +1442,9 @@ def media_response(st: AppState, digest: str, *, etag: bool = False):
     return FileResponse(path, media_type=ctype, headers=headers)
 
 
-@router.get("/media/{digest}", tags=["read"])
-def get_media(digest: str, st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+@router.get("/media/{digest}", tags=["read", CLIENT], dependencies=COUNTED,
+            responses={200: {"description": "The image bytes (immutable).", "content": {"image/*": {}}}})
+def get_media(digest: str, st: St, session: Sess, _: ClientRead):
     return served_media(session, st, digest, "no such image")
 
 
@@ -1521,6 +1623,95 @@ def sync_changes(st: St, session: Sess, who: Annotated[auth.Principal, Depends(r
     return {"head": head, "entries": [
         {"seq": r.seq, "kind": r.kind, "body": r.body, "body_hash": r.body_hash, "signature": r.signature,
          "key_id": r.key_id, "node_id": origin, "created_at": r.created_at.isoformat()} for r in rows]}
+
+
+# ---- client pairing (CONTRACT-C15 §10.1 item 1, D15.15, A24) ----------------------------------------------------
+
+class PairBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=pairing.LABEL_MAX, description=(
+        "What the person will see on the approval page and on their token list, e.g. `Jellyfin on nas`. "
+        "Printable, at most 64 characters."))
+
+    @field_validator("label")
+    @classmethod
+    def _printable(cls, value: str) -> str:
+        return pairing.clean_label(value)
+
+
+class PairStarted(BaseModel):
+    code: str = Field(description="The user code to show (`XXXX-XXXX`, Crockford base32, 40 bits). Single use.")
+    verify_url: str = Field(description="Where the person approves: `<public_url>/pair`, signed in.")
+    verify_url_complete: str = Field(description="The same address with the code filled in (what the QR encodes).")
+    qr_svg: str = Field(description="An inline SVG QR code of `verify_url_complete`, drawn dark on white. Show the "
+                                    "code next to it.")
+    poll_token: str = Field(description="Secret for `POST /client/pair/poll`. Keep it; never show it.")
+    expires_in: int = Field(description="Seconds until the code and the poll token expire (at most 600).")
+    interval: int = Field(description="Seconds to wait between polls (5).")
+
+
+class PollBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    poll_token: str = Field(min_length=1, max_length=200)
+
+
+class PollAnswer(BaseModel):
+    status: Literal["pending", "slow_down", "approved", "denied", "expired"] = Field(description=(
+        "`pending`: ask again after `interval`. `slow_down`: you polled too fast; `interval` grew by 5 s. "
+        "`approved`: `token` is the new read token (shown once). `denied`: the person refused (or their token "
+        "limit was reached, `reason: token_limit`). `expired`: unknown, used or expired; start again."))
+    interval: int | None = None
+    expires_in: int | None = None
+    token: str | None = Field(default=None, description="`approved` only: a personal token with scope `read`.")
+    token_id: str | None = None
+    name: str | None = None
+    scopes: list[str] | None = None
+    reason: str | None = None
+
+
+def _anonymous_budget(request: Request, st: AppState) -> str:
+    """The per-IP budget of anonymous API calls (60/min, `deps.require`): pairing shares it."""
+    from .. import ratelimit
+
+    ip = request.client.host if request.client else "?"
+    ok, retry = ratelimit.hit(st.maker, f"ip:{ip}"[:128], 60)
+    if not ok:
+        raise HTTPException(429, "rate limit exceeded", headers={"Retry-After": str(retry)})
+    return ip
+
+
+@router.post("/client/pair", tags=["client"], dependencies=COUNTED, response_model=PairStarted,
+             summary="Start pairing a client (device code)")
+def client_pair(body: PairBody, request: Request, st: St, session: Sess):
+    """Public. Start pairing a tool with a person's account (CONTRACT-C15 §10.1): show `code` and `qr_svg` to the
+    person, who approves at `verify_url` while signed in; then poll `POST /client/pair/poll` every `interval`
+    seconds. The token minted on approval is a **personal read token** of the approving account (listed and
+    revocable on their profile, counted in their limit of 10). At most 20 pairings are open per node (429 beyond);
+    calls count on the anonymous per-address budget (60 a minute)."""
+    from .. import qr
+
+    ip = _anonymous_budget(request, st)
+    service.write_lock(session)
+    try:
+        started = pairing.start(session, body.label, request.headers.get("user-agent", ""), ip)
+    except pairing.PairingError as exc:
+        raise HTTPException(429, str(exc), headers={"Retry-After": "60"}) from None
+    base = st.ctx.settings.public_url.rstrip("/")
+    complete = f"{base}/pair?code={started['code']}"
+    return {"code": started["code"], "verify_url": f"{base}/pair", "verify_url_complete": complete,
+            "qr_svg": qr.svg(complete, label="Pairing code QR"), "poll_token": started["poll_token"],
+            "expires_in": started["expires_in"], "interval": started["interval"]}
+
+
+@router.post("/client/pair/poll", tags=["client"], dependencies=COUNTED, response_model=PollAnswer,
+             response_model_exclude_none=True, summary="Poll a pairing")
+def client_pair_poll(body: PollBody, request: Request, st: St, session: Sess):
+    """Public. The state of a pairing started with `POST /client/pair` (always 200; read `status`). Polling faster
+    than `interval` answers `slow_down` and widens it by 5 seconds. `approved` carries the new token once; the
+    pairing is then gone (`expired`)."""
+    _anonymous_budget(request, st)
+    service.write_lock(session)
+    return pairing.poll(session, body.poll_token)
 
 
 # ---- tokens -------------------------------------------------------------------------------------------

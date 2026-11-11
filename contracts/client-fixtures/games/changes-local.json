@@ -1,0 +1,89 @@
+{
+  "epoch": "fedcba9876543210",
+  "feed": "local",
+  "has_more": false,
+  "head": 15,
+  "next_cursor": 15,
+  "node_id": "0123456789abcdef",
+  "reset": false,
+  "results": [
+    {
+      "causes": [
+        "local",
+        "merge",
+        "provider"
+      ],
+      "id": "atlas:01kdvdna5a000000000000000h",
+      "merged_into": null,
+      "version": 5
+    },
+    {
+      "causes": [
+        "provider"
+      ],
+      "id": "atlas:01kdvdna68000000000000000m",
+      "merged_into": null,
+      "version": 2
+    },
+    {
+      "causes": [
+        "provider"
+      ],
+      "id": "atlas:01kdvdna76000000000000000q",
+      "merged_into": null,
+      "version": 2
+    },
+    {
+      "causes": [
+        "merge",
+        "provider"
+      ],
+      "id": "atlas:01kdvdna84000000000000000t",
+      "merged_into": "atlas:01kdvdna5a000000000000000h",
+      "version": 3
+    },
+    {
+      "causes": [
+        "local",
+        "provider"
+      ],
+      "id": "atlas:01kdvdna9c000000000000000y",
+      "merged_into": null,
+      "version": 4
+    },
+    {
+      "causes": [
+        "provider"
+      ],
+      "id": "atlas:01kdvdnaaa0000000000000011",
+      "merged_into": null,
+      "version": 2
+    },
+    {
+      "causes": [
+        "local",
+        "provider"
+      ],
+      "id": "atlas:01kdvdnab80000000000000014",
+      "merged_into": null,
+      "version": 3
+    },
+    {
+      "causes": [
+        "local",
+        "provider"
+      ],
+      "id": "atlas:01kdvdnac60000000000000017",
+      "merged_into": null,
+      "version": 4
+    },
+    {
+      "causes": [
+        "provider"
+      ],
+      "id": "atlas:01kdvdnad4000000000000001a",
+      "merged_into": null,
+      "version": 2
+    }
+  ]
+}

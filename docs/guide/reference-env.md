@@ -97,6 +97,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_METRICS_CACHE_SECONDS` | `300` | How long the expensive `/metrics` collectors (catalogue aggregates, the media directory walk) are cached in each process; 0 recomputes them on every scrape. |
 | `ATLAS_ACHIEVEMENT_PERCENT_MAX_AGE_DAYS` | `30` | Days after which an achievement's rarity is shown as stale and a fresher value from another source wins (C12 §12.1.6). |
 | `ATLAS_ACHIEVEMENT_RETIRED_RETENTION_DAYS` | `180` | Days a retired achievement row (one its source no longer lists) is kept, with its id and key, before it is deleted (C12 §12.1.3, H37). |
+| `ATLAS_PUBLIC_READ` | `false` | Let anonymous clients read the client API subset (`/site`, search, records, batch, relations, artwork, achievements, resolve, changes) without a token, 60 requests a minute per address. Off by default (CONTRACT-C15 D15.15); editable in Admin → Settings. **live** |
 
 ## Providers
 

@@ -526,6 +526,28 @@ def cmd_doctor(args) -> int:
     return 3 if found["count"] and not args.retype else 0
 
 
+def cmd_seed(args) -> int:
+    """`atlas seed --fixture connectors-v1 [--token]` (CONTRACT-C15 §12): seed the synthetic client catalogue
+    (idempotent) and print `{fixture, created, ids}` as JSON; `--token` also mints a `read` token for it."""
+    from . import client_seed
+
+    settings, maker = _maker()
+    ctx = _ctx(settings, maker)
+    with maker() as session:
+        try:
+            ids, created = client_seed.seed(session, ctx, args.fixture)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        out = {"fixture": args.fixture, "created": created, "ids": ids}
+        if args.token:
+            row, secret = auth.create_token(session, f"{args.fixture}-read", ["read"])
+            out.update(token=secret, token_id=row.id)
+        session.commit()
+    print(json.dumps(out, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="atlas")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -635,6 +657,10 @@ def main(argv: list[str] | None = None) -> int:
     dmt.add_argument("--retype", metavar="NODE_ID", help="give one peer feed's misfiled records their named type")
     dmt.add_argument("--json", action="store_true", help="machine-readable output")
     dmt.set_defaults(fn=cmd_doctor)
+    sd = sub.add_parser("seed", help="seed a synthetic test catalogue (CONTRACT-C15 §12: connectors-v1)")
+    sd.add_argument("--fixture", required=True, help="the catalogue to seed: connectors-v1")
+    sd.add_argument("--token", action="store_true", help="also mint a read token and print it")
+    sd.set_defaults(fn=cmd_seed)
     i = sub.add_parser("import-legacy")
     i.add_argument("path", help="path to the demo-1 SQLite database")
     i.set_defaults(fn=cmd_import_legacy)

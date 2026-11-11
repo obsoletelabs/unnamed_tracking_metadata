@@ -62,6 +62,7 @@ from .web.group_link import router as group_link_router
 from .web.importing import router as import_router
 from .web.mfa import router as mfa_router
 from .web.oidc import router as oidc_router
+from .web.pairing import router as pair_router
 from .web.profile_pages import router as profile_router
 from .web.routes import router as web_router
 from .web.routes import web_headers
@@ -434,6 +435,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(federation_router)
     app.include_router(import_router)
     app.include_router(book_router)
+    app.include_router(pair_router)
     app.include_router(backups_router)
     app.include_router(oidc_router)
     app.include_router(group_router)

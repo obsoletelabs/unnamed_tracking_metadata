@@ -25,8 +25,8 @@
 <td><a class="small" href="/proposal/{{ r.id }}">Open</a> {% if r.status == 'pending' %}<form class="inline" method="post" action="/proposal/{{ r.id }}/withdraw">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Withdraw</button></form>{% endif %}</td></tr>{% endfor %}
 </tbody></table>{% else %}<p class="muted">Nothing yet. Open a game and choose “Suggest an edit”.</p>{% endif %}
 
-<h2>API tokens</h2>
-<p class="muted small">Personal tokens let your own tools read Atlas. They are read-only; suggest changes on the site so they can be reviewed.</p>
+<h2 id="tokens">API tokens</h2>
+<p class="muted small">Personal tokens let your own tools read Atlas. They are read-only; suggest changes on the site so they can be reviewed. A device that shows a pairing code (the Jellyfin or Playnite plugin) is connected under <a href="/pair">Connect a device</a>; its token appears here.</p>
 <p class="muted small" data-sync-help>To follow this node from your own Atlas node or the Tracking App, create a token with <strong>Read and follow changes</strong>{% if sync_refusal %} (not available now: {{ sync_refusal }}){% endif %}. On your node, open Admin → Peers → Add a peer, and paste this node's address <code>{{ public_url }}</code> and the token.</p>
 {% if token_error %}<div class="card error" role="alert">{{ token_error }}</div>{% endif %}
 {% if new_token %}<div class="flash"><strong>{{ new_token }}</strong><br><span class="small">Copy it now; it will not be shown again.{% if new_token_sync %} Use it with the address <code>{{ public_url }}</code> on the node or app that follows this one.{% endif %}</span></div>{% endif %}

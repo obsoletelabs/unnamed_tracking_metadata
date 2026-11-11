@@ -207,6 +207,9 @@ class Settings(BaseSettings):
     # can follow this node from their own node or app. Read-only either way; turning it off stops those tokens'
     # sync access at once.
     self_service_sync_tokens: bool = False
+    # CONTRACT-C15 D15.15 (A24): anonymous clients may read the client API subset (`/site.client_api` lists
+    # `public_read`). Off by default; meant for public authorities. Anonymous reads count on the per-IP budget.
+    public_read: bool = False
     comments_enabled: bool = True
     lists_enabled: bool = True
     comment_daily_limit: int = Field(default=30, ge=1)

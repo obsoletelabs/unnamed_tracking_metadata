@@ -1,0 +1,39 @@
+{
+  "client_api": {
+    "capabilities": [
+      "books",
+      "pairing",
+      "etag",
+      "batch"
+    ],
+    "deprecations": [],
+    "min_supported": "1.0",
+    "version": "1.0"
+  },
+  "contract": 1,
+  "email_verification": "optional",
+  "kind": "local",
+  "media_types": [
+    "game",
+    "anime",
+    "movie",
+    "tv_show",
+    "series",
+    "collection",
+    "book",
+    "comic"
+  ],
+  "name": "Atlas",
+  "nav_links": [],
+  "node_id": "0123456789abcdef",
+  "operator": "",
+  "registration": "open",
+  "role": "local",
+  "tagline": "Media metadata, merged and sourced",
+  "theme": {
+    "accent": "#6aa8ff",
+    "accent_light": "#1a5fc2",
+    "default": "auto",
+    "logo": null
+  }
+}
