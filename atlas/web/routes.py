@@ -779,7 +779,29 @@ def _edit_ctx(p: Page, mtype: str, **extra: Any) -> dict[str, Any]:
     return {"lbl": labels_for(p, mtype), "mtype": mtype,
             "mtype_label": media_type.label if media_type else mtype.replace("_", " ").title(),
             "auto": proposals.can_auto_apply(p.st.ctx, p.me), "dates_gated": service.dates_gated(p.st.ctx),
-            **extra}
+            "upstream": _upstream(p), **extra}
+
+
+def _upstream(p: Page) -> Any:
+    """C14 §7.2 "Where this edit goes": the main Atlas this node is linked to, for a local admin."""
+    if not p.is_local_admin or p.st.ctx.settings.role == "authority":
+        return None
+    from .. import link_client
+
+    return link_client.linked(p.session)
+
+
+def _propose_upstream(p: Page, f: dict[str, str], kind: str, cid: str | None, payload: dict[str, Any],
+                      note: str) -> None:
+    if f.get("upstream") != "on" or (row := _upstream(p)) is None:
+        return
+    from .. import link_client
+
+    try:
+        link_client.propose(p.session, p.st.ctx.settings, p.st.ctx.identity, row, kind=kind, local_cid=cid,
+                            payload=payload, note=note, user_id=p.me.id)
+    except link_client.LinkClientError as exc:
+        raise AtlasError(str(exc)) from exc
 
 
 @router.get("/game/{cid}/edit", response_class=HTMLResponse)
@@ -818,6 +840,7 @@ def edit_submit(cid: str, p: Annotated[Page, Depends(user_form)], f: Annotated[d
         if not payload:
             raise AtlasError("You did not change anything.")
         pr = proposals.create(p.session, p.st.ctx, p.me, "edit", g.id, payload, note)
+        _propose_upstream(p, f, "edit", g.id, payload, note)
     except AtlasError as exc:
         p.session.rollback()
         shown = {**_form_view(g.view), **{k: v for k, v in new.items() if v}}
@@ -1181,6 +1204,8 @@ def sync_token_refusal(p: Page) -> str | None:
     """Why this member may not create a personal sync token now (#84), or None. Read-only either way."""
     from .. import mail
 
+    if auth.holds_feed_access(p.session, p.me.id):
+        return None  # CONTRACT-C14 §7.6 (H68): an administrator granted this account "Feed allowed"
     if not p.st.ctx.settings.self_service_sync_tokens:
         return ("this node does not let members create sync tokens. An administrator can turn on \"Members may "
                 "create their own sync tokens\" (Admin → Settings) or create one for you under Admin → Tokens")
@@ -1201,8 +1226,10 @@ def token_create(p: Annotated[Page, Depends(user_form)], name: Annotated[str, Fo
         Token.user_id == p.me.id, Token.revoked_at.is_(None)))
     if active >= 10:
         raise HTTPException(409, "You already have 10 active tokens; revoke one first.")
-    row, secret = auth.create_token(p.session, name.strip() or "token", scopes)
+    days = auth.FEED_TOKEN_DAYS if "sync" in scopes else None  # feed tokens expire (C14 §7.6)
+    row, secret = auth.create_token(p.session, name.strip() or "token", scopes, days)
     row.user_id = p.me.id
+    row.limits = {} if "sync" in scopes else None
     accounts.audit(p.session, p.me.id, "token_create", row.id, {"scopes": scopes})
     return render(p, "me.html", **_me_ctx(p, new_token=secret, new_token_sync=scope == "sync"))
 
@@ -1213,6 +1240,7 @@ def token_revoke(tid: str, p: Annotated[Page, Depends(user_form)]):
     if row is None or row.user_id != p.me.id:
         raise HTTPException(404, "No such token.")
     row.revoked_at = row.revoked_at or datetime.now(UTC)
+    accounts.audit(p.session, p.me.id, "token_revoke", row.id)
     return go("/me", "revoked")
 
 
@@ -1258,7 +1286,17 @@ def _proposal_card(p: Page, r: Proposal) -> dict[str, Any]:
         "id": r.id, "kind": r.kind, "cid": r.canonical_id, "title": title_of(p, r.canonical_id) if r.canonical_id
         else (r.payload.get("title") or "(new game)"), "user": u.username if u else "?", "rep": u.reputation if u else 0,
         "when": r.created_at, "note": r.note, "own": r.proposer_id == p.me.id,
-        "rows": [], "entries": []}
+        "rows": [], "entries": [], "via": None, "stale": bool(r.stale_base), "flag": r.link_flag}
+    if r.via_link_id:  # C14 §7.4 step 4: "via node NAS Atlas (5f0c…)"; the account only with the H65 mapping on
+        from .. import link as links
+        from ..models import NodeLink
+
+        nl = p.session.get(NodeLink, r.via_link_id)
+        card["via"] = {"label": links.label(nl, u), "node": nl.name if nl else "", "trust": nl.trust if nl else "",
+                       "link_id": r.via_link_id}
+        if nl is not None and not nl.show_name:
+            card["user"] = links.label(nl, u)
+            card["rep"] = None
     if r.kind in ("edit", "new_game"):
         row = p.session.get(Canonical, r.canonical_id) if r.canonical_id else None
         # C14 §5.7: the "current value" column is the record as this viewer sees it (a proposer without
@@ -1293,8 +1331,13 @@ def _proposal_card(p: Page, r: Proposal) -> dict[str, Any]:
 @router.get("/review", response_class=HTMLResponse)
 def review_queue(p: Annotated[Page, Depends(review_page)]):
     p.session.flush()
-    rows = p.session.scalars(select(Proposal).where(Proposal.status == "pending")
-                             .order_by(Proposal.created_at).limit(50)).all()
+    q = select(Proposal).where(Proposal.status == "pending")
+    via = p.request.query_params.get("via_link", "")
+    if via == "any":  # C14 §7.5: the review queue can show link contributions alone
+        q = q.where(Proposal.via_link_id.is_not(None))
+    elif via:
+        q = q.where(Proposal.via_link_id == via[:26])
+    rows = p.session.scalars(q.order_by(Proposal.created_at).limit(50)).all()
     dups = p.session.scalar(select(func.count()).select_from(ReviewItem).where(ReviewItem.status == "open")) or 0
     return render(p, "review.html", items=[_proposal_card(p, r) for r in rows], dup_count=dups,
                   pending_badge=scope.badge("local"))
@@ -1302,11 +1345,12 @@ def review_queue(p: Annotated[Page, Depends(review_page)]):
 
 @router.post("/review/{pid}")
 def review_decide(pid: str, p: Annotated[Page, Depends(review_form)], decision: Annotated[str, Form()],
-                  note: Annotated[str, Form(max_length=500)] = ""):
+                  note: Annotated[str, Form(max_length=500)] = "", checked: Annotated[str, Form()] = ""):
     if decision not in ("approve", "reject"):
         raise HTTPException(400, "Unknown decision.")
     try:
-        proposals.review(p.session, p.st.ctx, p.me, pid, approve=decision == "approve", note=note)
+        proposals.review(p.session, p.st.ctx, p.me, pid, approve=decision == "approve", note=note,
+                         checked=checked == "on")
     except AtlasError as exc:
         raise HTTPException({"not_found": 404, "forbidden": 403}.get(
             exc.code, 409 if exc.code in ("conflict", "emit_protocol") else 400), str(exc)) from exc
@@ -1594,6 +1638,7 @@ def _users_page(p: Page, *, q: str = "", role: str = "", status: str = "", error
                   roles=USER_ROLES, statuses=USER_STATUSES, counts=counts, suspended=suspended, error=error,
                   group_grants=_group_grants_by_user(p), back=_users_back(q, role, status),
                   detail_granted=scope.granted(s, [u.id for u in users]),
+                  feed_granted=scope.granted(s, [u.id for u in users], scope.FEED),
                   detail_by_role={u.id for u in users if u.role in ("admin", "curator")
                                   or getattr(p.st.ctx.settings, "registration", "open") == "closed"})
 
@@ -1636,7 +1681,8 @@ def admin_user(uid: str, p: Annotated[Page, Depends(admin_form)], role: Annotate
                status: Annotated[str, Form()], fq: Annotated[str, Form(max_length=80)] = "",
                frole: Annotated[str, Form(max_length=16)] = "", fstatus: Annotated[str, Form(max_length=16)] = "",
                oidc_field: Annotated[str, Form(alias="has_oidc")] = "", oidc: Annotated[str, Form()] = "",
-               detail_field: Annotated[str, Form(alias="has_detail")] = "", detail: Annotated[str, Form()] = ""):
+               detail_field: Annotated[str, Form(alias="has_detail")] = "", detail: Annotated[str, Form()] = "",
+               feed_field: Annotated[str, Form(alias="has_feed")] = "", feed: Annotated[str, Form()] = ""):
     """One save per row (#66): role, status and, when the row's form carries them, external sign-in and the
     `scope.detail` right (C14 §5.7: sees data received from your nodes, with badges)."""
     target = p.session.get(User, uid)
@@ -1661,6 +1707,15 @@ def admin_user(uid: str, p: Annotated[Page, Depends(admin_form)], role: Annotate
                 accounts.audit(p.session, p.me.id, "permission_grant", target.id, {"permission": scope.DETAIL})
             elif detail != "on" and scope.revoke(p.session, target, scope.DETAIL):
                 accounts.audit(p.session, p.me.id, "permission_revoke", target.id, {"permission": scope.DETAIL})
+        if feed_field and (feed == "on") != bool(scope.granted(p.session, [target.id], scope.FEED)):
+            # C14 §7.6 (H68): "Feed allowed" lets the holder create their own read-only feed tokens. A standing
+            # per-account right like scope.detail, so only a local administrator changes it.
+            if not p.is_local_admin:
+                raise AtlasError("only a local administrator can change who may create feed tokens", "forbidden")
+            if feed == "on" and scope.grant(p.session, target, scope.FEED, p.me.id):
+                accounts.audit(p.session, p.me.id, "user_permission_grant", target.id, {"permission": scope.FEED})
+            elif feed != "on" and scope.revoke(p.session, target, scope.FEED):
+                accounts.audit(p.session, p.me.id, "user_permission_revoke", target.id, {"permission": scope.FEED})
     except AtlasError as exc:
         # Show the reason on the list itself, with the controls still there to try again. Nothing was changed:
         # the request's session is rolled back when the response is an error status.

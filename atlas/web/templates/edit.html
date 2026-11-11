@@ -14,6 +14,10 @@
   {% endif %}
   <label for="note">Source / note for reviewers <span class="hint">link to the store page or announcement</span></label>
   <textarea id="note" name="note" maxlength="2000">{{ note|default('') }}</textarea>
+  {% if upstream and not new %}<fieldset class="upstream"><legend>Where this edit goes</legend>
+    <label><input type="checkbox" name="upstream"> Also propose it to <strong>{{ upstream.main_name or upstream.issuer_url }}</strong></label>
+    <p class="small muted">It is applied here as usual and queued for the main Atlas, where its reviewers decide. Your linked node signs it; your account there is shown only as {% if upstream.display_name %}{{ upstream.display_name }}{% else %}a linked node{% endif %}.</p>
+  </fieldset>{% endif %}
   <p class="small muted">{% if auto %}Your reputation lets this apply immediately; reviewers can still revert it.{% else %}A reviewer will check this before it is published.{% endif %}</p>
   <button type="submit">{{ 'Submit' if new else 'Propose changes' }}</button> <a class="btn secondary" href="{{ cancel }}">Cancel</a>
 </form>

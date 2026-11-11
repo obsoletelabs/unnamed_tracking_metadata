@@ -566,6 +566,9 @@ class Token(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     user_id: Mapped[str | None] = mapped_column(ForeignKey("app_user.id"), nullable=True, index=True)
+    # CONTRACT-C14 §7.6 (H68, migration 0040): room to narrow a token later (per feed, media type, rate) without a
+    # schema change. Empty for every token today.
+    limits: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
 class RateCounter(Base):
@@ -819,6 +822,13 @@ class Proposal(Base):
     decision_note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # CONTRACT-C14 §6.6/§7.4 (migration 0040): a proposal that arrived as a node-signed contribution through a link.
+    via_link_id: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
+    contribution_id: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
+    stale_base: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # `link_revoked` / `link_compromised` (§6.7, Review #1 C14-10): never auto-applied; a compromised one needs the
+    # reviewer's "I checked this change".
+    link_flag: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
 
 class ReputationEvent(Base):
@@ -1093,6 +1103,10 @@ class OidcAccess(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"))
     scope: Mapped[str] = mapped_column(String(100))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    # CONTRACT-C14 §6.6 (migration 0040): a node link's DPoP-bound access token. `jkt` is the token's `cnf.jkt`.
+    link_id: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
+    key_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    jkt: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class OidcIssuer(Base):
@@ -1619,3 +1633,214 @@ class GroupContribState(Base):
     envelope: Mapped[dict[str, Any]] = mapped_column(JSON)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# ---- node links (CONTRACT-C14 Part C, migration 0040) -----------------------------------------------------------
+# Main side: one `node_link` per (account, node link key); the device flow's challenge and device rows; DPoP-bound
+# refresh tokens and proof ids; banned keys; the stored answer of every contribution (idempotent execution).
+
+class NodeLink(Base):
+    """A node's link key registered at this (main) node, owned by the account that approved it (§6.6).
+
+    `node_id` is the id of the link's root key: a per-main key the node made for this main only (C14-11), so two
+    mains cannot correlate the node by key. `current_key_id`/`current_jkt` are the link's one active key and
+    `key_epoch` counts its rotations (C14-6). `trust` is the link's own (`probation` until its `reputation` reaches
+    the main's auto-approve threshold, C14-8, H73). `status`: `active`, `frozen` (a fork or a reported theft: every
+    token refused), `revoked`, `banned`."""
+
+    __tablename__ = "node_link"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
+    node_id: Mapped[str] = mapped_column(String(16), index=True)
+    root_public_key: Mapped[str] = mapped_column(String(64))
+    current_key_id: Mapped[str] = mapped_column(String(16))
+    current_jkt: Mapped[str] = mapped_column(String(64))
+    key_epoch: Mapped[int] = mapped_column(Integer, default=1)
+    rotations: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    subject: Mapped[str] = mapped_column(String(36))
+    name: Mapped[str] = mapped_column(String(80), default="")
+    public_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    scopes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    review: Mapped[str] = mapped_column(String(8), default="standard")
+    trust: Mapped[str] = mapped_column(String(10), default="probation")
+    reputation: Mapped[int] = mapped_column(Integer, default=0)
+    show_name: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    last_seq: Mapped[int] = mapped_column(BigInteger, default=0)
+    status: Mapped[str] = mapped_column(String(10), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    __table_args__ = (UniqueConstraint("user_id", "node_id", name="uq_node_link_user_node"),
+                      UniqueConstraint("subject", name="uq_node_link_subject"))
+
+
+class LinkChallenge(Base):
+    """§6.3 step 0 (Review #1 C14-7): a registration challenge, stored as its hash, consumed once."""
+
+    __tablename__ = "link_challenge"
+
+    hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LinkDevice(Base):
+    """One device authorization (§6.3). Codes are stored only as a hash (`device_code`) and an HMAC (`user_code`);
+    `confirm_hash` is the node's per-flow confirmation code, compared, never shown; `jkt` binds every poll to the
+    key that registered. `status`: `pending`, `approved`, `denied`, `used`."""
+
+    __tablename__ = "link_device"
+
+    device_code_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_code_hmac: Mapped[str] = mapped_column(String(64), unique=True)
+    confirm_hash: Mapped[str] = mapped_column(String(64))
+    jkt: Mapped[str] = mapped_column(String(64))
+    node: Mapped[dict[str, Any]] = mapped_column(JSON)
+    scopes: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(10), default="pending")
+    user_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    link_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    show_name: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    confirm_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    interval: Mapped[int] = mapped_column(Integer, default=5)
+    last_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class LinkRefresh(Base):
+    """A link's refresh token (sha256), bound to the key (`jkt`) and `key_epoch` it was issued for (§6.5)."""
+
+    __tablename__ = "link_refresh"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    link_id: Mapped[str] = mapped_column(String(26), index=True)
+    jkt: Mapped[str] = mapped_column(String(64))
+    key_epoch: Mapped[int] = mapped_column(Integer)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LinkNonce(Base):
+    """A DPoP proof id seen (§6.5): the primary key makes `(jkt, jti)` unique, so a replay is a duplicate key."""
+
+    __tablename__ = "link_nonce"
+
+    jkt: Mapped[str] = mapped_column(String(64), primary_key=True)
+    jti: Mapped[str] = mapped_column(String(64), primary_key=True)
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+
+
+class LinkBannedKey(Base):
+    """A node link key (a link root id or one key of a rotation history) that may never link again (§6.7)."""
+
+    __tablename__ = "link_banned_key"
+
+    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    reason: Mapped[str] = mapped_column(String(32), default="")
+    banned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    by: Mapped[str | None] = mapped_column(String(26), nullable=True)
+
+
+class LinkContributionAnswer(Base):
+    """The stored per-item answer to one contribution (§7.4 step 1, Review #1 C14-9): a retry gets it back without
+    being counted again (a refused item until its `retry_until`)."""
+
+    __tablename__ = "link_contribution_answer"
+
+    contribution_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    link_id: Mapped[str] = mapped_column(String(26), index=True)
+    answer: Mapped[dict[str, Any]] = mapped_column(JSON)
+    retry_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# Node side (C14-3n): the link to one main, the contribution queue, and local -> main id aliases.
+
+class UpstreamLink(Base):
+    """This node's link to one main Atlas (§6, node side). One row per main (its pinned root `main_node_id`).
+
+    The link key is a per-main Ed25519 key made for this main only (C14-11): `link_key` holds the current private
+    key, sealed like the node signing key; `link_rotations` its history from `link_root_public`. Tokens are sealed.
+    `status`: `starting` (a device flow is open; `flow` holds it, its confirmation code sealed), `linked`,
+    `revoked_locally` -> `pending_remote` -> `confirmed` (an unlink from here, C14-10), `remote_revoked` (the main
+    refused the link)."""
+
+    __tablename__ = "upstream_link"
+
+    main_node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    issuer_url: Mapped[str] = mapped_column(String(300))
+    main_root_public_key: Mapped[str] = mapped_column(String(64))
+    main_name: Mapped[str] = mapped_column(String(80), default="")
+    link_root_public: Mapped[str] = mapped_column(String(64))
+    link_key: Mapped[str] = mapped_column(Text)
+    link_key_previous: Mapped[str | None] = mapped_column(Text, nullable=True)
+    link_rotations: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(16), default="starting")
+    flow: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    link_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    grant: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    key_epoch: Mapped[int] = mapped_column(Integer, default=1)
+    access_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    refresh_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_seq: Mapped[int] = mapped_column(BigInteger, default=1)
+    status_cursor: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    unlinked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UpstreamContribution(Base):
+    """One node-signed contribution to a main (§7.1, §7.2). `body` is what gets signed (re-signed after a link key
+    rotation); `envelope` the last signed form. States (§7.2): `queued`, `sent`, `pending`, `approved`, `rejected`,
+    `reverted`, `withdrawn`, `failed`, `link_revoked`, `unsent`."""
+
+    __tablename__ = "upstream_contribution"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    main_node_id: Mapped[str] = mapped_column(String(16), index=True)
+    seq: Mapped[int] = mapped_column(BigInteger)
+    kind: Mapped[str] = mapped_column(String(16))
+    local_cid: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    main_cid: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    body: Mapped[dict[str, Any]] = mapped_column(JSON)
+    envelope: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    fields: Mapped[list[str]] = mapped_column(JSON, default=list)
+    state: Mapped[str] = mapped_column(String(14), default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_try_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    proposal_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    feed_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewer_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    __table_args__ = (UniqueConstraint("main_node_id", "seq", name="uq_upstream_contribution_seq"),)
+
+
+class UpstreamAlias(Base):
+    """A local record a main approved as a new record under its own id (§7.4 "New records")."""
+
+    __tablename__ = "upstream_alias"
+
+    local_cid: Mapped[str] = mapped_column(String(40), primary_key=True)
+    main_cid: Mapped[str] = mapped_column(String(40), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

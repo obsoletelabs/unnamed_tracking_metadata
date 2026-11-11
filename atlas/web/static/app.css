@@ -594,3 +594,6 @@ details.ach-others > summary { cursor: pointer; margin-top: 1.6em; }
 .sharing-table .greyed { color: var(--muted); }
 .category-list { list-style: none; padding: 0; display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
 .category-list li { display: flex; gap: 8px; align-items: flex-start; }
+/* C14-3 node links: a fingerprint stays on one line, and the facts stack on a phone */
+.link-facts code.mono { overflow-wrap: normal; white-space: nowrap; }
+@media (max-width: 480px) { dl.facts.link-facts { grid-template-columns: 1fr; gap: 2px 0; } dl.facts.link-facts dd { margin-bottom: 8px; } }

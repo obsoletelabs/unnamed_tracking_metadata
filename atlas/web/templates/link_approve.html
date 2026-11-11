@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Link a node · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Link a node to your account</h1>
+{% if alarm %}<div class="card warn" role="status" data-link-alarm>Many unknown link codes were typed on this site in the last hour. Someone may be guessing codes; look at <a href="/admin/links">Node links</a>.</div>{% endif %}
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+{% if refusal %}<div class="card" role="status"><p>{{ refusal }}</p></div>
+{% elif not device %}
+<form class="card" method="post" action="/link">{{ csrf(p.csrf) }}
+  <p>Your own Atlas node shows a code like <code>WDJB-MJHT</code> and a QR code on its <em>Main Atlas</em> page. Type the code here.</p>
+  <label for="code">Code from your node</label>
+  <input id="code" type="text" name="code" value="{{ code }}" maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
+  <p class="small muted">Only type a code that your own node shows you right now. Never type a code someone sent you: it would let their node act for your account.</p>
+  <p><button type="submit">Continue</button></p>
+</form>
+{% else %}
+<section class="card" data-link-request>
+  <h2>{% if device.relink %}Relink{% else %}Link{% endif %} <q>{{ device.name }}</q>?</h2>
+  <p><strong>Only continue if you started this on your own node a moment ago.</strong> A linked node can propose changes here under your account. Every proposal goes through review until the link earns trust (probation).</p>
+  <dl class="facts link-facts">
+    <dt>Node name (chosen by that node)</dt><dd>{{ device.name }}</dd>
+    <dt>Node fingerprint</dt><dd><code class="mono" data-fingerprint>{{ device.fingerprint }}</code></dd>
+    <dt>Link key</dt><dd><code class="mono">{{ device.key_fingerprint }}</code></dd>
+    <dt>Started from</dt><dd><code>{{ device.ip }}</code>, {{ when(device.started) }}</dd>
+    <dt>Code</dt><dd><code>{{ user_code }}</code></dd>
+  </dl>
+  <form method="post" action="/link/decide">{{ csrf(p.csrf) }}
+    <input type="hidden" name="code" value="{{ user_code }}">
+    <label for="confirm">Confirmation code shown on your node's screen</label>
+    <input id="confirm" type="text" name="confirm" maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
+    <p class="small muted">The node shows it next to the QR code. It is never part of the link, so a link someone sent you cannot be approved without your node.</p>
+    {% if has_password %}<label for="lpw">Your password</label><input id="lpw" type="password" name="password" maxlength="200" autocomplete="current-password" required>
+    {% else %}<p class="small muted">Your account has no password: this works only within five minutes of signing in on this site.</p>{% endif %}
+    {% if mfa %}<label for="lmfa">Code from your authenticator</label><input id="lmfa" type="text" name="mfa_code" inputmode="numeric" maxlength="20" autocomplete="one-time-code" required>{% endif %}
+    <label><input type="checkbox" name="show_name"> Show my display name ({{ p.me.username }}) on this node's proposals</label>
+    <p class="small muted">Off: reviewers see <q>a linked node</q> and a short pseudonym. You can change this later on <a href="/me/links">Linked local nodes</a>.</p>
+    <p><button name="decision" value="approve" type="submit">Link this node</button>
+       <button class="secondary" name="decision" value="deny" type="submit" formnovalidate>Refuse</button></p>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

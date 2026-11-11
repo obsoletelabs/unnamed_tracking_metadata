@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Node links · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+<section class="card"><h2>Node links</h2>
+{% if not on %}<p class="muted">Local nodes cannot link here: {% if s.role != 'authority' %}only an authority accepts node links{% else %}<em>Let local nodes link and propose edits</em> is off in Settings{% endif %}.</p>
+{% else %}
+<p class="muted">People link their own Atlas nodes to their account here; each node's proposals then go through your review rules. New links and relinks start on probation.{% if s.link_review_default == 'always' %} Every link proposal is reviewed (setting).{% endif %}</p>
+{% if alarm %}<p class="error" role="alert" data-link-alarm>More unknown link codes than usual were typed recently (last at {{ when(alarm) }}). Code entry stays open; each account that keeps missing is slowed down.</p>{% endif %}
+<p class="small">{% for k in ('active', 'frozen', 'revoked', 'banned') %}<a class="chip" {% if state == k %}aria-current="page" {% endif %}href="/admin/links?status={{ k }}">{{ k }} {{ counts.get(k, 0) }}</a> {% endfor %}{% if state %}<a href="/admin/links">all</a>{% endif %}</p>
+{% if links %}
+<div class="table-scroll"><table><thead><tr><th>Node</th><th>Account</th><th>State</th><th>Waiting</th><th></th></tr></thead><tbody>
+{% for x in links %}{% set l = x.l %}<tr data-node-link="{{ l.id }}"><td>{{ l.name or '—' }}<br><code class="mono small">{{ x.fp }}</code></td><td>{{ x.user }}</td>
+<td>{{ l.status }}{% if l.status == 'active' %}, {{ l.trust }} ({{ l.reputation }}){% endif %}</td><td>{% if x.pending %}<a href="/review?via_link={{ l.id }}">{{ x.pending }}</a>{% else %}0{% endif %}</td>
+<td>{% if l.status in ('active', 'frozen') %}<form class="inline" method="post" action="/admin/links/{{ l.id }}/revoke">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Revoke this link?" type="submit">Revoke</button></form>{% endif %}
+{% if l.status != 'banned' %}<form class="inline" method="post" action="/admin/links/{{ l.id }}/ban">{{ csrf(p.csrf) }}<label class="small"><input type="checkbox" name="compromised"> key stolen</label> <button class="danger small" data-confirm="Ban this node key? It can never link again, under any account." type="submit">Ban key</button></form>{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
+{% else %}<p class="muted">No node links{% if state %} in this state{% endif %}.</p>{% endif %}
+{% endif %}
+</section>
+{% endblock %}

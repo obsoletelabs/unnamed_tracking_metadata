@@ -138,6 +138,20 @@ group_assist_lookups = REGISTRY.counter(
     "Provider lookups made through the group (asked) or for a member (answered), by outcome",
     {"role": ("asked", "answered"), "outcome": ("ok", "not_found", "throttled", "refused", "error")})
 
+# ---- node links (C14 Part C, §8.1) ---------------------------------------------------------------------------
+LINK_ENDPOINTS = ("challenge", "device", "approve", "token", "link", "contributions", "status", "withdraw",
+                  "rotation", "unlink", "revoke")
+LINK_RESULTS = ("ok", "invalid", "invalid_request", "invalid_scope", "invalid_client", "invalid_grant",
+                "invalid_dpop_proof", "authorization_pending", "slow_down", "access_denied", "expired_token",
+                "unsupported_grant_type", "unauthorized", "refused", "rate_limited", "frozen", "off")
+link_requests = REGISTRY.counter(
+    "atlas_link_requests_total", "Node link requests on this main, by endpoint and closed result",
+    {"endpoint": LINK_ENDPOINTS, "result": LINK_RESULTS})
+LINK_SEND_RESULTS = ("accepted", "duplicate", "refused", "retry", "unauthorized", "error")
+link_contributions_sent = REGISTRY.counter(
+    "atlas_link_contributions_sent_total", "Contributions this node sent to a main Atlas, by answer",
+    {"result": LINK_SEND_RESULTS})
+
 # ---- database and search (#74) ------------------------------------------------------------------------------
 DB_OPERATIONS = ("select", "insert", "update", "delete", "other")
 db_query = REGISTRY.histogram(
@@ -160,14 +174,15 @@ search_results = REGISTRY.histogram(
 
 # ---- background work, mail and recovery (#75) ---------------------------------------------------------------
 BACKGROUND_OPERATIONS = ("housekeeping", "price_purge", "decision_prune", "retired_purge", "media_cache",
-                         "mail_delivery", "mail_purge", "backup", "sync_round", "scheduled_introduce", "group_round")
+                         "mail_delivery", "mail_purge", "backup", "sync_round", "scheduled_introduce", "group_round",
+                         "link_round")
 background_ops = REGISTRY.counter(
     "atlas_background_operations_total", "Background task runs by outcome (skipped: not due or not configured)",
     {"operation": BACKGROUND_OPERATIONS, "outcome": ("ok", "error", "skipped")})
 background_duration = REGISTRY.histogram(
     "atlas_background_operation_duration_seconds", "Background task run time",
     {"operation": BACKGROUND_OPERATIONS}, SLOW_BUCKETS)
-BACKGROUND_LOOPS = ("housekeeping", "media_cache", "mail", "backup", "sync")
+BACKGROUND_LOOPS = ("housekeeping", "media_cache", "mail", "backup", "sync", "link")
 background_delay = REGISTRY.histogram(
     "atlas_background_schedule_delay_seconds",
     "How late a loop woke up compared with when it planned to (scheduler and thread contention)",
