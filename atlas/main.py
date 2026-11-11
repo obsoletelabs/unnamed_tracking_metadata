@@ -173,24 +173,27 @@ def _cache_media(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) 
 
     group_http = httpx.Client(trust_env=False)  # sealed member calls for images (C14 §3.6), never via a proxy
     group_fetch = assist.blob_fetcher(ctx, group_http)
-    while not stop.is_set():
-        settings = ctx.settings
-        try:
-            if settings.media_cache_enabled:
-                with background.operation("media_cache"):
-                    cached = media.cache_pending(maker, settings, group_fetch=group_fetch)
-            else:
-                background.skipped("media_cache")
+    try:
+        while not stop.is_set():
+            settings = ctx.settings
+            try:
+                if settings.media_cache_enabled:
+                    with background.operation("media_cache"):
+                        cached = media.cache_pending(maker, settings, group_fetch=group_fetch)
+                else:
+                    background.skipped("media_cache")
+                    cached = 0
+            except media.MediaStorageError as exc:
+                log.warning("artwork cache cannot store images: %s", exc)
                 cached = 0
-        except media.MediaStorageError as exc:
-            log.warning("artwork cache cannot store images: %s", exc)
-            cached = 0
-        except Exception as exc:
-            log.warning("artwork cache failed: %s", type(exc).__name__)
-            cached = 0
-        # Drain full successful batches, but avoid a busy loop on an empty or failing queue.
-        if background.wait(stop, "media_cache", 0 if cached >= settings.media_cache_batch else 5):
-            break
+            except Exception as exc:
+                log.warning("artwork cache failed: %s", type(exc).__name__)
+                cached = 0
+            # Drain full successful batches, but avoid a busy loop on an empty or failing queue.
+            if background.wait(stop, "media_cache", 0 if cached >= settings.media_cache_batch else 5):
+                break
+    finally:
+        group_http.close()
 
 
 def _backups(engine, ctx: Ctx, stop: threading.Event) -> None:
