@@ -8,7 +8,6 @@ Upgrade (main side):
   replayed DPoP proof is a duplicate key), `link_banned_key` and `link_contribution_answer`. Empty.
 * `oidc_access.link_id`, `oidc_access.key_epoch`, `oidc_access.jkt` (NULL): a node link's DPoP-bound access token.
 * `proposal.via_link_id`, `proposal.contribution_id` (unique), `proposal.stale_base` (false), `proposal.link_flag`.
-* `api_token.limits` (JSON, NULL): room to narrow a token later (§7.6, H68).
 * `user_permission` gains the value `feed.access` (no schema change; the table is 0038's).
 
 Upgrade (node side):
@@ -138,8 +137,6 @@ def upgrade() -> None:
         batch.add_column(sa.Column("link_flag", sa.String(20), nullable=True))
         batch.create_index("ix_proposal_via_link_id", ["via_link_id"])
         batch.create_unique_constraint("uq_proposal_contribution_id", ["contribution_id"])
-    with op.batch_alter_table("api_token") as batch:
-        batch.add_column(sa.Column("limits", sa.JSON(), nullable=True))
     # node side
     op.create_table(
         "upstream_link",
@@ -218,8 +215,6 @@ def downgrade() -> None:
         op.drop_index(f"ix_upstream_contribution_{name}", table_name="upstream_contribution")
     op.drop_table("upstream_contribution")
     op.drop_table("upstream_link")
-    with op.batch_alter_table("api_token") as batch:
-        batch.drop_column("limits")
     with op.batch_alter_table("proposal") as batch:
         batch.drop_constraint("uq_proposal_contribution_id", type_="unique")
         batch.drop_index("ix_proposal_via_link_id")

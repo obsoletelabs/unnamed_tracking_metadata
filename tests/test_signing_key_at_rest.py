@@ -202,7 +202,7 @@ def test_rewrap_moves_every_secret_to_the_new_key(tmp_path):
         counts = secrets_box.rewrap(session, rotated)
         session.commit()
     assert counts == {"signing_key": 1, "peer_tokens": 1, "oidc_client_secrets": 0, "integration_secrets": 1,
-                      "mfa_secrets": 0, "group_secrets": 0}
+                      "mfa_secrets": 0, "group_secrets": 0, "link_secrets": 0}
     only_new = build_settings(secret_key=OTHER)
     with db.make_sessionmaker(engine, only_new)() as session:
         assert load_identity(session).public_b64 == identity.public_b64

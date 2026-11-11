@@ -157,7 +157,9 @@ def test_discovery_and_jwks_describe_the_provider(world):
 
 
 def test_a_provider_that_is_switched_off_serves_nothing(tmp_path):
-    app = main.create_app(build_settings(database_url=f"sqlite:///{tmp_path}/o.db", media_cache_enabled=False))
+    # node links (C14 §6.2, on by default on an authority) publish discovery on their own; off here
+    app = main.create_app(build_settings(database_url=f"sqlite:///{tmp_path}/o.db", media_cache_enabled=False,
+                                         link_enabled=False))
     with TestClient(app, follow_redirects=False) as c:
         for path in ("/.well-known/openid-configuration", "/oidc/jwks"):
             assert c.get(path).status_code == 404
