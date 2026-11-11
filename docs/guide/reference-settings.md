@@ -102,7 +102,7 @@ These can be changed live in **Admin → Settings** without restarting. Each cha
 | **Accept what your other nodes already applied** (`group_assist_auto_adopt`) | on/off | `False` | When another node of yours already applied a feed's changes to a game, apply the same waiting changes here without a click. Reversible with `atlas group assist forget`. |
 | **Ask your nodes for images before the original site** (`group_assist_group_before_origin`) | on/off | `False` | Fewer requests to third-party image hosts: your nodes fetch each image once between them. |
 | **Share contribution state with your other nodes** (`group_share_contribution_state`) | on/off | `True` | Edits proposed to a main Atlas show as waiting or applied on every node of your group. Only the state travels: never the values, reviewer notes or account details. |
-| **Act as one node with your other nodes** (`group_super`) | on/off | `False` | The owner group presents to its users as one node (C14-4): user edits and list changes made on any node are signed and synced to every node, conflicts resolve the same way everywhere (admins see them), and user pages never name a node. See [Node groups](node-groups.md#one-node-for-your-users-super-group). |
+| **Act as one node with your other nodes** (`group_super`) | on/off | `False` | Edits to games and people's lists made on any node of your group are signed and copied to every other node, so each node shows the same thing. Concurrent edits are settled the same way everywhere (the latest wins) and listed for administrators under Admin -> Node group. What arrives this way stays shared with your nodes only: it is never signed into this node's public feed or sent to a main Atlas. |
 
 ## Artwork
 

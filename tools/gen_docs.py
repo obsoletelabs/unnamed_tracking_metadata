@@ -97,6 +97,9 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                                          "origin (same-owner preset); otherwise only when the origin fails."),
     "group_share_contribution_state": ("Federation", "Share the state of this node's proposals to a main Atlas with "
                                        "the other members of the owner group, and show theirs (on by default)."),
+    "group_super": ("Federation", "Super group (C14-4): the owner group presents to its users as one node. User "
+                    "edits and list changes made on any member are signed and synced to every member; user pages "
+                    "never name a node. Off by default; the same-owner preset turns it on."),
     "link_enabled": ("Federation", "Node links (authority only): let local nodes link to accounts here with the "
                      "device grant and send edits as proposals. On by default; every new link starts on probation."),
     "link_review_default": ("Federation", "Node links: `standard` follows the normal auto-apply rules after the "
