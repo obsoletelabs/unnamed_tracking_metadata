@@ -10,7 +10,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     # The suite runs 23-29 min on hosted runners (u3/A20); 30 cancelled the post-pytest steps after a green run.
-    timeout-minutes: 45
+    # C14-4 and A24 each ran 35-38 min; with both merged (C16 Z1) 45 cancelled pytest at 83%, all green so far.
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16

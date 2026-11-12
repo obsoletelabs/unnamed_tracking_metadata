@@ -13,7 +13,7 @@ Upgrade:
   legacy mapping (`signing.id_matches`: a 16-character
   id is the first 16 hex digits of the SHA-256 of the key, a 64-character id is all of it). New identities, new
   keys and new groups are minted in the 256-bit form. PostgreSQL alters the columns; SQLite (which does not
-  enforce lengths) rebuilds those tables in batch mode so the declared widths match the models.
+  enforce lengths) has the declared width rewritten in its stored schema so it matches the models.
 * `peer.remote_wire` (JSON, nullable): what a wire peer advertised `{min, max, use, high}` (design §2.3, §4.10).
 * `follower_wire`: per follower token, the wire range it sent, the negotiated `use`, what was omitted for it and
   why it was refused (replaces `follower_seen.protocol` for wire followers; `follower_seen` stays for v0 rows).
@@ -28,6 +28,8 @@ Downgrade:
   `peer.remote_wire` are dropped and `wire_high_water` is removed.
 """
 from __future__ import annotations
+
+import re
 
 import sqlalchemy as sa
 from alembic import op
@@ -89,18 +91,33 @@ def _alter(widths: str) -> None:
                 length = new if widths == "new" else old
                 op.execute(sa.text(f'ALTER TABLE "{table}" ALTER COLUMN "{column}" TYPE VARCHAR({length})'))
         return
-    # SQLite does not enforce VARCHAR lengths, but the declared type is what the schema says: rebuild each table
-    # (batch mode copies the rows) so the declared widths match the models.
-    by_table: dict[str, list[tuple[str, int, int, bool]]] = {}
-    for table, column, old, new, nullable in WIDEN:
+    # SQLite does not enforce VARCHAR lengths (both widths have TEXT affinity and the same on-disk format), but the
+    # declared type is what the schema says. Rewrite the declared width in each table's stored CREATE statement
+    # (the documented `writable_schema` edit for a change that leaves the file format alone) instead of rebuilding
+    # thirty tables on every upgrade; `schema_version` is bumped so every connection reloads the schema.
+    by_table: dict[str, list[tuple[str, int, int]]] = {}
+    for table, column, old, new, _nullable in WIDEN:
         if table in existing:
-            by_table.setdefault(table, []).append((column, old, new, nullable))
-    for table, columns in by_table.items():
-        with op.batch_alter_table(table) as batch:
-            for column, old, new, nullable in columns:
-                to, frm = (new, old) if widths == "new" else (old, new)
-                batch.alter_column(column, type_=sa.String(to), existing_type=sa.String(frm),
-                                   existing_nullable=nullable)
+            to, frm = (new, old) if widths == "new" else (old, new)
+            by_table.setdefault(table, []).append((column, frm, to))
+    if not by_table:
+        return
+    version = bind.exec_driver_sql("PRAGMA schema_version").scalar()
+    bind.exec_driver_sql("PRAGMA writable_schema = ON")
+    try:
+        for table, columns in by_table.items():
+            ddl = bind.execute(sa.text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = :t"),
+                               {"t": table}).scalar()
+            for column, frm, to in columns:
+                ddl, count = re.subn(rf'(?<![\w"])("?{re.escape(column)}"?\s+)VARCHAR\({frm}\)', rf"\g<1>VARCHAR({to})",
+                                     ddl)
+                if count != 1:
+                    raise RuntimeError(f"0063: cannot find {table}.{column} VARCHAR({frm}) in the stored schema")
+            bind.execute(sa.text("UPDATE sqlite_master SET sql = :sql WHERE type = 'table' AND name = :t"),
+                         {"sql": ddl, "t": table})
+        bind.exec_driver_sql(f"PRAGMA schema_version = {int(version) + 1}")
+    finally:
+        bind.exec_driver_sql("PRAGMA writable_schema = OFF")
 
 
 def upgrade() -> None:
