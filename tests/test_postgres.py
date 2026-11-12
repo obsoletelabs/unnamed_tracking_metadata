@@ -158,8 +158,9 @@ def test_rotation_and_stale_feed_readers_share_one_gap_free_history(pg):
         history, keys = key_rotation.validate_history(current.node_id, current.trust_public_b64,
                       key_rotation.own_history(session, current.node_id), current.key_id)
         rows = list(session.scalars(select(ChangeLog).order_by(ChangeLog.seq)))
-        assert [row.seq for row in rows] == list(range(1, 10))
-        assert feed.head_seq(session) == 9
+        assert [row.seq for row in rows] == list(range(1, 11))  # one wire_start (C16 Z1), eight schemas, a rotation
+        assert [row.kind for row in rows].count("wire_start") == 1
+        assert feed.head_seq(session) == 10
         assert all(key_rotation.check_entry(current.node_id, history, keys, key_rotation.proof(row, current.node_id))
                    for row in rows)
 

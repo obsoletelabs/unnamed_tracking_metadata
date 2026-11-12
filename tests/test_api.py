@@ -125,8 +125,8 @@ def test_feed_published_only_for_curated(client):
         "connection": {"source_kind": "manual", "source": "manual", "source_scope": "ops"},
         "observations": [{"external_id": "m1", "title": "Curated", "release_date": "2020-01-01"}]})
     client.post("/api/v2/observations", headers=H(c), json=obs("steam", "9", "Provider Only"))
-    ch = client.get("/api/v2/sync/changes?since=0", headers=H(c)).json()
-    assert ch["head"] == 1 and ch["entries"][0]["kind"] == "obs"
+    ch = client.get("/api/v2/sync/changes?since=0", headers={**H(c), "Atlas-Wire": "min=1, max=1"}).json()
+    assert ch["head"] == 2 and [e["kind"] for e in ch["entries"]] == ["wire_start", "obs"]  # C16: the first entry
     info = client.get("/api/v2/sync/info", headers=H(c)).json()
     assert info["node_id"] == ch["entries"][0]["key_id"]
 

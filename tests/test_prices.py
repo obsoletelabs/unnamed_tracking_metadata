@@ -18,14 +18,14 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
 
-from atlas import auth, cli, feed, feed_schema, money, prices, service, signing, sync
+from atlas import auth, cli, feed, feed_schema, money, prices, service, signing
 from atlas.models import Canonical, ChangeLog, PriceObservation
 
 from .conftest import batch
 from .test_sync_compat import Node, pull
 
 # C11 (A17) reserved the merge-undo kinds for protocol 1.6.
-RESERVED_C11 = {"price": "1.6", "unmerge": "1.7", "distinct": "1.7"}  # after the H52 shift (C13)
+RESERVED_C11 = frozenset({"price", "unmerge", "distinct"})  # reserved in wire 1 (C16 Z1)
 
 NOW = datetime.now(UTC).replace(microsecond=0)
 
@@ -47,7 +47,7 @@ def price(cid: str, **kw) -> dict:
 
 @pytest.fixture
 def node(tmp_path):
-    n = Node(tmp_path, "authority", "authority", emit_protocol=feed_schema.PROTOCOL)
+    n = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
     with n.st.maker() as s:
         _, n.curate = auth.create_token(s, "curator", ["read", "curate"])
         _, n.admin = auth.create_token(s, "admin", ["admin"])
@@ -81,21 +81,20 @@ def count(node) -> int:
 
 def test_price_channel_is_registered_reserved_and_disabled():
     channel = feed_schema.PRICE_CHANNEL
-    assert (channel.since, channel.capability, channel.endpoint) == ("1.6", "price-channel-v1",
+    assert (channel.since, channel.capability, channel.endpoint) == (None, "price-channel-v1",
                                                                      "/api/v2/sync/price-changes")
     assert channel.domain == signing.PRICE_DOMAIN == b"atlas-price-v1\n" and channel.domain != signing.DOMAIN
     assert (channel.sequence, channel.cursor_suffix) == ("price_feed_seq", "#price")
     assert feed_schema.CHANNEL_ENABLED is False
-    assert feed_schema.PROTOCOL == "1.5"  # 1.6 ships with the release that enables the channel (1.5 is C13's record)
     assert feed_schema.RESERVED_KINDS == RESERVED_C11 and "price" not in feed_schema.FEED_KINDS
-    assert feed_schema.RESERVED_TOKENS["price-channel-v1"] == "1.6"
+    assert "price-channel-v1" in feed_schema.RESERVED_TOKENS
     assert "price-channel-v1" not in feed_schema.capabilities()
     assert "price-channel-v1" not in feed_schema.known_tokens()
     vocabularies = feed_schema.vocabularies()
     assert vocabularies["price_availability"] == {"available", "unavailable", "preorder", "free", "unreleased",
                                                   "delisted", "unknown"}
     assert vocabularies["price_source_kind"] == {"provider", "manual"}
-    assert "| `price` | 1.6 (reserved) | not in this release | parked by this release |" in feed_schema.markdown_table()
+    assert "| `price` | reserved | not in this release | parked by this release |" in feed_schema.markdown_table()
 
 
 def test_the_channel_body_is_exactly_the_registered_c8_shape(node):
@@ -110,11 +109,9 @@ def test_the_channel_body_is_exactly_the_registered_c8_shape(node):
     assert body["availability"] in feed_schema.vocabularies()["price_availability"]
 
 
-@pytest.mark.parametrize("protocol", feed_schema.protocol_choices())
-def test_no_emit_protocol_signs_a_price_into_the_main_feed(protocol):
-    with pytest.raises(feed_schema.EmitGateError) as err:
-        feed_schema.check_emit("price", {"canonical_id": "atlas:x", "amount_minor": 1}, protocol)
-    assert err.value.needed == "1.6"
+def test_no_call_signs_a_price_into_the_main_feed():
+    with pytest.raises(feed_schema.ReservedConstructError):
+        feed_schema.check_emit("price", {"canonical_id": "atlas:x", "amount_minor": 1})
 
 
 # ---- money ------------------------------------------------------------------------------------------------
@@ -415,7 +412,7 @@ def test_retention_hides_then_purge_deletes(node):
     assert sorted(r["product_id"] for r in visible) == ["b", "c"]
     status = node.client.get("/api/v2/prices/status", headers=h(node.admin)).json()
     assert (status["observations"], status["due_for_purge"], status["records"]) == (3, 1, 1)
-    assert status["channel"] == {"protocol": "1.6", "capability": "price-channel-v1",
+    assert status["channel"] == {"protocol": None, "capability": "price-channel-v1",
                                  "endpoint": "/api/v2/sync/price-changes", "enabled": False}
     assert status["retention_days"] == {"default": 30, "max": 365}
 
@@ -538,11 +535,11 @@ def test_nothing_price_related_is_emitted_by_default(node):
 
     info = node.client.get("/api/v2/sync/info", headers=h(node.token)).json()
     assert "price-channel-v1" not in info["capabilities"] and "price" not in info["kinds"]
-    assert info["protocol"] == "1.5" and info["emit_protocol"] == "1.5"
+    assert info["wire"]["max"] == 1 and "emit_protocol" not in info
     channel = node.client.get("/api/v2/sync/price-changes?since=0", headers=h(node.token))
     assert channel.status_code == 404 and "price" not in json.dumps(node.client.get(
         "/api/v2/sync/digest", headers=h(node.token)).json())
-    with node.st.maker() as s, pytest.raises(feed_schema.EmitGateError):
+    with node.st.maker() as s, pytest.raises(feed_schema.ReservedConstructError):
         feed.emit(s, node.st.ctx, "price", prices.channel_body(s.scalars(select(PriceObservation)).first()))
     assert node.head() == head
 
@@ -559,13 +556,11 @@ def play(monkeypatch, release: str) -> None:
         kinds = {k: v for k, v in feed_schema.FEED_KINDS.items() if k != "relation"}
         monkeypatch.setattr(feed_schema, "FEED_KINDS", kinds)
         monkeypatch.setattr(feed_schema, "RESERVED_KINDS", {"relation": "1.4"})
-        monkeypatch.setattr(feed_schema, "PROTOCOL", release)
-        monkeypatch.setattr(sync, "PROTOCOL", release)
 
 
 @pytest.fixture
 def fed(tmp_path):
-    authority = Node(tmp_path, "authority", "authority", emit_protocol=feed_schema.PROTOCOL)
+    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
     with authority.st.maker() as s:
         _, authority.curate = auth.create_token(s, "curator", ["read", "curate"])
         s.commit()

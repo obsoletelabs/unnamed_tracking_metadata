@@ -447,12 +447,12 @@ def test_the_signed_list_is_the_v1_body_without_new_fields_or_later_same_names(s
 
 @pytest.mark.parametrize("release", ["this", "1.1"])
 def test_followers_park_an_achievements_v2_body(tmp_path, monkeypatch, release):
-    from atlas import auth, feed_schema
+    from atlas import auth
 
     from .test_prices import play
     from .test_sync_compat import Node, pull
 
-    authority = Node(tmp_path, "authority", "authority", emit_protocol=feed_schema.PROTOCOL)
+    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
     mirror = Node(tmp_path, "mirror", "mirror")
     with authority.st.maker() as s:
         auth.create_token(s, "curator", ["read", "curate"])

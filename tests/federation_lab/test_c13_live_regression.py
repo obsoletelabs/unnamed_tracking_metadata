@@ -5,13 +5,13 @@ redistributable), so its feed never signed an `obs` for it. A curator then set a
 `artwork` entry reached every follower naming a record they had never been told about. They quarantined it
 ("unknown or merged canonical"), retried it a fixed number of times and gave up.
 
-Now the follower records the entry as *waiting for its record* (not a failure, no attempts counted), moves on, and
-reports `waiting`. Once the authority raises its emit protocol to 1.5 (Admin → Peers, which schedules the
-introduction) and `atlas feed introduce --missing` signs a `record` for it, the next sync applies the record and the
-waiting artwork on the mirror and, through the mirror's relay, on the plain nodes. Everything is asserted on the
-nodes' databases.
-
-The same failure against real 1.0 and 1.1 followers: `python -m tools.skew_drill --scenario records`.
+A wire-1 authority (C16) can no longer produce this: it signs a `record` before the first entry that names a game
+(`test_a_wire_1_authority_introduces_before_it_signs_a_sidecar`). The feed of a v0 authority still holds such
+entries, so the lab signs that shape directly (`emit`, as a v0 release did) and checks the follower side: the follower
+records the entry as *waiting for its record* (not a failure, no attempts counted), moves on, and reports `waiting`.
+Once `atlas feed introduce --missing` signs a `record` for it, the next sync applies the record and the waiting
+artwork on the mirror and, through the mirror's relay, on the plain nodes. Everything is asserted on the nodes'
+databases.
 
 This covers C13 §10.2 on the wired network (relays included). The contract's own shape (upstream U with a relayed
 empty feed F, the `records` 7/5/2 counts, `introduce --all` with a silent record Q, `atlas_sync_woken_total`) and
@@ -66,12 +66,9 @@ def test_sidecars_for_unintroduced_record_wait_for_their_game_and_recover(lab):
     mirror, local, local2 = lab.nodes["mirror"], lab.nodes["local"], lab.nodes["local2"]
     first = official.post("Lab C13 Before")
     cid = _provider_only(official, "Lab C13 Provider Only", "7770001")
-    response = official.client.put(f"/api/v2/games/{cid}/artwork", headers=official.headers(official.admin_token),
-                                   json={"items": ART})
-    assert response.status_code == 200, response.text
-    art_seq = official.head()
+    art_seq = official.emit("artwork", {"canonical_id": cid, "source": "curator", "items": ART})  # the v0 shape
     later = official.post("Lab C13 After")
-    assert [kind for _, (kind, _, _) in sorted(official.own_feed().items())] == ["obs", "artwork", "obs"]
+    assert [kind for _, (kind, _, _) in sorted(official.own_feed().items())] == ["wire_start", "obs", "artwork", "obs"]
 
     # The live failure shape, now waiting instead of quarantined: nothing blocks, nothing is lost.
     for follower, upstream in ((mirror, "official"), (local, "official")):
@@ -123,12 +120,7 @@ def test_sidecars_for_unintroduced_record_wait_for_their_game_and_recover(lab):
     refused = local2.admin.post("/admin/peers", data={**own, "ack_relayed_fingerprint": "on"})
     assert refused.status_code == 400
 
-    # The authority raises its emit protocol to 1.5 in Admin → Peers: that schedules the introduction.
-    form = {"csrf": csrf(official.admin, "/admin/peers"), "emit_protocol": "1.5", "password": lab.password,
-            "followers_upgraded": "on"}
-    assert official.admin.post("/admin/peers/protocol", data=form).status_code == 303
-    with official.state.maker() as session:
-        assert session.get(NodeState, feed.INTRODUCE_PENDING).value == "missing"
+    # The authority introduces what its feed named without introducing it.
     done = _current_cli(official, "feed", "introduce", "--missing")
     assert done.returncode == 0, (done.stdout, done.stderr)
     result = json.loads(done.stdout)
@@ -157,3 +149,20 @@ def test_sidecars_for_unintroduced_record_wait_for_their_game_and_recover(lab):
         assert follower.canonicals(others) == official.canonicals(others), follower.name
         assert follower.retained(official) == official.own_feed(), follower.name
         assert follower.cursor(official) == official.head(), follower.name
+
+
+def test_a_wire_1_authority_introduces_before_it_signs_a_sidecar(lab):
+    """C16 Z1: no emit protocol and no bridge: the first entry naming a provider-only record is preceded by its
+    `record`, so no follower ever waits for it."""
+    official, mirror, local = lab.nodes["official"], lab.nodes["mirror"], lab.nodes["local"]
+    cid = _provider_only(official, "Lab C16 Provider Only", "7770002")
+    head = official.head()
+    response = official.client.put(f"/api/v2/games/{cid}/artwork", headers=official.headers(official.admin_token),
+                                   json={"items": ART})
+    assert response.status_code == 200, response.text
+    assert [official.own_feed()[seq][0] for seq in range(head + 1, official.head() + 1)][-2:] == ["record", "artwork"]
+    lab.sync_all()
+    for follower in (mirror, local):
+        assert _open(follower, official) == [], follower.name
+        assert _art(follower, cid) == sorted((a["kind"], a["url"]) for a in ART), follower.name
+        assert follower.sync_status(official)["state"] == "in_sync", follower.name

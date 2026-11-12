@@ -144,7 +144,7 @@ def test_a_published_merge_is_refused_an_unmerge_on_an_authority(authority):
     assert authority.post(f"/api/v2/games/{b}/merge", json={"into": a}, headers=H(authority.cur)).status_code == 200
     mid = authority.get(f"/api/v2/merges?canonical_id={a}", headers=H(authority.cur)).json()["results"][0]["merge_id"]
     r = authority.post(f"/api/v2/merges/{mid}/unmerge", headers=H(authority.cur))
-    assert r.status_code == 409 and r.json()["error"]["code"] == "emit_protocol"
+    assert r.status_code == 409 and r.json()["error"]["code"] == "reserved_feature"
     with db(authority) as s:
         assert s.get(Canonical, b).merged_into == a
 

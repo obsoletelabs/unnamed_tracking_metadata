@@ -73,7 +73,7 @@ def test_sync_peers_replicates_from_db_peers_and_records_status():
 
     client = httpx.Client(transport=httpx.MockTransport(route))
     results = sync.sync_peers(m_maker, m_ctx, client)
-    assert results["central"] == "ok, 1 entries" and "HTTPStatusError" in results["broken"] and "paused" not in results
+    assert results["central"] == "ok, 2 entries" and "HTTPStatusError" in results["broken"] and "paused" not in results
     assert ("central.test", "Bearer atl_x") in seen and all(h != "paused.test" for h, _ in seen)
     with m_maker() as s:
         assert s.scalars(select(Canonical)).one().view["title"] == "Hades"

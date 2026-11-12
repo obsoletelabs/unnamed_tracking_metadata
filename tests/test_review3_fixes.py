@@ -190,7 +190,9 @@ def test_malformed_feed_entries_are_skipped_without_stalling(session, ctx):
         sync.apply_entry(session, ctx, "node", 1, kind, body)  # none of these may raise
     session.commit()
     assert session.scalars(select(Canonical.id)).all() == ["atlas:g1"]
-    sync.apply_entry(session, ctx, "node", 2, "obs", {"canonical_id": "atlas:g1", "observation": good_obs})
+    # C16 Z1 W-2: the `surprise` payload member was ignored and that observation applied, so the good one is new
+    sync.apply_entry(session, ctx, "node", 2, "obs", {"canonical_id": "atlas:g1",
+                                                     "observation": {**good_obs, "id": "B" * 26}})
     session.commit()
     assert session.get(Canonical, "atlas:g1").view["title"] == "Fine"  # a good entry after bad ones still applies
 

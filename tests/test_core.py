@@ -119,7 +119,7 @@ def test_merge_leaves_redirect_and_repoints_ids(session, ctx):
     live, redirected = service.get_canonical(session, b.canonical_id)
     assert live.id == a.canonical_id and redirected == b.canonical_id
     assert session.get(Crosswalk, ("gog", "2")).canonical_id == a.canonical_id
-    assert set(live.view["provider_ids"]) == {"gog", "steam"}
+    assert set(live.view["provider_ids"]) - {"atlas-record"} == {"gog", "steam"}  # + the signed record (C16 Z1)
     assert session.scalars(select(ReviewItem)).one().status == "merged"
     # later claims for the merged id land on the survivor
     [c] = ingest(session, ctx, "gog", [{"external_id": "2", "title": "Mystery Game"}])

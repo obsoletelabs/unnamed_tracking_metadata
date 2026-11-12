@@ -435,8 +435,8 @@ def test_schema_changes_are_published_only_by_authorities(session, ctx):
     custom.seed(session)
     custom.save_type(session, ctx, "movie", "Movie")
     session.commit()
-    assert [e.kind for e in feed.read(session, 0, 10)] == ["schema"]
+    assert [e.kind for e in feed.read(session, 0, 10)] == ["wire_start", "schema"]
     local = Ctx(build_settings(role="local"), load_identity(session))
     custom.save_type(session, local, "anime", "Anime")
     session.commit()
-    assert feed.head_seq(session) == 1
+    assert feed.head_seq(session) == 2

@@ -132,7 +132,7 @@ def test_join_payload_length_and_url_policy(ui):  # noqa: F811
     create_via_ui(a, ca)
     code = code_of(invite(ca, preset="cautious").text)
     padded = json.dumps({"v": 1, "type": "atlas-group-invite", "url": "http://a.test", "code": code, "pad": "x" * 380})
-    assert 400 < len(padded) <= 600
+    assert 600 < len(padded) <= 800  # C16 Z1: a v2 code (64-hex ids) is longer; the field takes 800
     assert join(cb, url=padded).status_code == 303
     long_url = json.dumps({"v": 1, "type": "atlas-group-invite", "url": "http://a.test/" + "p" * 300, "code": code})
     assert join(cb, url=long_url).status_code == 400

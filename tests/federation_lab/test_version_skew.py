@@ -120,7 +120,8 @@ ART = [{"kind": "key_art", "url": "https://img.example.org/skew-key.png"}]
 
 
 def _orphan(official) -> tuple[str, int]:
-    """An authority in legacy emission with a provider-only record and curated artwork on it (the live shape)."""
+    """A v0 authority's live shape: a provider-only record and curated artwork on it, signed without introducing the
+    record. A wire-1 authority signs a `record` first (C16 Z1), so the lab signs the v0 entry directly."""
     from atlas import service
     from atlas.contract import ObservationBatchV1
 
@@ -131,10 +132,7 @@ def _orphan(official) -> tuple[str, int]:
         [result] = service.ingest(session, official.state.ctx, body, system=True)
         session.commit()
     cid = result.canonical_id
-    response = official.client.put(f"/api/v2/games/{cid}/artwork", headers=official.headers(official.admin_token),
-                                   json={"items": ART})
-    assert response.status_code == 200, response.text
-    return cid, official.head()
+    return cid, official.emit("artwork", {"canonical_id": cid, "source": "curator", "items": ART})
 
 
 def _as_1_0(path, body):
@@ -174,7 +172,6 @@ def test_v3_an_upgrade_from_1_0_rescans_and_recovers_the_dropped_sidecar_when_th
     from sqlalchemy import delete, select
 
     from atlas.models import Artwork, SyncFailure
-    from tools.multinode_drill import csrf
     from tools.skew_drill import _current_cli
 
     official, mirror = lab.nodes["official"], lab.nodes["mirror"]
@@ -191,9 +188,6 @@ def test_v3_an_upgrade_from_1_0_rescans_and_recovers_the_dropped_sidecar_when_th
         row = session.get(SyncFailure, (official.node_id, art_seq))
         assert (row.disposition, row.reason, row.waiting_for) == ("wait", "dropped_by_previous_release", cid)
 
-    form = {"csrf": csrf(official.admin, "/admin/peers"), "emit_protocol": "1.5", "password": lab.password,
-            "followers_upgraded": "on"}
-    assert official.admin.post("/admin/peers/protocol", data=form).status_code == 303
     done = _current_cli(official, "feed", "introduce", "--missing")
     assert done.returncode == 0, (done.stdout, done.stderr)
     assert lab.sync("mirror", "official") is None

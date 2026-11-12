@@ -10,18 +10,15 @@ while `count` included it. Now the response lists each skipped image and who hol
 
 from __future__ import annotations
 
-import dataclasses
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from atlas import auth, facets, main, relations
-from atlas.models import Artwork, Canonical, ChangeLog, Relation
+from atlas import auth, facets, main
+from atlas.models import Artwork, Canonical, ChangeLog
 
 from .conftest import build_settings
 from .test_relations import record
-from .test_sync_compat import Node, pull
 from .test_web import _wait_for_startup_replay
 
 
@@ -55,56 +52,6 @@ def ids_and_token(tmp_path):
     return ids, {"Authorization": f"Bearer {curator}"}
 
 
-def test_a_gated_relation_is_reported_unpublished_then_published_by_putting_it_again(tmp_path, ids_and_token):
-    ids, cur = ids_and_token
-    body = {"relations": [{"to": ids["O1 Game"], "type": "dlc_of"}]}
-    gated = app_at(tmp_path, "1.0")
-    with TestClient(gated) as client:
-        r = client.put(f"/api/v2/games/{ids['O1 DLC']}/relations", json=body, headers=cur)
-        assert r.status_code == 200, r.text
-        assert r.json()["changed"] == {"added": 1, "ended": 0, "published": 0}
-        assert (r.json()["published"], r.json()["reason"], r.json()["pending"]) == (False, "emit_protocol", 1)
-        r = client.put(f"/api/v2/games/{ids['O1 DLC']}/relations", json=body, headers=cur)  # still gated
-        assert (r.json()["published"], r.json()["pending"]) == (False, 1)
-        assert r.json()["changed"] == {"added": 0, "ended": 0, "published": 0}
-        assert signed_relations(gated.state.atlas) == []
-
-    raised = app_at(tmp_path, "1.4")
-    with TestClient(raised) as client:
-        st = raised.state.atlas
-        before = version(st, ids["O1 Game"])
-        r = client.put(f"/api/v2/games/{ids['O1 DLC']}/relations", json=body, headers=cur)
-        assert r.status_code == 200, r.text
-        assert r.json()["changed"] == {"added": 0, "ended": 0, "published": 1}
-        assert r.json()["published"] is True and "reason" not in r.json() and "pending" not in r.json()
-        assert signed_relations(st) == [{"op": "add", "from": ids["O1 DLC"], "to": ids["O1 Game"], "type": "dlc_of",
-                                         "source": "curator"}]
-        with st.maker() as s:
-            row = s.scalars(select(Relation).where(Relation.from_id == ids["O1 DLC"])).one()
-            assert row.feed_seq is not None and row.ended_at is None
-        assert version(st, ids["O1 Game"]) > before  # clients see the change (ETags, /changes)
-        r = client.put(f"/api/v2/games/{ids['O1 DLC']}/relations", json=body, headers=cur)  # idempotent
-        assert r.json()["changed"] == {"added": 0, "ended": 0, "published": 0} and r.json()["published"] is True
-        assert len(signed_relations(st)) == 1
-
-
-def test_a_gated_relation_not_listed_again_is_ended_unsigned(tmp_path, ids_and_token):
-    """Replacing it after the raise ends the never-published row locally (followers never had it: no `end` is
-    signed for it) and signs the new one only."""
-    ids, cur = ids_and_token
-    with TestClient(app_at(tmp_path, "1.0")) as client:
-        assert client.put(f"/api/v2/games/{ids['O1 DLC']}/relations", headers=cur,
-                          json={"relations": [{"to": ids["O1 Game"], "type": "dlc_of"}]}).status_code == 200
-    raised = app_at(tmp_path, "1.4")
-    with TestClient(raised) as client:
-        r = client.put(f"/api/v2/games/{ids['O1 DLC']}/relations", headers=cur,
-                       json={"relations": [{"to": ids["O1 Port"], "type": "port_of"}]})
-        assert r.status_code == 200, r.text
-        assert r.json()["changed"] == {"added": 1, "ended": 1, "published": 0} and r.json()["published"] is True
-        assert signed_relations(raised.state.atlas) == [{"op": "add", "from": ids["O1 DLC"], "to": ids["O1 Port"],
-                                                         "type": "port_of", "source": "curator"}]
-
-
 def test_a_mirror_answers_that_its_relations_are_local(tmp_path):
     app = main.create_app(build_settings(database_url=f"sqlite:///{tmp_path}/mirror.db", role="mirror",
                                          media_dir=str(tmp_path / "m"), media_cache_enabled=False))
@@ -120,31 +67,6 @@ def test_a_mirror_answers_that_its_relations_are_local(tmp_path):
         assert r.status_code == 200, r.text
         assert (r.json()["published"], r.json()["reason"]) == (False, "local_node")
 
-
-def test_a_follower_receives_a_relation_published_after_the_raise(tmp_path):
-    authority, mirror = Node(tmp_path, "authority", "authority", emit_protocol="1.4"), Node(tmp_path, "mirror",
-                                                                                           "mirror")
-    game, dlc = authority.publish("Late Game"), authority.publish("Late DLC")
-    ctx = authority.st.ctx
-    low = dataclasses.replace(ctx, settings=ctx.settings.model_copy(update={"emit_protocol": "1.0"}))
-    with authority.st.maker() as s:
-        assert relations.set_outgoing(s, low, dlc, [{"to": game, "type": "dlc_of"}]) == {
-            "added": 1, "ended": 0, "published": 0}
-        s.commit()
-    pull(mirror, authority)
-    with mirror.st.maker() as s:
-        assert s.scalars(select(Relation)).first() is None  # never signed: the follower has nothing
-    with authority.st.maker() as s:
-        assert relations.set_outgoing(s, ctx, dlc, [{"to": game, "type": "dlc_of"}])["published"] == 1
-        s.commit()
-    pull(mirror, authority)
-    assert mirror.failures(authority) == []
-    with mirror.st.maker() as s:
-        assert [(r.from_id, r.to_id, r.type) for r in s.scalars(select(Relation).where(Relation.ended_at.is_(None)))] \
-            == [(dlc, game, "dlc_of")]
-
-
-# ---- O3 -------------------------------------------------------------------------------------------------
 
 def test_curator_artwork_put_reports_the_images_another_source_holds(tmp_path):
     app = main.create_app(build_settings(database_url=f"sqlite:///{tmp_path}/art.db", media_dir=str(tmp_path / "m"),

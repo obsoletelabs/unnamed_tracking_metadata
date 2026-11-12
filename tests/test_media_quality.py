@@ -554,12 +554,11 @@ def test_failures_record_their_code_and_the_api_reports_the_state(session, ctx, 
 
 @pytest.mark.parametrize("release", ["this", "1.1"])
 def test_followers_park_an_artwork_v2_body(tmp_path, monkeypatch, release):
-    from atlas import feed_schema
 
     from .test_prices import play
     from .test_sync_compat import Node, pull
 
-    authority = Node(tmp_path, "authority", "authority", emit_protocol=feed_schema.PROTOCOL)
+    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
     mirror = Node(tmp_path, "mirror", "mirror")
     gid = authority.publish("Park Art")
     seq = authority.emit("artwork", {"_v": 2, "canonical_id": gid, "source": "curator", "_requires": ["art-v2"],

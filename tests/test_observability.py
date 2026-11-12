@@ -90,7 +90,7 @@ def test_inactive_exception_logging_cannot_break_redaction():
 
 
 def test_peer_entry_lag_tracks_a_partial_pull_then_catches_up(tmp_path):
-    from atlas import sync
+    from atlas import feed, sync
     from atlas.models import Peer
 
     from .test_relay import node, publish, transport
@@ -112,10 +112,11 @@ def test_peer_entry_lag_tracks_a_partial_pull_then_catches_up(tmp_path):
     assert "atlas_peer_lag_entries{" not in client.get("/metrics", headers=headers).text  # unknown, not zero
     with transport(source[1]) as http:
         trusted = {origin.node_id: origin.public_b64}
-        assert sync.pull_once(state.maker, state.ctx, http, "http://upstream", source[3], trusted=trusted) == 1
-        assert f"atlas_peer_lag_entries{{{label}}} 1" in client.get("/metrics", headers=headers).text
-        assert sync.pull_once(state.maker, state.ctx, http, "http://upstream", source[3], trusted=trusted) == 1
-        assert f"atlas_peer_lag_entries{{{label}}} 0" in client.get("/metrics", headers=headers).text
+        with source[2].maker() as s:
+            head = feed.head_seq(s)  # wire_start, the record, the observation and the schema entry (C16 Z1)
+        for behind in range(head - 1, -1, -1):
+            assert sync.pull_once(state.maker, state.ctx, http, "http://upstream", source[3], trusted=trusted) == 1
+            assert f"atlas_peer_lag_entries{{{label}}} {behind}" in client.get("/metrics", headers=headers).text
 
 
 def test_readiness_fails_when_migrations_are_pending_and_status_reports_the_detail(tmp_path):

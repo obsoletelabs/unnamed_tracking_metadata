@@ -67,12 +67,12 @@ def curate(maker, ctx, source, items):
 def test_mirror_converges_and_preserves_ids(pair):
     a_maker, a_ctx, m_maker, m_ctx, client = pair
     [r] = curate(a_maker, a_ctx, "curator", [{"external_id": "c1", "title": "Hades", "release_date": "2020-09-17"}])
-    assert sync.pull_all(m_maker, m_ctx, client, "http://upstream", None) == 1
+    assert sync.pull_all(m_maker, m_ctx, client, "http://upstream", None) == 2  # wire_start, the observation
     with m_maker() as s:
         row = s.get(Canonical, r.canonical_id)
         assert row.view["title"] == "Hades"
         assert s.get(Crosswalk, ("curator", "c1")).canonical_id == r.canonical_id
-        assert s.get(SyncCursor, a_ctx.identity.node_id).last_seq == 1
+        assert s.get(SyncCursor, a_ctx.identity.node_id).last_seq == 2
     # idempotent when nothing new
     assert sync.pull_all(m_maker, m_ctx, client, "http://upstream", None) == 0
 
@@ -187,15 +187,15 @@ def test_failed_entry_is_recorded_rolled_back_and_does_not_block_healthy_ones(pa
     a_maker, a_ctx, m_maker, m_ctx, client = pair
     [first] = curate(a_maker, a_ctx, "curator", [{"external_id": "1", "title": "Failing"}])
     [second] = curate(a_maker, a_ctx, "curator", [{"external_id": "2", "title": "Healthy"}])
-    flaky.add(1)
+    flaky.add(2)  # 1 is wire_start
     sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
     with m_maker() as s:
         assert s.get(Canonical, second.canonical_id).view["title"] == "Healthy"
         assert s.get(Canonical, first.canonical_id) is None
-        assert s.get(NodeState, "partial:1") is None  # the half-applied write was rolled back
-        assert s.get(SyncCursor, a_ctx.identity.node_id).last_seq == 2
+        assert s.get(NodeState, "partial:2") is None  # the half-applied write was rolled back
+        assert s.get(SyncCursor, a_ctx.identity.node_id).last_seq == 3
         [failure] = s.scalars(select(SyncFailure)).all()
-        assert (failure.seq, failure.kind, failure.resolved_at) == (1, "obs", None)
+        assert (failure.seq, failure.kind, failure.resolved_at) == (2, "obs", None)
         assert "simulated apply failure" in failure.error
         assert sync.open_failures(s) == 1
 
@@ -203,7 +203,7 @@ def test_failed_entry_is_recorded_rolled_back_and_does_not_block_healthy_ones(pa
 def test_retry_converges_without_duplicates_once_the_cause_is_fixed(pair, flaky):
     a_maker, a_ctx, m_maker, m_ctx, client = pair
     [first] = curate(a_maker, a_ctx, "curator", [{"external_id": "1", "title": "Failing"}])
-    flaky.add(1)
+    flaky.add(2)  # 1 is wire_start
     sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
     flaky.clear()
     sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)  # nothing new; the retry still runs
@@ -221,7 +221,7 @@ def test_automatic_retries_back_off_but_an_administrator_can_retry_at_once(pair,
     1, 2, 4 ... minutes (at most every 6 hours), so a broken entry is neither re-run on every pull nor abandoned."""
     a_maker, a_ctx, m_maker, m_ctx, client = pair
     [first] = curate(a_maker, a_ctx, "curator", [{"external_id": "1", "title": "Failing"}])
-    flaky.add(1)
+    flaky.add(2)  # 1 is wire_start
     for _ in range(23):
         sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
     with m_maker() as s:

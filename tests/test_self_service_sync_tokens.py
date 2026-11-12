@@ -49,7 +49,7 @@ def test_off_by_default_members_get_read_only_and_a_clear_reason(web_site):  # n
     with web_site.st.maker() as s:
         assert s.scalars(select(Token).where(Token.name == "my node")).first() is None
     secret = _secret(_create(bob, "read").text)
-    api = {"Authorization": f"Bearer {secret}"}
+    api = {"Authorization": f"Bearer {secret}", "Atlas-Wire": "min=1, max=1"}
     assert web_site.get("/api/v2/games?q=hades", headers=api).status_code == 200
     assert web_site.get(SYNC, headers=api).status_code == 403
 
@@ -76,7 +76,7 @@ def test_enabled_member_creates_a_sync_token_that_follows_but_never_writes(web_s
         audit = s.scalars(select(AuditEntry).where(AuditEntry.action == "token_create",
                                                    AuditEntry.target == row.id)).one()
         assert audit.detail == {"scopes": ["read", "sync"]}
-    api = {"Authorization": f"Bearer {secret}"}
+    api = {"Authorization": f"Bearer {secret}", "Atlas-Wire": "min=1, max=1"}
     feed = web_site.get(SYNC, headers=api)
     assert feed.status_code == 200 and "entries" in feed.json()
     body = {"connection": {"source_kind": "plugin", "source": "spam", "source_scope": "x"},

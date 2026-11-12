@@ -25,7 +25,7 @@ from atlas.service import Ctx
 from tests.group_harness import create, enrol, finish_creation
 from tools.federation_lab import Lab
 
-from .test_c13_contract_shape import _provider_only, _sidecars
+from .test_c13_contract_shape import _provider_only
 
 pytestmark = pytest.mark.federation_lab
 
@@ -62,6 +62,17 @@ def network(monkeypatch):
         yield lab
 
 
+def _v0_sidecars(node, cid: str) -> None:
+    """What a v0 authority signed for a record it never introduced (a wire-1 authority signs a `record` first, C16
+    Z1): artwork, achievements, custom values and achievements again."""
+    node.emit("artwork", {"canonical_id": cid, "source": "curator",
+                          "items": [{"kind": "key_art", "url": "https://img.example.org/s.png"}]})
+    node.emit("achievements", {"canonical_id": cid, "source": "curator", "items": [{"name": "First Dive"}]})
+    node.emit("custom", {"canonical_id": cid, "source": "curator", "values": {"players_max": 4}})
+    node.emit("achievements", {"canonical_id": cid, "source": "curator",
+                               "items": [{"name": "First Dive"}, {"name": "Deep Dive"}]})
+
+
 def _waiting(node, origin) -> list[tuple[int, str]]:
     with node.state.maker() as s:
         return [(f.seq, f.kind) for f in s.scalars(select(SyncFailure).where(
@@ -72,12 +83,11 @@ def _waiting(node, origin) -> list[tuple[int, str]]:
 def test_a_member_answers_what_another_waits_for(network):
     official, local, local2 = (network.nodes[n] for n in ("official", "local", "local2"))
     s_id = _provider_only(official, "Subnautica 2", "1962700")
-    _sidecars(official, s_id)
+    _v0_sidecars(official, s_id)
     peer1 = local.follow(official)
     assert local.sync(peer1) is None
     assert [k for _seq, k in _waiting(local, official)] == ["artwork", "achievements", "custom", "achievements"]
 
-    official.state.ctx.settings = official.state.ctx.settings.model_copy(update={"emit_protocol": "1.5"})
     with official.state.maker() as s:
         assert feed.introduce_batch(s, official.state.ctx, "missing")["introduced"] >= 1
         s.commit()

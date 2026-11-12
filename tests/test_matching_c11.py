@@ -404,7 +404,7 @@ def test_a_local_clear_lock_is_stored_and_a_signed_one_needs_protocol_1_6(sessio
     [a] = ingest(session, ctx, "steam", [{"external_id": "1", "title": "Clear Me", "facts": {"description": "d"}}])
     with pytest.raises(service.AtlasError) as err:
         service.set_lock(session, ctx, a.canonical_id, "description", None, actor="cur", clear=True)
-    assert err.value.code == "emit_protocol" and "1.7" in str(err.value)
+    assert err.value.code == "reserved_feature" and "reserved" in str(err.value)
     session.rollback()
     with pytest.raises(service.AtlasError) as err:
         service.set_lock(session, ctx, a.canonical_id, "description", None, actor="cur", local_only=True)

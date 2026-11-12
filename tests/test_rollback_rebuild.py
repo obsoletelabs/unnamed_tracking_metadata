@@ -71,6 +71,10 @@ def seed(maker, ctx) -> dict[str, str]:
         plain = service.ingest(s, ctx, batch("igdb", [{"external_id": "p1", "title": "Plain Day",
                                                        "release_date": "2010-02-03"}]), system=True)[0].canonical_id
         s.commit()
+    with maker() as s:  # C16 Z1: introducing a record adds its `atlas-record` observation without re-deriving the
+        for cid in (dated, conflict, locked, plain):  # view; start from the derived state the rebuild reproduces
+            service.rebuild(s, ctx, cid, only_if_changed=True)
+        s.commit()
     return {"dated": dated, "conflict": conflict, "locked": locked, "plain": plain}
 
 

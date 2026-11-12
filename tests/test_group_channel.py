@@ -133,7 +133,7 @@ def test_public_outputs_carry_no_group_data(pair):
         _, secret = auth.create_token(s, "reader", ["read", "sync"])
         s.commit()
     client = a.net.clients["a.test"]
-    headers = {"Authorization": f"Bearer {secret}"}
+    headers = {"Authorization": f"Bearer {secret}", "Atlas-Wire": "min=1, max=1"}
     bodies = []
     for path, params in (("/api/v2/sync/info", {}), ("/api/v2/sync/changes", {"since": 0}),
                          ("/api/v2/changes", {"since": 0}), ("/api/v2/changes", {"feed": "local", "since": 0})):
@@ -291,12 +291,13 @@ def test_response_for_other_request_refused(pair, monkeypatch):
 # ---- c: negotiation, park and held ----------------------------------------------------------------------------
 
 def test_negotiation_n_minus_one_and_refusal():
-    assert group_schema.negotiate({"group_protocol": "1.1", "min_group_protocol": "1.0"}) == "1.0"
-    assert group_schema.negotiate({"group_protocol": "1.0", "min_group_protocol": "1.0"}) == "1.0"
-    assert group_schema.negotiate({"group_protocol": "2.0", "min_group_protocol": "2.0"}) is None
-    assert group_schema.negotiate({"group_protocol": "0.9", "min_group_protocol": "0.9"}) is None
-    assert group_schema.negotiate({"group_protocol": "x"}) is None
-    assert group_schema.acceptable("1.0") and not group_schema.acceptable("2.0")
+    assert group_schema.negotiate({"wire": {"min": 1, "max": 3}}) == 1  # the highest common wire
+    assert group_schema.negotiate({"wire": {"min": 1, "max": 1}}) == 1
+    assert group_schema.negotiate({"wire": {"min": 2, "max": 2}}) is None  # no overlap
+    assert group_schema.negotiate({"group_protocol": "1.0", "min_group_protocol": "1.0"}) is None  # a v0 member
+    assert group_schema.negotiate({"wire": {"min": 0, "max": 1}}) is None  # malformed: fail closed
+    assert group_schema.proto_of(1) == "w1" and group_schema.proto_use("w1") == 1
+    assert group_schema.proto_use("1.0") is None and group_schema.proto_use("w2") is None
 
 
 def test_hello_advertises_kinds_fields_and_capabilities(pair):

@@ -359,9 +359,9 @@ def test_achievement_proposal_lines_accept_extras_in_any_order(site):
     assert ok.status_code == 303
     bad = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Escape | Leave | diamond"})
     assert bad.status_code == 400
-    # A known tier this authority may not publish yet (emit protocol 1.0 < 1.2): refused, not misread (C1.6).
-    gated = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Finale | All of it | platinum"})
-    assert gated.status_code == 409 and "Raise federation emit protocol to 1.2 first" in gated.text
+    # C16 Z1: every shipped tier is published at wire 1 (no emit-protocol gate any more).
+    plat = site.post(f"/game/{site.gid}/achievements", data={"csrf": t, "lines": "Finale | All of it | platinum"})
+    assert plat.status_code == 303
     page = site.get(f"/game/{site.gid}")
     assert page.status_code == 200 and "Edit achievements" in page.text
 

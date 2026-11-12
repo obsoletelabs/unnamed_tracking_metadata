@@ -20,17 +20,14 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from atlas import custom, facets, feed_schema, proposals, sync, vocab
+from atlas import custom, facets, feed_schema, sync, vocab
 from atlas.models import (
     Achievement,
     ChangeLog,
     CustomValue,
     FieldDef,
-    Proposal,
     ReplicatedChange,
     SyncFailure,
-    User,
-    now,
 )
 from atlas.service import AtlasError
 from atlas.signing import body_hash
@@ -143,40 +140,6 @@ def test_a_local_node_stores_and_serves_platinum_and_allows_more_than_one(tmp_pa
 
 # ---- the emission gate (C1.6, H13) -----------------------------------------------------------------------
 
-def test_an_authority_below_1_2_refuses_platinum_on_every_write_path(tmp_path):
-    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.1")
-    cid = authority.publish("Gated")
-    admin = {"Authorization": f"Bearer {_admin(authority)}"}
-    before = authority.head()
-    api = authority.client.put(f"/api/v2/games/{cid}/achievements", headers=admin,
-                               json={"items": [{"name": "Bronze", "tier": "bronze"}, {"name": "All", "tier": "platinum"}]})
-    assert api.status_code == 409 and api.json()["error"]["code"] == "emit_protocol"
-    assert "platinum achievement tier needs federation protocol 1.2; this node emits 1.1" in api.json()["error"]["message"]
-    with authority.st.maker() as session:
-        user = User(username="contributor", email="c@example.invalid", password_hash="!", role="admin",
-                    email_verified_at=now())
-        session.add(user)
-        session.flush()
-        with pytest.raises(AtlasError) as refused:
-            proposals.create(session, authority.st.ctx, user, "achievements", cid,
-                             {"items": [{"name": "All", "tier": "platinum"}]}, "")
-        assert refused.value.code == "emit_protocol"
-        with pytest.raises(AtlasError, match="Raise federation emit protocol to 1.2 first"):
-            facets.set_achievements(session, authority.st.ctx, cid, "curator", [{"name": "All", "tier": "platinum"}],
-                                    redistributable=True)
-        session.rollback()
-    with authority.st.maker() as session:
-        assert session.scalars(select(Achievement)).first() is None  # nothing half-written
-        assert session.scalars(select(Proposal)).first() is None
-    assert authority.head() == before  # nothing signed
-    # The same authority may still keep platinum it never signs (a non-redistributable provider import).
-    with authority.st.maker() as session:
-        facets.set_achievements(session, authority.st.ctx, cid, "steam", [{"name": "All", "tier": "platinum"}])
-        session.commit()
-        assert session.scalars(select(Achievement.tier)).one() == "platinum"
-    assert authority.head() == before
-
-
 def test_raising_emit_to_1_2_signs_platinum_with_its_requires_token(tmp_path):
     authority = Node(tmp_path, "authority", "authority", emit_protocol="1.2")
     cid = authority.publish("Unlocked")
@@ -200,15 +163,12 @@ def test_raising_emit_to_1_2_signs_platinum_with_its_requires_token(tmp_path):
 def test_check_emit_adds_the_token_once_and_never_changes_the_callers_body():
     body = {"canonical_id": "atlas:x", "source": "curator",
             "items": [{"name": "A", "tier": "platinum"}, {"name": "B", "tier": "platinum"}]}
-    signed = feed_schema.check_emit("achievements", body, "1.2")
+    signed = feed_schema.check_emit("achievements", body)
     assert signed["_requires"] == ["tier-platinum"] and "_requires" not in body
-    again = feed_schema.check_emit("achievements", {**body, "_requires": ["tier-platinum"]}, "1.2")
+    again = feed_schema.check_emit("achievements", {**body, "_requires": ["tier-platinum"]})
     assert again["_requires"] == ["tier-platinum"]
-    for below in ("1.0", "1.1"):
-        with pytest.raises(feed_schema.EmitGateError, match="Raise federation emit protocol to 1.2 first"):
-            feed_schema.check_emit("achievements", body, below)
     gold = {"canonical_id": "atlas:x", "source": "curator", "items": [{"name": "A", "tier": "gold"}]}
-    assert feed_schema.check_emit("achievements", gold, "1.0") is gold
+    assert feed_schema.check_emit("achievements", gold) == {**gold, "_wire": 1}
 
 
 # ---- federation: 1.2 applies, 1.1 parks, upgrade converges (C7.5) ----------------------------------------
@@ -254,7 +214,6 @@ def test_a_1_1_follower_parks_the_platinum_list_keeps_the_old_one_and_converges_
     old = {k: (v - {"platinum"} if k == "achievement_tier" else v) for k, v in feed_schema.vocabularies().items()}
     monkeypatch.setattr(feed_schema, "vocabularies", lambda: old)
     monkeypatch.setattr(feed_schema, "VOCAB_TOKENS", ())
-    monkeypatch.setattr(sync, "PROTOCOL", "1.1")
     pull(mirror, authority)
 
     assert mirror.failures(authority) == [(platinum_seq, "achievements", "parked", "unsupported_capability")]
@@ -284,7 +243,6 @@ def test_a_relay_at_1_1_still_serves_the_platinum_entry_byte_for_byte(platinum_n
     authority, mirror, _, put = platinum_net
     seq = put([{"name": "Everything", "tier": "platinum"}])
     monkeypatch.setattr(feed_schema, "VOCAB_TOKENS", ())
-    monkeypatch.setattr(sync, "PROTOCOL", "1.1")
     pull(mirror, authority)
     assert mirror.failures(authority)[0][3] == "unsupported_capability"
     assert mirror.retained(authority)[seq] == authority.own_feed()[seq]
@@ -325,7 +283,7 @@ def local_site(tmp_path):
 
 @pytest.fixture
 def authority_site(tmp_path):
-    """An authority at the default emit protocol (1.0): platinum is gated."""
+    """An authority (wire 1: platinum is signed, no gate)."""
     yield from _site(tmp_path, "authority")
 
 
@@ -351,25 +309,6 @@ def test_editor_offers_platinum_warns_about_a_second_one_and_saves(local_site):
     with site.st.maker() as s:
         assert s.scalars(select(Achievement).where(Achievement.name == "Trilogy")).one().tier == "platinum"
 
-
-def test_editor_on_a_gated_authority_disables_platinum_and_refuses_it(authority_site):
-    site = authority_site
-    signup(site, "alice")
-    url = f"/game/{site.gid}/achievements/edit"
-    page = site.get(url).text
-    assert '<option value="platinum"  disabled>Platinum (needs every follower upgraded)</option>' in page
-    assert "Platinum is not available on this node yet" in page
-    t = token(site, url)
-    refused = site.post(url, data=_ach_form(t, {"a": {"name": "Everything", "tier": "platinum"}},
-                                                        action="submit"))
-    text = unescape(refused.text)
-    assert refused.status_code == 400 and "Platinum cannot be published by this node yet" in text
-    assert '<option value="platinum" selected>Platinum (needs every follower upgraded)</option>' in text  # kept
-    with site.st.maker() as s:
-        assert s.scalars(select(Achievement)).first() is None and s.scalars(select(Proposal)).first() is None
-
-
-# ---- crossplay (C7.2, C7.3) ------------------------------------------------------------------------------
 
 @pytest.mark.parametrize(("stored", "players_max", "shown"), [
     ("yes", None, "yes"), ("partial", 1, "partial"), ("no", 4, "no"), ("no", 1, "no"),

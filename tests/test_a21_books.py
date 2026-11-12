@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 
 from atlas import auth, custom, facets, feed_schema, matching, merge, relations, service, vocab
 from atlas.contract import BookInfoV1, SourceObservationV1
-from atlas.feed_schema import EmitGateError, check_emit, classify
+from atlas.feed_schema import check_emit, classify
 from atlas.models import BookCreator, Canonical, ChangeLog, MediaType, Relation
 from atlas.normalize import norm_title
 
@@ -111,74 +111,37 @@ def test_t_b8_follower_of_this_release_applies_ext_book():
     assert out.body["observation"]["payload"]["ext"]["book"]["editions"][0]["isbn_13"] == ISBN_A
 
 
+@pytest.mark.parametrize("book", [
+    {"authors": [{"name": "X", "pseudonym": True}]},
+    {"editions": [{"name": "E", "published": {"date": "2005", "precision": "year", "era": "ce"}}]},
+    {"illustrations": 3},
+])
+def test_t_b8_unknown_nested_members_are_ignored(book):
+    """C16 Z1 W-2: a tolerant reader applies the entry without the members it does not know."""
+    out = classify("obs", {**obs_body(book), "_requires": ["book-v1"]})
+    assert (out.action, out.reason) == ("apply", feed_schema.IGNORED_MEMBER), out.message
+
+
 @pytest.mark.parametrize(("book", "reason"), [
-    ({"authors": [{"name": "X", "pseudonym": True}]}, "unsupported_field"),
-    ({"editions": [{"name": "E", "published": {"date": "2005", "precision": "year", "era": "ce"}}]},
-     "unsupported_field"),
-    ({"illustrations": 3}, "unsupported_field"),
     ({"editions": [{"format": "scroll"}]}, "unsupported_value"),
     ({"authors": [{"name": "X", "role": "ghostwriter"}]}, "unsupported_value"),
     ({"editions": [{"published": {"date": "2005-08", "precision": "week"}}]}, "unsupported_value"),
 ])
-def test_t_b8_unknown_nested_members_and_values_park(book, reason):
+def test_t_b8_unknown_nested_values_park(book, reason):
     out = classify("obs", {**obs_body(book), "_requires": ["book-v1"]})
     assert (out.action, out.reason) == ("parked", reason), out.message
-
-
-def test_t_b8_signed_with_book_v1_and_refused_below_unified():
-    assert "book-v1" in feed_schema.CAPABILITIES and "book-v1" in feed_schema.capabilities()
-    signed = check_emit("obs", obs_body(BOOK), feed_schema.UNIFIED)
-    assert signed["_requires"] == ["book-v1"]
-    with pytest.raises(EmitGateError, match="needs federation protocol 1.5"):
-        check_emit("obs", obs_body(BOOK), "1.4")
-    plain = obs_body()
-    assert check_emit("obs", plain, "1.0") is plain  # a body without ext.book is signed exactly as before
-    both = obs_body(BOOK, ext=None)
-    both["observation"]["payload"]["ext"] = {"book": BOOK, "release": {"first": {"date": "1999", "precision": "year"}}}
-    assert check_emit("obs", both, feed_schema.UNIFIED)["_requires"] == ["book-v1", "dates-v1"]
 
 
 def test_t_b8_a_follower_without_book_v1_parks_instead_of_stripping(monkeypatch):
     monkeypatch.setattr(feed_schema, "CAPABILITIES", ("ext-v1", "dates-v1"))
     monkeypatch.setattr(feed_schema, "EXT_APPLY", frozenset({"release"}))
-    signed = check_emit("obs", obs_body(BOOK), "1.5")
+    signed = check_emit("obs", obs_body(BOOK))
     out = classify("obs", signed)
     assert (out.action, out.reason, out.detail["requires"]) == ("parked", "unsupported_capability", ["book-v1"])
     # without the token it would have been stripped to a bare record: the token is what makes it explicit
     unsigned = classify("obs", obs_body(BOOK))
     assert unsigned.action == "apply" and "ext" not in unsigned.body["observation"]["payload"]
 
-
-def test_t_b8_moving_unified_moves_every_c15_gate(monkeypatch):
-    later = feed_schema.UnifiedVersion("1.6")
-    monkeypatch.setattr(feed_schema, "UNIFIED", later)
-    for name, key in feed_schema.UNIFIED_CONSTRUCTS:
-        monkeypatch.setitem(getattr(feed_schema, name), key, later)
-    with pytest.raises(EmitGateError, match="1.6"):
-        check_emit("obs", obs_body(BOOK), "1.5")
-    with pytest.raises(EmitGateError, match="1.6"):
-        check_emit("lock", {"canonical_id": "atlas:x", "field": "authors", "value": AUTHORS}, "1.5")
-    rel = {"op": "add", "from": "atlas:a", "to": "atlas:s", "type": "series_member", "source": "curator",
-           "position": "2"}
-    assert "position" not in check_emit("relation", rel, "1.5")
-    monkeypatch.setattr(feed_schema, "PROTOCOL", "1.6")
-    assert check_emit("obs", obs_body(BOOK), "1.6")["_requires"] == ["book-v1"]
-    assert check_emit("relation", rel, "1.6")["position"] == "2"
-
-
-def test_t_b8_book_locks_and_position_are_registered_under_unified():
-    for f in merge.BOOK_LOCKS:
-        assert feed_schema.VALUE_SINCE[("lock_field", f)] is feed_schema.UNIFIED
-        assert f in feed_schema.vocabularies()["lock_field"]
-    assert feed_schema.BOOK_LOCK_FIELDS == merge.BOOK_LOCKS
-    assert feed_schema.MEMBER_SINCE[("relation", "position")] is feed_schema.UNIFIED
-    assert feed_schema.TOKEN_SINCE["book-v1"] is feed_schema.UNIFIED
-    with pytest.raises(EmitGateError):
-        check_emit("lock", {"canonical_id": "atlas:x", "field": "page_count", "value": 3}, "1.4")
-    assert check_emit("lock", {"canonical_id": "atlas:x", "field": "page_count", "value": 3}, "1.5")["value"] == 3
-
-
-# ---- merge (T-B5) and the editions view (T-B6) -------------------------------------------------------------
 
 def mk(oid: str, source: str, trust: int, book: dict | None = None, *, cls: str = "provider", **payload) -> merge.Obs:
     if book is not None:
@@ -374,19 +337,6 @@ def test_curated_book_federates_with_book_v1_and_the_follower_holds_it(tmp_path)
         assert s.scalar(select(func.count()).select_from(BookCreator).where(BookCreator.canonical_id == cid)) == 2
 
 
-def test_curated_book_data_is_refused_below_unified(tmp_path):
-    node = Node(tmp_path, "n", "authority")  # emit protocol 1.0 (the default)
-    r = node.client.post("/api/v2/observations", headers=curator(node), json={
-        "connection": {"source_kind": "manual", "source": "manual", "source_scope": "default"},
-        "media_type": "book", "observations": [{"external_id": "x", "title": "T", "ext": {"book": BOOK}}]})
-    assert r.status_code == 409 and "needs federation protocol 1.5" in r.text
-    with node.st.maker() as s:
-        assert s.scalar(select(func.count()).select_from(Canonical)) == 0  # nothing stored
-    # a local node never signs anything: no gate
-    local = Node(tmp_path, "l", "local")
-    publish_book(local, "The Lantern Keeper")
-
-
 def test_book_locks_validate_sign_and_replicate(tmp_path):
     authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
     follower = Node(tmp_path, "follower", "mirror")
@@ -409,22 +359,6 @@ def test_book_locks_validate_sign_and_replicate(tmp_path):
         view = s.get(Canonical, cid).view
         assert view["authors"] == locked and view["page_count"] == 300
 
-
-def test_book_lock_refused_below_unified(tmp_path):
-    node = Node(tmp_path, "n", "authority", emit_protocol="1.5")
-    cid = publish_book(node, "The Lantern Keeper")
-    with node.st.maker() as s:
-        node.st.ctx.settings.emit_protocol = "1.4"
-        try:
-            with pytest.raises(service.AtlasError, match="needs federation protocol 1.5") as exc:
-                service.set_lock(s, node.st.ctx, cid, "subtitle", "Another")
-            assert exc.value.code == "emit_protocol"
-            service.set_lock(s, node.st.ctx, cid, "subtitle", "Another", local_only=True)  # never signed: allowed
-        finally:
-            node.st.ctx.settings.emit_protocol = "1.5"
-
-
-# ---- relation.position (T-B11) -----------------------------------------------------------------------------
 
 def make_series(node: Node, title: str) -> str:
     with node.st.maker() as s:
@@ -486,7 +420,8 @@ def test_t_b11_relations_without_position_are_signed_as_before(tmp_path):
         relations.add(s, node.st.ctx, book, series, "series_member")
         s.commit()
         body = s.scalars(select(ChangeLog.body).where(ChangeLog.kind == "relation")).one()
-    assert body == {"op": "add", "from": book, "to": series, "type": "series_member", "source": "curator"}
+    assert body == {"op": "add", "from": book, "to": series, "type": "series_member", "source": "curator",
+                    "_wire": 1}
 
 
 def test_web_add_keeps_a_series_position_and_can_set_one(tmp_path):

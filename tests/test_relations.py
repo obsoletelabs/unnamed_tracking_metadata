@@ -28,7 +28,7 @@ from .test_sync_compat import Node, observation, pull
 from .test_web import _wait_for_startup_replay, signup, token
 
 # C11 (A17) reserved the merge-undo kinds for protocol 1.6.
-RESERVED_C11 = {"price": "1.6", "unmerge": "1.7", "distinct": "1.7"}  # after the H52 shift (C13)
+RESERVED_C11 = frozenset({"price", "unmerge", "distinct"})  # reserved in wire 1 (C16 Z1)
 
 # ---- helpers --------------------------------------------------------------------------------------------
 
@@ -79,9 +79,9 @@ def emitting(session):
 
 def test_relation_kind_is_registered_with_closed_vocabularies():
     spec = feed_schema.FEED_KINDS["relation"]
-    assert (spec.since, spec.emit, spec.apply) == ("1.4", 1, 1)
+    assert (spec.since, spec.emit, spec.apply) == (1, 1, 1)
     assert spec.fields == {"op", "from", "to", "type", "source", "position"}  # position: A21, series_member only
-    assert feed_schema.PROTOCOL == "1.5" and feed_schema.RESERVED_KINDS == RESERVED_C11
+    assert feed_schema.RESERVED_KINDS == RESERVED_C11
     assert feed_schema.vocabularies()["relation_type"] == set(vocab.RELATION_TYPES)
     assert feed_schema.vocabularies()["relation_op"] == {"add", "end"}
     assert relations.TYPES == vocab.RELATION_TYPES
@@ -101,7 +101,7 @@ ADD = {"op": "add", "from": "atlas:" + "a" * 26, "to": "atlas:" + "b" * 26, "typ
     ({"op": "end", "from": ADD["from"], "to": ADD["to"], "type": "dlc_of"}, "apply", ""),
     ({**ADD, "type": "sequel_of"}, "parked", "unsupported_value"),  # a type a later release may add
     ({**ADD, "op": "replace"}, "parked", "unsupported_value"),
-    ({**ADD, "weight": 1}, "parked", "unsupported_field"),
+    ({**ADD, "weight": 1}, "apply", "ignored_member"),  # C16 Z1 W-2: a tolerant reader
     ({**ADD, "_v": 2}, "parked", "unsupported_version"),
     ({**ADD, "_requires": ["relation-v2"]}, "parked", "unsupported_capability"),
     ({**ADD, "type": 7}, "parked", "unsupported_value"),
@@ -111,14 +111,6 @@ def test_classify_relation_entries(body, action, reason):
     assert (outcome.action, outcome.reason) == (action, reason)
 
 
-def test_emission_gate_refuses_relation_below_1_4_and_signs_it_unchanged_at_1_4():
-    with pytest.raises(feed_schema.EmitGateError, match="1.4"):
-        feed_schema.check_emit("relation", ADD, "1.3")
-    assert feed_schema.check_emit("relation", ADD, "1.4") is ADD  # version-1 body, no envelope added
-
-
-# ---- the rules ------------------------------------------------------------------------------------------
-
 def test_add_and_end_persist_rows_and_bump_both_versions(session, ctx):
     game, dlc = record(session, ctx, "Base Game"), record(session, ctx, "Base Game Extra")
     before = (version(session, game), version(session, dlc))
@@ -126,7 +118,8 @@ def test_add_and_end_persist_rows_and_bump_both_versions(session, ctx):
     session.commit()
     assert created and rows(session) == [(dlc, game, "dlc_of")]
     stored = session.get(Relation, row.id)
-    assert (stored.source, stored.created_by, stored.redistributable, stored.feed_seq) == ("curator", "cur", True, None)
+    assert (stored.source, stored.created_by, stored.redistributable) == ("curator", "cur", True)
+    assert isinstance(stored.feed_seq, int)  # C16 Z1: an authority signs every relation (no emit-protocol gate)
     assert (version(session, game), version(session, dlc)) == (before[0] + 1, before[1] + 1)
     again, created = relations.add(session, ctx, dlc, game, "dlc_of")  # idempotent
     assert not created and again.id == row.id
@@ -379,17 +372,6 @@ def test_set_outgoing_replaces_atomically(session, ctx):
 
 # ---- emission ---------------------------------------------------------------------------------------------
 
-def test_gated_authority_stores_relations_but_signs_nothing(session, ctx):
-    game, dlc = record(session, ctx, "Gated Game"), record(session, ctx, "Gated DLC")
-    head = feed.head_seq(session)
-    assert relations.gated(ctx)
-    row, _ = relations.add(session, ctx, dlc, game, "dlc_of")
-    relations.end(session, ctx, dlc, game, "dlc_of")
-    session.commit()
-    assert feed.head_seq(session) == head and row.feed_seq is None
-    assert session.scalars(select(ChangeLog).where(ChangeLog.kind == "relation")).first() is None
-
-
 def test_authority_at_1_4_signs_add_and_end(session, emitting):
     game, dlc = record(session, emitting, "Signed Game"), record(session, emitting, "Signed DLC")
     row, _ = relations.add(session, emitting, dlc, game, "dlc_of")
@@ -397,20 +379,9 @@ def test_authority_at_1_4_signs_add_and_end(session, emitting):
     session.commit()
     entries = [e.body for e in session.scalars(select(ChangeLog).where(ChangeLog.kind == "relation")
                                                .order_by(ChangeLog.seq))]
-    assert entries == [{"op": "add", "from": dlc, "to": game, "type": "dlc_of", "source": "curator"},
-                       {"op": "end", "from": dlc, "to": game, "type": "dlc_of"}]
+    assert entries == [{"op": "add", "from": dlc, "to": game, "type": "dlc_of", "source": "curator", "_wire": 1},
+                       {"op": "end", "from": dlc, "to": game, "type": "dlc_of", "_wire": 1}]
     assert row.feed_seq is not None
-
-
-def test_a_published_relation_is_not_ended_after_lowering_the_emit_protocol(session, emitting, ctx):
-    game, dlc = record(session, emitting, "Lowered Game"), record(session, emitting, "Lowered DLC")
-    relations.add(session, emitting, dlc, game, "dlc_of")
-    session.commit()
-    with pytest.raises(AtlasError, match="Raise federation emit protocol to 1.4") as exc:
-        relations.end(session, ctx, dlc, game, "dlc_of")  # ctx emits 1.0
-    assert exc.value.code == "emit_protocol"
-    session.rollback()
-    assert rows(session) == [(dlc, game, "dlc_of")]
 
 
 def test_mirror_and_local_relations_are_never_signed(tmp_path):
@@ -532,7 +503,7 @@ def test_editor_adds_searches_refuses_and_removes(tmp_path):
     try:
         page = site.get(f"/game/{ids['Web DLC']}/relations?q=Web+Ga&type=dlc_of")
         assert page.status_code == 200 and "Web Game" in page.text and "data-relation-results" in page.text
-        assert "Stays on this node for now" in page.text  # emit protocol 1.0: kept local
+        assert "Stays on this node for now" not in page.text  # C16 Z1: every relation is signed at wire 1
         t = token(site, f"/game/{ids['Web DLC']}/relations")
         r = site.post(f"/game/{ids['Web DLC']}/relations/add", data={"csrf": t, "to": ids["Web Game"], "type": "dlc_of"})
         assert r.status_code == 303
@@ -632,44 +603,10 @@ def test_a_1_4_mirror_applies_relations_merges_and_ends_like_the_authority(fed):
     assert relation_state(mirror) == (mirror_active, mirror_ended)
 
 
-def at_protocol(node, protocol):
-    """The node's context with another `emit_protocol` (the curator lowering or raising it)."""
-    return Ctx(settings=node.st.ctx.settings.model_copy(update={"emit_protocol": protocol}),
-               identity=node.st.ctx.identity)
-
-
 def replicated_state(node):
     with node.st.maker() as s:
         return sorted((r.from_id, r.to_id, r.type) for r in s.scalars(
             select(Relation).where(Relation.ended_at.is_(None))) if relations.is_replicated(r))
-
-
-def test_a_gated_local_relation_does_not_change_how_a_merge_collapses(fed):
-    """Review finding: a relation kept local below emit 1.4 must not decide a replicated merge."""
-    authority, mirror = fed
-    g1, g2, d, s_ = (authority.publish(t) for t in ("Gm G1", "Gm G2", "Gm D", "Gm S"))
-    with authority.st.maker() as s:  # emit 1.3: stored locally, nothing signed (the documented upgrade path)
-        local, _ = relations.add(s, at_protocol(authority, "1.3"), s_, g2, "dlc_of")
-        s.commit()
-        assert local.feed_seq is None and not relations.is_replicated(local)
-    relate(authority, d, g1, "dlc_of")  # emit 1.4: published
-    pull(mirror, authority)
-    with authority.st.maker() as s:
-        before = version(s, s_), version(s, g2)
-        service.merge_canonicals(s, authority.st.ctx, d, s_)
-        s.commit()
-    pull(mirror, authority)
-    assert mirror.failures(authority) == []
-    # the published D -> G1 moved on both nodes; the authority's local S -> G2 gave way to it
-    assert replicated_state(authority) == replicated_state(mirror) == [(s_, g1, "dlc_of")]
-    assert relation_state(authority)[0] == relation_state(mirror)[0] == [(s_, g1, "dlc_of")]
-    assert relation_state(authority)[1] == {(s_, g2, "dlc_of"): "superseded"}
-    with authority.st.maker() as s:
-        assert version(s, g2) > before[1] and version(s, s_) > before[0]
-        assert no_active_relation_names_a_merged_record(s)
-    relate(authority, s_, g1, "dlc_of", op="end")  # a later end reaches the mirror's row
-    pull(mirror, authority)
-    assert relation_state(mirror)[0] == relation_state(authority)[0] == []
 
 
 def test_a_mirror_overlay_never_blocks_an_upstream_relation(fed):
@@ -729,6 +666,10 @@ def test_restore_after_a_downgrade_converges_with_a_follower_that_applied_the_me
     pull(mirror, authority)
     url = authority.st.ctx.settings.database_url
     db.downgrade(url, "0031")
+    from atlas.api import routes as api_routes
+
+    # that release had no `follower_wire` table (0063): it served the feed without noting what its follower speaks
+    monkeypatch.setattr(api_routes, "_note_follower", lambda *a, **k: None)
     # The previous release's merge, written as that release wrote it: this release's models (0034: matching
     # columns, merge records) cannot run on a 0031 schema, so the merge is replayed in SQL. It moves observations,
     # keys and locks, leaves a redirect, bumps both versions and signs a `merge`; relations stay where they are.
@@ -745,8 +686,7 @@ def test_restore_after_a_downgrade_converges_with_a_follower_that_applied_the_me
                        "version = version + 1 WHERE id = :src"), p)
         s.execute(text("UPDATE canonical SET version = version + 1 WHERE id = :dst"), p)
         # signed as that release signed it (it has no `feed_introduced` table: C13 introductions came later)
-        feed.append(s, authority.st.ctx.identity, "merge", {"src": dup, "dst": game},
-                    protocol=feed_schema.emit_protocol(authority.st.ctx.settings))
+        feed.append_unchecked(s, authority.st.ctx.identity, "merge", {"src": dup, "dst": game})
         s.commit()
     pull(mirror, authority)
     assert mirror.failures(authority) == []
@@ -810,8 +750,6 @@ def play_older(monkeypatch, protocol):
     kinds = {k: v for k, v in feed_schema.FEED_KINDS.items() if k != "relation"}
     monkeypatch.setattr(feed_schema, "FEED_KINDS", kinds)
     monkeypatch.setattr(feed_schema, "RESERVED_KINDS", {"relation": "1.4"})
-    monkeypatch.setattr(feed_schema, "PROTOCOL", protocol)
-    monkeypatch.setattr(sync, "PROTOCOL", protocol)
 
 
 @pytest.mark.parametrize("protocol", ["1.3", "1.1"])

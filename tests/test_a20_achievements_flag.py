@@ -105,17 +105,8 @@ def test_turning_the_flag_off_hides_and_never_deletes(tmp_path):
     assert got["applicable"] is True and got["total"] == 2 and stored(node, cid) == 2
 
 
-def test_below_unified_the_flag_stays_local(tmp_path):
-    """At emit protocol 1.0 (the default) the member is left out of the signed schema (`MEMBER_SINCE`)."""
-    authority = Node(tmp_path, "authority", "authority")
-    set_type(authority, "comic", "Comic", achievements=False)
-    with authority.st.maker() as s:
-        schema = s.scalars(select(ChangeLog).where(ChangeLog.kind == "schema").order_by(ChangeLog.seq.desc())).first()
-        assert all("achievements" not in t for t in schema.body["types"])
-
-
 def test_the_flag_travels_in_the_schema_and_a_follower_quarantines_invalid_not_wait(tmp_path):
-    authority = Node(tmp_path, "authority", "authority", emit_protocol=feed_schema.UNIFIED)
+    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
     mirror = Node(tmp_path, "mirror", "mirror")
     set_type(authority, "comic", "Comic", achievements=False)  # an authority publishes its schema
     cid = make_record(authority, "Watchmen", "comic")

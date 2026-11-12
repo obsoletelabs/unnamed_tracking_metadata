@@ -156,7 +156,7 @@ def _forged_hello(b, code, mutate=None):
             "joiner": {"node_id": b.node_id, "root_public_key": b.identity.trust_public_b64,
                        "signing_key_id": b.identity.key_id, "rotations": [], "member": member,
                        "member_pop": gc.member_pop(b.identity.private, inv.group_id, member, b.identity.key_id),
-                       "atlas_protocol": "1.1", "group_protocol": "1.0"},
+                       "wire": {"min": 1, "max": 1}},
             "commit_j": gc.commitment(b"\x01" * 32)}
     if mutate:
         mutate(body)
@@ -351,7 +351,7 @@ def test_call_state_between_members_and_uniform_404(pair, net):
         state = group_routes.call(s, b.settings, b.identity, groups.load(s), _member(a), "state", {}, net)
         assert state["genesis"]["group_id"] == groups.load(s).group_id
         hello = group_routes.call(s, b.settings, b.identity, groups.load(s), _member(a), "hello", {}, net)
-        assert hello["group_protocol"] == "1.0"
+        assert hello["wire"] == {"min": 1, "max": 1}
     # non-members, garbage and a node in no group all look the same
     stranger = net.node("s")
     garbage = net.post("http://a.test/api/v2/group/call", content=b'{"sealed_req":"x"}',
@@ -362,7 +362,7 @@ def test_call_state_between_members_and_uniform_404(pair, net):
     with stranger.session():
         fake = OwnerGroup(group_id=group_id, genesis={}, succession=[])
         inner = {"v": 1, "g": fake.group_id, "n": stranger.node_id, "aud": a.node_id, "k": stranger.identity.key_id,
-                 "t": int(groups.utcnow().timestamp()), "r": gc.b64(b"\0" * 16), "proto": "1.0", "op": "state",
+                 "t": int(groups.utcnow().timestamp()), "r": gc.b64(b"\0" * 16), "proto": "w1", "op": "state",
                  "params": {}}
         sealed = gc.seal_request(_member(a)["box_public_key"], fake.group_id, a.node_id,
                                  gc.sign_request(stranger.identity.private, inner))
@@ -379,7 +379,7 @@ def test_call_replay_and_audience_binding(pair, net):
     with b.session() as s:
         group = groups.load(s)
         inner = {"v": 1, "g": group.group_id, "n": b.node_id, "aud": a.node_id, "k": b.identity.key_id,
-                 "t": int(groups.utcnow().timestamp()), "r": gc.b64(b"\7" * 16), "proto": "1.0", "op": "hello",
+                 "t": int(groups.utcnow().timestamp()), "r": gc.b64(b"\7" * 16), "proto": "w1", "op": "hello",
                  "params": {}}
         sealed = canonical_json(gc.seal_request(_member(a)["box_public_key"], group.group_id, a.node_id,
                                                 gc.sign_request(b.identity.private, inner)))
@@ -544,7 +544,7 @@ def test_revoked_member_call_gets_404(pair, net):
 
 def _sealed_call(b, a_member, group, t, nonce):
     inner = {"v": 1, "g": group.group_id, "n": b.node_id, "aud": a_member["node_id"], "k": b.identity.key_id,
-             "t": t, "r": gc.b64(nonce), "proto": "1.0", "op": "hello", "params": {}}
+             "t": t, "r": gc.b64(nonce), "proto": "w1", "op": "hello", "params": {}}
     return gc.seal_request(a_member["box_public_key"], group.group_id, a_member["node_id"],
                            gc.sign_request(b.identity.private, inner))
 

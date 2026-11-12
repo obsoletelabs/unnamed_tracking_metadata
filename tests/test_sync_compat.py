@@ -21,7 +21,7 @@ from atlas.ids import canonical_id, ulid
 from atlas.models import (
     Achievement,
     AuditEntry,
-    FollowerSeen,
+    FollowerWire,
     NodeState,
     Observation,
     Peer,
@@ -33,9 +33,13 @@ from atlas.models import (
 from .conftest import batch, build_settings
 
 # C11 (A17) reserved the merge-undo kinds for protocol 1.6.
-RESERVED_C11 = {"price": "1.6", "unmerge": "1.7", "distinct": "1.7"}  # after the H52 shift (C13)
+RESERVED_C11 = frozenset({"price", "unmerge", "distinct"})  # reserved in wire 1 (C16 Z1)
 
 # ---- a small two-node network ---------------------------------------------------------------------------
+
+
+#: What every wire-1 follower sends (C16 Z1); `TestClient(app)` without it plays a v0 caller.
+WIRE_HEADERS = {"Atlas-Wire": "min=1, max=1"}
 
 
 class Node:
@@ -44,7 +48,7 @@ class Node:
                                                   media_dir=str(tmp_path / name), media_cache_enabled=False,
                                                   **settings))
         self.st = self.app.state.atlas
-        self.client = TestClient(self.app)
+        self.client = TestClient(self.app, headers=WIRE_HEADERS)  # a wire-1 caller unless a test says otherwise
         with self.st.maker() as session:
             self.token_row, self.token = auth.create_token(session, f"{name}-follower", ["read", "sync"])
             session.commit()
@@ -109,7 +113,7 @@ class Wire:
         self.upstream, self.info, self.changes, self.fail, self.seen = upstream, info, changes, fail, []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
-        self.seen.append((request.url.path, request.headers.get("atlas-protocol")))
+        self.seen.append((request.url.path, request.headers.get("atlas-wire")))
         if self.fail and self.fail(request):
             raise httpx.ConnectError("simulated network failure")
         response = self.upstream.client.request(request.method, request.url.raw_path.decode(),
@@ -164,10 +168,11 @@ def test_registry_replaces_the_duplicated_kind_lists():
 
     assert promotion.KINDS == feed_schema.known_kinds()
     assert set(feed_schema.kinds_advertised()) == {"obs", "artwork", "achievements", "custom", "schema", "merge",
-                                                   "detach", "lock", "unlock", "key_rotation", "relation", "record"}
+                                                   "detach", "lock", "unlock", "key_rotation", "relation", "record",
+                                                   "wire_start"}
     assert feed_schema.OBS_PAYLOAD == set(sync._OBS_FIELDS)
     assert "x_future" not in feed_schema.FEED_KINDS and feed_schema.RESERVED_KINDS == RESERVED_C11
-    assert feed_schema.FEED_KINDS["relation"].since == "1.4"  # reserved in 1.1-1.3, shipped by A15 (C6.3)
+    assert feed_schema.FEED_KINDS["relation"].since == 1  # every shipped kind is wire 1 (C16 Z1)
 
 
 @pytest.mark.parametrize(("kind", "body", "action", "reason"), [
@@ -175,18 +180,21 @@ def test_registry_replaces_the_duplicated_kind_lists():
     ("obs", {**observation("x"), "_v": 2}, "parked", "unsupported_version"),
     ("obs", {**observation("x"), "_requires": ["x"]}, "parked", "unsupported_capability"),
     ("obs", {**observation("x"), "_requires": ["ext-v1"]}, "apply", ""),
-    ("obs", observation("x", release_date_precision="month"), "parked", "unsupported_field"),
-    ("obs", {**observation("x"), "surprise": 1}, "parked", "unsupported_field"),
-    ("obs", {**observation("x"), "_future_envelope": 1}, "parked", "unsupported_field"),
-    ("obs", observation("x", facts={"new_fact": 1}), "parked", "unsupported_field"),
+    ("obs", observation("x", release_date_precision="month"), "apply", "ignored_member"),
+    ("obs", {**observation("x"), "surprise": 1}, "apply", "ignored_member"),
+    ("obs", {**observation("x"), "_future_envelope": 1}, "apply", "ignored_member"),
+    ("obs", observation("x", facts={"new_fact": 1}), "apply", "ignored_member"),
+    ("obs", {**observation("x"), "_wire": 2}, "parked", "unsupported_version"),
+    ("obs", {**observation("x"), "_wire": "1"}, "parked", "unsupported_version"),
+    ("obs", {**observation("x"), "_wire": 1}, "apply", ""),
     # An `ext` member this release does not know is optional unless the entry requires it (C1.4). `release`
     # is known since 1.3 (C5.2), so the examples use a member no release defines.
-    ("obs", observation("x", ext={"x_future": {"precision": "month"}}), "apply", ""),
+    ("obs", observation("x", ext={"x_future": {"precision": "month"}}), "apply", "ignored_member"),
     ("obs", {**observation("x", ext={"x_future": {}}), "_requires": ["x-future-v1"]}, "parked",
      "unsupported_capability"),
     ("obs", {**observation("x", ext={"release": {"first": {"date": "2011", "precision": "year"}}}),
              "_requires": ["dates-v1"]}, "apply", ""),
-    ("obs", observation("x", ext={"release": {"precision": "month"}}), "parked", "unsupported_field"),
+    ("obs", observation("x", ext={"release": {"precision": "month"}}), "apply", "ignored_member"),
     # platinum is known since 1.2 (C7.1); an unknown tier still parks (test_c covers a 1.1 follower)
     ("achievements", {"canonical_id": "atlas:x", "source": "curator", "items": [{"name": "A", "tier": "platinum"}]},
      "apply", ""),
@@ -200,8 +208,8 @@ def test_registry_replaces_the_duplicated_kind_lists():
      "parked", "unsupported_value"),
     ("schema", {"types": [], "fields": [{"media_type": "game", "key": "k", "label": "K", "kind": "rating"}]},
      "parked", "unsupported_value"),
-    ("schema", {"types": [{"key": "game", "label": "Game", "icon": "x"}], "fields": []}, "parked",
-     "unsupported_field"),
+    ("schema", {"types": [{"key": "game", "label": "Game", "icon": "x"}], "fields": []}, "apply",
+     "ignored_member"),
     ("lock", {"canonical_id": "atlas:x", "field": "mood", "value": "x"}, "parked", "unsupported_value"),
     # Envelope and vocabulary shapes this release does not know fail closed (park), never skip past.
     ("obs", {**observation("x"), "_v": "2"}, "parked", "unsupported_version"),
@@ -231,55 +239,36 @@ def test_protocol_parsing_is_strict():
     for bad in ("1", "1.x", " 1.1", "1.1.1", None, 11):
         with pytest.raises(ValueError):
             feed_schema.parse_protocol(bad)
-    assert feed_schema.protocol_choices("1.0", "1.1") == ["1.0", "1.1"]
 
 
-# ---- emission gate (H13) --------------------------------------------------------------------------------
+# ---- signing check (C16 Z1) ----------------------------------------------------------------------------
 
-def test_emission_gate_fails_closed_and_keeps_version_one_bodies_unchanged(net):
+def test_signing_fails_closed_and_every_entry_carries_wire(net):
     authority, _, _ = net
     with authority.st.maker() as session:
-        with pytest.raises(feed_schema.EmitGateError, match="1.4"):  # a kind newer than the emit protocol
-            feed.append(session, authority.st.ctx.identity, "relation",
-                        {"op": "add", "from": "atlas:a", "to": "atlas:b", "type": "dlc_of", "source": "curator"},
-                        protocol="1.3")
         with pytest.raises(ValueError, match="unregistered"):
-            feed.append(session, authority.st.ctx.identity, "mystery", {}, protocol="1.1")
-        with pytest.raises(feed_schema.EmitGateError, match="Raise federation emit protocol to 1.2 first"):
-            feed.append(session, authority.st.ctx.identity, "achievements",
-                        {"canonical_id": "atlas:x", "source": "curator", "items": [{"name": "P", "tier": "platinum"}]},
-                        protocol="1.1")
-        with pytest.raises(feed_schema.EmitGateError, match="tier-platinum"):
-            feed.append(session, authority.st.ctx.identity, "obs", {**observation("x"), "_requires": ["tier-platinum"]},
-                        protocol="1.1")
-        dated = observation("Dated", ext={"release": {"precision": "year", "value": "2026"}})
-        seq = feed.append(session, authority.st.ctx.identity, "obs", dated, protocol="1.1")
+            feed.append(session, authority.st.ctx.identity, "mystery", {})
+        with pytest.raises(feed_schema.ReservedConstructError):
+            feed.append(session, authority.st.ctx.identity, "obs", {**observation("x"), "_requires": ["art-v2"]})
+        platinum = {"canonical_id": "atlas:x", "source": "curator", "items": [{"name": "P", "tier": "platinum"}]}
+        p_seq = feed.append(session, authority.st.ctx.identity, "achievements", platinum)
+        dated = observation("Dated", ext={"release": {"first": {"date": "2026", "precision": "year"}}})
+        seq = feed.append(session, authority.st.ctx.identity, "obs", dated)
         plain = observation("Plain")
         plain_seq = feed.emit(session, authority.st.ctx, "obs", plain)
         session.commit()
     with authority.st.maker() as session:
         from atlas.models import ChangeLog
         from atlas.signing import body_hash
+        first = session.get(ChangeLog, 1)
+        assert first.kind == "wire_start" and first.body == {"first_seq": 1, "wire": {"min": 1, "max": 1}, "_wire": 1}
+        assert session.get(ChangeLog, p_seq).body["_requires"] == ["tier-platinum"]
         signed = session.get(ChangeLog, seq).body
-        assert "ext" not in signed["observation"]["payload"]  # stored locally, omitted from the signed feed
-        assert dated["observation"]["payload"]["ext"]  # the caller's copy is untouched
+        assert signed["observation"]["payload"]["ext"]["release"] and signed["_requires"] == ["dates-v1"]
+        assert "_requires" not in dated  # the caller's copy is untouched
         row = session.get(ChangeLog, plain_seq)
-        assert row.body == plain and row.body_hash == body_hash(plain)  # no envelope added to v1 bodies
-    assert feed_schema.emit_protocol(authority.st.ctx.settings) == "1.0"  # default: min_follower_protocol
-
-
-def test_platinum_stays_rejected_by_the_curator_api_while_emit_protocol_is_below_1_2(net):
-    authority, _, _ = net
-    cid = authority.publish("Trophies")
-    r = authority.client.put(f"/api/v2/games/{cid}/achievements",
-                             headers={"Authorization": f"Bearer {_admin(authority)}"},
-                             json={"source": "curator", "items": [{"name": "All", "tier": "platinum"}]})
-    assert r.status_code == 409  # valid request; this node's emit protocol is what refuses it (C1.6)
-    assert r.json()["error"]["code"] == "emit_protocol"
-    assert "Raise federation emit protocol to 1.2 first" in r.json()["error"]["message"]
-    with authority.st.maker() as session:
-        assert session.scalars(select(Achievement)).first() is None
-        assert feed.head_seq(session) == 1  # only the observation; nothing signed for platinum
+        assert row.body == {**plain, "_wire": 1} and row.body_hash == body_hash(row.body)
+        assert feed.wire_start_seq(session) == 1
 
 
 def _admin(node):
@@ -291,29 +280,40 @@ def _admin(node):
 
 # ---- /sync/info and follower telemetry ------------------------------------------------------------------
 
-def test_sync_info_advertises_versions_and_records_follower_protocol(net):
+def test_sync_info_advertises_versions_and_records_follower_wire(net):
     authority, mirror, _ = net
     authority.publish("Hello")
     info = authority.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {authority.token}"}).json()
     assert info["contract"] == 1  # kept for pre-1.1 readers
-    assert (info["protocol"], info["min_follower_protocol"], info["emit_protocol"]) == ("1.5", "1.0", "1.0")
+    assert info["wire"] == {"min": 1, "max": 1, "reads_v0": True, "serves_v0": False}
+    assert (info["protocol"], info["min_follower_protocol"]) == ("2.0", "2.0")  # the frozen v0 tombstone
+    assert "emit_protocol" not in info
     assert info["observation_schema"] == 1 and info["capabilities"] == ["ext-v1", "dates-v1", "book-v1"]
     assert info["kinds"]["achievements"] == {"emit": 1, "apply": 1}
     with authority.st.maker() as session:
-        assert session.get(FollowerSeen, authority.token_row.id) is None  # a plain reader is not a follower
+        assert session.get(FollowerWire, authority.token_row.id) is None  # a plain reader is not a follower
 
     _, wire = pull(mirror, authority)
-    assert {protocol for _, protocol in wire.seen} == {"1.5"}
+    assert {sent for _, sent in wire.seen} == {"min=1, max=1"}
     with authority.st.maker() as session:
-        assert session.get(FollowerSeen, authority.token_row.id).protocol == "1.5"
-    # A pre-1.1 follower sends no header: recorded as 1.0 on /sync/changes.
-    authority.client.get("/api/v2/sync/changes", headers={"Authorization": f"Bearer {authority.token}"})
+        row = session.get(FollowerWire, authority.token_row.id)
+        assert (row.use, row.wire_min, row.wire_max, row.refused) == (1, 1, 1, None)
+    # A v0 follower sends no Atlas-Wire: refused (409 wire_unsupported, peer_v0) and recorded.
+    r = authority.client.get("/api/v2/sync/changes", headers={"Authorization": f"Bearer {authority.token}",
+                                                             "Atlas-Wire": "", "Atlas-Protocol": "1.4"})
+    assert r.status_code in (400, 409)
+    old = TestClient(authority.app)
+    r = old.get("/api/v2/sync/changes", headers={"Authorization": f"Bearer {authority.token}", "Atlas-Protocol": "1.4"})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "wire_unsupported"
+    assert r.json()["error"]["reason"] == "peer_v0" and r.json()["error"]["client"] == {"legacy_protocol": "1.4"}
     with authority.st.maker() as session:
-        assert session.get(FollowerSeen, authority.token_row.id).protocol == "1.0"
-    # The relay advertises what it saw the relayed authority speak.
+        row = session.get(FollowerWire, authority.token_row.id)
+        assert (row.refused, row.legacy_protocol) == ("peer_v0", "1.4")
+    # The relay advertises the relayed origin's wire, never an M.m (design §2.3).
     relay = mirror.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {mirror.token}"}).json()
     [relayed] = relay["feeds"]
-    assert relayed["node_id"] == authority.node_id and relayed["protocol"] == "1.5"
+    assert relayed["node_id"] == authority.node_id and relayed["wire"] == {"min": 1, "max": 1}
+    assert "protocol" not in relayed
 
 
 # ---- C1.11 (a)-(f): parking and quarantine --------------------------------------------------------------
@@ -338,16 +338,16 @@ def test_a_unknown_kind_parks_blocks_applied_and_later_entries_are_still_retaine
     assert mirror.heads(authority)["applied_head"] == seq - 1
 
 
-def test_b_extra_observation_field_parks_instead_of_silent_drop(net):
+def test_b_extra_observation_field_is_ignored_and_the_entry_applied(net):
+    """C16 Z1 (W-2, a one-way door): an unknown member of a known body is ignored, not parked; the signed bytes stay
+    retained, so a later release that knows the member applies it by replay."""
     authority, mirror, _ = net
     entry = observation("Newer Field", release_date_precision="month")
     seq = around(authority, "obs", entry)
     pull(mirror, authority)
-    assert mirror.failures(authority) == [(seq, "obs", "parked", "unsupported_field")]
-    assert mirror.heads(authority)["applied_head"] == seq - 1
-    with mirror.st.maker() as session:
-        detail = session.get(SyncFailure, (authority.node_id, seq)).detail
-    assert detail["unknown"] == ["observation.payload.release_date_precision"]
+    assert mirror.failures(authority) == []
+    assert mirror.heads(authority)["applied_head"] == seq + 1
+    assert mirror.retained(authority)[seq] == authority.own_feed()[seq]
 
 
 def test_c_platinum_tier_parks_the_whole_list_instead_of_dropping_it(net, release_1_1):
@@ -425,46 +425,20 @@ def test_ignorable_extension_member_applies_on_this_release(net):
 
 # ---- C1.11 (g)-(h): refusal ------------------------------------------------------------------------------
 
-def test_g_refusal_when_this_node_is_older_than_the_upstream_minimum(net):
-    authority, mirror, _ = net
-    authority.publish("Hidden Behind A Refusal")
-    newer = {"protocol": "1.7", "min_follower_protocol": "1.6"}
-    with pytest.raises(sync.SyncRefused, match=r"needs protocol ≥ 1.6; this node speaks 1.5. Upgrade Atlas"):
-        _, wire = pull(mirror, authority, info=lambda body: {**body, **newer})
-    with mirror.st.maker() as session:
-        assert session.get(SyncCursor, authority.node_id) is None  # cursor untouched
-        assert session.scalars(select(ReplicatedChange)).first() is None  # nothing downloaded
-        refused = json.loads(session.get(NodeState, "sync_refused:" + authority.node_id).value)
-    assert refused["upstream_protocol"] == "1.7" and "Upgrade Atlas" in refused["reason"]
-    status = mirror.heads(authority)
-    assert status["state"] == "refused" and status["upstream_protocol"] == "1.7"
-    # Accepted again once the upstream allows this node: the refusal clears.
-    pull(mirror, authority)
-    assert mirror.heads(authority)["state"] == "in_sync"
-
-
 def test_g_no_changes_request_is_made_when_refused(net):
     authority, mirror, _ = net
-    wire = Wire(authority, info=lambda body: {**body, "min_follower_protocol": "1.9"})
+    wire = Wire(authority, info=lambda body: {**body, "wire": {"min": 2, "max": 3}})
     with httpx.Client(transport=httpx.MockTransport(wire)) as http, pytest.raises(sync.SyncRefused):
         sync.pull_once(mirror.st.maker, mirror.st.ctx, http, "http://upstream", authority.token,
                        trusted={authority.node_id: authority.st.ctx.identity.trust_public_b64})
     assert [path for path, _ in wire.seen] == ["/api/v2/sync/info"]
 
 
-def test_h_n_minus_two_refusal(net, monkeypatch):
-    authority, mirror, _ = net
-    monkeypatch.setattr(sync, "PROTOCOL", "3.0")
-    with pytest.raises(sync.SyncRefused, match="older than this node supports"):
-        pull(mirror, authority)
-    monkeypatch.setattr(sync, "PROTOCOL", "2.0")
-    pull(mirror, authority)  # N-1 is still accepted
-
-
-def test_pre_1_1_upstream_is_accepted(net):
+def test_a_v0_upstream_is_read_through_the_legacy_reader(net):
+    """Hard gate: a wire-1 node still syncs FROM a v0 node (`WIRE_MIN == 0`)."""
     authority, mirror, _ = net
     authority.publish("From An Old Authority")
-    legacy = ("protocol", "min_follower_protocol", "emit_protocol", "kinds", "capabilities", "observation_schema")
+    legacy = ("wire", "protocol", "min_follower_protocol", "kinds", "capabilities", "observation_schema")
     pull(mirror, authority, info=lambda body: {k: v for k, v in body.items() if k not in legacy})
     assert "From An Old Authority" in mirror.titles()
     assert mirror.heads(authority)["upstream_protocol"] == "1.0"
@@ -473,7 +447,8 @@ def test_pre_1_1_upstream_is_accepted(net):
 def test_malformed_upstream_protocol_is_refused(net):
     authority, mirror, _ = net
     with pytest.raises(sync.SyncRefused, match="malformed"):
-        pull(mirror, authority, info=lambda body: {**body, "protocol": "one point four"})
+        pull(mirror, authority, info=lambda body: {**{k: v for k, v in body.items() if k != "wire"},
+                                                   "protocol": "one point four"})  # a v0 upstream's malformed value
 
 
 # ---- C1.11 (i)-(j): replay and skip ---------------------------------------------------------------------
@@ -486,8 +461,6 @@ def release_1_1(monkeypatch):
         old = {k: (v - {"platinum"} if k == "achievement_tier" else v) for k, v in feed_schema.vocabularies().items()}
         monkeypatch.setattr(feed_schema, "vocabularies", lambda: old)
         monkeypatch.setattr(feed_schema, "VOCAB_TOKENS", ())
-        monkeypatch.setattr(feed_schema, "PROTOCOL", "1.1")
-        monkeypatch.setattr(sync, "PROTOCOL", "1.1")
     return install
 
 
@@ -680,7 +653,7 @@ def test_follower_never_reports_in_sync_from_an_unverified_head(net):
     authority.publish("Two")
     pull(mirror, authority, changes=lambda page: {**page, "entries": page["entries"][:1]})
     heads = mirror.heads(authority)
-    assert heads["applied_head"] == heads["verified_head"] == 1 and heads["observed_head"] == 2
+    assert heads["applied_head"] == heads["verified_head"] == 1 and heads["observed_head"] == 3  # 1: wire_start
     assert heads["state"] == "behind" and not heads["in_sync"]
     pull(mirror, authority, changes=lambda page: {k: v for k, v in page.items() if k != "head"})
     with mirror.st.maker() as session:
@@ -697,10 +670,10 @@ def test_rewound_authority_is_reported_not_silently_ignored(net):
     with pytest.raises(sync.SyncError, match="fork or rewind"):
         pull(mirror, authority, changes=lambda page: {**page, "head": 1})
     heads = mirror.heads(authority)
-    assert heads["applied_head"] == 3
+    assert heads["applied_head"] == 4  # wire_start and three observations
     assert heads["state"] == "rewound" and not heads["in_sync"], heads  # never "in sync" from a forked feed
     assert (heads["rewound"]["kind"], heads["rewound"]["advertised_head"], heads["rewound"]["verified_head"]) == \
-        ("rewind", 1, 3)
+        ("rewind", 1, 4)
     with mirror.st.maker() as session:  # persisted in node state, also without a Peer row
         assert session.get(NodeState, "sync_rewound:" + authority.node_id) is not None
     # A pull that again sees a short head stays rewound; one that re-serves the verified tip unchanged clears it.
@@ -722,19 +695,19 @@ def test_forked_tip_keeps_the_upstream_rewound_and_the_cli_exits_5(net, monkeypa
 
     from atlas.signing import load_identity
 
-    with authority.st.maker() as session:  # the authority's real key signs a different entry 2
+    with authority.st.maker() as session:  # the authority's real key signs a different entry 3 (1: wire_start)
         signer = load_identity(session)
     other = observation("Forked History")
 
     def forked(page):
         entries = [dict(e) for e in page["entries"]]
         for e in entries:
-            if e["seq"] == 2:
+            if e["seq"] == 3:
                 digest = feed.body_hash(other)
-                e.update(kind="obs", body=other, body_hash=digest, signature=signer.sign(2, "obs", digest))
+                e.update(kind="obs", body=other, body_hash=digest, signature=signer.sign(3, "obs", digest))
         return {**page, "entries": entries}
 
-    with pytest.raises(sync.SyncError, match="already retained entry 2 changed"):
+    with pytest.raises(sync.SyncError, match="already retained entry 3 changed"):
         pull(mirror, authority, changes=forked)
     heads = mirror.heads(authority)
     assert heads["state"] == "rewound" and heads["rewound"]["kind"] == "fork", heads
@@ -757,7 +730,7 @@ def test_relay_that_is_behind_is_not_an_error(net):
     pull(local, authority)  # local gets ahead of the relay directly from the authority
     pull(local, mirror, authority)  # the relay serves an older head: fine, and reported
     heads = local.heads(authority)
-    assert heads["applied_head"] == 2 and heads["in_sync"]
+    assert heads["applied_head"] == 3 and heads["in_sync"]  # wire_start, A, B
 
 
 def test_rescan_records_entries_an_older_release_silently_skipped(net):
@@ -782,7 +755,7 @@ def test_rescan_records_entries_an_older_release_silently_skipped(net):
         counts = sync.rescan(session, authority.node_id)
         session.commit()
     # "After" was held back behind the parked entry, so the old release never applied it either.
-    assert counts == {"scanned": 5, "parked": 3, "quarantined": 1}
+    assert counts == {"scanned": 6, "parked": 3, "quarantined": 1}  # 6: with wire_start
     assert mirror.failures(authority) == [(unknown, "x_future", "parked", "unsupported_kind"),
                                           (invalid, "obs", "quarantined", "invalid"),
                                           (skipped, "obs", "parked", "dropped_by_previous_release"),
@@ -791,7 +764,7 @@ def test_rescan_records_entries_an_older_release_silently_skipped(net):
     assert heads["applied_head"] == authority.head()  # the cursor never moves back
     assert heads["parked"]["count"] == 3 and heads["state"] == "parked"
     with mirror.st.maker() as session:  # idempotent
-        assert sync.rescan(session, authority.node_id) == {"scanned": 5, "parked": 0, "quarantined": 0}
+        assert sync.rescan(session, authority.node_id) == {"scanned": 6, "parked": 0, "quarantined": 0}
     with mirror.st.maker() as session:  # a plain replay never applies them out of order (C1.7, C1.8)
         result = sync.replay(session, mirror.st.ctx, authority.node_id)[authority.node_id]
         session.commit()
@@ -854,7 +827,7 @@ def test_rollback_then_reupgrade_rescan_recovers_rows_the_old_release_resolved(n
     with mirror.st.maker() as session:
         counts = sync.rescan(session, authority.node_id)
         session.commit()
-    assert counts == {"scanned": 3, "parked": 1, "quarantined": 0}
+    assert counts == {"scanned": 4, "parked": 1, "quarantined": 0}  # 4: with wire_start
     heads = mirror.heads(authority)
     assert mirror.failures(authority) == [(seq, "x_future", "parked", "unsupported_kind")]
     assert heads["state"] == "parked" and not heads["in_sync"]  # no longer silently "in sync"
@@ -1000,10 +973,10 @@ def test_cli_status_replay_and_skip_exit_codes(net, monkeypatch, capsys, future_
 def test_cli_reports_a_refused_upstream(net, monkeypatch, capsys):
     authority, mirror, _ = net
     with pytest.raises(sync.SyncRefused):
-        pull(mirror, authority, info=lambda body: {**body, "min_follower_protocol": "1.6"})
+        pull(mirror, authority, info=lambda body: {**body, "wire": {"min": 2, "max": 2}})
     _cli_env(monkeypatch, mirror)
     assert cli.main(["sync", "status"]) == cli.EXIT_REFUSED
-    assert "refused: upstream needs protocol" in capsys.readouterr().out
+    assert "refused: upstream needs wire 2" in capsys.readouterr().out
     assert cli.main(["sync", "replay"]) == cli.EXIT_REFUSED
 
 
@@ -1047,7 +1020,7 @@ def test_status_api_exposes_named_heads(net):
     up = status["upstreams"][authority.node_id]
     assert (up["applied_head"], up["verified_head"], up["parked"]["first_seq"]) == (seq - 1, seq + 1, seq)
     detail = mirror.client.get("/api/v2/sync/status", headers=admin).json()
-    assert detail["own_protocol"] == feed_schema.PROTOCOL and detail["upstreams"][authority.node_id]["state"] == "parked"
+    assert detail["wire"]["max"] == 1 and detail["upstreams"][authority.node_id]["state"] == "parked"
     failures = mirror.client.get("/api/v2/sync/failures", headers=admin).json()
     assert failures["parked"] == 1 and failures["failures"][0]["reason"] == "unsupported_kind"
     assert mirror.client.get("/api/v2/sync/status", headers={"Authorization": f"Bearer {mirror.token}"}
@@ -1064,8 +1037,8 @@ def test_metrics_expose_heads_and_parked_counts(tmp_path):
         session.commit()
     text = mirror.client.get("/metrics", headers={"Authorization": f"Bearer {scrape}"}).text
     label = json.dumps(authority.node_id)
-    assert f'atlas_sync_upstream_head{{node_id={label},head="applied"}} 1' in text
-    assert f'atlas_sync_upstream_head{{node_id={label},head="verified"}} 3' in text
+    assert f'atlas_sync_upstream_head{{node_id={label},head="applied"}} 2' in text  # 1 is wire_start
+    assert f'atlas_sync_upstream_head{{node_id={label},head="verified"}} 4' in text
     assert f"atlas_sync_parked_entries{{node_id={label}}} 2" in text
     assert f"atlas_sync_in_sync{{node_id={label}}} 0" in text
 
@@ -1080,7 +1053,7 @@ def test_startup_replay_runs_once_per_release(net, future_kind_support):
     assert sync.startup_replay(mirror.st.maker, mirror.st.ctx)[authority.node_id]["state"] == "in_sync"
 
 
-def test_peer_records_the_remote_protocol(net):
+def test_peer_records_the_remote_wire(net):
     authority, mirror, _ = net
     with mirror.st.maker() as session:
         session.add(Peer(name="a", url="http://upstream", node_id=authority.node_id,
@@ -1088,7 +1061,8 @@ def test_peer_records_the_remote_protocol(net):
         session.commit()
     pull(mirror, authority)
     with mirror.st.maker() as session:
-        assert session.scalars(select(Peer)).one().remote_protocol == feed_schema.PROTOCOL
+        peer = session.scalars(select(Peer)).one()
+        assert peer.remote_protocol is None and peer.remote_wire == {"min": 1, "max": 1, "use": 1, "high": 1}
 
 
 def test_follower_telemetry_upsert_tolerates_a_row_another_request_inserted(net):
@@ -1099,19 +1073,21 @@ def test_follower_telemetry_upsert_tolerates_a_row_another_request_inserted(net)
 
     authority, _, _ = net
     token_id = authority.token_row.id
+    one = {"wire_min": 1, "wire_max": 1, "use": 1, "refused": None, "legacy_protocol": None}
     with authority.st.maker() as first, authority.st.maker() as second:
-        assert first.get(FollowerSeen, token_id) is None and second.get(FollowerSeen, token_id) is None
-        routes.upsert_follower_seen(first, token_id, "1.0", datetime.now(UTC) - timedelta(minutes=5))
+        assert first.get(FollowerWire, token_id) is None and second.get(FollowerWire, token_id) is None
+        routes.upsert_follower_wire(first, token_id, {**one, "refused": "peer_v0"}, datetime.now(UTC) - timedelta(minutes=5))
         first.commit()
-        routes.upsert_follower_seen(second, token_id, "1.1", datetime.now(UTC))  # would be a duplicate insert
+        routes.upsert_follower_wire(second, token_id, one, datetime.now(UTC))  # would be a duplicate insert
         second.commit()
     with authority.st.maker() as session:
-        assert session.get(FollowerSeen, token_id).protocol == "1.1"
-    headers = {"Authorization": f"Bearer {authority.token}", "Atlas-Protocol": "1.1"}
+        assert session.get(FollowerWire, token_id).refused is None
+    headers = {"Authorization": f"Bearer {authority.token}"}
     for _ in range(3):  # repeated reads within a minute: no rewrite, no error
-        assert authority.client.get("/api/v2/sync/changes", headers=headers).status_code == 200
+        r = authority.client.get("/api/v2/sync/changes", headers=headers)
+        assert r.status_code == 200 and r.headers["Atlas-Wire"] == "use=1, min=1, max=1"
     with authority.st.maker() as session:
-        assert session.scalars(select(FollowerSeen)).all()[0].protocol == "1.1"
+        assert session.scalars(select(FollowerWire)).all()[0].use == 1
 
 
 def test_sync_digest_is_cached_per_feed(net):

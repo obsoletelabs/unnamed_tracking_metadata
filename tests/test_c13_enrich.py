@@ -18,6 +18,7 @@ from atlas.providers.base import ProviderResult
 
 from .test_c13_follower import curate_art, provider_only
 from .test_sync_compat import Node, pull
+from .v0_authority import upgrade, v0, v0_authorities  # noqa: F401
 
 STEAM_ART = "https://cdn.steam.example/apps/{id}/header.jpg"
 
@@ -60,7 +61,7 @@ def jobs(node: Node) -> list[tuple[str, str, str]]:
 def test_record_enriches_from_own_provider(tmp_path):
     """T-F7: the record arrives with its Steam id; the follower fetches the game from its own Steam and attaches it
     to the record (art and achievements present here), signs nothing, and asks nothing of the authority."""
-    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
+    authority = Node(tmp_path, "authority", "authority")
     cid = provider_only(authority)
     curate_art(authority, cid)
     mirror, steam = follower(tmp_path)
@@ -84,7 +85,7 @@ def test_record_enriches_from_own_provider(tmp_path):
 
 def test_enrichment_is_off_by_default(tmp_path):
     """H56 is the owner's decision: without the setting nothing is queued or fetched."""
-    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
+    authority = Node(tmp_path, "authority", "authority")
     curate_art(authority, provider_only(authority))
     mirror = Node(tmp_path, "mirror", "mirror")
     pull(mirror, authority)
@@ -96,8 +97,8 @@ def test_enrich_skips_key_owned_by_other_record(tmp_path):
     """T-F17: a second authority's record carries a Steam id that already belongs to the first authority's record
     here (a cross-origin duplicate under review). Fetching it with `force_canonical` would move the first record's
     observation, so it is never queued; the first record keeps its store id."""
-    a = Node(tmp_path, "a", "authority", emit_protocol="1.5")
-    b = Node(tmp_path, "b", "authority", emit_protocol="1.5")
+    a = Node(tmp_path, "a", "authority")
+    b = Node(tmp_path, "b", "authority")
     first, second = provider_only(a, "Subnautica 2", "1962700"), provider_only(b, "Subnautica 2", "1962700")
     curate_art(a, first)
     curate_art(b, second)
@@ -117,7 +118,7 @@ def test_enrich_skips_key_owned_by_other_record(tmp_path):
 def test_enrich_rate_limited_and_validates_ids(tmp_path):
     """T-F17: an id the provider would refuse is never requested (counted instead), and at most
     `sync_enrich_per_peer_per_hour` fetches run per upstream feed; the rest wait for the next hour."""
-    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
+    authority = Node(tmp_path, "authority", "authority")
     for n in range(3):
         curate_art(authority, provider_only(authority, f"Game {n}", str(500 + n)))
     curate_art(authority, provider_only(authority, "Odd id", "12ab"))
@@ -144,7 +145,7 @@ def test_a_late_record_for_a_record_the_follower_already_holds(tmp_path):
 
     from .test_c13_follower import ART_ROWS, art, waiting
 
-    authority = Node(tmp_path, "authority", "authority")  # a legacy authority: nothing introduced
+    authority = v0(Node(tmp_path, "authority", "authority"))  # a legacy authority: nothing introduced
     a, b = provider_only(authority, "Alpha", "301"), provider_only(authority, "Beta", "302")
     curate_art(authority, a)
     with authority.st.maker() as s:
@@ -152,7 +153,7 @@ def test_a_late_record_for_a_record_the_follower_already_holds(tmp_path):
 
         service.merge_canonicals(s, authority.st.ctx, a, b, actor="curator")
         s.commit()
-    other = Node(tmp_path, "other", "authority", emit_protocol="1.5")
+    other = Node(tmp_path, "other", "authority")
     other.emit("record", {"canonical_id": a, "media_type": "game", "title": "Alpha", "provider_ids": {"steam": "301"},
                           "because": "publish"})
     mirror, steam = follower(tmp_path)
@@ -160,7 +161,7 @@ def test_a_late_record_for_a_record_the_follower_already_holds(tmp_path):
     assert jobs(mirror) == [("steam", "301", a)]
     pull(mirror, authority)
     assert waiting(mirror, authority)  # the merge waits for B, which nobody has introduced
-    authority.st.ctx.settings = authority.st.ctx.settings.model_copy(update={"emit_protocol": "1.5"})
+    upgrade(authority)
     with authority.st.maker() as s:
         assert feed.introduce_batch(s, authority.st.ctx, "missing")["introduced"] == 2
         s.commit()

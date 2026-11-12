@@ -56,7 +56,7 @@ def test_populated_upgrade_preserves_fields_values_proposals_and_signed_history(
                                       for row in session.execute(select(old_fields)).mappings()]}
         feed.append(session, identity, "schema", original_schema)
         session.commit()
-        signed = session.scalars(select(ChangeLog)).one()
+        signed = session.scalars(select(ChangeLog).where(ChangeLog.kind == "schema")).one()
         original_signature, original_hash = signed.signature, signed.body_hash
         proposal_id = proposal.id
     db.upgrade(url)
@@ -71,8 +71,9 @@ def test_populated_upgrade_preserves_fields_values_proposals_and_signed_history(
         proposal = session.get(Proposal, proposal_id)
         assert proposal.payload["custom"] == {"custom_genres_2": ["New"]}
         assert proposal.previous["custom"] == {"custom_genres_2": ["Old"]}
-        signed = session.scalars(select(ChangeLog)).one()
-        assert (signed.body, signed.signature, signed.body_hash) == (original_schema, original_signature, original_hash)
+        signed = session.scalars(select(ChangeLog).where(ChangeLog.kind == "schema")).one()
+        assert (signed.body, signed.signature, signed.body_hash) == ({**original_schema, "_wire": 1}, original_signature,
+                                                                     original_hash)
         assert verify(identity.public_b64, identity.node_id, signed.seq, signed.kind,
                       signed.body, signed.body_hash, signed.signature)
         assert custom.clean_values(session, "game", {"genres": ["Compatible"]}, editable_only=True) == {

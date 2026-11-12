@@ -85,7 +85,8 @@ def v1_page(node, since=0, **params):
 
 
 def signed_feed(node, since=0):
-    r = node.client.get("/api/v2/sync/changes", params={"since": since, "limit": 1000}, headers=H(node))
+    r = node.client.get("/api/v2/sync/changes", params={"since": since, "limit": 1000},
+                        headers={**H(node), "Atlas-Wire": "min=1, max=1"})
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -209,7 +210,8 @@ def test_followers_never_see_provider_imports_or_the_local_log(tmp_path, authori
     pull(downstream, mirror, authority=a)
     assert downstream.retained(a) == mirror.retained(a)
     assert all(r[3] == "replicated" for r in rows(downstream))
-    relayed = mirror.client.get("/api/v2/sync/changes", params={"since": 0, "node_id": a.node_id}, headers=H(mirror))
+    relayed = mirror.client.get("/api/v2/sync/changes", params={"since": 0, "node_id": a.node_id},
+                                headers={**H(mirror), "Atlas-Wire": "min=1, max=1"})
     assert relayed.status_code == 200
     assert SECRET_NAME not in relayed.text and SECRET_ART not in relayed.text
 

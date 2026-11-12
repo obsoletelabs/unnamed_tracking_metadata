@@ -371,16 +371,17 @@ def test_authors_editor_is_for_curators_and_books_only(books):
     assert f'href="/game/{cid}/authors"' not in bob.get(f"/game/{cid}").text
 
 
-def test_authors_editor_on_an_authority_below_the_unified_release(tmp_path):
-    with _site(tmp_path, role="authority") as c:  # emit protocol 1.0: book data is refused, not stripped (A21)
+def test_authors_editor_on_an_authority_signs_book_data(tmp_path):
+    """C16 Z1: there is no release below the unified one any more; an authority signs curated book data."""
+    with _site(tmp_path, role="authority") as c:
         _wait_for_startup_replay(c.st)
         cid = lantern(c.st)
         signup(c, "alice")
         t = csrf_in(c, f"/game/{cid}/authors")
         r = c.post(f"/game/{cid}/authors", data={"csrf": t, "name.0": "Ilse Varn", "role.0": "author"})
-        assert r.status_code == 409 and "book data" in r.text
+        assert r.status_code in (200, 303), r.text
         with c.st.maker() as s:
-            assert not s.scalars(select(Observation).where(Observation.source == "curator")).all()
+            assert s.scalars(select(Observation).where(Observation.source == "curator")).all()
 
 
 # ---- series picker -----------------------------------------------------------------------------------------------
