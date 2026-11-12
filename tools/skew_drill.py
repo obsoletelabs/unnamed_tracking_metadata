@@ -47,8 +47,12 @@ from .multinode_drill import PASSWORD, Node, free_port
 
 ROOT = Path(__file__).resolve().parents[1]
 #: v2 at 62c73f3 ("feat: read large achievement catalogues in bounded pages (#95)"): the last release
-#: without protocol negotiation (federation protocol 1.0).
+#: without protocol negotiation (federation protocol 1.0, migration head 0020).
 DEFAULT_PREVIOUS = "62c73f36e7de4a0bd6b814a7dd992eacc7a670e1"
+#: The other real v0 build: A12 (federation protocol 1.1, migration head 0030), the build the owner's live follower
+#: runs. Its exact commit c91b631 is no longer on any branch of `origin` (the A12 branch was rebased); CI runs the
+#: rebased A12 head 71893c1 (same head 0030 and protocol 1.1) until the owner pins c91b631 with a tag (`skew/a12`).
+A12_PREVIOUS = "71893c17f58e13a31ca5c727abc9c9c186267a66"
 
 _SETUP = r"""
 import json, sys
@@ -67,6 +71,28 @@ with st.maker() as s:
     s.commit()
 print(json.dumps({"node_id": st.ctx.identity.node_id, "public_b64": st.ctx.identity.public_b64,
                   "reader": reader, "follower": follower}))
+"""
+
+
+#: The previous release's own pull, run out of process against a wire-1 authority it was never allowed to pin (a v0
+#: build cannot pin a 64-digit node id through its form): what it does when it meets wire 1. A 1.1-1.5 build refuses
+#: itself from the v0 tombstone (`min_follower_protocol` "2.0", "Upgrade Atlas"); any build that gets as far as
+#: `/sync/changes` is refused there with 409 `wire_unsupported`.
+_V0_PULL = r"""
+import json, sys
+import httpx
+from atlas import main, sync
+from atlas.settings import Settings
+a = json.loads(sys.argv[1])
+settings = Settings(_env_file=None, database_url=a["db"], role=a["role"], public_url=a["url"], secret_key=a["key"],
+                    media_cache_enabled=False, media_dir=a["media"])
+st = main.create_app(settings).state.atlas
+try:
+    with httpx.Client() as client:
+        n = sync.pull_once(st.maker, st.ctx, client, a["upstream"], a["token"], {a["node_id"]: a["public"]})
+    print(json.dumps({"refused": None, "applied": n}))
+except Exception as exc:  # noqa: BLE001
+    print(json.dumps({"refused": f"{type(exc).__name__}: {exc}"}))
 """
 
 
@@ -133,6 +159,25 @@ class PreviousNode(Node):
         assert response.status_code == 200, f"sync response on {self.name}: {response.status_code}"
         with sqlite3.connect(self.db_path) as db:
             return db.execute("SELECT last_error FROM peer WHERE id = ?", (peer_id,)).fetchone()[0]
+
+    def v0_pull(self, upstream: Node) -> dict[str, Any]:
+        """Run this previous release's own pull against `upstream`, pinning it in code (see `_V0_PULL`)."""
+        args = {"db": self.database_url, "role": self.role, "url": self.url, "key": self.encryption_key,
+                "media": str(self.root / f"{self.name}-media"), "upstream": upstream.url, "token": upstream.follower,
+                "node_id": upstream.identity.node_id, "public": upstream.identity.public_b64}
+        out = subprocess.run([self.python, "-c", _V0_PULL, json.dumps(args)], cwd=self.cwd, capture_output=True,
+                             text=True, env=_clean_env())
+        assert out.returncode == 0, (out.stdout[-2000:], out.stderr[-2000:])
+        return json.loads(out.stdout.strip().splitlines()[-1])
+
+    def publish_dated(self, title: str, release_date: str) -> str:
+        """A record with a release date: migration 0031 rewrites its view, the case R2 must not report as lost."""
+        payload = {"connection": {"source_kind": "manual", "source": "manual", "source_scope": "release-drill"},
+                   "observations": [{"external_id": title, "title": title, "release_date": release_date,
+                                     "facts": {"genres": ["Puzzle"]}}]}
+        response = self.client.post("/api/v2/observations", headers=self.headers(self.admin_token), json=payload)
+        assert response.status_code == 200, f"publish on {self.name}: {response.status_code} {response.text[:300]}"
+        return response.json()["results"][0]["atlas"]["canonical_id"]
 
     def upgrade(self) -> None:
         """Stop the previous release and run this checkout against the same database (auto-migrates)."""
@@ -229,6 +274,19 @@ def run(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) 
         followers = new_authority.client.get("/api/v2/sync/status",
                                              headers=new_authority.headers(new_authority.admin_token)).json()["followers"]
         assert [f["refused"] for f in followers] == ["peer_v0"], followers
+        # The previous release's own pull code, pinned to the wire-1 authority in code (the case the form cannot
+        # reach): a 1.1-1.5 build refuses itself from the v0 tombstone; whatever it does, nothing is applied.
+        tried = old_local.v0_pull(new_authority)
+        assert tried["refused"], tried
+        assert old_local.client.get(f"/api/v2/games/{first}", headers=old_local.headers()).status_code == 404
+        self_refused = "Upgrade Atlas" in tried["refused"] and wire.V0_TOMBSTONE["protocol"] in tried["refused"]
+        report["v0_pull"] = {"previous_protocol": old_info.get("protocol"), "refused": tried["refused"][:300],
+                             "self_refused_from_tombstone": self_refused}
+        if old_info.get("protocol") not in (None, "1.0"):
+            assert self_refused, tried  # 1.1-1.5 (A12): the tombstone makes it refuse before /sync/changes
+        checks.append("the previous release's own pull, pinned to the wire-1 authority in code, is refused and applies "
+                      f"nothing ({'self-refusal from the v0 tombstone' if self_refused else 'refused'}: "
+                      f"{tried['refused'][:120]})")
         checks.append("a v0 follower cannot pin a wire-1 authority (its 64-digit node id is not a v0 id: the v0 release "
                       "answers 400 and pins nothing), and a v0-shaped pull of /sync/changes is refused with 409 "
                       "wire_unsupported (peer_v0), applies nothing, and the authority lists that follower as refused")
@@ -236,8 +294,10 @@ def run(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) 
         # Hard gate 2: the v0 follower upgrades in place without losing data.
         old_peer = old_local.add_peer(old_authority)
         second = old_authority.publish("Skew Before Upgrade")
+        dated = old_authority.publish_dated("Skew Dated Before Upgrade", "2011-04-19")
         assert old_local.sync(old_peer) is None
         assert old_local.game(second)["title"] == "Skew Before Upgrade"
+        assert old_local.game(dated)["title"] == "Skew Dated Before Upgrade"
         old_local.stop()
         manifest = root / "local-v0-manifest.json"
         exported = _current_cli(old_local, "export-verify", "export", str(manifest))
@@ -246,10 +306,17 @@ def run(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) 
         assert migrated.returncode == 0, (migrated.stdout, migrated.stderr)
         verified = _current_cli(old_local, "export-verify", "verify", str(manifest), "--json")
         assert verified.returncode == 0, (verified.stdout, verified.stderr)
+        rewritten = json.loads(verified.stdout)["tables"]["canonical"]["derived_rewritten"]
+        assert rewritten >= 1, verified.stdout[:2000]  # the dated record's view was rewritten by 0031, not lost
+        report["export_verify"] = {"revision_before": json.loads(verified.stdout)["revision_before"],
+                                   "canonical_derived_rewritten": rewritten}
         old_local.upgrade()
         assert old_local.game(second)["title"] == "Skew Before Upgrade"
+        assert old_local.game(dated)["title"] == "Skew Dated Before Upgrade"
         checks.append("the v0 follower upgrades in place: export-verify before, `atlas migrate`, export-verify "
-                      f"after reports every row present and unchanged ({exported.stdout.strip()})")
+                      f"after reports every row present and unchanged ({exported.stdout.strip()}), a dated record "
+                      f"included ({rewritten} record view(s) rewritten on purpose by migration 0031, reported as "
+                      "derived)")
 
         third = old_authority.publish("Skew After Upgrade")
         assert old_local.sync(old_peer) is None

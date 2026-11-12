@@ -62,11 +62,17 @@ disposable folder, SQLite and synthetic data on loopback. It checks that:
   only after it verified and applied the advertised head;
 * a previous-release follower of an authority of this release is refused (HTTP 409 `wire_unsupported`, reason
   `peer_v0`), applies nothing, and the authority lists it as refused on Admin → Peers;
+* the previous release's own pull, pinned in code to the wire-1 authority, is refused and applies nothing (a 1.1
+  build such as A12 refuses itself from the v0 tombstone: "upstream needs protocol ≥ 2.0 … Upgrade Atlas.");
 * that follower upgrades in place without losing data: `atlas export-verify export` before the upgrade, the
-  migrations on start, and `atlas export-verify verify` after it must report every row present and unchanged;
+  migrations on start, and `atlas export-verify verify` after it must report every row present and unchanged
+  (it holds a record with a release date, whose derived view migration 0031 rewrites on purpose);
   the upgraded node then follows both its v0 authority and the wire-1 authority that refused it.
 
-The Federation lab workflow runs it after the scenarios and uploads `skew-v0-wire1.json`. See
+The Federation lab workflow runs it twice after the scenarios, against the 1.0 release (`62c73f3`, schema 0020) and
+the A12 1.1 build (schema 0030; the rebased A12 head `71893c1`, since the exact A12 commit is no longer on a
+branch), and uploads `skew-v0-wire1.json` and `skew-a12-wire1.json`. The same upgrade from both schemas is tested on
+SQLite and PostgreSQL by `tests/test_c16_export_verify.py`. See
 [Compatibility and upgrades](federation.md#compatibility-and-upgrades).
 
 ## Topology and ordinary users

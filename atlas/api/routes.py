@@ -1660,14 +1660,18 @@ def served_media(session: Session, st: AppState, digest: str, missing: str, *, v
 
 @router.get("/sync/media/{digest}", tags=["federation"])
 def sync_media(digest: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")], st: St, session: Sess,
-               who: Annotated[auth.Principal, Depends(require("sync"))]):
+               who: Annotated[auth.Principal, Depends(require("sync"))],
+               atlas_wire: Annotated[str | None, Header(alias=wire.HEADER, max_length=200)] = None,
+               atlas_protocol: Annotated[str | None, Header(alias=wire.LEGACY_HEADER, max_length=32)] = None):
     """C13 §6.2: the cached bytes of an image this node federates, for the followers that received its row. A blob is
     served only when a row referencing it may federate (C12 §12.5.5 applied to bytes): redistributable, not local-only,
     of a source whose policy federates, with the licence `cc0` or `owner_upload` (or `unknown` on a curated URL row
     when `federation_media_unknown_licence` is on, H58). Anything else is 404, so this never discloses provider,
-    private or licence-withheld media. Content addressed: the follower checks the hash."""
+    private or licence-withheld media. Content addressed: the follower checks the hash. A peer channel, negotiated
+    like `/sync/changes` (design §5.3): a caller without `Atlas-Wire` is a v0 build and gets 409 `peer_v0`."""
     from .. import scope
 
+    use = _negotiate_follower(st, session, who, atlas_wire, atlas_protocol)
     settings = st.ctx.settings
     # C14 §5.4/§5.7: never the art of a record under a ceiling (the feed never carries it), never art the caller
     # may not see (received from the group, of a hidden record): the same 404 as an unknown digest
@@ -1683,7 +1687,10 @@ def sync_media(digest: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")], st: St, 
         if pol.federate and (licence in facets.FEDERABLE_UPLOAD_LICENCES or (
                 licence == "unknown" and settings.federation_media_unknown_licence
                 and source_class(row.source) != "provider")):
-            return media_response(st, digest)
+            response = media_response(st, digest)
+            response.headers[wire.HEADER] = wire.response_header(use, wire.profile(st))
+            response.headers["Vary"] = wire.HEADER
+            return response
     raise HTTPException(404, "no such image")
 
 
@@ -1803,10 +1810,15 @@ def sync_price_changes(_: Annotated[auth.Principal, Depends(require("sync"))],
 
 
 @router.get("/sync/digest", tags=["federation"])
-def sync_digest(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("sync"))],
-                node_id: Annotated[str | None, Query(max_length=64)] = None):
+def sync_digest(st: St, session: Sess, response: Response, who: Annotated[auth.Principal, Depends(require("sync"))],
+                node_id: Annotated[str | None, Query(max_length=64)] = None,
+                atlas_wire: WireHeader = None, atlas_protocol: LegacyHeader = None):
     """Digest of the replicated observations of this node's feed, or of a retained authority feed with
-    `node_id`. It hashes every observation, so answers are cached per feed for DIGEST_TTL seconds."""
+    `node_id`. It hashes every observation, so answers are cached per feed for DIGEST_TTL seconds. A peer channel,
+    negotiated like `/sync/changes` (design §5.3)."""
+    use = _negotiate_follower(st, session, who, atlas_wire, atlas_protocol)
+    response.headers[wire.HEADER] = wire.response_header(use, wire.profile(st))
+    response.headers["Vary"] = wire.HEADER
     if node_id and node_id != st.ctx.identity.node_id:
         if session.get(ReplicatedFeed, node_id) is None:
             raise HTTPException(404, "This node does not retain that authority's feed.")

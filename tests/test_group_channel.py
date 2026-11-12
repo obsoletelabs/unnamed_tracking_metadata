@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import timedelta
 
 import pytest
@@ -312,6 +313,33 @@ def test_hello_advertises_kinds_fields_and_capabilities(pair):
     assert hello["kinds"]["profile.field.set"] == {"emit": 1, "apply": 1}
     assert "display_name" in hello["profile_fields"] and "password_hash" not in hello["profile_fields"]
     assert "store-forward-v1" in hello["capabilities"]
+
+
+def test_the_call_speaks_the_negotiated_wire_the_outcome_echoes_it_and_a_refusal_evicts_the_hello(pair, monkeypatch):
+    """Design §4.10 rule 4 / T-W27 (review of C16 Z1): the caller sends the wire negotiated from the member's cached
+    hello, the signed outcome echoes it, and a `wire_unsupported` answer drops the cached hello so the next round
+    asks again (the member may have been upgraded or rolled back)."""
+    from atlas.api import group_routes
+
+    a, b, *_ = pair
+    with b.session() as s:
+        group = groups.load(s)
+        member = groups.trust(s, group, own_node=b.node_id).in_force(a.node_id)["body"]["member"]
+        sent: list[str] = []
+        real_sign = group_routes.gc.sign_request
+
+        def spy(private, inner):
+            sent.append(inner["proto"])
+            return real_sign(private, inner)
+
+        monkeypatch.setattr(group_routes.gc, "sign_request", spy)
+        group_channel._HELLO[a.node_id] = (time.monotonic(), {"wire": {"min": 1, "max": 1}})
+        group_routes.call(s, b.settings, b.identity, group, member, "hello", {}, b.net)
+        assert sent[-1] == "w1"
+        monkeypatch.setattr(group_schema, "proto_use", lambda proto, prof=None: None)  # a member that refuses it
+        with pytest.raises(group_routes.CallError, match="wire_unsupported"):
+            group_routes.call(s, b.settings, b.identity, group, member, "hello", {}, b.net)
+    assert a.node_id not in group_channel._HELLO
 
 
 def test_unknown_kind_parks_only_its_stream_and_unknown_field_is_held(pair):

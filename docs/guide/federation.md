@@ -246,11 +246,21 @@ older one lacks, it adapts down and the follower's Admin → Peers lists what wa
 wire the request is refused with HTTP 409:
 
 ```json
-{"error": {"code": "wire_unsupported", "reason": "peer_v0", "theirs": null, "mine": {"min": 1, "max": 1}}}
+{"error": {"code": "wire_unsupported", "reason": "peer_v0",
+           "detail": "The caller runs Atlas from before the first wire version (v0, protocol 1.0). ...",
+           "server": {"wire": {"min": 1, "max": 1}, "release": "2.0.0", "node": "<node id>"},
+           "client": {"legacy_protocol": "1.0"}, "action": "upgrade_client"}}
 ```
 
-`reason` is `peer_too_old`, `peer_too_new`, `peer_v0` (no header: a v0 release) or `peer_downgraded` (a peer that
-spoke wire 1 now answers as v0). A malformed header is HTTP 400 `invalid_wire`.
+`reason` is `peer_too_old`, `peer_too_new` or `peer_v0` (no header: a v0 release); `client` holds the caller's
+`wire` range when it sent one, and `action` says which side to upgrade. A malformed header is HTTP 400
+`invalid_wire`. `/sync/changes`, `/sync/digest` and `/sync/media` negotiate this way; every other `/api/v2`
+answer is served at wire 1 and carries `Atlas-Wire` and `Vary: Atlas-Wire` too.
+
+A follower also refuses on its side with `peer_downgraded` when a peer that spoke wire before now answers as v0 (a
+rolled-back build or interception), until an administrator accepts it: **Accept downgrade** on that peer under
+Admin → Peers, or `atlas sync accept-downgrade URL` for the upstream set in `ATLAS_UPSTREAM_URL`. A peer that now
+advertises a lower wire than before raises an alert at the top of Admin → Peers.
 
 `/api/v2/sync/info` and `/api/v2/health` carry `wire` (`{"min": 1, "max": 1, "reads_v0": true, "serves_v0":
 false}`: this node reads v0 upstreams and serves no v0 followers), next to the unchanged
@@ -355,13 +365,18 @@ parked as `dropped_by_previous_release`) and `--historical` applies them.
 
 ### Upgrading a network
 
-1. **Export and verify before upgrading.** On each node, with the old release still installed and the node stopped,
-   run `atlas export-verify export MANIFEST.json`. It writes, per table, the row count and a hash of every row.
-2. Upgrade the code and run the migrations (`atlas migrate`, or start the node). Migration 0063 widens every
-   integer id and feed sequence to 64 bits and records the wire.
+1. **Back up, then export.** On each node, stop it and take a full backup with the old release (`atlas backup
+   create`, see [Backup and restore](backup.md)): it is what you restore if you abandon the upgrade. Then, with
+   the new release's CLI and the node still stopped, run `atlas export-verify export MANIFEST.json`. It writes,
+   per table, the row count and a hash of every row; it holds hashes only, so it is not a backup.
+2. Upgrade the code and run the migrations (`atlas migrate`, or start the node). Migration 0063 widens the
+   hexadecimal node, key and group id columns from 16 to 64 characters (and a few related key columns), records
+   the wire, and adds the wire tables; integer ids and feed sequence numbers are unchanged.
 3. Run `atlas export-verify verify MANIFEST.json`. It exits 0 when every row from before is still present with the
-   same content (new tables, columns and rows are allowed) and 1 with the differences otherwise. Keep the manifest
-   until you are satisfied.
+   same content (new tables, columns and rows are allowed) and 1 with the differences otherwise. A few columns are
+   rewritten by a migration on purpose (a record's derived view and year when it has a release date, a duplicate
+   open review item superseded, an entry that only waits for its record); they are reported as `derived`, while
+   the rest of each such row is still checked. Keep the manifest and the backup until you are satisfied.
 4. Upgrade followers (mirrors first, then local nodes) before or together with their authority: a wire-1 follower
    keeps following a v0 authority, a v0 follower cannot follow a wire-1 authority (409 `wire_unsupported`).
 5. Upgrade authorities. From the first entry they sign after the upgrade (a `wire_start` entry, then everything

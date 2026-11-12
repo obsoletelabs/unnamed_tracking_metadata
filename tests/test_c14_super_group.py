@@ -845,6 +845,39 @@ def test_a_write_that_fails_to_apply_is_held_and_the_round_goes_on(trio, monkeyp
     assert states(a)[subject] == states(b)[subject]
 
 
+def test_database_contention_is_never_kept_as_failed_and_the_next_round_receives_the_write(trio, monkeypatch):
+    """Review of C16 Z1 (the PostgreSQL-authority lab lost a write): a lock timeout, deadlock or `database is locked`
+    while receiving is not the write's fault. It used to be swallowed twice (the fallback insert hit the same lock)
+    and returned `invalid`, so the cursor moved past a good write and that node never applied it. Now the round
+    rolls back with its cursor unchanged, and the next round applies the write."""
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    a, b, _c = trio
+    cid = new_game(a, boss(a), "Quiet Orchard", developer="One")
+    rnd(b)
+    edit(a, boss(a), cid, developer="Two")
+    with b.session() as s:
+        cursor = super_group._int(s, super_group.CURSOR + a.node_id)
+    real = super_group.receive
+
+    def locked(session, ctx, group, tr, obj):
+        if ctx.identity.node_id == b.node_id:
+            raise OperationalError("INSERT", {}, sqlite3.OperationalError("database is locked"))
+        return real(session, ctx, group, tr, obj)
+
+    monkeypatch.setattr(super_group, "receive", locked)
+    rnd(b)  # the round fails and rolls back (main.group_round logs it; the next round retries)
+    assert view(b, cid)["developer"] == "One"
+    with b.session() as s:
+        assert super_group._int(s, super_group.CURSOR + a.node_id) == cursor
+        assert not s.scalars(select(GroupWrite).where(GroupWrite.status == "held")).all()
+    monkeypatch.setattr(super_group, "receive", real)
+    rnd(b)
+    assert view(b, cid)["developer"] == "Two"
+
+
 def test_a_record_that_cannot_be_shown_waits_without_breaking_the_round(trio, monkeypatch):
     """Review (high): a failure while showing a settled state (here the view rebuild) rolls back to a savepoint;
     the state waits (`invalid`) and is retried, and the round commits everything else."""

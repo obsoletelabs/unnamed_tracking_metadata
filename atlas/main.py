@@ -524,7 +524,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def _security_headers(request: Request, call_next):
         response = await call_next(request)
         web_headers(response, request.url.path)
+        if request.url.path.startswith("/api/") and wire.HEADER not in response.headers:
+            _read_api_wire(request, response)
         return response
+
+    def _read_api_wire(request: Request, response) -> None:
+        """CR-11/T-W26: every read-API answer names the wire it was served at (`WIRE_MAX` unless the caller sent
+        a range) and varies on the request header, so a cache never hands one caller's answer to another. Peer
+        channels set their own header after negotiating; a malformed header here is simply not echoed."""
+        prof = wire.profile(app.state.atlas)
+        try:
+            use = wire.negotiate_request(request.headers.get(wire.HEADER), prof=prof, peer_channel=False)
+        except (wire.InvalidWire, wire.WireUnsupported):
+            return
+        response.headers[wire.HEADER] = wire.response_header(use, prof)
+        vary = response.headers.get("Vary")
+        if not vary or wire.HEADER.lower() not in vary.lower():
+            response.headers["Vary"] = f"{vary}, {wire.HEADER}" if vary else wire.HEADER
 
     @app.exception_handler(LoginRequired)
     async def _login_required(request: Request, _: LoginRequired):

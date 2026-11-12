@@ -7,9 +7,10 @@ it). A follower whose negotiated `use` is below an entry's `_wire` receives, *in
 produced by a pure, deterministic adapter, signed once and cached; the origin or a mirror (as itself) may sign it.
 
 Wire 1 is the first wire version, so no real down-adapter exists and this build never attaches a rendition. It
-ships the object, the signing domain, the verifier the follower runs on any rendition it is offered, and the
-canonical-first rule (a follower that can read the canonical body applies it and ignores renditions): the
-one-way doors of design §8.
+ships the object, the signing domain, the verifier, and the follower side (`sync._receive_renditions`, `sync.rendered`):
+a wire-1 follower offered a verified rendition of a later wire's entry keeps the canonical row and applies the
+rendition in its place, recording what it omitted per upstream; with the canonical-first rule (a follower that can
+read the canonical body applies it and ignores renditions), these are the one-way doors of design §8.
 """
 
 from __future__ import annotations
@@ -74,7 +75,8 @@ def check(entry: dict[str, Any], rendition: dict[str, Any] | None, *, own_max: i
     A rendition naming another origin-signed body hash for the same seq is evidence of a fork."""
     body = entry.get("body") if isinstance(entry.get("body"), dict) else {}
     wire = body.get("_wire")
-    if type(wire) is int and wire <= own_max:
+    if "_wire" not in body or (type(wire) is int and wire <= own_max):
+        # A v0-era row (no `_wire`) is read by the legacy reader: it never needs a rendition (review of C16 Z1).
         return Verdict(UNNEEDED if rendition is not None else "canonical")
     if rendition is None:
         return Verdict(BAD, "no rendition for an entry above this node's wire")

@@ -54,6 +54,7 @@
 </ul>
 </section>{% endif %}
 <div class="section-head"><h2 id="peer-list">Peers this node replicates from</h2>{% if rows and not probe %}<a class="btn secondary small" href="#add-peer">Add a peer</a>{% endif %}</div>
+{% for a in wire_alerts %}<p class="notice error" data-wire-alert>Peer <strong>{{ a.peer }}</strong> now advertises wire {{ a.now }} at most (it spoke wire {{ a.was }} before): a downgraded build or interception. Check with its operator.</p>{% endfor %}
 {% if env_upstream %}<p class="small muted">The environment also configures an upstream: <code>{{ env_upstream }}</code> (ATLAS_UPSTREAM_URL).</p>{% endif %}
 {% set unconfirmed = rows|selectattr('peer.follow', 'none')|list %}
 {% if unconfirmed %}<div class="card" role="status" data-banner="confirm-follow"><p><strong>Confirm which feed {{ 'this peer follows' if unconfirmed|length == 1 else 'these peers follow' }}.</strong> {{ 'It was' if unconfirmed|length == 1 else 'They were' }} added before Atlas asked whether to follow a node's own feed or an authority feed it relays, so each sync still guesses. Confirm the choice below; nothing changes until you do.</p></div>{% endif %}
@@ -69,7 +70,9 @@
 {% if h.parked %}<div class="small error">Parked at entry {{ h.parked.first_seq }} ({{ h.parked.first_reason|replace('_', ' ') }}, kind {{ h.parked.first_kind }}): {{ h.parked.count }} entr{{ 'y' if h.parked.count == 1 else 'ies' }} held back{% if h.parked.backlog_full %}, downloading paused{% endif %}. Upgrade Atlas; they apply automatically afterwards.</div>{% endif %}
 {% if h.state == 'backlog_full' and not h.parked %}<div class="small error">Too many entries are waiting or failing; applying is paused (ATLAS_SYNC_MAX_OPEN_FAILURES).</div>{% endif %}
 {% if h.quarantined.count %}<div class="small error">{{ h.quarantined.count }} entr{{ 'y' if h.quarantined.count == 1 else 'ies' }} could not be applied (<a href="#failed-entries">details</a>).</div>{% endif %}
-{% if h.refused %}<div class="small error">Refused: {{ h.refused.reason }}</div>{% endif %}
+{% if h.refused %}<div class="small error">Refused: {{ h.refused.reason }}</div>{% if h.refused.upstream_protocol == 'peer_downgraded' %}<form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/accept-downgrade">{{ csrf(p.csrf) }}<button class="secondary small" data-accept-downgrade data-confirm="Read this peer as an older (v0) release again? Only do this if it was rolled back on purpose." type="submit">Accept downgrade</button></form>{% endif %}{% endif %}
+{% if h.legacy_upstream %}<div class="small muted" data-legacy-upstream>Legacy upstream: an older release (v0), read through the legacy reader.</div>{% endif %}
+{% if h.renditions %}<div class="small muted" data-renditions>{{ h.renditions.entries }} entr{{ 'y' if h.renditions.entries == 1 else 'ies' }} arrived in an older form{% if h.renditions.members %}; left out for this node: {{ h.renditions.members|join(', ') }}{% endif %} ({{ h.renditions.by }}).</div>{% endif %}
 {% if h.rewound %}<div class="small error">Rewound or forked: {{ h.rewound.reason }}</div>{% endif %}{% endif %}</td>
 <td class="small" data-label="Last sync">{% if r.peer.last_ok_at %}{{ when(r.peer.last_ok_at, relative=True) }}{% else %}never{% endif %}{% if r.peer.last_error %}<div class="error">{{ r.peer.last_error }}</div>{% endif %}</td>
 <td><div class="peer-actions"><form class="inline" method="post" action="/admin/peers/{{ r.peer.id }}/sync">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Sync now</button></form>

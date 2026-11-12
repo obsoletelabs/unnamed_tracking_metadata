@@ -1063,6 +1063,8 @@ def _receive_one(session: Session, ctx: Any, group: Any, tr: Any, obj: Any) -> s
         with session.begin_nested():
             return receive(session, ctx, group, tr, obj)
     except Exception as exc:  # noqa: BLE001
+        if _transient(exc):
+            raise  # the round rolls back and its cursor stays: the next round receives this write again
         log.warning("super group: a write could not be applied here: %s", type(exc).__name__)
     body = obj.get("body") if isinstance(obj, dict) else None
     try:
@@ -1076,9 +1078,25 @@ def _receive_one(session: Session, ctx: Any, group: Any, tr: Any, obj: Any) -> s
                                        status="held", reason="failed", envelope=obj, received_at=now()))
                 session.flush()
     except Exception as exc:  # noqa: BLE001 - not even storable: counted, skipped
+        if _transient(exc):
+            raise
         log.warning("super group: a write could not be kept: %s", type(exc).__name__)
         return "invalid"
     return "failed"
+
+
+def _transient(exc: BaseException) -> bool:
+    """Contention or a lost connection (SQLite `database is locked`, a PostgreSQL deadlock or lock timeout): not
+    the write's fault. Keeping it as `failed`, or skipping it as `invalid`, would move the cursor past a good write
+    and lose it on this node (review of C16 Z1: the PostgreSQL-authority lab lost a write this way)."""
+    import sqlite3
+
+    from sqlalchemy import exc as sa_exc
+
+    from .db import error_class
+
+    return isinstance(exc, sa_exc.DBAPIError | sqlite3.Error) and error_class(exc) in (
+        "lock_timeout", "deadlock", "serialization", "connection")
 
 
 def retry(session: Session, ctx: Any, tr: Any) -> dict[str, int]:

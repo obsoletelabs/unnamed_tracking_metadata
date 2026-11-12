@@ -463,7 +463,9 @@ def _peer_request(client: httpx.Client, base: str, digest: str, token: str | Non
     """GET `<peer>/api/v2/sync/media/<sha256>`. The peer's address was pinned by the operator, so this exact
     origin is allowed even on a private network (the C12 public-address rule is for provider URLs); no redirects
     are followed, and the body is bounded and must hash to the digest asked for."""
-    headers = {"Accept": "image/*", "User-Agent": "atlas-metadata/2"}
+    from . import wire
+
+    headers = {"Accept": "image/*", "User-Agent": "atlas-metadata/2", wire.HEADER: wire.request_header()}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:

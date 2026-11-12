@@ -102,6 +102,9 @@ def _alter(widths: str) -> None:
             by_table.setdefault(table, []).append((column, frm, to))
     if not by_table:
         return
+    if not _schema_writable(bind, next(iter(by_table))):
+        _rebuild(by_table, widths)
+        return
     version = bind.exec_driver_sql("PRAGMA schema_version").scalar()
     bind.exec_driver_sql("PRAGMA writable_schema = ON")
     try:
@@ -118,6 +121,31 @@ def _alter(widths: str) -> None:
         bind.exec_driver_sql(f"PRAGMA schema_version = {int(version) + 1}")
     finally:
         bind.exec_driver_sql("PRAGMA writable_schema = OFF")
+
+
+def _schema_writable(bind, table: str) -> bool:
+    """Whether this SQLite build lets `writable_schema` edit the stored schema. A build compiled or configured with
+    SQLITE_DBCONFIG_DEFENSIVE refuses ("table sqlite_master may not be modified"); probe with a no-op edit of one
+    table before changing anything (review of C16 Z1)."""
+    try:
+        bind.exec_driver_sql("PRAGMA writable_schema = ON")
+        bind.execute(sa.text("UPDATE sqlite_master SET sql = sql WHERE type = 'table' AND name = :t"), {"t": table})
+        return True
+    except sa.exc.DBAPIError:
+        return False
+    finally:
+        bind.exec_driver_sql("PRAGMA writable_schema = OFF")
+
+
+def _rebuild(by_table: dict[str, list[tuple[str, int, int]]], widths: str) -> None:
+    """The portable way, used only where the stored schema cannot be edited: rebuild each table with the new
+    declared widths (Alembic batch mode copies the rows; slower on a large node, same result)."""
+    nullable = {(t, c): n for t, c, _old, _new, n in WIDEN}
+    for table, columns in by_table.items():
+        with op.batch_alter_table(table, recreate="always") as batch:
+            for column, frm, to in columns:
+                batch.alter_column(column, existing_type=sa.String(frm), type_=sa.String(to),
+                                   existing_nullable=nullable[(table, column)])
 
 
 def upgrade() -> None:

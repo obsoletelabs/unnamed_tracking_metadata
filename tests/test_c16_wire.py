@@ -263,11 +263,48 @@ def test_migration_0063_up_and_down(tmp_path):
     engine.dispose()
 
 
+def test_migration_0063_widens_on_a_defensive_sqlite_by_rebuilding(tmp_path):
+    """Review of C16 Z1 (low): a SQLite build with SQLITE_DBCONFIG_DEFENSIVE refuses `writable_schema` edits
+    ("table sqlite_master may not be modified"). 0063 probes first and rebuilds the tables instead; rows survive."""
+    import sqlite3
+
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    url = f"sqlite:///{tmp_path}/def.db"
+    db.upgrade(url, "0062")
+    engine = create_engine(url)
+    with engine.begin() as c:
+        c.execute(text("INSERT INTO node_state (key, value) VALUES ('kept', 'yes')"))
+    engine.dispose()
+
+    def defensive(dbapi_conn, _record):
+        if isinstance(dbapi_conn, sqlite3.Connection):
+            dbapi_conn.setconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE, True)
+
+    event.listen(Engine, "connect", defensive)
+    try:
+        probe = create_engine(url)
+        with probe.connect() as c, pytest.raises(Exception, match="may not be modified"):
+            c.exec_driver_sql("PRAGMA writable_schema = ON")
+            c.exec_driver_sql("UPDATE sqlite_master SET sql = sql WHERE name = 'node_state'")
+        probe.dispose()
+        db.upgrade(url, "0063")
+    finally:
+        event.remove(Engine, "connect", defensive)
+    engine = create_engine(url)
+    widths = {c["name"]: c["type"].length for c in inspect(engine).get_columns("node_state")}
+    assert widths["key"] == 160
+    with engine.connect() as c:
+        assert c.execute(text("SELECT value FROM node_state WHERE key = 'kept'")).scalar() == "yes"
+    engine.dispose()
+
+
 # ---- R2: a v0 node upgrades in place with no data loss -----------------------------------------------------------
 
 def test_pre_upgrade_export_verifies_after_the_upgrade_and_catches_a_lost_row(tmp_path):
     url = f"sqlite:///{tmp_path}/v0.db"
-    db.upgrade(url, "0062")  # the last v0 schema
+    db.upgrade(url, "0062")  # the schema before wire 1 (the real v0 heads 0020 and 0030: test_c16_export_verify)
     engine = create_engine(url)
     with engine.begin() as c:
         for i in range(25):
@@ -335,3 +372,149 @@ def test_a_rotation_proof_signed_in_wire_1_validates_and_a_bad_wire_does_not(tmp
     bad = {**proof, "body": {**proof["body"], "_wire": "1"}}
     with pytest.raises(key_rotation.RotationError):
         key_rotation.validate_history(original.node_id, original.public_b64, [bad], successor.key_id)
+
+
+# ---- review of C16 Z1: the sticky floor covers the environment upstream; renditions reach the follower ---------
+
+def _strip_wire(body):
+    return {k: v for k, v in body.items() if k != "wire"}
+
+
+def test_the_environment_upstream_is_held_to_the_sticky_floor_and_a_downgrade_can_be_accepted(tmp_path):
+    """ATLAS_UPSTREAM_URL has no `Peer` row: its wire record lives in `NodeState`, so stripping its wire is refused
+    (`peer_downgraded`, with the CLI to accept it), and an accepted rollback is read as v0 until it speaks wire."""
+    from atlas import sync
+
+    authority, follower = Node(tmp_path, "a", "authority"), Node(tmp_path, "f", "mirror")
+    authority.publish("Seen On Wire")
+    pull(follower, authority)
+    with follower.st.maker() as s:
+        [(name, seen, _put)] = sync.wire_record(s, "http://upstream")
+        assert name == "http://upstream" and seen["high"] == 1 and seen["use"] == 1
+    with pytest.raises(sync.SyncRefused, match="atlas sync accept-downgrade http://upstream") as refused:
+        pull(follower, authority, info=_strip_wire)
+    assert refused.value.upstream_protocol == "peer_downgraded"
+    assert follower.heads(authority)["refused"]["upstream_protocol"] == "peer_downgraded"
+    with follower.st.maker() as s:
+        assert sync.accept_downgrade(s, "http://upstream")
+        s.commit()
+    pull(follower, authority, info=_strip_wire)  # accepted: read through the legacy reader
+    pull(follower, authority)  # back on wire: the acceptance is cleared
+    with follower.st.maker() as s:
+        [(_name, seen, _put)] = sync.wire_record(s, "http://upstream")
+        assert "accept_downgrade" not in seen
+        assert not sync.accept_downgrade(s, "http://elsewhere")
+
+
+def test_a_direct_v0_answer_for_an_origin_whose_wire_entries_are_held_is_refused(tmp_path):
+    """Even without any record of the URL (a new peer row pointing at the same origin), an origin this node holds
+    wire entries of is never silently re-read as v0."""
+    from atlas import sync
+
+    authority, follower = Node(tmp_path, "a", "authority"), Node(tmp_path, "f", "mirror")
+    authority.publish("Held")
+    pull(follower, authority)
+    with follower.st.maker() as s:
+        s.execute(NodeState.__table__.delete().where(NodeState.key.like(sync.UPSTREAM_WIRE + "%")))
+        s.commit()
+    with pytest.raises(sync.SyncRefused, match="signed wire entries this node holds"):
+        pull(follower, authority, info=_strip_wire)
+
+
+def test_a_lower_wire_max_raises_an_admin_alert_until_the_peer_is_back(tmp_path):
+    from atlas import sync
+
+    authority, follower = Node(tmp_path, "a", "authority"), Node(tmp_path, "f", "mirror")
+    authority.publish("Alerting")
+    with follower.st.maker() as s:  # pretend this peer once spoke wire 3
+        sync.wire_record(s, "http://upstream")[0][2]({"min": 1, "max": 3, "use": 1, "high": 3})
+        s.commit()
+    pull(follower, authority)
+    with follower.st.maker() as s:
+        [alert] = sync.wire_alerts(s)
+        assert (alert["was"], alert["now"]) == (3, 1)
+        assert sync.status(s, follower.st.ctx)["wire_alerts"] == [alert]
+
+
+def _render(authority, entry, **over):
+    canonical = {**entry, "node_id": authority.node_id}
+    body = over.pop("body", observation("Rendered For Wire 1"))
+    return rendition.build(canonical, version=1, adapter={"id": "obs.2-1", "from": 2, "to": 1, "version": 1},
+                           kind="obs", body={**body, "_wire": 1}, omitted=over.pop("omitted", ["x_tier"]),
+                           signer_kind="origin", identity=authority.st.ctx.identity)
+
+
+def _with_renditions(authority, seq, make):
+    def changes(page):
+        for e in page["entries"]:
+            if e["seq"] == seq:
+                e["renditions"] = [make(e)]
+        return page
+    return changes
+
+
+def test_a_wire_1_follower_applies_a_verified_origin_rendition_of_a_later_wire_entry(tmp_path):
+    """Design §8 (one-way door, review of C16 Z1): the canonical row is retained for replay and relaying, the
+    verified rendition is applied in its place, and what it omitted is shown per upstream."""
+    from atlas import sync
+    from atlas.models import RenditionReceived, ReplicatedChange
+
+    authority, follower = Node(tmp_path, "a", "authority"), Node(tmp_path, "f", "mirror")
+    authority.publish("Before")
+    seq = authority.emit("obs", {**observation("Only Wire 2 Reads This"), "_wire": 2})
+    authority.publish("After")
+    pull(follower, authority, changes=_with_renditions(authority, seq, lambda e: _render(authority, e)))
+    assert {"Before", "Rendered For Wire 1", "After"} <= follower.titles()
+    assert "Only Wire 2 Reads This" not in follower.titles() and not follower.failures(authority)
+    with follower.st.maker() as s:
+        assert s.get(ReplicatedChange, (authority.node_id, seq)).body["_wire"] == 2  # canonical retained
+        assert s.scalars(select(RenditionReceived)).one().seq == seq
+        shown = sync.upstream_status(s, follower.st.ctx, authority.node_id)["renditions"]
+    assert shown == {"entries": 1, "members": ["x_tier"], "last_seq": seq, "by": "origin"}
+
+
+def test_a_bad_rendition_is_ignored_and_the_entry_parks_and_a_forked_one_is_refused(tmp_path):
+    from atlas import sync
+
+    authority, follower = Node(tmp_path, "a", "authority"), Node(tmp_path, "f", "mirror")
+    seq = authority.emit("obs", {**observation("Wire 2"), "_wire": 2})
+
+    def tampered(e):
+        obj = _render(authority, e)
+        obj["body"] = {**obj["body"], "observation": {**obj["body"]["observation"], "payload": {"title": "Forged"}}}
+        return obj
+
+    pull(follower, authority, changes=_with_renditions(authority, seq, tampered))
+    assert "Forged" not in follower.titles()
+    assert [(f[0], f[3]) for f in follower.failures(authority)] == [(seq, "unsupported_version")]
+    assert "signature" in follower.heads(authority)["bad_rendition"]["why"]
+
+    other, second = Node(tmp_path, "b", "authority"), Node(tmp_path, "g", "mirror")
+    seq = other.emit("obs", {**observation("Wire 2"), "_wire": 2})
+    with pytest.raises(sync.SyncRewound):
+        pull(second, other, changes=_with_renditions(other, seq, lambda e: _render(other, {**e, "body_hash": "f" * 64})))
+
+
+def test_a_v0_era_row_never_needs_a_rendition():
+    entry = {"node_id": "n", "seq": 1, "kind": "obs", "body": {"title": "v0"}}
+    assert rendition.check(entry, None, own_max=1, use=1, signer_keys={}, mirror_standing=set(),
+                           critical=False).result == "canonical"
+
+
+def test_digest_and_media_negotiate_like_changes_and_the_read_api_names_its_wire(tmp_path):
+    """Design §5.3 and CR-11/T-W26 (review of C16 Z1): `/sync/digest` and `/sync/media` are peer channels (a caller
+    without `Atlas-Wire` is a v0 build: 409 `peer_v0`), and every read-API answer carries `Atlas-Wire` and
+    `Vary: Atlas-Wire`."""
+    node = Node(tmp_path, "a", "authority")
+    node.publish("Headers")
+    auth = {"Authorization": f"Bearer {node.token}"}
+    v0 = TestClient(node.app)  # no Atlas-Wire: what a v0 build sends
+    for path in ("/api/v2/sync/digest", f"/api/v2/sync/media/{'0' * 64}"):
+        refused = v0.get(path, headers=auth)
+        assert refused.status_code == 409 and refused.json()["error"]["reason"] == "peer_v0", path
+    digest = node.client.get("/api/v2/sync/digest", headers=auth)
+    assert digest.status_code == 200 and digest.headers[wire.HEADER].startswith("use=1")
+    assert node.client.get(f"/api/v2/sync/media/{'0' * 64}", headers=auth).status_code == 404
+    read = v0.get("/api/v2/sync/info", headers=auth)
+    assert read.status_code == 200 and read.headers[wire.HEADER].startswith("use=1")
+    assert wire.HEADER in read.headers["Vary"]

@@ -251,6 +251,14 @@ def cmd_sync(args) -> int:
         else:
             print("\n".join(_describe(n, u) for n, u in upstreams.items()) or "no upstream feeds")
         return _exit_for(upstreams)
+    if action == "accept-downgrade":
+        with maker() as session:
+            if not sync.accept_downgrade(session, args.url):
+                print(f"{args.url} was never seen speaking wire: nothing to accept", file=sys.stderr)
+                return 2
+            session.commit()
+        print(f"accepted: {args.url} is read as v0 until it speaks wire again")
+        return 0
     if action == "replay":
         with maker() as session:
             if args.rescan:
@@ -668,6 +676,9 @@ def main(argv: list[str] | None = None) -> int:
     sk.add_argument("--node", required=True)
     sk.add_argument("--seq", type=int, required=True)
     sk.add_argument("--reason", required=True, help="written to the audit log")
+    ad = sya.add_parser("accept-downgrade", help="read an upstream once seen speaking wire as v0 again (a deliberate "
+                                                 "rollback; design §4.10 rule 3)")
+    ad.add_argument("url", help="the upstream URL, as configured (ATLAS_UPSTREAM_URL or the peer's URL)")
     rc = sya.add_parser("reconcile", help="compare this node's view with the upstream's /sync/digest")
     rc.add_argument("--node", required=True)
     rc.add_argument("--dry-run", action="store_true", help="compare only (the only mode in this release)")

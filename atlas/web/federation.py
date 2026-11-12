@@ -11,7 +11,7 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from .. import __version__, accounts, auth, feed, feed_schema, key_rotation, peer_probe, secrets_box, service, sync
 from ..models import FollowerWire, NodeState, Peer, ReplicatedFeed, SyncCursor, SyncFailure, Token, User
@@ -282,6 +282,7 @@ def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, sta
                   next_retry=sync.next_retry_at, own=p.st.ctx.identity, fp=fingerprint(p.st.ctx.identity.node_id),
                   can_store=secrets_box.available(s), env_upstream=s.upstream_url, probe=probe, error=error,
                   flash_tone=tone or _flash_tone(error, status), release=__version__,
+                  wire_alerts=sync.wire_alerts(p.session),
                   standalone=not rows and not p.session.scalar(select(func.count()).select_from(FollowerWire))
                   and not probe and not s.upstream_url,
                   inherit=s.inherit_schema, protocol=_protocol(p))
@@ -451,6 +452,20 @@ def toggle_peer(pid: str, p: Annotated[Ctx, Depends(admin_form)]):
         raise HTTPException(404, "No such peer.")
     row.enabled = not row.enabled
     accounts.audit(p.session, p.me.id, "peer_toggle", row.node_id, {"enabled": row.enabled})
+    return go("/admin/peers", "saved")
+
+
+@router.post("/admin/peers/{pid}/accept-downgrade")
+def accept_downgrade(pid: str, p: Annotated[Ctx, Depends(admin_form)]):
+    """Design §4.10 rule 3: a peer once seen speaking wire that now answers as v0 is refused (`peer_downgraded`)
+    until an administrator accepts it here (a deliberate rollback). Audited; cleared when it speaks wire again."""
+    row = p.session.get(Peer, pid)
+    if row is None:
+        raise HTTPException(404, "No such peer.")
+    if not sync.accept_downgrade(p.session, row.url):
+        raise HTTPException(400, "This peer was never seen speaking wire: there is no downgrade to accept.")
+    p.session.execute(delete(NodeState).where(NodeState.key == "sync_refused:" + row.node_id))
+    accounts.audit(p.session, p.me.id, "peer_accept_downgrade", row.node_id, {"url": row.url})
     return go("/admin/peers", "saved")
 
 

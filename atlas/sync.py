@@ -47,6 +47,7 @@ from .models import (
     NodeState,
     Observation,
     Peer,
+    RenditionReceived,
     ReplicatedChange,
     ReplicatedFeed,
     SyncCursor,
@@ -1499,6 +1500,10 @@ def upstream_status(session: Session, ctx_or_settings: Any, node_id: str) -> dic
             "quarantined": {"count": quarantined_count, "oldest_seq": oldest}, "waiting": waiting,
             "refused": refused, "rewound": rewound, "upstream_protocol": upstream_protocol,
             "upstream_wire": origin_wire(session, node_id), "own_wire": wire.DEFAULT.advertised(),
+            # design §4.9: a v0 upstream read through the legacy reader is flagged, and what renditions omitted
+            "legacy_upstream": bool(upstream_protocol) and origin_wire(session, node_id) is None,
+            "renditions": _json_state(session, OMITTED + node_id),
+            "bad_rendition": _json_state(session, BAD_RENDITION + node_id),
             "upstream_behind": claimed is not None and claimed < verified,
             "state": state, "in_sync": state == "in_sync"}
 
@@ -1516,7 +1521,16 @@ def status(session: Session, ctx_or_settings: Any) -> dict[str, Any]:
     upstreams = {n: upstream_status(session, ctx_or_settings, n) for n in upstream_nodes(session)}
     settings = getattr(ctx_or_settings, "settings", ctx_or_settings)
     return {"upstreams": upstreams, "peers": [peer_summary(session, p, upstreams.get(p.node_id), settings)
-                                              for p in session.scalars(select(Peer).order_by(Peer.created_at))]}
+                                              for p in session.scalars(select(Peer).order_by(Peer.created_at))],
+            "wire_alerts": wire_alerts(session)}
+
+
+def _json_state(session: Session, key: str) -> Any:
+    raw = _state(session, key)
+    try:
+        return json.loads(raw) if raw else None
+    except ValueError:
+        return None
 
 
 #: C13 §7.5: one honest status per peer, in the order they are decided.
@@ -1872,37 +1886,112 @@ def origin_wire(session: Session, node_id: str) -> dict[str, int] | None:
         return None
 
 
+#: `NodeState` key prefix of the wire record of an upstream that has no `Peer` row (ATLAS_UPSTREAM_URL), by URL hash.
+UPSTREAM_WIRE = "upstream_wire:"
+
+
+def _url_key(upstream_url: str) -> str:
+    return UPSTREAM_WIRE + hashlib.sha256(upstream_url.rstrip("/").encode()).hexdigest()[:32]
+
+
+def wire_record(session: Session, upstream_url: str) -> list[tuple[str, dict[str, Any], Any]]:
+    """What this node remembers of the wire an upstream spoke (design §4.10 rule 3), one entry per `Peer` row with
+    that URL, or the `NodeState` record of the environment upstream (review of C16 Z1: it has no `Peer` row, so it
+    was silently re-read as v0 when its wire was stripped). Each entry is (name, record, setter)."""
+    out: list[tuple[str, dict[str, Any], Any]] = []
+    for peer in session.scalars(select(Peer).where(Peer.url == upstream_url)):
+        out.append((peer.name, dict(peer.remote_wire or {}), lambda v, p=peer: setattr(p, "remote_wire", v)))
+    if not out:
+        key = _url_key(upstream_url)
+        raw = _state(session, key)
+        try:
+            seen = json.loads(raw) if raw else {}
+        except ValueError:
+            seen = {}
+        out.append((upstream_url, seen if isinstance(seen, dict) else {},
+                    lambda v, k=key: _set_state(session, k, json.dumps(v, sort_keys=True))))
+    return out
+
+
+def accept_downgrade(session: Session, upstream_url: str) -> bool:
+    """An administrator accepts that a peer once seen speaking wire now runs a v0 (rolled-back) build: it is read as
+    v0 again until it speaks wire. Returns False when nothing was refused for that URL."""
+    changed = False
+    for _name, seen, put in wire_record(session, upstream_url):
+        if seen.get("high"):
+            put({**seen, "accept_downgrade": True})
+            changed = True
+    return changed
+
+
 def _check_floor(session: Session, node_id: str, upstream_url: str, up: Upstream, *, relay: bool) -> None:
     """Design §4.10 rule 3, the sticky floor. A peer once seen speaking wire that now looks like v0 is refused
-    (`peer_downgraded`) until an administrator accepts the downgrade; a lower `max` is allowed but logged once. Rows
-    of an origin whose wire entries this node holds are never read through the v0 legacy reader (a v0 relay)."""
-    for peer in session.scalars(select(Peer).where(Peer.url == upstream_url)):
-        seen = peer.remote_wire or {}
+    (`peer_downgraded`) until an administrator accepts the downgrade (Admin → Peers, or `atlas sync
+    accept-downgrade URL` for the environment upstream); a lower `max` raises an Admin alert. Rows of an origin
+    whose wire entries this node holds are never read through a v0 relay, and a direct v0 answer for such an origin
+    is refused like a downgrade."""
+    accepted = False
+    for name, seen, _put in wire_record(session, upstream_url):
         high = seen.get("high") if type(seen.get("high")) is int else None
+        accepted = accepted or bool(seen.get("accept_downgrade"))
         if high and not up.use and not seen.get("accept_downgrade"):
-            raise SyncRefused(f"peer {peer.name} was seen speaking wire {high} and now looks like v0: a downgraded build "
-                              "or interception. Accept the downgrade under Admin → Peers to read it again.",
-                              "peer_downgraded")
+            raise SyncRefused(f"peer {name} was seen speaking wire {high} and now looks like v0: a downgraded build "
+                              f"or interception. {_accept_hint(session, upstream_url)}", "peer_downgraded")
         if high and up.range is not None and up.range.max < high and seen.get("alerted") != up.range.max:
-            log.warning("peer %s now advertises wire <= %s (was %s): downgraded build or interception", peer.name,
+            log.warning("peer %s now advertises wire <= %s (was %s): downgraded build or interception", name,
                         up.range.max, high)
-    if not up.use and relay and _state(session, "sync_wire:" + node_id) is not None:
-        raise SyncRefused(f"{upstream_url} is a v0 relay, and this node already holds wire entries of {node_id[:16]}: "
-                          "they are never read through a v0 relay", "peer_downgraded")
+            _set_state(session, ALERT + _url_key(upstream_url).removeprefix(UPSTREAM_WIRE), json.dumps(
+                {"peer": name, "url": upstream_url, "was": high, "now": up.range.max,
+                 "at": datetime.now(UTC).isoformat()}, sort_keys=True))
+    if not up.use and _state(session, "sync_wire:" + node_id) is not None:
+        if relay:
+            raise SyncRefused(f"{upstream_url} is a v0 relay, and this node already holds wire entries of "
+                              f"{node_id[:16]}: they are never read through a v0 relay", "peer_downgraded")
+        if not accepted:
+            raise SyncRefused(f"{node_id[:16]} signed wire entries this node holds and now answers as v0: a "
+                              f"downgraded build or interception. {_accept_hint(session, upstream_url)}",
+                              "peer_downgraded")
+
+
+#: `NodeState` key prefix of an Admin alert: a peer that now advertises a lower wire `max` than it did.
+ALERT = "wire_alert:"
+
+
+def _accept_hint(session: Session, upstream_url: str) -> str:
+    if session.scalars(select(Peer.id).where(Peer.url == upstream_url)).first() is not None:
+        return "If it was rolled back on purpose, use “Accept downgrade” under Admin → Peers to read it again."
+    return f"If it was rolled back on purpose, run `atlas sync accept-downgrade {upstream_url}` to read it again."
+
+
+def wire_alerts(session: Session) -> list[dict[str, Any]]:
+    """Admin alerts of peers whose advertised wire `max` went down (design §4.10 rule 3)."""
+    out = []
+    for raw in session.scalars(select(NodeState.value).where(NodeState.key.like(ALERT + "%"))):
+        try:
+            out.append(json.loads(raw))
+        except ValueError:
+            continue
+    return out
 
 
 def _note_peer_wire(session: Session, upstream_url: str, up: Upstream) -> None:
     """Remember what a peer speaks (design §2.3 rule 1): `remote_wire` for a wire peer, never an M.m; the v0
-    protocol in `remote_protocol` only for a v0 peer."""
+    protocol in `remote_protocol` only for a v0 peer. The environment upstream keeps the same record in
+    `NodeState` (`wire_record`)."""
     for peer in session.scalars(select(Peer).where(Peer.url == upstream_url)):
-        if up.use and up.range is not None:
-            seen = dict(peer.remote_wire or {})
-            high = max(int(seen.get("high") or 0), up.range.max)
-            peer.remote_wire = {"min": up.range.min, "max": up.range.max, "use": up.use, "high": high,
-                                **({"alerted": up.range.max} if up.range.max < high else {})}
-            peer.remote_protocol = None
-        else:
+        if not (up.use and up.range is not None):
             peer.remote_protocol = (up.legacy or feed_schema.LEGACY_PROTOCOL)[:16]
+        else:
+            peer.remote_protocol = None
+    if up.use and up.range is not None:
+        for _name, seen, put in wire_record(session, upstream_url):
+            high = max(int(seen.get("high") or 0), up.range.max)
+            put({"min": up.range.min, "max": up.range.max, "use": up.use, "high": high,
+                 **({"alerted": up.range.max} if up.range.max < high else {})})
+        if up.range.max >= max((int(s.get("high") or 0) for _n, s, _p in wire_record(session, upstream_url)),
+                               default=0):
+            session.execute(NodeState.__table__.delete().where(
+                NodeState.key == ALERT + _url_key(upstream_url).removeprefix(UPSTREAM_WIRE)))
 
 
 def _record_refusal(maker: sessionmaker[Session], node_id: str, upstream_url: str, exc: SyncRefused) -> None:
@@ -1997,6 +2086,79 @@ def _note_downloaded(maker: sessionmaker[Session], node_id: str, seq: int) -> No
 _RESULT_LABEL = {APPLY: "applied", NOOP: "noop", PARK: "parked", QUARANTINE: "quarantined", WAIT: "waiting"}
 
 
+OMITTED = "sync_omitted:"  # + origin: what renditions left out for this node (per upstream, design §4.9)
+BAD_RENDITION = "sync_bad_rendition:"  # + origin: the last rendition that did not verify
+
+
+def _receive_renditions(session: Session, node_id: str, entry: dict[str, Any], upstream: Upstream,
+                        history: Any, signing_keys: dict[str, str], mirror: tuple[str, str] | None) -> None:
+    """Design §4.3-§4.4 on the follower: an entry above this build's wire may come with renditions at the
+    negotiated `use`. The canonical row is retained as always (it is what a relay serves and what replay applies
+    after an upgrade); a rendition that verifies (`rendition.check`) is kept in `rendition_received` and applied in
+    its place. A rendition of an entry this build reads is ignored (canonical first, the downgrade defence); one
+    naming another body for this seq is a fork; any other bad one is ignored, so the entry parks as before."""
+    from . import rendition
+    from .wire import WIRE_MAX
+
+    body = entry.get("body") if isinstance(entry.get("body"), dict) else {}
+    level = body.get("_wire")
+    if not (type(level) is int and level > WIRE_MAX) or not isinstance(entry.get("renditions"), list):
+        return  # rendition_unneeded
+    current = history[-1]["body"]["key_id"] if history else node_id
+    signer_keys = {node_id: signing_keys.get(current, "")}
+    standing: set[str] = set()
+    if mirror is not None:
+        signer_keys[mirror[0]], standing = mirror[1], {mirror[0]}
+    critical = bool(body.get("_requires"))
+    bad = "no rendition object"
+    for obj in entry["renditions"][:8]:
+        if not isinstance(obj, dict):
+            continue
+        verdict = rendition.check({**entry, "node_id": node_id}, obj, own_max=WIRE_MAX, use=upstream.use,
+                                  signer_keys=signer_keys, mirror_standing=standing, critical=critical)
+        if verdict.result == "fork":
+            metric.federation_verification.inc(reason="fork")
+            raise SyncRewound(f"authority feed fork: a rendition of entry {entry['seq']} names another signed body",
+                              "fork", None, verified_head(session, node_id))
+        if verdict.result == "apply":
+            session.merge(RenditionReceived(
+                node_id=node_id, seq=entry["seq"], rendition_version=obj["rendition_version"],
+                signer_kind=obj["signer"]["kind"], signer_id=str(obj["signer"]["id"])[:64],
+                object={**obj, "label": verdict.label}))
+            return
+        bad = verdict.why
+    log.warning("feed %s entry %s: no usable rendition (%s); it waits for an upgrade", node_id[:16], entry["seq"],
+                bad)
+    _set_state(session, BAD_RENDITION + node_id, json.dumps({"seq": entry["seq"], "why": bad[:200]}, sort_keys=True))
+
+
+def rendered(session: Session, node_id: str, row: Any) -> tuple[str, Any]:
+    """The kind and body to apply for a retained row: its canonical body when this build reads it, else the
+    rendition this node verified for it (`_receive_renditions`), else the canonical body (which parks)."""
+    from .wire import WIRE_MAX
+
+    body = row.body if isinstance(row.body, dict) else {}
+    level = body.get("_wire")
+    if not (type(level) is int and level > WIRE_MAX):
+        return row.kind, row.body
+    got = session.scalars(select(RenditionReceived).where(RenditionReceived.node_id == node_id,
+                                                          RenditionReceived.seq == row.seq)
+                          .order_by(RenditionReceived.rendition_version.desc()).limit(1)).first()
+    if got is None or not isinstance(got.object, dict) or not isinstance(got.object.get("body"), dict):
+        return row.kind, row.body
+    omitted = [str(m)[:64] for m in got.object.get("omitted") or []]
+    raw = _state(session, OMITTED + node_id)
+    try:
+        seen = json.loads(raw) if raw else {}
+    except ValueError:
+        seen = {}
+    members = sorted(set(seen.get("members") or []) | set(omitted))[:50]
+    _set_state(session, OMITTED + node_id, json.dumps(
+        {"entries": int(seen.get("entries") or 0) + 1, "members": members, "last_seq": row.seq,
+         "by": got.object.get("label") or "origin"}, sort_keys=True))
+    return str(got.object.get("kind") or row.kind), got.object["body"]
+
+
 def _apply_pending(session: Session, ctx: Ctx, node_id: str, *, limit: int | None = None,
                    tally: Counter[str] | None = None) -> tuple[int, int]:
     """Apply verified entries from applied+1 in order, stopping at the first one that parks.
@@ -2019,8 +2181,9 @@ def _apply_pending(session: Session, ctx: Ctx, node_id: str, *, limit: int | Non
             break
         failure = session.get(SyncFailure, (node_id, row.seq))
         skipped = failure is not None and failure.disposition == QUARANTINE and failure.reason == "skipped"
+        kind, body = rendered(session, node_id, row)
         with entry_at(row.created_at):
-            result = apply_entry(session, ctx, node_id, row.seq, row.kind, row.body, may_park=not skipped)
+            result = apply_entry(session, ctx, node_id, row.seq, kind, body, may_park=not skipped)
         if tally is not None:
             tally[_RESULT_LABEL.get(result, "applied")] += 1
         if result == PARK:
@@ -2068,7 +2231,6 @@ class _PullState:
     def __init__(self) -> None:
         self.relay = False
         self.backlog_full = False
-        self.legacy_upstream = False  # a v0 upstream, read through the legacy reader (design §3.2)
 
 
 _PULL_STATE: ContextVar[_PullState | None] = ContextVar("atlas_pull_state", default=None)
@@ -2173,10 +2335,11 @@ def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, ups
         upstream = negotiate(top)
         with maker() as session:
             _check_floor(session, node_id, upstream_url, upstream, relay=relay)
+            if session.new or session.dirty:  # an Admin alert (a lower wire max) was recorded
+                session.commit()
     except SyncRefused as exc:
         _record_refusal(maker, node_id, upstream_url, exc)
         raise
-    state.legacy_upstream = upstream.use == 0
     # What the feed's origin speaks (design §2.3): a wire relay reports `feeds[].wire` for wire origins and
     # `feeds[].protocol` for v0 ones; a v0 relay knows only protocols. Stored for display, never compared.
     origin_range: dict[str, int] | None = None
@@ -2247,8 +2410,11 @@ def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, ups
         _record_rewind(maker, node_id, exc)
         raise exc
     try:
+        # W-5: a mirror rendition is taken only from the configured (pinned) relay this page came from.
+        relay_id = top.get("node_id")
+        mirror = (relay_id, keys[relay_id]) if relay and isinstance(relay_id, str) and relay_id in keys else None
         _store_and_apply(maker, ctx, node_id, pub, history, signing_keys, entries, since, advertised_head,
-                         relay, upstream_url, upstream, feed_protocol, origin_range)
+                         relay, upstream_url, upstream, feed_protocol, origin_range, mirror)
     except SyncRewound as exc:
         _record_rewind(maker, node_id, exc)
         raise
@@ -2258,7 +2424,7 @@ def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, ups
 def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: str, history: Any,
                      signing_keys: Any, entries: list[dict[str, Any]], since: int, advertised_head: Any,
                      relay: bool, upstream_url: str, upstream: Upstream, feed_protocol: str | None,
-                     origin_range: dict[str, int] | None = None) -> None:
+                     origin_range: dict[str, int] | None = None, mirror: tuple[str, str] | None = None) -> None:
     with maker() as session:
         try:
             service.write_lock(session)  # SQLite: BEGIN IMMEDIATE (atlas.db); PostgreSQL: advisory lock
@@ -2283,6 +2449,8 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
                     raise _refused("kind", f"entry {e['seq']} has a feed kind this node cannot store")
                 if not key_rotation.check_entry(node_id, history, signing_keys, e):
                     raise _refused("signature", f"bad signature on entry {e['seq']}")
+                if e.get("renditions"):
+                    _receive_renditions(session, node_id, e, upstream, history, signing_keys, mirror)
                 retained_entry = session.get(ReplicatedChange, (node_id, e["seq"]))
                 tally["retained" if retained_entry is None else "duplicate"] += 1
                 if retained_entry is None:

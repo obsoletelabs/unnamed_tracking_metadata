@@ -30,7 +30,7 @@ concurrency:
 jobs:
   lab:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16
@@ -51,6 +51,9 @@ jobs:
       - name: skew drill (v0 release against wire 1, in-place upgrade with export-verify)
         if: always()
         run: mkdir -p lab-logs && uv run python -m tools.skew_drill --previous-ref 62c73f36e7de4a0bd6b814a7dd992eacc7a670e1 --output lab-logs/skew-v0-wire1.json
+      - name: skew drill (A12 1.1 build, head 0030, against wire 1; tombstone self-refusal and in-place upgrade)
+        if: always()
+        run: mkdir -p lab-logs && uv run python -m tools.skew_drill --previous-ref 71893c17f58e13a31ca5c727abc9c9c186267a66 --output lab-logs/skew-a12-wire1.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
