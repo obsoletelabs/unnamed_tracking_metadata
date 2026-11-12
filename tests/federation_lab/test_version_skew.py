@@ -50,7 +50,8 @@ def test_unknown_entry_kind_is_not_silently_dropped(lab):
         assert status["verified_head"] == official.head() and not status["in_sync"]
 
 
-def test_unknown_observation_field_is_not_silently_dropped(lab):
+def test_unknown_observation_field_is_ignored_not_dropped(lab):
+    """C16 Z1 (W-2, tolerant readers): an unknown member of a known body is ignored and the entry applies."""
     official, local = lab.nodes["official"], lab.nodes["local"]
     entry = observation_entry("Game With A Newer Field", extra_payload={"release_date_precision": "month"})
     observation_id = entry["observation"]["id"]
@@ -59,10 +60,10 @@ def test_unknown_observation_field_is_not_silently_dropped(lab):
     lab.sync("mirror", "official")
     lab.sync("local", "official")
 
-    assert disposition(local, official, seq, observation_id) != "dropped", (
-        f"observation {observation_id} with an unknown payload field vanished: local's cursor is "
+    assert disposition(local, official, seq, observation_id) == "applied", (
+        f"observation {observation_id} with an unknown payload field did not apply: local's cursor is "
         f"{local.cursor(official)}, open sync failures {local.open_failures()}")
-    assert local.sync_status(official)["parked"]["first_reason"] == "unsupported_field"
+    assert local.sync_status(official)["parked"] is None
 
 
 def test_mirror_relays_newer_entries_verbatim(lab):
@@ -132,15 +133,15 @@ def _orphan(official) -> tuple[str, int]:
         [result] = service.ingest(session, official.state.ctx, body, system=True)
         session.commit()
     cid = result.canonical_id
-    return cid, official.emit("artwork", {"canonical_id": cid, "source": "curator", "items": ART})
+    return cid, official.emit("artwork", {"canonical_id": cid, "source": "curator", "items": ART}, v0=True)
 
 
 def _as_1_0(path, body):
-    """What a 1.0 upstream's `/sync/info` says: no record counts, no introduction mark, protocol 1.0."""
+    """What an upstream that does not report its records says in `/sync/info`: no record counts, no introduction
+    mark (a v0 upstream; the wire range stays, so the lab's wire-1 server still answers this follower)."""
     if path.endswith("/sync/info"):
         for key in ("records", "introduced_through", "media_withheld"):
             body.pop(key, None)
-        body["protocol"] = "1.0"
     return body
 
 

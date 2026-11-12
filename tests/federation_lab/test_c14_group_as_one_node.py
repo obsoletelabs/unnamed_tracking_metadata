@@ -66,11 +66,11 @@ def _v0_sidecars(node, cid: str) -> None:
     """What a v0 authority signed for a record it never introduced (a wire-1 authority signs a `record` first, C16
     Z1): artwork, achievements, custom values and achievements again."""
     node.emit("artwork", {"canonical_id": cid, "source": "curator",
-                          "items": [{"kind": "key_art", "url": "https://img.example.org/s.png"}]})
-    node.emit("achievements", {"canonical_id": cid, "source": "curator", "items": [{"name": "First Dive"}]})
-    node.emit("custom", {"canonical_id": cid, "source": "curator", "values": {"players_max": 4}})
+                          "items": [{"kind": "key_art", "url": "https://img.example.org/s.png"}]}, v0=True)
+    node.emit("achievements", {"canonical_id": cid, "source": "curator", "items": [{"name": "First Dive"}]}, v0=True)
+    node.emit("custom", {"canonical_id": cid, "source": "curator", "values": {"players_max": 4}}, v0=True)
     node.emit("achievements", {"canonical_id": cid, "source": "curator",
-                               "items": [{"name": "First Dive"}, {"name": "Deep Dive"}]})
+                               "items": [{"name": "First Dive"}, {"name": "Deep Dive"}]}, v0=True)
 
 
 def _waiting(node, origin) -> list[tuple[int, str]]:

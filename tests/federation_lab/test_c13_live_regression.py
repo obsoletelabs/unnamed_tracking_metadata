@@ -66,7 +66,7 @@ def test_sidecars_for_unintroduced_record_wait_for_their_game_and_recover(lab):
     mirror, local, local2 = lab.nodes["mirror"], lab.nodes["local"], lab.nodes["local2"]
     first = official.post("Lab C13 Before")
     cid = _provider_only(official, "Lab C13 Provider Only", "7770001")
-    art_seq = official.emit("artwork", {"canonical_id": cid, "source": "curator", "items": ART})  # the v0 shape
+    art_seq = official.emit("artwork", {"canonical_id": cid, "source": "curator", "items": ART}, v0=True)
     later = official.post("Lab C13 After")
     assert [kind for _, (kind, _, _) in sorted(official.own_feed().items())] == ["wire_start", "obs", "artwork", "obs"]
 

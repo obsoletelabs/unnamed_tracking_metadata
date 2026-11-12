@@ -65,7 +65,7 @@ A newer authority will emit things an older follower does not understand: new en
 Before the compatibility gate a follower logged and skipped such entries while its cursor moved past them. Now it **parks** them ([Compatibility and upgrades](federation.md#compatibility-and-upgrades)):
 
 * `test_unknown_entry_kind_is_not_silently_dropped`: an unknown kind is parked (`unsupported_kind`); the cursor stops before it and the follower's status names it.
-* `test_unknown_observation_field_is_not_silently_dropped`: an observation with an unknown payload field is parked (`unsupported_field`).
+* `test_unknown_observation_field_is_ignored_not_dropped`: an observation with an unknown payload field applies without it (`ignored_member`, tolerant readers).
 * `test_mirror_relays_newer_entries_verbatim`: a parked mirror still retains and relays the entry and everything after it byte for byte; the entry after it waits instead of being applied out of order.
 * `test_skipping_a_parked_entry_lets_the_rest_apply_and_is_audited`: the operator escape hatch.
 * A known kind from the same authority applies normally.
