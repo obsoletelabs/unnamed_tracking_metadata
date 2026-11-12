@@ -1,58 +1,23 @@
-"""skew-1.0 drill: a real mixed-version network of this release and the previous one (CONTRACTS-v1 C1.9).
+"""skew drill: a real mixed network of this release (wire 1) and the previous v0 release (CONTRACT-C16).
 
 The previous release is unpacked from git (`git archive`, nothing in the repository changes), gets its
 own virtual environment through `uv sync --frozen`, and runs as real HTTP servers next to servers of
 this checkout. Every node is disposable (temporary folder, SQLite, synthetic data, loopback only).
 
-Checks, in both directions:
+It checks the two C16 hard gates and the refusal:
 
-* a previous-release (1.0) follower converges on an authority of this release emitting 1.0;
-* a follower of this release accepts a previous-release authority (no `protocol` advertised = 1.0);
-* the authority records that its follower speaks 1.0, which is what keeps `emit_protocol` down;
-* a newer construct (an unknown kind, an observation with an `ext` member) that the 1.0 follower
-  skipped is recovered after that follower is upgraded in place: `atlas sync replay --rescan` records
-  both (classification only), a plain `atlas sync replay` leaves them alone (never out of order), and
-  `atlas sync replay --historical` re-applies the retained range in feed order; the unknown kind stays
-  parked with its reason.
+* a wire-1 follower still syncs FROM a v0 authority and reports `in_sync` only after verifying and applying its
+  head (the upstream is shown as v0);
+* a v0 follower of a wire-1 authority is refused (HTTP 409 `wire_unsupported`, `peer_v0`): nothing is applied
+  and the authority lists that follower as refused;
+* a v0 node upgrades in place without losing data: `atlas export-verify export` before the upgrade,
+  `atlas migrate`, `atlas export-verify verify` after it (every row from before present and unchanged), and
+  the upgraded node then follows both its v0 authority and the wire-1 authority that refused it before.
 
 The previous release is pinned to a commit (`DEFAULT_PREVIOUS`, the last v2 commit before protocol
-negotiation), not a branch: once this release is merged, the branch head would no longer be the previous
-release. Bump it when the next release ships.
+negotiation), not a branch. Bump it when the next release ships.
 
-`python -m tools.skew_drill [--previous-ref <commit or tag>] [--output skew.json]`
-
-`--scenario platinum` (skew-1.1, contract C7.5) runs a 1.1 release as the follower instead: an authority of
-this release at emit protocol 1.2 publishes a platinum achievement list; the 1.1 follower must park it
-(`unsupported_capability`, token `tier-platinum`), keep its previous complete list and hold back later
-entries, and converge after an in-place upgrade. No 1.1 release is tagged yet, so `--previous-ref` (or
-`--previous-dir`) is required for it.
-
-`--scenario dates` (skew-1.2, contract C5.6) runs a 1.2 release as the follower: an authority of this release
-at emit protocol 1.3 publishes an observation with partial and regional release dates (`ext.release`); the
-1.2 follower must park it (`unsupported_capability`, token `dates-v1`) rather than strip the dates, keep the
-record exactly as it was, hold back later entries, and converge after an in-place upgrade (which runs
-migration 0031 on its database). `--previous-ref`/`--previous-dir` must name a 1.2 release.
-
-`--scenario relations` (skew-1.4, contract C6) runs any earlier release as the follower: an authority of this
-release at emit protocol 1.4 publishes a relation (`relation` entry) through the API. A 1.1, 1.2 or 1.3 follower
-must park it (`unsupported_kind`), hold back later entries, and converge after an in-place upgrade (migration
-0032) with a plain `atlas sync replay`. A 1.0 follower cannot park: it passes over it, and after the upgrade
-`atlas sync replay --rescan` records it (`dropped_by_previous_release`) and `atlas sync replay --historical`
-applies it. Without `--previous-ref`/`--previous-dir` it runs against the 1.0 release.
-
-`--scenario rescan` (Phase 4 defect D1) runs the 1.0 release as the follower of a 1.4 authority that signs a
-platinum achievement list and a `releases` lock through its API. The 1.0 release drops both without recording
-anything; after an in-place upgrade `atlas sync replay --rescan` must record both (`dropped_by_previous_release`),
-`atlas sync replay --historical` must apply them, and a second rescan must record nothing. Without
-`--previous-ref`/`--previous-dir` it runs against the 1.0 release.
-
-`--scenario records` (C13, A19) reproduces the live failure against any earlier release: a provider-only record is
-never signed, so its curator artwork is quarantined on a 1.1+ follower (`unknown or merged canonical`) and dropped
-without a trace by 1.0. With the bridge on (`ATLAS_FEDERATION_BRIDGE_RECORD_OBS=true`) `atlas feed introduce
---missing` signs a bridge observation the old release applies; a 1.1+ release's own retry then applies the artwork;
-on 1.0 `atlas sync replay --rescan` after the in-place upgrade (migration 0036) finds it and `--historical` applies
-it.
-Without `--previous-ref`/`--previous-dir` it runs against the 1.0 release.
+`python -m tools.skew_drill [--previous-ref <commit or tag>] [--previous-dir <checkout>] [--output skew.json]`
 """
 
 from __future__ import annotations
@@ -61,6 +26,7 @@ import argparse
 import io
 import json
 import os
+import re
 import secrets
 import sqlite3
 import subprocess
@@ -73,9 +39,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from atlas import feed, feed_schema, sync
+from atlas import feed, sync, wire
 from atlas.ids import canonical_id, ulid
-from atlas.models import ChangeLog
 from atlas.signing import load_identity
 
 from .multinode_drill import PASSWORD, Node, free_port
@@ -207,94 +172,93 @@ def _observation(title: str, **payload: Any) -> dict[str, Any]:
 
 
 def run(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) -> dict[str, Any]:
-    report: dict[str, Any] = {"drill": "skew-1.0", "started_at": datetime.now(UTC).isoformat(), "checks": [],
+    report: dict[str, Any] = {"drill": "skew-v0-wire1", "started_at": datetime.now(UTC).isoformat(), "checks": [],
                               "transport": "isolated loopback HTTP, development mode, SQLite"}
     checks = report["checks"]
     with tempfile.TemporaryDirectory(prefix="atlas-skew-", ignore_cleanup_errors=True) as folder, ExitStack() as stack:
         root = Path(folder)
-        if previous_dir is None:
-            (root / "previous").mkdir()
-            source, python, commit = prepare_previous(previous_ref, root / "previous")
-        else:
-            source, python, commit = previous_dir, _venv_python(previous_dir), "local"
+        source, python, commit = _prepare(root, previous_ref, previous_dir)
         report["previous"] = {"ref": previous_ref if previous_dir is None else str(previous_dir), "commit": commit}
         report["current"] = {"commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
                                                       text=True).stdout.strip()}
-        new_authority = Node(root, "authority-1.1", "authority")
-        new_local = Node(root, "local-1.1", "local")
-        old_authority = PreviousNode(root, "authority-1.0", "authority", source, python)
-        old_local = PreviousNode(root, "local-1.0", "local", source, python)
+        new_authority = Node(root, "authority-w1", "authority")
+        new_local = Node(root, "local-w1", "local")
+        old_authority = PreviousNode(root, "authority-v0", "authority", source, python)
+        old_local = PreviousNode(root, "local-v0", "local", source, python)
         for node in (new_authority, new_local, old_authority, old_local):
             stack.callback(node.close)
             node.start()
 
         info = new_authority.client.get("/api/v2/sync/info", headers=new_authority.headers()).json()
         old_info = old_authority.client.get("/api/v2/sync/info", headers=old_authority.headers()).json()
-        assert info["protocol"] == feed_schema.PROTOCOL and info["emit_protocol"] == "1.0" and info["contract"] == 1
-        assert "protocol" not in old_info and old_info["contract"] == 1
-        checks.append(f"this release advertises protocol {feed_schema.PROTOCOL} / emit 1.0; the previous release "
-                      "advertises none (= 1.0)")
+        assert (info["wire"]["min"], info["wire"]["max"]) == (wire.WIRE_MIN_PEER, wire.WIRE_MAX), info
+        assert info["wire"]["reads_v0"] is True and info["contract"] == 1, info
+        assert info["protocol"] == info["min_follower_protocol"] == wire.V0_TOMBSTONE["protocol"], info
+        assert "wire" not in old_info and old_info["contract"] == 1
+        checks.append(f"this release advertises wire {wire.WIRE_MAX} and the v0 tombstone protocol "
+                      f"{wire.V0_TOMBSTONE["protocol"]}; the previous release advertises no wire (v0)")
 
-        # 1.0 follower <- 1.1 authority.
-        first = new_authority.publish("Skew New Authority Game")
-        peer = old_local.add_peer(new_authority)
-        assert old_local.sync(peer) is None
-        assert old_local.game(first)["title"] == "Skew New Authority Game"
-        followers = new_authority.client.get("/api/v2/sync/status",
-                                             headers=new_authority.headers(new_authority.admin_token)).json()["followers"]
-        assert [f["protocol"] for f in followers] == ["1.0"], followers
-        checks.append("a previous-release follower converges on this release's authority at emit protocol 1.0, "
-                      "and the authority records that follower as protocol 1.0")
-
-        # 1.1 follower <- 1.0 authority.
+        # Hard gate 1: a wire-1 follower <- a v0 authority.
         old_game = old_authority.publish("Skew Old Authority Game")
         new_peer = new_local.add_peer(old_authority)
         assert new_local.sync(new_peer) is None
         assert new_local.game(old_game)["title"] == "Skew Old Authority Game"
         with new_local.state.maker() as session:
             heads = sync.upstream_status(session, new_local.state.ctx, old_authority.identity.node_id)
-        assert heads["state"] == "in_sync" and heads["upstream_protocol"] == "1.0", heads
-        checks.append("a follower of this release accepts a previous-release authority (N-1) and reports in_sync "
-                      "only after verifying and applying its head")
+        assert heads["state"] == "in_sync" and heads["upstream_wire"] is None, heads
+        checks.append("a wire-1 follower syncs from a v0 authority and reports in_sync only after verifying and "
+                      "applying its head (upstream shown as v0)")
 
-        # A newer construct, the 1.0 follower, then an in-place upgrade.
-        unknown = _sign(new_authority, "relationship", {"canonical_id": "atlas:" + "0" * 26, "kind": "dlc_of"})
-        # A valid 1.3 extension (C5.2): the previous release rejects the unknown `ext` key; this one applies it.
-        extended = _observation("Skew Extended Game",
-                                ext={"release": {"first": {"date": "2026", "precision": "year"}}})
-        ext_seq = _sign(new_authority, "obs", extended)
-        after = new_authority.publish("Skew After Newer Entries")
-        assert old_local.sync(peer) is None  # the previous release passes over both silently (atlas#33)
-        assert old_local.client.get(f"/api/v2/games/{extended['canonical_id']}",
-                                    headers=old_local.headers()).status_code == 404
-        assert old_local.game(after)["title"] == "Skew After Newer Entries"
-        checks.append(f"the previous release skips entries {unknown} (unknown kind) and {ext_seq} (observation with "
-                      "an ext member) without recording them: the documented 1.0 limitation")
+        # The refusal: a v0 follower <- a wire-1 authority.
+        first = new_authority.publish("Skew New Authority Game")
+        from .multinode_drill import add_peer_form
 
+        identity = new_authority.identity
+        response = add_peer_form(old_local.admin, new_authority.url, new_authority.follower, identity.node_id,
+                                 identity.public_b64, new_authority.name)
+        assert response.status_code == 400, f"a v0 follower must not pin a wire-1 authority: {response.status_code}"
+        assert old_local._peer(identity.node_id) is None
+        assert old_local.client.get(f"/api/v2/games/{first}", headers=old_local.headers()).status_code == 404
+        refusal = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", response.text))
+        assert "does not match the public key" in refusal, refusal[:400]  # D5: a wide node id is not a v0 id
+        changes = new_authority.client.get("/api/v2/sync/changes", params={"after": 0},  # what a v0 pull sends
+                                           headers=new_authority.headers(new_authority.follower))
+        assert changes.status_code == 409, changes.status_code
+        error = changes.json()["error"]
+        assert (error["code"], error["reason"]) == ("wire_unsupported", "peer_v0"), error
+        followers = new_authority.client.get("/api/v2/sync/status",
+                                             headers=new_authority.headers(new_authority.admin_token)).json()["followers"]
+        assert [f["refused"] for f in followers] == ["peer_v0"], followers
+        checks.append("a v0 follower cannot pin a wire-1 authority (its 64-digit node id is not a v0 id: the v0 release "
+                      "answers 400 and pins nothing), and a v0-shaped pull of /sync/changes is refused with 409 "
+                      "wire_unsupported (peer_v0), applies nothing, and the authority lists that follower as refused")
+
+        # Hard gate 2: the v0 follower upgrades in place without losing data.
+        old_peer = old_local.add_peer(old_authority)
+        second = old_authority.publish("Skew Before Upgrade")
+        assert old_local.sync(old_peer) is None
+        assert old_local.game(second)["title"] == "Skew Before Upgrade"
+        old_local.stop()
+        manifest = root / "local-v0-manifest.json"
+        exported = _current_cli(old_local, "export-verify", "export", str(manifest))
+        assert exported.returncode == 0, (exported.stdout, exported.stderr)
+        migrated = _current_cli(old_local, "migrate")
+        assert migrated.returncode == 0, (migrated.stdout, migrated.stderr)
+        verified = _current_cli(old_local, "export-verify", "verify", str(manifest), "--json")
+        assert verified.returncode == 0, (verified.stdout, verified.stderr)
         old_local.upgrade()
-        rescan = old_local.cli("sync", "replay", "--rescan")
-        assert rescan.returncode == 3 and "recorded 2 parked" in rescan.stdout, (rescan.stdout, rescan.stderr)
-        status = old_local.cli("sync", "status", "--json")
-        upstream = json.loads(status.stdout)["upstreams"][new_authority.identity.node_id]
-        assert status.returncode == 3 and upstream["parked"]["first_seq"] == unknown, upstream
-        assert upstream["parked"]["first_reason"] == "unsupported_kind"
-        assert upstream["applied_head"] == upstream["verified_head"]  # the cursor never moved back
-        replay = old_local.cli("sync", "replay")
-        assert replay.returncode == 3 and "replay --historical" in replay.stdout, (replay.stdout, replay.stderr)
-        assert old_local.client.get(f"/api/v2/games/{extended['canonical_id']}",
-                                    headers=old_local.headers()).status_code == 404  # never out of order
-        replay = old_local.cli("sync", "replay", "--historical")
-        assert replay.returncode == 3 and "unsupported kind" in replay.stdout + replay.stderr, (replay.stdout, replay.stderr)
-        recovered = old_local.game(extended["canonical_id"])
-        assert recovered["title"] == "Skew Extended Game", recovered
-        assert recovered["first_release"] == {"date": "2026", "precision": "year"}, recovered
-        assert recovered["release_year"] == 2026 and "release_date" not in recovered, recovered
-        assert old_local.game(after)["title"] == "Skew After Newer Entries"
-        assert old_local.sync(peer) is None
-        checks.append("after upgrading that follower in place, `atlas sync replay --rescan` records both (exit 3), "
-                      "a plain `atlas sync replay` applies nothing below the cursor, and `atlas sync replay "
-                      "--historical` re-applies the retained range in feed order: the dropped observation is "
-                      "applied while the unknown kind stays parked with its reason shown")
+        assert old_local.game(second)["title"] == "Skew Before Upgrade"
+        checks.append("the v0 follower upgrades in place: export-verify before, `atlas migrate`, export-verify "
+                      f"after reports every row present and unchanged ({exported.stdout.strip()})")
+
+        third = old_authority.publish("Skew After Upgrade")
+        assert old_local.sync(old_peer) is None
+        assert old_local.game(third)["title"] == "Skew After Upgrade"
+        new_peer_on_upgraded = old_local.add_peer(new_authority)
+        assert old_local.sync(new_peer_on_upgraded) is None
+        assert old_local.game(first)["title"] == "Skew New Authority Game"
+        checks.append("after the upgrade the same node keeps following its v0 authority and now follows the wire-1 "
+                      "authority that refused it before")
     report["status"] = "passed"
     report["finished_at"] = datetime.now(UTC).isoformat()
     return report
@@ -307,344 +271,6 @@ def _prepare(root: Path, previous_ref: str, previous_dir: Path | None) -> tuple[
     return previous_dir, _venv_python(previous_dir), "local"
 
 
-def _achievements(node: Node, cid: str) -> set[tuple[str, str | None, str]]:
-    response = node.client.get(f"/api/v2/games/{cid}/achievements", headers=node.headers())
-    assert response.status_code == 200, f"achievements on {node.name}: {response.status_code}"
-    return {(a["name"], a.get("tier"), a.get("key")) for a in response.json()["results"]}  # 1.0 serves no key
-
-
-def run_platinum(previous_ref: str, previous_dir: Path | None = None) -> dict[str, Any]:
-    """skew-1.1: a real 1.1 follower meets platinum from a 1.2 authority (C7.5)."""
-    report: dict[str, Any] = {"drill": "skew-1.1-platinum", "started_at": datetime.now(UTC).isoformat(),
-                              "checks": [], "transport": "isolated loopback HTTP, development mode, SQLite"}
-    checks = report["checks"]
-    with tempfile.TemporaryDirectory(prefix="atlas-skew11-", ignore_cleanup_errors=True) as folder, ExitStack() as stack:
-        root = Path(folder)
-        source, python, commit = _prepare(root, previous_ref, previous_dir)
-        report["previous"] = {"ref": previous_ref if previous_dir is None else str(previous_dir), "commit": commit}
-        report["current"] = {"commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
-                                                      text=True).stdout.strip()}
-        authority = Node(root, "authority-1.2", "authority", extra_env={"ATLAS_EMIT_PROTOCOL": "1.2"})
-        follower = PreviousNode(root, "local-1.1", "local", source, python)
-        for node in (authority, follower):
-            stack.callback(node.close)
-            node.start()
-        old_info = follower.client.get("/api/v2/sync/info", headers=follower.headers()).json()
-        info = authority.client.get("/api/v2/sync/info", headers=authority.headers()).json()
-        assert old_info.get("protocol") == "1.1", old_info.get("protocol")
-        assert (info["protocol"], info["emit_protocol"]) == (feed_schema.PROTOCOL, "1.2"), info
-        checks.append(f"the follower runs a 1.1 release; the authority speaks {info['protocol']} and emits 1.2")
-
-        cid = authority.publish("Skew Trophy Hall")
-        curator = authority.headers(authority.admin_token)
-        start = [{"name": "Start", "tier": "bronze"}]
-        assert authority.client.put(f"/api/v2/games/{cid}/achievements", headers=curator,
-                                    json={"items": start}).status_code == 200
-        peer = follower.add_peer(authority)
-        assert follower.sync(peer) is None
-        before = _achievements(follower, cid)
-        assert {(n, t) for n, t, _ in before} == {("Start", "bronze")}, before
-        response = authority.client.put(f"/api/v2/games/{cid}/achievements", headers=curator,
-                                        json={"items": [*start, {"name": "Everything", "tier": "platinum"}]})
-        assert response.status_code == 200, response.text
-        with authority.state.maker() as session:
-            platinum_seq = feed.head_seq(session)
-        later = authority.publish("Skew After Platinum")
-        follower.sync(peer)
-        status = follower.client.get("/api/v2/sync/status", headers=follower.headers(follower.admin_token)).json()
-        up = status["upstreams"][authority.identity.node_id]
-        assert up["state"] == "parked" and up["parked"]["first_seq"] == platinum_seq, up
-        assert up["parked"]["first_reason"] == "unsupported_capability" and up["parked"]["first_kind"] == "achievements"
-        assert up["applied_head"] == platinum_seq - 1 and up["verified_head"] == platinum_seq + 1, up
-        assert _achievements(follower, cid) == before  # not dropped, not partial: the previous list stays
-        assert follower.client.get(f"/api/v2/games/{later}", headers=follower.headers()).status_code == 404
-        checks.append(f"the 1.1 follower parks the platinum list at seq {platinum_seq} (unsupported_capability), "
-                      "keeps its previous complete list, holds back the later record and still verifies and "
-                      "retains the later entry")
-
-        follower.upgrade()
-        replay = follower.cli("sync", "replay")
-        assert replay.returncode == 0, (replay.stdout, replay.stderr)
-        assert _achievements(follower, cid) == _achievements(authority, cid)
-        assert {t for _, t, _ in _achievements(follower, cid)} == {"bronze", "platinum"}
-        assert follower.game(later)["title"] == "Skew After Platinum"
-        status = follower.cli("sync", "status", "--json")
-        assert status.returncode == 0, (status.stdout, status.stderr)
-        checks.append("after upgrading the follower in place, replay applies the parked list and the later record: "
-                      "names, tiers and keys equal the authority's, and `atlas sync status` exits 0")
-    report["status"] = "passed"
-    report["finished_at"] = datetime.now(UTC).isoformat()
-    return report
-
-
-RELEASE = {"first": {"date": "2027", "precision": "year"},
-           "entries": [{"date": "2027", "precision": "year", "platform": "pc", "region": "ww", "category": "full"},
-                       {"date": "2026-11", "precision": "month", "platform": "pc", "region": "ww",
-                        "category": "beta"},
-                       {"date": "2027-03-01", "precision": "day", "platform": "Switch", "region": "jp",
-                        "category": "port"}]}
-
-
-def _post_release(node: Node, title: str, release: dict[str, Any]) -> str:
-    payload = {"connection": {"source_kind": "manual", "source": "manual", "source_scope": "release-drill"},
-               "observations": [{"external_id": title, "title": title, "facts": {"genres": ["Puzzle"]},
-                                 "ext": {"release": release}}]}
-    response = node.client.post("/api/v2/observations", headers=node.headers(node.admin_token), json=payload)
-    assert response.status_code == 200, f"publish on {node.name}: {response.status_code} {response.text[:300]}"
-    return response.json()["results"][0]["atlas"]["canonical_id"]
-
-
-def run_dates(previous_ref: str, previous_dir: Path | None = None) -> dict[str, Any]:
-    """skew-1.2: a real 1.2 follower meets partial and regional release dates from a 1.3 authority (C5.6)."""
-    report: dict[str, Any] = {"drill": "skew-1.2-dates", "started_at": datetime.now(UTC).isoformat(),
-                              "checks": [], "transport": "isolated loopback HTTP, development mode, SQLite"}
-    checks = report["checks"]
-    with tempfile.TemporaryDirectory(prefix="atlas-skew12-", ignore_cleanup_errors=True) as folder, ExitStack() as stack:
-        root = Path(folder)
-        source, python, commit = _prepare(root, previous_ref, previous_dir)
-        report["previous"] = {"ref": previous_ref if previous_dir is None else str(previous_dir), "commit": commit}
-        report["current"] = {"commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
-                                                      text=True).stdout.strip()}
-        authority = Node(root, "authority-1.3", "authority", extra_env={"ATLAS_EMIT_PROTOCOL": "1.3"})
-        follower = PreviousNode(root, "local-1.2", "local", source, python)
-        for node in (authority, follower):
-            stack.callback(node.close)
-            node.start()
-        old_info = follower.client.get("/api/v2/sync/info", headers=follower.headers()).json()
-        info = authority.client.get("/api/v2/sync/info", headers=authority.headers()).json()
-        assert old_info.get("protocol") == "1.2", old_info.get("protocol")
-        assert (info["protocol"], info["emit_protocol"]) == (feed_schema.PROTOCOL, "1.3"), info
-        assert "dates-v1" in info["capabilities"] and "dates-v1" not in old_info.get("capabilities", []), info
-        checks.append(f"the follower runs a 1.2 release; the authority speaks {info['protocol']} and emits 1.3")
-
-        title = "Skew Dated Game"
-        cid = authority.publish(title)
-        peer = follower.add_peer(authority)
-        assert follower.sync(peer) is None
-        before = follower.game(cid)
-        assert before["title"] == title and "first_release" not in before, before
-        assert _post_release(authority, title, RELEASE) == cid
-        with authority.state.maker() as session:
-            dated_seq = feed.head_seq(session)
-            body = session.get(ChangeLog, dated_seq).body
-        assert body["_requires"] == ["dates-v1"], body
-        assert body["observation"]["payload"]["ext"]["release"] == RELEASE, body
-        later = authority.publish("Skew After Dates")
-        follower.sync(peer)
-        status = follower.client.get("/api/v2/sync/status", headers=follower.headers(follower.admin_token)).json()
-        up = status["upstreams"][authority.identity.node_id]
-        assert up["state"] == "parked" and up["parked"]["first_seq"] == dated_seq, up
-        assert up["parked"]["first_reason"] == "unsupported_capability" and up["parked"]["first_kind"] == "obs", up
-        assert up["applied_head"] == dated_seq - 1 and up["verified_head"] == dated_seq + 1, up
-        kept = follower.game(cid)
-        assert kept == before, (kept, before)  # not stripped, not partial: the record stays as it was
-        assert follower.client.get(f"/api/v2/games/{later}", headers=follower.headers()).status_code == 404
-        checks.append(f"the 1.2 follower parks the dated observation at seq {dated_seq} (unsupported_capability, "
-                      "token dates-v1) instead of stripping the dates, keeps the record exactly as it was, holds "
-                      "back the later record and still verifies and retains the later entry")
-
-        follower.upgrade()
-        replay = follower.cli("sync", "replay")
-        assert replay.returncode == 0, (replay.stdout, replay.stderr)
-        got, want = follower.game(cid), authority.game(cid)
-        assert got["first_release"] == want["first_release"] == {"date": "2027", "precision": "year"}, (got, want)
-        assert got["release_year"] == 2027 and "release_date" not in got, got  # never a fake 1 January
-        assert got["releases"] == want["releases"] and len(got["releases"]) == 3, got["releases"]
-        assert follower.game(later)["title"] == "Skew After Dates"
-        status = follower.cli("sync", "status", "--json")
-        assert status.returncode == 0, (status.stdout, status.stderr)
-        checks.append("after upgrading the follower in place (migration 0031 on its database), replay applies the "
-                      "parked observation and the later record: first release, year and the three regional "
-                      "entries equal the authority's, `release_date` stays absent, and `atlas sync status` exits 0")
-    report["status"] = "passed"
-    report["finished_at"] = datetime.now(UTC).isoformat()
-    return report
-
-
-def _relations(node: Node, cid: str) -> dict[str, Any]:
-    response = node.client.get(f"/api/v2/games/{cid}", headers=node.headers())
-    assert response.status_code == 200, f"game on {node.name}: {response.status_code}"
-    return response.json().get("relations", {})
-
-
-def run_relations(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) -> dict[str, Any]:
-    """skew-1.4: a real follower of an earlier release meets `relation` entries from a 1.4 authority (C6)."""
-    report: dict[str, Any] = {"drill": "skew-1.4-relations", "started_at": datetime.now(UTC).isoformat(),
-                              "checks": [], "transport": "isolated loopback HTTP, development mode, SQLite"}
-    checks = report["checks"]
-    with tempfile.TemporaryDirectory(prefix="atlas-skew14-", ignore_cleanup_errors=True) as folder, ExitStack() as stack:
-        root = Path(folder)
-        source, python, commit = _prepare(root, previous_ref, previous_dir)
-        report["previous"] = {"ref": previous_ref if previous_dir is None else str(previous_dir), "commit": commit}
-        report["current"] = {"commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
-                                                      text=True).stdout.strip()}
-        authority = Node(root, "authority-1.4", "authority", extra_env={"ATLAS_EMIT_PROTOCOL": "1.4"})
-        follower = PreviousNode(root, "local-previous", "local", source, python)
-        for node in (authority, follower):
-            stack.callback(node.close)
-            node.start()
-        old_info = follower.client.get("/api/v2/sync/info", headers=follower.headers()).json()
-        info = authority.client.get("/api/v2/sync/info", headers=authority.headers()).json()
-        old_protocol = old_info.get("protocol", "1.0")
-        report["previous"]["protocol"] = old_protocol
-        assert old_protocol in ("1.0", "1.1", "1.2", "1.3"), old_protocol
-        assert (info["protocol"], info["emit_protocol"]) == (feed_schema.PROTOCOL, "1.4"), info
-        checks.append(f"the follower runs a {old_protocol} release; the authority speaks {info['protocol']} and "
-                      "emits 1.4")
-
-        game, dlc = authority.publish("Skew Base Game"), authority.publish("Skew Base Game Expansion")
-        peer = follower.add_peer(authority)
-        assert follower.sync(peer) is None
-        assert follower.game(dlc)["title"] == "Skew Base Game Expansion"
-        response = authority.client.put(f"/api/v2/games/{dlc}/relations",
-                                        headers=authority.headers(authority.admin_token),
-                                        json={"relations": [{"to": game, "type": "dlc_of"}]})
-        assert response.status_code == 200 and response.json()["published"] is True, response.text
-        with authority.state.maker() as session:
-            relation_seq = feed.head_seq(session)
-            body = session.get(ChangeLog, relation_seq).body
-        assert body == {"op": "add", "from": dlc, "to": game, "type": "dlc_of", "source": "curator"}, body
-        later = authority.publish("Skew After Relation")
-        want = _relations(authority, dlc)
-        assert [(p["id"], p["type"]) for p in want["parents"]] == [(game, "dlc_of")], want
-
-        follower.sync(peer)
-        if old_protocol == "1.0":
-            assert follower.game(later)["title"] == "Skew After Relation"
-            assert "relations" not in follower.game(dlc)
-            checks.append(f"the 1.0 follower passes over the relation at seq {relation_seq} without recording it "
-                          "(the documented 1.0 limitation) and applies the later record")
-            follower.upgrade()
-            rescan = follower.cli("sync", "replay", "--rescan")
-            assert rescan.returncode == 3 and "recorded 1 parked" in rescan.stdout, (rescan.stdout, rescan.stderr)
-            with sqlite3.connect(follower.db_path) as db:
-                reason = db.execute("SELECT reason FROM sync_failure WHERE seq = ?", (relation_seq,)).fetchone()
-            assert reason == ("dropped_by_previous_release",), reason
-            replay = follower.cli("sync", "replay", "--historical")
-            assert replay.returncode == 0, (replay.stdout, replay.stderr)
-            checks.append("after upgrading it in place (migration 0032), `atlas sync replay --rescan` records the "
-                          "relation as dropped_by_previous_release (exit 3) and `atlas sync replay --historical` "
-                          "applies it")
-        else:
-            status = follower.client.get("/api/v2/sync/status", headers=follower.headers(follower.admin_token)).json()
-            up = status["upstreams"][authority.identity.node_id]
-            assert up["state"] == "parked" and up["parked"]["first_seq"] == relation_seq, up
-            assert up["parked"]["first_reason"] == "unsupported_kind" and up["parked"]["first_kind"] == "relation", up
-            assert up["applied_head"] == relation_seq - 1 and up["verified_head"] == relation_seq + 1, up
-            assert follower.client.get(f"/api/v2/games/{later}", headers=follower.headers()).status_code == 404
-            assert "relations" not in follower.game(dlc)
-            checks.append(f"the {old_protocol} follower parks the relation at seq {relation_seq} (unsupported_kind), "
-                          "holds back the later record and still verifies and retains the later entry")
-            follower.upgrade()
-            replay = follower.cli("sync", "replay")
-            assert replay.returncode == 0, (replay.stdout, replay.stderr)
-            checks.append("after upgrading it in place (migration 0032), a plain `atlas sync replay` applies the "
-                          "parked relation and the later record in feed order")
-        assert _relations(follower, dlc) == want, (_relations(follower, dlc), want)
-        assert _relations(follower, game) == _relations(authority, game)
-        assert follower.game(later)["title"] == "Skew After Relation"
-        assert follower.sync(peer) is None
-        status = follower.cli("sync", "status", "--json")
-        assert status.returncode == 0, (status.stdout, status.stderr)
-        checks.append("the upgraded follower's relations on both records equal the authority's and `atlas sync "
-                      "status` exits 0")
-    report["status"] = "passed"
-    report["finished_at"] = datetime.now(UTC).isoformat()
-    return report
-
-
-def _date_keys(node: Node, cid: str) -> dict[str, Any]:
-    game = node.game(cid)
-    return {k: game.get(k) for k in ("release_date", "first_release", "releases", "release_year")}
-
-
-def run_rescan(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) -> dict[str, Any]:
-    """skew-1.0 rescan (Phase 4 defect D1): a real 1.0 follower drops a platinum list and a `releases` lock from a
-    1.4 authority without recording them; after an in-place upgrade `--rescan` must record both and
-    `--historical` must apply them."""
-    report: dict[str, Any] = {"drill": "skew-1.0-rescan", "started_at": datetime.now(UTC).isoformat(),
-                              "checks": [], "transport": "isolated loopback HTTP, development mode, SQLite"}
-    checks = report["checks"]
-    with tempfile.TemporaryDirectory(prefix="atlas-skew10r-", ignore_cleanup_errors=True) as folder, \
-            ExitStack() as stack:
-        root = Path(folder)
-        source, python, commit = _prepare(root, previous_ref, previous_dir)
-        report["previous"] = {"ref": previous_ref if previous_dir is None else str(previous_dir), "commit": commit}
-        report["current"] = {"commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
-                                                      text=True).stdout.strip()}
-        authority = Node(root, "authority-1.4", "authority", extra_env={"ATLAS_EMIT_PROTOCOL": "1.4"})
-        follower = PreviousNode(root, "local-1.0", "local", source, python)
-        for node in (authority, follower):
-            stack.callback(node.close)
-            node.start()
-        old_info = follower.client.get("/api/v2/sync/info", headers=follower.headers()).json()
-        assert "protocol" not in old_info, old_info.get("protocol")  # a 1.0 release advertises none
-        checks.append("the follower runs a 1.0 release; the authority emits 1.4")
-
-        curator = authority.headers(authority.admin_token)
-        game, locked = authority.publish("Skew Rescan Game"), authority.publish("Skew Rescan Locked")
-        start = [{"name": "Start", "tier": "bronze"}]
-        assert authority.client.put(f"/api/v2/games/{game}/achievements", headers=curator,
-                                    json={"items": start}).status_code == 200
-        peer = follower.add_peer(authority)
-        assert follower.sync(peer) is None
-        assert {(n, t) for n, t, _ in _achievements(follower, game)} == {("Start", "bronze")}
-        response = authority.client.put(f"/api/v2/games/{game}/achievements", headers=curator,
-                                        json={"items": [*start, {"name": "All", "tier": "platinum"}]})
-        assert response.status_code == 200, response.text
-        response = authority.client.put(f"/api/v2/games/{locked}/locks/releases", headers=curator, json={
-            "value": [{"date": "2030", "precision": "year", "platform": "pc", "region": "ww", "category": "full"}]})
-        assert response.status_code == 200, response.text
-        later = authority.publish("Skew Rescan Later")
-        assert follower.sync(peer) is None  # no error, nothing recorded: the documented 1.0 limitation
-        assert {(n, t) for n, t, _ in _achievements(follower, game)} == {("Start", "bronze")}
-        assert follower.game(locked).get("releases") is None
-        assert follower.game(later)["title"] == "Skew Rescan Later"
-        checks.append("the 1.0 follower drops the platinum list and the releases lock silently and applies the "
-                      "later record")
-
-        follower.upgrade()
-        rescan = follower.cli("sync", "replay", "--rescan")
-        assert rescan.returncode == 3 and "recorded 2 parked" in rescan.stdout, (rescan.stdout, rescan.stderr)
-        with sqlite3.connect(follower.db_path) as db:
-            reasons = db.execute("SELECT kind, reason FROM sync_failure ORDER BY seq").fetchall()
-        assert reasons == [("achievements", "dropped_by_previous_release"),
-                           ("lock", "dropped_by_previous_release")], reasons
-        replay = follower.cli("sync", "replay", "--historical")
-        assert replay.returncode == 0, (replay.stdout, replay.stderr)
-        assert _achievements(follower, game) == _achievements(authority, game)
-        assert {t for _, t, _ in _achievements(follower, game)} == {"bronze", "platinum"}
-        assert _date_keys(follower, locked) == _date_keys(authority, locked)
-        assert len(_date_keys(follower, locked)["releases"]) == 1
-        again = follower.cli("sync", "replay", "--rescan")
-        assert again.returncode == 0 and "recorded 0 parked" in again.stdout, (again.stdout, again.stderr)
-        assert follower.sync(peer) is None
-        status = follower.cli("sync", "status", "--json")
-        assert status.returncode == 0, (status.stdout, status.stderr)
-        checks.append("after upgrading it in place, `atlas sync replay --rescan` records both entries as "
-                      "dropped_by_previous_release (exit 3), `--historical` applies them (achievements with keys "
-                      "and the regional releases equal the authority's), a second rescan records nothing and "
-                      "`atlas sync status` exits 0")
-    report["status"] = "passed"
-    report["finished_at"] = datetime.now(UTC).isoformat()
-    return report
-
-
-def _provider_only(node: Node, title: str, steam: str) -> str:
-    """A record whose only observation is a provider's (not redistributable): the feed never signs an `obs` for it,
-    so before C13 nothing ever introduced it to followers (the live failure)."""
-    from atlas import service
-    from atlas.contract import ObservationBatchV1
-
-    body = ObservationBatchV1.model_validate({
-        "connection": {"source_kind": "metadata", "source": "steam", "source_scope": "skew-drill"},
-        "observations": [{"external_id": steam, "title": title, "provider_ids": {"steam": steam}}]})
-    with node.state.maker() as session:
-        [result] = service.ingest(session, node.state.ctx, body, system=True)
-        session.commit()
-    return result.canonical_id
-
-
 def _current_cli(node: Node, *argv: str) -> subprocess.CompletedProcess:
     """Run this checkout's CLI against `node`'s database, with the node's settings."""
     env = _clean_env() | {"ATLAS_DATABASE_URL": node.database_url, "ATLAS_ROLE": node.role,
@@ -654,166 +280,14 @@ def _current_cli(node: Node, *argv: str) -> subprocess.CompletedProcess:
                            *argv], cwd=ROOT, env=env, capture_output=True, text=True)
 
 
-def _open_failures(node: PreviousNode) -> list[tuple[str, str]]:
-    with sqlite3.connect(node.db_path) as db:
-        return db.execute("SELECT kind, error FROM sync_failure WHERE resolved_at IS NULL ORDER BY seq").fetchall()
-
-
-def _artwork(node: PreviousNode, cid: str) -> list[tuple[str, str]]:
-    with sqlite3.connect(node.db_path) as db:
-        return db.execute("SELECT kind, url FROM artwork WHERE canonical_id = ? ORDER BY kind, url",
-                          (cid,)).fetchall()
-
-
-def run_records(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) -> dict[str, Any]:
-    """C13 (A19) live failure: curator artwork for a provider-only record reaches a previous-release follower that
-    never received the record. A 1.1+ release quarantines it (`unknown or merged canonical`); 1.0 drops it without a
-    trace. The bridge (C13 §4.1) plus `atlas feed introduce --missing` introduce the record with a bridge observation
-    the old release understands; a 1.1+ release's own retry then applies the artwork, and on 1.0 the rescan after
-    the in-place upgrade (migration 0036) finds it and `--historical` applies it."""
-    report: dict[str, Any] = {"drill": "skew-records", "started_at": datetime.now(UTC).isoformat(),
-                              "checks": [], "transport": "isolated loopback HTTP, development mode, SQLite"}
-    checks = report["checks"]
-    with tempfile.TemporaryDirectory(prefix="atlas-skewrec-", ignore_cleanup_errors=True) as folder, \
-            ExitStack() as stack:
-        root = Path(folder)
-        source, python, commit = _prepare(root, previous_ref, previous_dir)
-        report["previous"] = {"ref": previous_ref if previous_dir is None else str(previous_dir), "commit": commit}
-        report["current"] = {"commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
-                                                      text=True).stdout.strip()}
-        follower = PreviousNode(root, "local-previous", "local", source, python)
-        stack.callback(follower.close)
-        follower.start()
-        old_info = follower.client.get("/api/v2/sync/info", headers=follower.headers()).json()
-        speaks = old_info.get("protocol", "1.0")
-        report["previous"]["protocol"] = speaks
-        authority = Node(root, "authority", "authority", extra_env={"ATLAS_EMIT_PROTOCOL": speaks})
-        stack.callback(authority.close)
-        authority.start()
-        checks.append(f"the follower runs a {speaks} release; the authority (this checkout) emits {speaks} with the "
-                      "bridge off (the default)")
-
-        first = authority.publish("Skew Records First")
-        peer = follower.add_peer(authority)
-        assert follower.sync(peer) is None
-        assert follower.game(first)["title"] == "Skew Records First"
-
-        cid = _provider_only(authority, "Skew Provider Only", "4242001")
-        art = [{"kind": "key_art", "url": "https://img.example.org/skew-key.png"}]
-        curator = authority.headers(authority.admin_token)
-        response = authority.client.put(f"/api/v2/games/{cid}/artwork", headers=curator, json={"items": art})
-        assert response.status_code == 200, response.text
-        later = authority.publish("Skew Records Later")
-        assert follower.sync(peer) is None
-        failures = _open_failures(follower)
-        # 1.0 swallows the error and records nothing; 1.1 and later quarantine the entry and retry it.
-        quarantines = speaks != "1.0"
-        if quarantines:
-            assert [k for k, _ in failures] == ["artwork"], failures
-            assert "unknown or merged canonical" in failures[0][1], failures
-        else:
-            assert failures == [], failures
-        assert _artwork(follower, cid) == []
-        assert follower.game(later)["title"] == "Skew Records Later"
-        info = authority.client.get("/api/v2/sync/info", headers=authority.headers()).json()
-        assert info["records"]["not_federated"] == 1, info.get("records")
-        report["reproduced"] = {"open_failures": failures, "authority_records": info["records"]}
-        checks.append("reproduced: the provider-only record is never signed and its curator artwork never lands on "
-                      "the follower (" + ("quarantined as `unknown or merged canonical`" if quarantines else
-                                          "dropped without a trace by the 1.0 release") +
-                      "); the authority's /sync/info counts the record as not federated")
-
-        refused = _current_cli(authority, "feed", "introduce", "--missing")
-        assert refused.returncode == 2 and "enable the bridge" in refused.stderr, (refused.stdout, refused.stderr)
-        authority.stop()
-        authority.extra_env["ATLAS_FEDERATION_BRIDGE_RECORD_OBS"] = "true"
-        authority.start()
-        dry = _current_cli(authority, "feed", "introduce", "--missing", "--dry-run")
-        assert dry.returncode == 0, (dry.stdout, dry.stderr)
-        planned = json.loads(dry.stdout)
-        assert (planned["would_introduce"], planned["mode"]) == (1, "bridge"), planned
-        done = _current_cli(authority, "feed", "introduce", "--missing")
-        assert done.returncode == 0, (done.stdout, done.stderr)
-        result = json.loads(done.stdout)
-        assert (result["introduced"], result["finished"]) == (1, True), result
-        checks.append("`atlas feed introduce --missing` refuses (exit 2) at emit protocol "
-                      f"{speaks} with the bridge off; with ATLAS_FEDERATION_BRIDGE_RECORD_OBS=true it plans and "
-                      "signs one bridge observation and finishes")
-
-        assert follower.sync(peer) is None
-        assert follower.game(cid)["title"] == "Skew Provider Only"
-        with sqlite3.connect(follower.db_path) as db:
-            sources = db.execute("SELECT source FROM observation WHERE canonical_id = ?", (cid,)).fetchall()
-        assert sources == [("atlas-record",)], sources
-        assert _open_failures(follower) == []
-        if quarantines:
-            assert _artwork(follower, cid) == [("key_art", art[0]["url"])]
-            checks.append(f"the unmodified {speaks} follower applies the bridge observation (source atlas-record), "
-                          "its own retry applies the quarantined artwork, and no failure stays open")
-        else:
-            assert _artwork(follower, cid) == []
-            checks.append("the unmodified 1.0 follower applies the bridge observation (source atlas-record) and now "
-                          "holds the record; the artwork it dropped earlier stays missing (1.0 kept no trace)")
-
-        follower.upgrade()
-        if not quarantines:
-            rescan = follower.cli("sync", "replay", "--rescan")
-            assert rescan.returncode == 3 and "recorded 1 parked" in rescan.stdout, (rescan.stdout, rescan.stderr)
-            with sqlite3.connect(follower.db_path) as db:
-                reasons = db.execute("SELECT kind, reason FROM sync_failure WHERE resolved_at IS NULL").fetchall()
-            assert reasons == [("artwork", "dropped_by_previous_release")], reasons
-            replay = follower.cli("sync", "replay", "--historical")
-            assert replay.returncode == 0, (replay.stdout, replay.stderr)
-            assert _artwork(follower, cid) == [("key_art", art[0]["url"])]
-            checks.append("after the in-place upgrade `atlas sync replay --rescan` finds the artwork entry 1.0 "
-                          "dropped before the record arrived (dropped_by_previous_release, exit 3) and "
-                          "`--historical` applies it")
-        assert follower.sync(peer) is None
-        assert _artwork(follower, cid) == [("key_art", art[0]["url"])]
-        assert _open_failures(follower) == []
-        status = follower.cli("sync", "status", "--json")
-        assert status.returncode == 0, (status.stdout, status.stderr)
-        with sqlite3.connect(follower.db_path) as db:
-            head = db.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        report["upgraded_schema"] = head
-        checks.append(f"after an in-place upgrade (schema {head}) the follower stays converged and "
-                      "`atlas sync status` exits 0")
-    report["status"] = "passed"
-    report["finished_at"] = datetime.now(UTC).isoformat()
-    return report
-
-
 def main_cli() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--previous-ref", default=DEFAULT_PREVIOUS, help="git ref of the previous release")
+    parser.add_argument("--previous-ref", default=DEFAULT_PREVIOUS, help="git ref of the previous (v0) release")
     parser.add_argument("--previous-dir", type=Path,
                         help="an existing checkout of the previous release with its own .venv (skips git and uv)")
     parser.add_argument("--output", type=Path, help="write the JSON report here")
-    parser.add_argument("--scenario", choices=("1.0", "platinum", "dates", "relations", "rescan", "records"),
-                        default="1.0",
-                        help="1.0: the previous 1.0 release (default); platinum: a 1.1 release meets platinum; "
-                             "dates: a 1.2 release meets partial and regional release dates; relations: any "
-                             "earlier release meets relations from a 1.4 authority; rescan: a 1.0 release drops "
-                             "a platinum list and a releases lock, recovered after the upgrade; records: any "
-                             "earlier release quarantines artwork of a never-introduced record, recovered by the "
-                             "bridge and `atlas feed introduce --missing`")
     args = parser.parse_args()
-    if args.scenario == "platinum":
-        if args.previous_dir is None and args.previous_ref == DEFAULT_PREVIOUS:
-            parser.error("--scenario platinum needs --previous-ref or --previous-dir of a 1.1 release")
-        report = run_platinum(args.previous_ref, args.previous_dir)
-    elif args.scenario == "dates":
-        if args.previous_dir is None and args.previous_ref == DEFAULT_PREVIOUS:
-            parser.error("--scenario dates needs --previous-ref or --previous-dir of a 1.2 release")
-        report = run_dates(args.previous_ref, args.previous_dir)
-    elif args.scenario == "relations":
-        report = run_relations(args.previous_ref, args.previous_dir)
-    elif args.scenario == "rescan":
-        report = run_rescan(args.previous_ref, args.previous_dir)
-    elif args.scenario == "records":
-        report = run_records(args.previous_ref, args.previous_dir)
-    else:
-        report = run(args.previous_ref, args.previous_dir)
+    report = run(args.previous_ref, args.previous_dir)
     text = json.dumps(report, indent=2) + "\n"
     if args.output:
         args.output.write_text(text, encoding="utf-8")

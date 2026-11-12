@@ -164,9 +164,9 @@ and registered in `atlas/feed_schema.py` (`PRICE_CHANNEL`):
 
 In this release:
 
-* `/sync/info` does not list `price-channel-v1`, and the node still speaks protocol 1.4;
+* `/sync/info` does not list `price-channel-v1`, and the node speaks wire 1;
 * `/api/v2/sync/price-changes` answers 404;
-* nothing price-related is signed or appended to the feed, at any `emit_protocol`;
+* nothing price-related is signed or appended to the feed (`price` stays a reserved kind in wire 1);
 * the feed kind `price` is **reserved**. If one ever reached the main feed, a follower of this release would
   park it (`unsupported_kind`) instead of dropping it, and this node refuses to sign one.
 

@@ -48,12 +48,9 @@ jobs:
           uv run python -m tools.federation_lab
           --postgres-admin-url postgresql+psycopg://postgres:pw@localhost:5432/postgres
           --logs lab-logs --junit lab-junit.xml
-      - name: skew-1.0 drill (previous release against this one)
+      - name: skew drill (v0 release against wire 1, in-place upgrade with export-verify)
         if: always()
-        run: mkdir -p lab-logs && uv run python -m tools.skew_drill --previous-ref 62c73f36e7de4a0bd6b814a7dd992eacc7a670e1 --output lab-logs/skew-1.0.json
-      - name: skew-1.0 rescan drill (a 1.0 follower's dropped platinum list and releases lock are recovered)
-        if: always()
-        run: mkdir -p lab-logs && uv run python -m tools.skew_drill --scenario rescan --previous-ref 62c73f36e7de4a0bd6b814a7dd992eacc7a670e1 --output lab-logs/skew-1.0-rescan.json
+        run: mkdir -p lab-logs && uv run python -m tools.skew_drill --previous-ref 62c73f36e7de4a0bd6b814a7dd992eacc7a670e1 --output lab-logs/skew-v0-wire1.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

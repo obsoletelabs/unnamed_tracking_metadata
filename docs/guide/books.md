@@ -134,9 +134,8 @@ Curators (and administrators) see two links on a book's page:
   created. When a provider says the book is part of a series, its name and number fill the form, but nothing is
   linked until a curator saves it. To change a position, save the same series with the new number.
 
-On an authority whose emit protocol is still below this release, both are refused with an explanation (HTTP 409),
-because book data and the authors lock cannot be signed for older followers; on local nodes and mirrors they stay on
-the node.
+On an authority both are signed into its feed like any other change; on local nodes and mirrors they stay on the
+node.
 
 **Importing books.** On **Import** choose Open Library: the search box takes a title, an author or an ISBN, and an
 **ISBN** box imports that book straight away (an ISBN goes straight to Open Library's book lookup, with no search in
@@ -165,8 +164,7 @@ Book data is registered under the **one release version** of this release, not u
 
 * An `obs` that carries `ext.book` is always signed with the `_requires` token **`book-v1`** (advertised in
   `capabilities`). A follower that cannot apply it **parks** the entry instead of storing a bare record without
-  authors or editions. An authority whose emit protocol is below the release version refuses book data and book
-  locks (HTTP 409, `"code": "emit_protocol"`).
+  authors or editions. Every authority of this release (wire 1) signs book data and book locks.
 * The lock fields `authors`, `subtitle`, `page_count` and `original_language`, the vocabularies `book_format` and
   `book_creator_role` and the relation member `position` are registered under the same version.
 * Book records travel on the public feed like games, and never on the private group channel. Reading history is not

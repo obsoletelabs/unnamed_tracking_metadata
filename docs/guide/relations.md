@@ -91,7 +91,7 @@ own relations always win. An active relation therefore never names a merged reco
 Every node makes the same decision for the same merge, so followers stay identical without extra feed
 entries. That holds because the decision for a *replicated* relation (one the authority published, or one a
 follower applied from its feed) looks only at other replicated relations. Relations that exist on one node
-only (an authority's relations kept local below emit protocol 1.4, a mirror's overlays) are decided after
+only (a mirror's or local node's overlays) are decided after
 them, and one that then conflicts is ended (`superseded`).
 
 Splitting a source record off (**Split off**) creates a new record without relations; the relations stay
@@ -110,14 +110,13 @@ with the new position (no new operation), so the history shows both. A relation 
 exactly as before. `position` is registered under the one release version, like the rest of the book model
 ([Books](books.md)).
 
-* Below `emit_protocol` **1.4** an authority keeps relations local and signs nothing; once a relation was
-  published it cannot be removed until the protocol is 1.4 again (HTTP 409). While gated,
-  `PUT /games/{id}/relations` answers `published: false` with `reason: "emit_protocol"` and `pending` (how many
-  of the record's own relations wait to be signed); a mirror or local node answers `published: false`,
-  `reason: "local_node"`. Raising the protocol does not publish relations made earlier by itself: put the
-  record's relations again (or add the same relation again in the editor) and the ones still waiting are signed
-  then, once each (`changed.published` counts them). A relation stored while gated and removed before it was
-  ever signed is ended on the authority only; no `end` is signed for it, since followers never had it.
+* An authority signs every relation it stores (wire 1). `PUT /games/{id}/relations` answers `published: true`
+  when every relation the record holds on its own is in the signed feed; relations an earlier release kept local
+  (below its emit protocol 1.4) are signed when the record's relations are put again, once each
+  (`changed.published` counts them), and until then the answer is `published: false` with `reason: "pending"` and
+  `pending` (how many still wait). A mirror or local node answers `published: false`, `reason: "local_node"`. A
+  relation that was never signed and is removed is ended on the authority only; no `end` is signed for it, since
+  followers never had it.
 * A follower of 1.1, 1.2 or 1.3 **parks** the first `relation` entry (`unsupported_kind`) and holds back what
   follows, then applies everything in order after it is upgraded (see
   [Compatibility and upgrades](federation.md#compatibility-and-upgrades)).

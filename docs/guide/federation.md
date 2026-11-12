@@ -174,20 +174,25 @@ You can also configure a single upstream with environment variables (`ATLAS_UPST
 
 ## Compatibility and upgrades
 
-Nodes of different releases can follow each other. Each release speaks a federation **protocol**
-(`MAJOR.MINOR`); this release speaks **1.5**. Releases before protocol negotiation did not
-advertise one and count as **1.0**.
+Every node of this release speaks **wire 1** (CONTRACT-C16). There is one release version and nothing to switch
+on: every feature this release ships (platinum tiers, partial and regional release dates, relationships, `record`
+entries, books) is signed by every authority from the first entry after the upgrade, and every follower of this
+release applies all of it.
 
-| Protocol | Adds | A 1.0 follower | A 1.1, 1.2 or 1.3 follower |
-| --- | --- | --- | --- |
-| 1.1 | negotiation, parking, named heads, `items[].key` on achievements (reserved-optional) | applies what it knows; drops what it does not | — |
-| 1.2 | the achievement tier `platinum` (an entry with it also lists the `_requires` token `tier-platinum`) | **drops the whole achievement list** of that game; after upgrading, `atlas sync replay --rescan` records it as `dropped_by_previous_release` and `--historical` applies it | a 1.1 follower **parks** it (`unsupported_capability`) and applies it after upgrading |
-| **1.3** | partial and regional release dates: `ext.release` on observations, a `release_date` lock that is a year or a month, and the `releases` lock field (each signed with the `_requires` token `dates-v1`, also advertised in `capabilities`) | **drops the observation or lock**; after upgrading, `--rescan` records both and `--historical` applies them | **parks** it (`unsupported_capability`) and applies it after upgrading; the record keeps its previous dates meanwhile, never a stripped or day-only copy |
-| **1.4** | the feed kind `relation`: relationships between works (DLC, expansions, ports, remakes, mods, series and collection membership; see [Relationships](relations.md)) | **drops the entry** (an unknown kind); after upgrading, `atlas sync replay --rescan` records it as `dropped_by_previous_release` and `--historical` applies it | **parks** it (`unsupported_kind`) and applies it after upgrading; the records keep their other data meanwhile |
-| **1.5** | the feed kind `record`: a game introduced by identity only (id, type, display title, store ids), signed before any artwork, achievements, custom values, locks, merges or relations that name it, so no follower receives changes for a game it has never heard of (see [Changes waiting for their game](#changes-waiting-for-their-game)). Below 1.5 an authority can instead publish an ordinary observation of the source `atlas-record` (the bridge, off by default) | **drops the entry** and the changes behind it; keep the emit protocol at 1.1 or lower while a 1.0 follower remains, or turn the bridge on. After upgrading, `--rescan` recovers both | **parks** it (`unsupported_kind`), which holds that follower's applied head until it upgrades; with the bridge on, the authority sends the bridge observation instead while `min_follower_protocol` is below 1.5 |
-| 1.6 (reserved) | the price channel: a separate signed channel `/sync/price-changes` (capability `price-channel-v1`); see [Prices](prices.md). **Designed, not enabled in this release**: no capability, the endpoint answers 404, nothing is signed | never sees it (separate endpoint, not the feed) | never sees it; a `price` entry in the main feed would be **parked** (`unsupported_kind`) |
-| 1.7 (reserved) | undoing merges across the federation: the feed kinds `unmerge` and `distinct` ("these are different works"), and lock body version 2 for an explicit clear (`field-clear-v1`) and the merge guard (`merge-guard-v1`); see [Matching and provenance](matching.md). **Not signed by this release**: unmerges, distinct marks and clears stay on the node that made them; a merge is published as before, so an authority cannot undo a published merge until it emits 1.7 | would **drop the entry** (an unknown kind) | **parks** it (`unsupported_kind` or `unsupported_version`) and applies it after upgrading |
-| 1.8, 1.9 (reserved) | achievement body version 2 (`ach-v2`), artwork body version 2 (`art-v2`, artwork kind `trailer`) | — | **parks** it |
+Releases before wire 1 are **v0**. A wire-1 node still follows a v0 authority (it reads the v0 feed and its
+`/sync/info` exactly as before) and a v0 database upgrades in place (see [Upgrading a network](#upgrading-a-network)).
+A v0 node cannot follow a wire-1 authority: the authority answers `/api/v2/sync/changes` with HTTP 409
+`wire_unsupported` instead of serving entries the old release would silently drop. Upgrade every follower before or
+with its authority.
+
+| Feature | Before (v0) | In wire 1 |
+| --- | --- | --- |
+| achievement tier `platinum` (`_requires: tier-platinum`) | gated by the emit protocol (1.2) | always signed |
+| partial and regional release dates (`ext.release`, `dates-v1`) | gated (1.3) | always signed |
+| feed kind `relation` | gated (1.4) | always signed |
+| feed kind `record` | gated (1.5) or the `atlas-record` bridge | always signed; the bridge is gone |
+| `wire_start` | none | signed once, before the node's first wire-1 entry |
+| price channel, `unmerge`, `distinct`, lock/achievement/artwork body version 2 | reserved | still reserved: refused when emitting (HTTP 409 `reserved_feature`), parked when received |
 
 ### What a follower does with entries it does not understand
 
@@ -235,57 +240,37 @@ last entry this node verified again, byte for byte. Recovering from a real fork 
 
 ### Negotiation and refusal
 
-`/api/v2/sync/info` advertises `protocol`, `min_follower_protocol`, `emit_protocol`,
-`observation_schema`, `kinds` (per kind, the highest body version emitted and applied) and
-`capabilities`, next to the unchanged `contract: 1`. Followers send an `Atlas-Protocol` header.
-A follower refuses an upstream, before downloading anything and without moving its cursor, when
-the upstream needs a newer follower (`min_follower_protocol`) or when the upstream is more than
-one major version older (N-1 support). The reason is shown on the peer and in `sync/status`.
+A follower sends `Atlas-Wire: min=1, max=1` on every pull. The authority picks the highest wire both speak and
+answers with `Atlas-Wire: use=1, min=1, max=1` (and `Vary: Atlas-Wire`); when the newer side has features the
+older one lacks, it adapts down and the follower's Admin → Peers lists what was left out. When there is no common
+wire the request is refused with HTTP 409:
 
-An authority records which protocol each follower token last sent (token id only) and shows it on
-Admin → Peers. A follower that sends no header is a 1.0 release.
+```json
+{"error": {"code": "wire_unsupported", "reason": "peer_v0", "theirs": null, "mine": {"min": 1, "max": 1}}}
+```
 
-### Emitting newer features
+`reason` is `peer_too_old`, `peer_too_new`, `peer_v0` (no header: a v0 release) or `peer_downgraded` (a peer that
+spoke wire 1 now answers as v0). A malformed header is HTTP 400 `invalid_wire`.
 
-`emit_protocol` (default: `ATLAS_MIN_FOLLOWER_PROTOCOL`, itself 1.0 by default) is the newest
-protocol this node's own feed may use. Constructs that need more are not signed: a reserved kind is
-refused (kept local), a platinum achievement tier is rejected with "Raise federation emit protocol
-to 1.2 first", and an extended release date is stored locally but left out of the signed
-observation. Raise it under **Admin → Peers → Federation protocol** only after every follower is
-upgraded: it asks for your password and a confirmation, like a key rotation, and is audited.
-Followers of releases before 1.1 cannot park and would silently drop newer constructs, so keep
-`emit_protocol` at 1.1 or lower until none remain. Raising it to **1.2** lets curators, the editor,
-proposals and bulk imports publish platinum achievements; until then those writes are refused with
-HTTP 409 (`"code": "emit_protocol"` in the API) and nothing is stored or signed. Mirrors and local
-nodes sign nothing, so they accept platinum whatever their own setting, and a mirror applies it from
-an upstream that emits 1.2.
+`/api/v2/sync/info` and `/api/v2/health` carry `wire` (`{"min": 1, "max": 1, "reads_v0": true, "serves_v0":
+false}`: this node reads v0 upstreams and serves no v0 followers), next to the unchanged
+`contract: 1`. `/sync/info` also keeps a frozen tombstone, `protocol` and `min_follower_protocol` `"2.0"`, so a v0
+follower that reads it refuses this authority cleanly ("needs a newer follower") before downloading anything.
 
-Raising it to **1.3** publishes partial and regional release dates. Below 1.3 an authority still stores
-them from providers, the API and the editor, and shows them locally, but signs observations without
-`ext.release` (followers see the day-only `release_date`, as before), and refuses a `release_date` lock
-that is a year or a month, a `releases` lock and removing a `releases` lock with HTTP 409
-(`"code": "emit_protocol"`), storing nothing. A day lock is unaffected. After raising it, run
-`atlas dates rebuild` on followers that upgraded with existing data, or simply let new entries arrive:
-migration 0031 already derived the first release from every record's existing date.
+A follower remembers the highest wire each upstream spoke. If that upstream later answers as v0 (a rolled-back
+node, or a proxy that strips the header) the follower refuses it (`peer_downgraded`) rather than reading a v0 feed
+silently; the refusal shows on the peer and in `sync/status`. An authority records the wire each follower token last
+sent (token id only) and Admin → Peers → **Compatibility** shows which followers speak wire 1 and which were refused
+as v0.
 
-Raising the emit protocol does **not** re-publish what was signed before. An observation stored while
-the authority emitted below 1.3 was signed without its `ext.release`, and that signed entry stays as it
-is: followers keep only its day-only `release_date`, so their first release can differ from the
-authority's until the same source sends the record again (a new import or sync signs a new observation,
-now with `ext.release`) or a curator edits or locks the date. `atlas dates rebuild` re-derives views on
-one node only and signs nothing. Raise the emit protocol before importing partial dates you want followers
-to have.
+An entry whose `_wire` is newer than this node's is **parked** (`unsupported_version`) and applies after upgrading.
+Members of an entry this release does not know (a later minor's optional field) are ignored, not parked: the entry is
+applied and the outcome records `ignored_member`. Members that change meaning are listed in `_requires`, which still
+parks.
 
-A `release_date` lock written by a release before 1.3 could hold any text ("TBA"). A follower of this
-release applies such a signed lock exactly as the authority stored it and shows it in `release_date` as
-before; only new locks must be a date. A day keeps any year (a 1937 film keeps its date); a year or a month
-must be between 1950 and 2100.
-
-Raising it to **1.4** publishes relationships between works (`relation` entries). Below 1.4 an authority
-stores relations made in the editor or with `PUT /api/v2/games/{id}/relations`, shows them locally and
-appends nothing to its feed. A relation that was already published is not removed while the protocol is
-below 1.4 (HTTP 409 `emit_protocol`): its followers would keep it. As with dates, raising the protocol does
-**not** publish relations made before; re-save them (remove and add) to publish them.
+Settings from earlier releases (`ATLAS_EMIT_PROTOCOL`, `ATLAS_MIN_FOLLOWER_PROTOCOL`,
+`ATLAS_FEDERATION_BRIDGE_RECORD_OBS`, `ATLAS_FEDERATION_BRIDGE_MEDIA_TYPES`) are ignored; the node logs a warning
+naming each one it still finds.
 
 ### Changes waiting for their game
 
@@ -294,13 +279,8 @@ in its feed. Before this release, a curator's artwork, achievements, custom valu
 such a game still reached followers, which had never heard of the game: they quarantined the entry ("unknown or
 merged canonical"), retried it 20 times and gave up (a 1.0 follower dropped it without a trace).
 
-Now the authority **introduces** a game before it signs anything that names it:
-
-| Emit protocol | Bridge (`ATLAS_FEDERATION_BRIDGE_RECORD_OBS`) | What introduces the game |
-| --- | --- | --- |
-| 1.5 or higher | any (off once `min_follower_protocol` is 1.5) | a `record` entry: id, media type, display title and store ids, no provider content |
-| below 1.5 | **on** | an ordinary observation of the source `atlas-record` with the same fields, which every follower release applies |
-| below 1.5 | off (the default) | nothing: the entry is signed as before and the game is counted as not federated |
+Now the authority **introduces** a game before it signs anything that names it: a `record` entry (id, media type,
+display title and store ids, no provider content), of any media type.
 
 What a `record` carries is limited by `ATLAS_FEDERATION_SNAPSHOT_FIELDS`. `ATLAS_FEDERATION_INTRODUCE=all` also
 introduces every game created from provider data alone; the default `referenced` introduces a game only when a
@@ -308,13 +288,12 @@ signed entry first names it. `/api/v2/sync/info` → `records` shows how many li
 many it did not (`not_federated`), and Admin → Peers shows the same numbers with a button to introduce them.
 
 Games named before the upgrade are introduced by **`atlas feed introduce --missing`** (try `--dry-run` first; it
-prints how many and in which mode). It works in resumable batches (`--batch`, `--limit`) and refuses (exit 2) while
-nothing can introduce a game (emit protocol below 1.5 and the bridge off). `--all` introduces every live game not
-introduced yet. Raising the emit protocol to 1.5 in Admin → Peers schedules `--missing` for the sync worker.
+prints how many). It works in resumable batches (`--batch`, `--limit`). `--all` introduces every live game not
+introduced yet. **Introduce them** on Admin → Peers schedules `--missing` for the sync worker.
 
 On a follower of this release, an entry that names a game it does not hold **waits** for it instead of failing:
 it is recorded with the reason `waiting_for_record` and the game it waits for, no attempt is counted, the cursor
-moves on and the upstream's state is `waiting`. When the game arrives (a `record`, a bridge observation or any
+moves on and the upstream's state is `waiting`. When the game arrives (a `record` or any
 observation of it) the waiting entries are applied in feed order in the same pull, before the next entry of that
 feed (in batches of `ATLAS_SYNC_WAKE_BATCH`, each flushed before the next). Only the feed that introduced the game
 wakes its own entries: another feed's entries naming the same game keep waiting until that feed introduces it.
@@ -369,24 +348,29 @@ never waits for its type between nodes of this release. Book data is registered 
 the entry rather than keeping a bare record), and the book lock fields, the `book_format` and `book_creator_role`
 vocabularies and the `series_member` `position` are registered under the same version. See [Books](books.md).
 
-**The bridge and other media types (A20, CONTRACT-C15 §4.1).** A 1.0 follower files every observation as a game,
-whatever its media type says, so the bridge introduces only the types in `ATLAS_FEDERATION_BRIDGE_MEDIA_TYPES`
-(default `["game"]`; an empty list is refused at startup). A record of another type gets a `record` when the emit protocol is 1.5 (a 1.0–1.4 follower parks
-it, `unsupported_kind`, and applies it after upgrading), and is not introduced at all below 1.5; `atlas feed
-introduce` leaves those out instead of looping. Admin → Peers → *Records on this node's feed* counts the records the
-bridge does not carry.
-
-Older followers: a 1.1–1.4 follower quarantines such an entry and its own retry (at most 20 attempts) applies it
-once the bridge observation has arrived; the drill checks this against a real 1.1 release. A 1.0 follower drops it; after upgrading, `atlas sync replay --rescan` finds it (it waits
-if the game is still unknown, or is parked as `dropped_by_previous_release` if the game arrived later) and
-`--historical` applies it. `python -m tools.skew_drill --scenario records --previous-dir <release>` runs this
-against a real 1.0 or 1.1 release.
+**Older feeds.** A v0 authority that published `atlas-record` bridge observations is still read: they are
+ordinary observations and introduce the game as before. After upgrading a follower from a release before 1.1,
+`atlas sync replay --rescan` finds entries the old release dropped (they wait if the game is still unknown, or are
+parked as `dropped_by_previous_release`) and `--historical` applies them.
 
 ### Upgrading a network
 
-1. Upgrade followers (mirrors first, then local nodes). They keep following older authorities.
-2. Upgrade authorities. They keep emitting the old protocol.
-3. When Admin → Peers shows every follower on the new protocol, raise `emit_protocol`.
+1. **Export and verify before upgrading.** On each node, with the old release still installed and the node stopped,
+   run `atlas export-verify export MANIFEST.json`. It writes, per table, the row count and a hash of every row.
+2. Upgrade the code and run the migrations (`atlas migrate`, or start the node). Migration 0063 widens every
+   integer id and feed sequence to 64 bits and records the wire.
+3. Run `atlas export-verify verify MANIFEST.json`. It exits 0 when every row from before is still present with the
+   same content (new tables, columns and rows are allowed) and 1 with the differences otherwise. Keep the manifest
+   until you are satisfied.
+4. Upgrade followers (mirrors first, then local nodes) before or together with their authority: a wire-1 follower
+   keeps following a v0 authority, a v0 follower cannot follow a wire-1 authority (409 `wire_unsupported`).
+5. Upgrade authorities. From the first entry they sign after the upgrade (a `wire_start` entry, then everything
+   else) their feed is wire 1, and every feature of this release is published; Admin → Peers → Compatibility shows
+   any follower still refused as v0.
+
+A node records the highest wire that ever ran on its database (`wire_high_water`). A later build that speaks a lower
+wire refuses to start on it rather than re-classifying its own feed; to go back, restore the pre-upgrade backup.
+Releases before wire 1 do not know this check, so do not start a v0 release on an upgraded database.
 
 After upgrading a follower from a release before 1.1, run `atlas sync replay --rescan` once: it
 records retained entries that the old release skipped without applying (unknown kinds, unknown
@@ -401,8 +385,7 @@ win), and `--historical` lands it there. A list is compared on the fields it sto
 (identity, text, icons, kind, tier, points, percent, set, status, locale, icon licence), not on
 translations or order. These rows sit below the applied head, so they no longer block, but the upstream stays
 `parked` (and promotion is refused) until they are dealt with. Rescanning again after the replay
-records nothing: the state then holds. `python -m tools.skew_drill --scenario rescan` runs this
-recovery against the real 1.0 release.
+records nothing: the state then holds.
 
 Then run `atlas sync replay --historical` (try `--dry-run` first). It re-applies **every** retained
 entry from the oldest recovered one up to the applied head, in feed order, so a skipped entry lands in
@@ -442,32 +425,34 @@ node. The upstream caches its answer for up to 60 seconds (`cached_seconds`). Pl
 
 ### Feed kinds in this release
 
-| Kind | Since | Emits / applies body version | Fields |
+| Kind | Wire | Emits / applies body version | Fields |
 | --- | --- | --- | --- |
-| `obs` | 1.0 | 1 / 1 | `canonical_id`, `media_type`, `observation` |
-| `artwork` | 1.0 | 1 / 1 | `canonical_id`, `items`, `source` |
-| `achievements` | 1.0 | 1 / 1 | `canonical_id`, `items`, `source` |
-| `custom` | 1.0 | 1 / 1 | `canonical_id`, `clear`, `source`, `values` |
-| `schema` | 1.0 | 1 / 1 | `fields`, `types` |
-| `merge` | 1.0 | 1 / 1 | `dst`, `src` |
-| `detach` | 1.0 | 1 / 1 | `canonical_id`, `new_canonical_id`, `observation_id` |
-| `lock` | 1.0 | 1 / 1 | `canonical_id`, `field`, `value` |
-| `unlock` | 1.0 | 1 / 1 | `canonical_id`, `field` |
-| `key_rotation` | 1.0 | 1 / 1 | `key_id`, `public_key` |
-| `relation` | 1.4 | 1 / 1 | `from`, `op`, `position`, `source`, `to`, `type` |
-| `record` | 1.5 | 1 / 1 | `because`, `canonical_id`, `media_type`, `provider_ids`, `title` |
-| `price` | 1.6 (reserved) | not in this release | parked by this release |
-| `unmerge` | 1.7 (reserved) | not in this release | parked by this release |
-| `distinct` | 1.7 (reserved) | not in this release | parked by this release |
+| `obs` | 1 | 1 / 1 | `canonical_id`, `media_type`, `observation` |
+| `artwork` | 1 | 1 / 1 | `canonical_id`, `items`, `source` |
+| `achievements` | 1 | 1 / 1 | `canonical_id`, `items`, `source` |
+| `custom` | 1 | 1 / 1 | `canonical_id`, `clear`, `source`, `values` |
+| `schema` | 1 | 1 / 1 | `fields`, `types` |
+| `merge` | 1 | 1 / 1 | `dst`, `src` |
+| `detach` | 1 | 1 / 1 | `canonical_id`, `new_canonical_id`, `observation_id` |
+| `lock` | 1 | 1 / 1 | `canonical_id`, `field`, `value` |
+| `unlock` | 1 | 1 / 1 | `canonical_id`, `field` |
+| `key_rotation` | 1 | 1 / 1 | `key_id`, `public_key` |
+| `relation` | 1 | 1 / 1 | `from`, `op`, `position`, `source`, `to`, `type` |
+| `record` | 1 | 1 / 1 | `because`, `canonical_id`, `media_type`, `provider_ids`, `title` |
+| `wire_start` | 1 | 1 / 1 | `first_seq`, `wire` |
+| `distinct` | reserved | not in this release | parked by this release |
+| `price` | reserved | not in this release | parked by this release |
+| `unmerge` | reserved | not in this release | parked by this release |
 
-Each entry body may carry `_v` (body version; absent means 1) and `_requires` (capability or
-vocabulary tokens a follower must know, at most 16 of up to 40 characters). Both are inside the
-signed body, so they cannot be stripped; keys starting with `_` are reserved for this envelope.
+Each entry body carries `_wire` (the wire it was signed under; absent means v0) and may carry `_v` (body
+version; absent means 1) and `_requires` (capability or vocabulary tokens a follower must know, at most 16 of up to
+40 characters). All are inside the signed body, so they cannot be stripped; keys starting with `_` are reserved for
+this envelope.
 Observation payloads may carry `ext` members: one listed in `_requires` must be understood, any
 other is ignored by a follower that does not know it. The only field that a later minor may add
 without parking 1.1 followers is `achievements.items[].key` (reserved-optional). Since migration 0022
 an authority puts each row's stored key there (see [Achievements](achievements.md#stable-keys)), at
-every emit protocol: 1.1 followers accept it as reserved-optional, and 1.0 followers read only the
+every wire: 1.1 followers accept it as reserved-optional, and 1.0 followers read only the
 fields they know, so they ignore it. A follower stores the authority's key, so mirror and authority
 name every entry alike; an entry without a key (from an older authority) gets the derived key, which
 is the same except for entries renamed in the authority's editor. Version-1 bodies are unchanged on

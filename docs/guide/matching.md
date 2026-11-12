@@ -131,8 +131,8 @@ points at the restored record. Pass the survivor's ETag as `If-Match` to be sure
 
 What cannot be undone in this release:
 
-* a merge this **authority published** in its signed feed (it is on every mirror): undoing it needs federation protocol
-  1.7 (`409 emit_protocol`);
+* a merge this **authority published** in its signed feed (it is on every mirror): undoing it needs the reserved
+  `unmerge` feed kind, which this release does not sign (`409 reserved_feature`);
 * a merge a **mirror applied from its upstream** (`409 upstream_owned`): only the upstream can undo it;
 * a merge made before this release (`409 legacy_merge`): split its source records off instead.
 

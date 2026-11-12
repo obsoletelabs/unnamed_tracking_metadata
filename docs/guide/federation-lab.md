@@ -56,7 +56,7 @@ Every scenario ends with assertions on node databases: observation rows by id, c
 | Wrong authority | `test_faults.py` | A URL serving another authority, a wrong pinned key and a relay that lacks the pinned feed are all refused |
 | Revoked credential | `test_faults.py` | A revoked sync token stops replication without damage; a replacement resumes it |
 | Version skew | `test_version_skew.py` | See below |
-| Changes for a game never introduced (release-blocking) | `test_c13_live_regression.py` | The live failure: artwork for a game the authority knows only from a provider waits on every follower (not quarantined, cursor at head, state `waiting`); raising the emit protocol to 1.5 and `atlas feed introduce --missing` introduce the game and the next sync applies game and artwork everywhere, the plain nodes through the mirror. The same shape against real 1.0 and 1.1 followers: `python -m tools.skew_drill --scenario records --previous-dir <release>` |
+| Changes for a game never introduced (release-blocking) | `test_c13_live_regression.py` | The live failure: artwork for a game the authority knows only from a provider waits on every follower (not quarantined, cursor at head, state `waiting`); `atlas feed introduce --missing` introduces the game and the next sync applies game and artwork everywhere, the plain nodes through the mirror. |
 
 ### Version skew and the expected failures
 
@@ -74,7 +74,7 @@ The assertions use `disposition()` and fail on `"dropped"`; "applied", "blocked"
 
 The rewound-authority scenario (`test_rewound_authority_is_not_silently_ignored_by_an_up_to_date_follower`) now passes too: a follower compares the advertised head with the entries it already verified and reports a fork or rewind instead of success. Recovering from it is still #15 / #24.
 
-A real mixed-version check against the previous release is the separate `skew-1.0` drill: see [Release verification](release-verification.md#version-skew-drill).
+A real mixed-version check against the previous release is the separate skew drill (v0 against wire 1): see [Release verification](release-verification.md#version-skew-drill).
 
 For a real mixed-version network, build a second virtual environment from the older or newer release and run one node from it by setting `ATLAS_LAB_PYTHON_<NODE>` (for example `ATLAS_LAB_PYTHON_LOCAL=/path/to/older/venv/bin/python`) or passing `Lab(pythons={"local": "..."})`. That node's server then runs the other release; the lab itself, its direct database reads and its seeding still use the current code, so this suits releases with the same database schema.
 

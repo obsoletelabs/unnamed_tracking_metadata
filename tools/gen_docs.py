@@ -127,24 +127,9 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                                    "superseded rows. A daily job then deletes every row that has a newer row for the "
                                    "same record; the newest row of each record is always kept. A client whose cursor "
                                    "is older than the oldest kept row gets `\"reset\": true` and must re-read."),
-    "min_follower_protocol": ("Federation", "Lowest federation protocol a follower must speak to sync from this node "
-                              "(followers below it refuse). Default: the previous release's protocol."),
-    "emit_protocol": ("Federation", "Newest federation protocol this node's own feed may use. Unset = "
-                      "`min_follower_protocol`. Raise it in Admin → Peers once every follower is upgraded."),
-    "federation_bridge_record_obs": ("Federation", "Authority, emit protocol below 1.5: introduce a record its feed never "
-                                     "signed (only provider data) with an ordinary observation of the source "
-                                     "`atlas-record` (title and store ids), which every follower release applies. Off: "
-                                     "such records reach followers only once the emit protocol is 1.5 (`record` "
-                                     "entries). See [Changes waiting for their game]"
-                                     "(federation.md#changes-waiting-for-their-game)."),
-    "federation_bridge_media_types": ("Federation", "The media types the bridge introduces (JSON list). A 1.0 follower "
-                                      "files every bridged observation as a game, so other types get a `record` (emit "
-                                      "protocol 1.5) or are not introduced; Admin → Peers counts them. An empty list is "
-                                      "refused. See [Changes "
-                                      "waiting for their game](federation.md#changes-waiting-for-their-game)."),
     "federation_introduce": ("Federation", "Authority: `referenced` introduces a record when a signed entry first names "
                              "it; `all` also introduces every record made from provider data alone as it is created."),
-    "federation_snapshot_fields": ("Federation", "What a `record` (or bridge observation) carries besides the id and "
+    "federation_snapshot_fields": ("Federation", "What a `record` carries besides the id and "
                                    "media type: a JSON list, a subset of `title` and `provider_ids`."),
     "sync_max_open_failures": ("Federation", "Follower: open waiting and quarantined entries per upstream feed before it "
                                "stops applying that feed and reports `backlog_full` (nothing is lost; the entries stay "
@@ -288,7 +273,7 @@ ENV_HELP: dict[str, tuple[str, str]] = {
 
 # One line per endpoint, kept here so the reference reads well. A test fails when an endpoint has no entry.
 SUMMARIES: dict[tuple[str, str], str] = {
-    ("get", "/health"): "Liveness: the process is up.",
+    ("get", "/health"): "Liveness: the process is up, and `wire`: the wire range this build speaks.",
     ("get", "/ready"): "Readiness: 503 when the database does not answer or migrations are pending; `degraded` (200) when only artwork storage is unwritable.",
     ("get", "/schema"): "Media types and custom fields this node describes (public ones only).",
     ("get", "/site"): "Name, theme, navigation, role, registration and email policy of this node, and `client_api` (CONTRACT-C15 §9.1): the client API `version` (`1.0`), `min_supported`, `capabilities` (`books`, `pairing`, `etag`, `batch`, `public_read`) and `deprecations`. See [Client API](client-api.md).",
@@ -296,13 +281,13 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/games/{cid}"): "One record. Follows merge redirects (`redirected_from`). ETag = id-version; a matching `If-None-Match` answers `304` with no body. Release dates: `first_release` (`{date, precision}`), `release_year`, `releases` (up to five `{date, precision, platform?, region?, edition?, category}`) and the unchanged day-only `release_date`, present only when the first release is known to the day. `relations`: `parents`, `children`, `members_of`, `members` (each `{id, type, title, media_type}`, ordered by type then id, at most 200) with `counts` and `truncated`; `editions` when known. See [Relationships](relations.md).",
     ("get", "/games/{cid}/relations"): "The relation graph around a record: `depth` hops (1-4) in both directions, at most `limit` (200) records, deterministic order, `truncated` when more exists; plus the record's `editions`. See [Relationships](relations.md).",
     ("put", "/games/{cid}/scope"): "Keep a record on this node only (`{ceiling: \"local\"}`) or publish it (`{ceiling: null}`), CONTRACT-C14 §5.3. A record this feed already introduced cannot be kept back (409 `conflict`). See [Scopes and sharing](scopes.md).",
-    ("put", "/games/{cid}/relations"): "Replace the record's own outgoing relations (`{relations: [{to, type}]}`, at most 200). Self relations, cycles, a second parent of the same kind and memberships that do not point at a series or collection are refused and nothing changes. Published at `emit_protocol` 1.4, kept local below: the answer says `published: false` with `reason` (`emit_protocol` with `pending`, or `local_node`), and `changed.published` counts relations stored while gated that this call signed.",
+    ("put", "/games/{cid}/relations"): "Replace the record's own outgoing relations (`{relations: [{to, type}]}`, at most 200). Self relations, cycles, a second parent of the same kind and memberships that do not point at a series or collection are refused and nothing changes. Signed on an authority: the answer says `published: false` with `reason` (`pending` with the count of relations an older release stored unsigned, or `local_node`), and `changed.published` counts those this call signed.",
     ("get", "/games/{cid}/prices"): "The newest observed price of every offer of a record, one per provider, product, package, edition, platform, region and currency (optional `region`, `currency`, `provider`). Integer minor units with the ISO 4217 `exponent`, exact decimal strings, `sale`, `stale`. Non-redistributable prices only for curator tokens. Not part of the record's view; never in the feed. See [Prices](prices.md).",
     ("get", "/games/{cid}/prices/history"): "Retained price observations of a record in one `region` (required), newest first, filtered by `currency`, `provider`, `product_id`, `edition`, `platform`, `since`, `until`; at most 1000 per page, follow `next_cursor`. With `currency`, `lowest` is the lowest retained price (the historical low within retention). See [Prices](prices.md).",
     ("post", "/prices"): "Store up to 500 price observations (integer minor units; floats, unknown currencies or regions and inconsistent discounts are a 422). Per item: `stored`, `duplicate`, `conflict`, `unknown_record`, `expired` or `invalid`. Nothing is published. See [Prices](prices.md).",
     ("get", "/admin/peers/probe"): "Look a node up before following it (read-only): its id and protocol, what the token can do, its record counts and the feeds it offers, with a recommended one. The peer's token goes in the `Atlas-Peer-Token` header. 400 bad address, 502 not verifiable, 504 no answer.",
-    ("get", "/prices/status"):"Stored price observations, how many the next purge removes, retention bounds, and the price channel's state (protocol 1.6, disabled in this release).",
-    ("get", "/sync/price-changes"): "The price channel (protocol 1.6, capability `price-channel-v1`). Designed but disabled in this release: always 404.",
+    ("get", "/prices/status"):"Stored price observations, how many the next purge removes, retention bounds, and the price channel's state (reserved, disabled in this release).",
+    ("get", "/sync/price-changes"): "The price channel (reserved, capability `price-channel-v1`). Designed but disabled in this release: always 404.",
     ("get", "/games/{cid}/achievements"): "Merged achievement list: name, description, kind, tier, points, icons, global percent, and a stable `key` (`ak1:…`) with `keys` and `key_identity`. Hidden ones are redacted unless `reveal=all` or `reveal=<id or key>,…` is sent with a signed-in user's token or a curator token. No per-user progress. See [Achievements](achievements.md).",
     ("get", "/games/{cid}/artwork"): ("Artwork in its long-standing order (community choice, trust, priority) with `primary`, the first image "
                                        "per kind in it, as before; `best`, the C12 quality pick per kind; `?order=quality` sorts the list (and "
@@ -318,7 +303,7 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("put", "/games/{cid}/artwork"): "Replace the curated artwork set for a record. Answers `count` (items given), `stored` (now curated) and `skipped`: each image another source of the record already lists (same kind and address), which stays that source's, as `{kind, url, held_by, reason: \"held_by_another_source\"}`.",
     ("put", "/games/{cid}/custom"): "Set or clear curated custom-field values.",
     ("delete", "/games/{cid}/locks/{field}"): "Remove a pinned field value.",
-    ("put", "/games/{cid}/locks/{field}"): "Pin a field value; it beats every merged value. `release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; `releases` takes a list of up to five release entries. A year/month `release_date` lock or a `releases` lock needs `emit_protocol` 1.3 on an authority (else 409 `emit_protocol`). `{\"clear\": true}` marks the field deliberately empty on this node.",
+    ("put", "/games/{cid}/locks/{field}"): "Pin a field value; it beats every merged value. `release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; `releases` takes a list of up to five release entries. A year/month `release_date` lock or a `releases` lock is signed with `_requires: [dates-v1]`. `{\"clear\": true}` marks the field deliberately empty on this node (federating a clear is reserved: 409 `reserved_feature`).",
     ("post", "/games/{cid}/merge"): "Merge a record into another (leaves a redirect and a merge record that can be undone). `dry_run=1` previews the survivor's view and every field change; `override_distinct` merges records marked as different works.",
     ("get", "/games/{cid}/provenance"): "Why each field has its value: winning source, trust class, reason, runners-up, conflicts, plus recent decisions, merges and distinct marks. `detail=values` (curate) adds candidate values.",
     ("get", "/games/{cid}/provenance/observations"): "Every observation of a record, newest first, paged.",
@@ -328,7 +313,7 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/conflicts"): "Records whose `field` has disagreeing sources in the winning trust class.",
     ("get", "/merges"): "Merge records of a record (`canonical_id`).",
     ("get", "/merges/{merge_id}"): "One merge record with its item counts.",
-    ("post", "/merges/{merge_id}/unmerge"): "Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published needs `emit_protocol` 1.7 (409 `emit_protocol`).",
+    ("post", "/merges/{merge_id}/unmerge"): "Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published cannot be undone yet: the `unmerge` feed kind is reserved (409 `reserved_feature`).",
     ("get", "/distinct"): "Active \"different works\" decisions of a record.",
     ("post", "/distinct"): "Mark two records as different works: never merged or paired for review again (local to this node).",
     ("delete", "/distinct/{rejection_id}"): "End a \"different works\" decision.",
@@ -361,10 +346,10 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("post", "/link/rotation"): "Rotate the link key: the new append-only key history and a proof by the new key, with a DPoP proof by the current key. A diverging history freezes the link.",
     ("post", "/group/assist/lookup"): "A provider lookup through a member of the owner group (CONTRACT-C14 §4), for a provider this node has no key or budget for. With `record`, the result is kept on that record as group data (never public, never in this node's feed). Needs `group_assist_lookups = answer+ask`.",
     ("get", "/providers/{name}/search"): "Lightweight provider search; nothing is stored.",
-    ("get", "/sync/changes"): "Signed entries after `since`; optional `node_id` selects a retained original authority feed.",
-    ("get", "/sync/info"): "Stable trust root, current signer, signed successor proofs, available original feeds, and the federation protocol, feed kinds and capabilities this node speaks. Since protocol 1.5 also `own_head` (this node's own feed head), `introduced_through` (from that seq on, every game the feed names was introduced first; null until `atlas feed introduce` finished once), `media_withheld` and, per retained feed, `feeds[].empty`; an authority adds `records` (`live`, `introduced`, `not_federated`). Additive: older followers ignore them.",
+    ("get", "/sync/changes"): "Signed entries after `since`; optional `node_id` selects a retained original authority feed. Negotiated: the caller sends `Atlas-Wire: min=, max=` and the answer carries `Atlas-Wire: use=, min=, max=`; no header (a v0 build) or no overlap is 409 `wire_unsupported`, a malformed header 400 `invalid_wire`.",
+    ("get", "/sync/info"): "Stable trust root, current signer, signed successor proofs, available original feeds, `wire` (the wire range this node speaks, `{min, max, reads_v0, serves_v0}`), the frozen v0 tombstone (`protocol`, `min_follower_protocol`: `2.0`, so a pre-wire build refuses itself), feed kinds and capabilities. Also `own_head` (this node's own feed head), `introduced_through` (from that seq on, every game the feed names was introduced first; null until `atlas feed introduce` finished once), `media_withheld` and, per retained feed, `feeds[].empty`; an authority adds `records` (`live`, `introduced`, `not_federated`). Additive: older followers ignore them.",
     ("get", "/status"): "Role, feed head, replication cursors, the number of feed entries that failed to apply and the named heads per upstream.",
-    ("get", "/sync/status"): "Protocol versions, named heads (observed, downloaded, verified, applied), parked, quarantined and waiting entries per upstream, the protocol each follower last spoke, and (additive) `peers[]`: each peer's id, name, what it follows, its status `{code, label, tone, detail, action}` and its waiting groups `waiting[]` (see [Peer status](federation.md#peer-status)).",
+    ("get", "/sync/status"): "This node's wire range, named heads (observed, downloaded, verified, applied), parked, quarantined and waiting entries per upstream, each follower's negotiated wire, omissions and refusals, and (additive) `peers[]`: each peer's id, name, what it follows, its status `{code, label, tone, detail, action}` and its waiting groups `waiting[]` (see [Peer status](federation.md#peer-status)).",
     ("get", "/sync/media/{digest}"): "The bytes of a cached image this node may hand to peers, by its lowercase SHA-256: an artwork row that is redistributable, not local-only, of a source that federates, licensed `cc0` or `owner_upload` (or a curated row of unknown licence when `ATLAS_FEDERATION_MEDIA_UNKNOWN_LICENCE` is on). Followers fetch replicated images here first and check the hash. 404 otherwise.",
     ("get", "/sync/digest"): "Digest of the replicated observations of this node's feed (or a retained one with `node_id`), for `atlas sync reconcile`. Observations only; cached up to 60 s (`cached_seconds`).",
     ("get", "/sync/failures"): "Mirrored feed entries that could not be applied and still need attention: parked (need a newer release), quarantined, or waiting for their game (`disposition` `wait`, `waiting_for`); `next_try_at` for quarantined ones.",
