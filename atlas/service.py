@@ -221,9 +221,6 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
     touched: dict[str, str] = {}  # record -> client change cause, rebuilt once at the end
     cause = "provider" if system else None
 
-    if _redistributable(ctx, conn.source, curator) and book_gated(ctx) and any(
-            item.ext is not None and item.ext.book is not None for item in batch.observations):
-        raise AtlasError(book_gate_message(ctx, "book data (ext.book)"), "emit_protocol")
     for item in batch.observations:
         payload = item.reported()
         if payload.get("source_updated_at", 0) > horizon:  # a clock in the far future would freeze the record
@@ -509,8 +506,8 @@ def merge_preview(session: Session, ctx: Ctx, src: str, dst: str) -> dict[str, A
                            "dropped_locks": sorted(f for f in locks_s if f in locks_d),
                            "undoable": not signed}
     if signed:
-        unmerge = feed_schema.KIND_SINCE['unmerge']
-        out["undo_note"] = f"this merge cannot be undone until federation emit protocol {unmerge} (feed kind 'unmerge')"
+        out["undo_note"] = "this merge cannot be undone once published: the feed kind 'unmerge' is reserved for a later " \
+                           "Atlas release"
     return out
 
 
@@ -589,37 +586,6 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
     return new
 
 
-DATES_PROTOCOL = feed_schema.RESERVED_TOKENS["dates-v1"]  # "1.3"
-
-
-def book_gated(ctx: Ctx) -> bool:
-    """True while this authority may not sign book data (`ext.book`, the book lock fields): its `emit_protocol` is
-    below the unified release version (CONTRACT-C15 §4.1). Read at call time, so moving `UNIFIED` moves it."""
-    if ctx.settings.role != "authority":
-        return False
-    return feed_schema.parse_protocol(feed_schema.emit_protocol(ctx.settings)) < \
-        feed_schema.parse_protocol(feed_schema.TOKEN_SINCE["book-v1"])
-
-
-def book_gate_message(ctx: Ctx, feature: str) -> str:
-    return str(feed_schema.EmitGateError(feature, feed_schema.TOKEN_SINCE["book-v1"],
-                                         feed_schema.emit_protocol(ctx.settings)))
-
-
-def dates_gated(ctx: Ctx) -> bool:
-    """True while this node may not sign a partial or regional release date: it is an authority (its writes
-    enter the signed feed) and its `emit_protocol` is below 1.3 (C1.6, H13). Observations are still stored
-    in full; only the signed copy omits `ext.release`. Locks cannot be split like that, so they are refused."""
-    if ctx.settings.role != "authority":
-        return False
-    return feed_schema.parse_protocol(feed_schema.emit_protocol(ctx.settings)) < \
-        feed_schema.parse_protocol(DATES_PROTOCOL)
-
-
-def dates_gate_message(ctx: Ctx, feature: str) -> str:
-    return str(feed_schema.EmitGateError(feature, DATES_PROTOCOL, feed_schema.emit_protocol(ctx.settings)))
-
-
 def clean_lock(field: str, value: Any, *, replicated: bool = False) -> Any:
     """Validate a lock value. `release_date` takes a PartialDate ("2011", "2011-04", "2011-04-19"; a day may
     have any year, as the legacy key always allowed); `releases` takes at most five release entries (C5.1).
@@ -662,15 +628,13 @@ def lock_needs_dates_protocol(field: str, value: Any) -> bool:
     return field == "release_date" and isinstance(value, str) and dates.precision_of(value) != "day"
 
 
-#: C11 §11.8: a federated explicit clear is a lock body version 2 (`field-clear-v1`, protocol 1.7).
-CLEAR_PROTOCOL = feed_schema.TOKEN_SINCE["field-clear-v1"]
 
 
 def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, actor: str = "",
              local_only: bool = False, log: bool = True, clear: bool = False) -> Canonical:
     """Pin a field, or with `clear` mark it deliberately empty (C11 §11.8; `value` must then be None). JSON null
-    never clears anything. A clear that would enter the signed feed needs protocol 1.7 and is refused; a
-    `local_only` clear is always allowed."""
+    never clears anything. A clear that would enter the signed feed is a lock body version 2 (`field-clear-v1`), a
+    reserved construct, and is refused (409 `reserved_feature`); a `local_only` clear is always allowed."""
     signed = log and not local_only and ctx.settings.role == "authority"
     if clear:
         if value is not None:
@@ -680,18 +644,12 @@ def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, ac
         if field not in LOCK_FIELDS:
             raise AtlasError(f"field {field!r} cannot be locked")
         if signed:
-            gate = feed_schema.EmitGateError("an explicitly cleared field (lock version 2)", CLEAR_PROTOCOL,
-                                             feed_schema.emit_protocol(ctx.settings))
-            raise AtlasError(f"{gate} Until then, clear it on this node only (local_only).", "emit_protocol")
+            gate = feed_schema.ReservedConstructError("an explicitly cleared field (lock version 2)")
+            raise AtlasError(f"{gate} Until then, clear it on this node only (local_only).", "reserved_feature")
     else:
         if value is None:
             raise AtlasError('a lock needs a value; use {"clear": true} to clear a field', "invalid_lock")
         value = clean_lock(field, value, replicated=not log)
-    if signed and lock_needs_dates_protocol(field, value) and dates_gated(ctx):
-        what = "a release-dates lock" if field == "releases" else "a partial release date lock"
-        raise AtlasError(dates_gate_message(ctx, what), "emit_protocol")
-    if signed and field in feed_schema.BOOK_LOCK_FIELDS and book_gated(ctx):
-        raise AtlasError(book_gate_message(ctx, f"a {field} lock"), "emit_protocol")
     write_lock(session)
     row = session.get(Canonical, cid)
     if row is None or row.merged_into:
@@ -721,10 +679,6 @@ def clear_lock(session: Session, ctx: Ctx, cid: str, field: str, *, log: bool = 
         raise AtlasError("no such lock", "not_found")
     local_only = lock.local_only
     signed = log and not local_only and ctx.settings.role == "authority"
-    if signed and field == "releases" and dates_gated(ctx):
-        raise AtlasError(dates_gate_message(ctx, "removing a release-dates lock"), "emit_protocol")
-    if signed and field in feed_schema.BOOK_LOCK_FIELDS and book_gated(ctx):
-        raise AtlasError(book_gate_message(ctx, f"removing a {field} lock"), "emit_protocol")
     session.delete(lock)
     session.flush()
     row = rebuild(session, ctx, cid, cause="feed" if signed else "local")

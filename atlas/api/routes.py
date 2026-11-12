@@ -34,6 +34,7 @@ from .. import (
     service,
     sync,
     vocab,
+    wire,
 )
 from .. import client_changes as client_change_log
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
@@ -41,7 +42,7 @@ from ..merge import source_class
 from ..models import (
     Artwork,
     Canonical,
-    FollowerSeen,
+    FollowerWire,
     Lock,
     MatchDecision,
     MatchRejection,
@@ -155,10 +156,12 @@ def _guard_upstream(session: Session, st: AppState, cid: str) -> None:
 # ---- health -------------------------------------------------------------------------------------------
 
 @router.get("/health", tags=["ops"])
-def health(st: St) -> dict[str, str]:
-    # Liveness stays "ok" (the process serves); "media" tells operators artwork cannot be stored.
+def health(st: St) -> dict[str, Any]:
+    # Liveness stays "ok" (the process serves); "media" tells operators artwork cannot be stored. `wire`: the wire
+    # range this build speaks (C16 §22, design §3.1), so a probe can tell versions apart without a credential.
     return {"status": "ok", "version": __version__,
-            "media": "ok" if media.storage_problem(st.ctx.settings) is None else "unwritable"}
+            "media": "ok" if media.storage_problem(st.ctx.settings) is None else "unwritable",
+            "wire": wire.profile(st).advertised()}
 
 
 @router.get("/ready", tags=["ops"])
@@ -216,12 +219,13 @@ def sync_failures(session: Sess, _: Annotated[auth.Principal, Depends(require("a
 
 @router.get("/sync/status", tags=["admin"])
 def sync_status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]) -> dict[str, Any]:
-    """Federation compatibility and replication heads of every upstream feed (C1.7)."""
-    s = st.ctx.settings
-    return {"own_protocol": feed_schema.PROTOCOL, "min_follower_protocol": s.min_follower_protocol,
-            "emit_protocol": feed_schema.emit_protocol(s), **sync.status(session, st.ctx),
-            "followers": [{"token_id": f.token_id, "protocol": f.protocol, "last_seen_at": _iso(f.last_seen_at)}
-                          for f in session.scalars(select(FollowerSeen).order_by(FollowerSeen.last_seen_at.desc())
+    """Federation compatibility and replication heads of every upstream feed: this build's wire range and, per
+    follower token, the negotiated wire, what was omitted for it and any refusal (C16 Z1)."""
+    return {"wire": wire.profile(st).advertised(), **sync.status(session, st.ctx),
+            "followers": [{"token_id": f.token_id, "use": f.use, "wire_min": f.wire_min, "wire_max": f.wire_max,
+                           "omitted": f.omitted or [], "omitted_since": f.omitted_since, "refused": f.refused,
+                           "legacy_protocol": f.legacy_protocol, "last_seen_at": _iso(f.last_seen_at)}
+                          for f in session.scalars(select(FollowerWire).order_by(FollowerWire.last_seen_at.desc())
                                                    .limit(200))]}
 
 
@@ -575,10 +579,9 @@ def put_relations(cid: str, body: RelationsBody, st: St, session: Sess,
                   p: Annotated[auth.Principal, Depends(require("curate"))]):
     """Replace the record's own outgoing relations (C6.3). Cycles, a second parent of the same kind, a self
     relation and a membership that does not point at a series or collection are refused (409/400) and nothing
-    changes. On an authority below federation emit protocol 1.4 the relations are stored but not published
-    (`published: false`, `reason: emit_protocol`, `pending`: how many wait); once the protocol is raised, putting
-    them again signs the ones still waiting (`changed.published`). Relations from the upstream feed are kept as
-    they are.
+    changes. On an authority every relation is signed; one a v0 release stored without signing is signed when the
+    relations are put again (`changed.published`); while any still waits the answer is `published: false`,
+    `reason: pending` with the count. Relations from the upstream feed are kept as they are.
 
     On a mirror or local node the relations are local overlays, allowed on any record, including one its
     upstream manages (as in the web editor): they are never published, and the upstream's own relations always
@@ -594,8 +597,8 @@ def put_relations(cid: str, body: RelationsBody, st: St, session: Sess,
     if local:
         return {**out, "published": False, "reason": "local_node"}
     waiting = relations.pending_count(session, row.id)
-    if waiting or relations.gated(st.ctx):
-        return {**out, "published": False, "reason": "emit_protocol", "pending": waiting}
+    if waiting:
+        return {**out, "published": False, "reason": "pending", "pending": waiting}
     return {**out, "published": True}
 
 
@@ -1686,24 +1689,29 @@ def sync_media(digest: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")], st: St, 
 
 # ---- federation ---------------------------------------------------------------------------------------
 
-ProtocolHeader = Annotated[str | None, Header(alias=feed_schema.PROTOCOL_HEADER, max_length=32)]
+WireHeader = Annotated[str | None, Header(alias=wire.HEADER, max_length=200)]
+#: Read only to name a refused v0 caller (`Atlas-Protocol: 1.x`); never sent by a wire build.
+LegacyHeader = Annotated[str | None, Header(alias=wire.LEGACY_HEADER, max_length=32)]
 
 
-def _note_follower(session: Session, who: auth.Principal, protocol: str | None, *, default: str | None) -> None:
-    """Remember which protocol a follower credential speaks (token id only), at most once a minute."""
-    value = protocol if feed_schema.valid_protocol(protocol) else default
-    if value is None or not who.token_id:
+def _note_follower(session: Session, who: auth.Principal, *, theirs: dict[str, int] | None, use: int | None,
+                   refused: str | None = None, legacy: str | None = None) -> None:
+    """Remember what a follower credential speaks (token id only, design §4.6), at most once a minute unless it
+    changed. A refusal is always recorded: it is what Admin → Peers shows."""
+    if not who.token_id:
         return
-    row = session.get(FollowerSeen, who.token_id)
+    values = {"wire_min": theirs["min"] if theirs else None, "wire_max": theirs["max"] if theirs else None,
+              "use": use, "refused": refused, "legacy_protocol": wire.legacy_protocol(legacy)}
+    row = session.get(FollowerWire, who.token_id)
     now = datetime.now(UTC)
     if row is not None:
         seen = row.last_seen_at if row.last_seen_at.tzinfo else row.last_seen_at.replace(tzinfo=UTC)
-        if row.protocol == value and (now - seen).total_seconds() <= 60:
+        if all(getattr(row, k) == v for k, v in values.items()) and (now - seen).total_seconds() <= 60:
             return  # fresh enough: a read request takes no write lock
-    upsert_follower_seen(session, who.token_id, value, now)
+    upsert_follower_wire(session, who.token_id, values, now)
 
 
-def upsert_follower_seen(session: Session, token_id: str, protocol: str, now: datetime) -> None:
+def upsert_follower_wire(session: Session, token_id: str, values: dict[str, Any], now: datetime) -> None:
     """Insert or update in one statement, so two concurrent requests with the same token cannot both
     insert the primary key (an IntegrityError and a failed sync request on PostgreSQL)."""
     dialect = session.get_bind().dialect.name
@@ -1713,20 +1721,41 @@ def upsert_follower_seen(session: Session, token_id: str, protocol: str, now: da
         from sqlalchemy.dialects.sqlite import insert
     else:  # pragma: no cover - Atlas supports SQLite and PostgreSQL only
         raise RuntimeError(f"unsupported database dialect {dialect}")
-    stmt = insert(FollowerSeen).values(token_id=token_id, protocol=protocol, last_seen_at=now)
-    session.execute(stmt.on_conflict_do_update(index_elements=[FollowerSeen.token_id],
-                                               set_={"protocol": protocol, "last_seen_at": now}))
-    cached = session.identity_map.get(session.identity_key(FollowerSeen, token_id))
+    stmt = insert(FollowerWire).values(token_id=token_id, last_seen_at=now, **values)
+    session.execute(stmt.on_conflict_do_update(index_elements=[FollowerWire.token_id],
+                                               set_={**values, "last_seen_at": now}))
+    cached = session.identity_map.get(session.identity_key(FollowerWire, token_id))
     if cached is not None:
         session.expire(cached)  # the statement bypassed the ORM; reload on next access
 
 
+def _negotiate_follower(st: AppState, session: Session, who: auth.Principal, header: str | None,
+                        legacy: str | None) -> int:
+    """`/sync/changes` negotiation (design §3, §6), after authentication: 400 `invalid_wire` on a malformed header,
+    409 `wire_unsupported` (recorded for Admin → Peers, committed even though the request fails) on no overlap or a
+    v0 caller. Returns the negotiated `use`."""
+    prof = wire.profile(st)
+    try:
+        theirs = wire.parse_header(header)
+        use = wire.negotiate_request(header, legacy=legacy, prof=prof, peer_channel=True)
+    except wire.WireUnsupported as exc:
+        exc.release = __version__
+        exc.node = st.ctx.identity.node_id
+        _note_follower(session, who, theirs=exc.theirs.as_dict() if exc.theirs else None, use=None,
+                       refused=exc.reason, legacy=legacy)
+        session.commit()
+        raise
+    _note_follower(session, who, theirs=theirs, use=use)
+    return use
+
+
 @router.get("/sync/info", tags=["federation"])
-def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(require("read"))],
-              atlas_protocol: ProtocolHeader = None):
+def sync_info(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+    """Who this node is and what it speaks. Never refuses on a version (design §3.2): it carries `wire` (the range
+    this build speaks) and the frozen v0 tombstone (`protocol`, `min_follower_protocol` "2.0"), so a v0 build reads
+    it and refuses itself with its own "Upgrade Atlas" message instead of syncing."""
     identity = load_identity(session, st.ctx.settings)
     s = st.ctx.settings
-    _note_follower(session, who, atlas_protocol, default=None)
     feeds = []
     for row in session.scalars(select(ReplicatedFeed).order_by(ReplicatedFeed.node_id)):
         history = key_rotation.trusted_history(session, row.node_id)
@@ -1734,9 +1763,13 @@ def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(requ
                 "signing_key_id": key_rotation.expected_key(row.node_id, history, 2**63 - 1),
                 "head": session.scalar(select(func.max(ReplicatedChange.seq))
                                        .where(ReplicatedChange.node_id == row.node_id)) or 0}
-        seen = session.get(NodeState, "sync_protocol:" + row.node_id)
-        if seen is not None and feed_schema.valid_protocol(seen.value):
-            item["protocol"] = seen.value  # what the relayed authority was seen advertising; not re-signed
+        seen_wire = sync.origin_wire(session, row.node_id)
+        if seen_wire is not None:
+            item["wire"] = seen_wire  # what the relayed wire origin advertised (design §2.3: never an M.m)
+        else:
+            seen = session.get(NodeState, "sync_protocol:" + row.node_id)
+            if seen is not None and feed_schema.valid_protocol(seen.value):
+                item["protocol"] = seen.value  # a v0 origin's own protocol, as it was seen; not re-signed
         item["empty"] = item["head"] == 0  # C13 §3.4: known but nothing retained yet (a relay, not an origin)
         feeds.append(item)
     # C13 §3.4 (additive): this node's own feed head, so a prober can tell an empty origin from a relay; what its
@@ -1755,9 +1788,8 @@ def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(requ
     return {"node_id": identity.node_id, "public_key": identity.trust_public_b64,
             "signing_key_id": identity.key_id, "rotations": key_rotation.own_history(session, identity.node_id),
             "role": s.role, "kind": s.kind(), "operator": s.node_operator,
-            "contract": 1, "name": s.app_name,
-            "protocol": feed_schema.PROTOCOL, "min_follower_protocol": s.min_follower_protocol,
-            "emit_protocol": feed_schema.emit_protocol(s), "observation_schema": feed_schema.OBSERVATION_SCHEMA,
+            "contract": 1, "name": s.app_name, "wire": wire.profile(st).advertised(), **wire.V0_TOMBSTONE,
+            "observation_schema": feed_schema.OBSERVATION_SCHEMA,
             "kinds": feed_schema.kinds_advertised(), "capabilities": feed_schema.capabilities(),
             "feeds": feeds, **extra}
 
@@ -1765,9 +1797,9 @@ def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(requ
 @router.get("/sync/price-changes", tags=["federation"])
 def sync_price_changes(_: Annotated[auth.Principal, Depends(require("sync"))],
                        since: Annotated[int, Query(ge=0)] = 0):
-    """The price channel (C8.3, protocol 1.6): designed, not enabled in this release. It answers 404, and
+    """The price channel (C8.3): designed, reserved, not enabled in this release. It answers 404, and
     `/sync/info` does not list the `price-channel-v1` capability, so no follower ever reads prices from it."""
-    raise HTTPException(404, f"the price channel (protocol {feed_schema.PRICE_CHANNEL.since}) is not enabled on this node")
+    raise HTTPException(404, "the price channel is reserved for a later Atlas release and not enabled on this node")
 
 
 @router.get("/sync/digest", tags=["federation"])
@@ -1804,11 +1836,17 @@ def _cached_digest(st: AppState, session: Session, node_id: str | None) -> dict[
 
 
 @router.get("/sync/changes", tags=["federation"])
-def sync_changes(st: St, session: Sess, who: Annotated[auth.Principal, Depends(require("sync"))],
+def sync_changes(st: St, session: Sess, response: Response,
+                 who: Annotated[auth.Principal, Depends(require("sync"))],
                  since: Annotated[int, Query(ge=0)] = 0, limit: Annotated[int, Query(ge=1, le=5000)] = 500,
-                 node_id: Annotated[str | None, Query(max_length=64)] = None, atlas_protocol: ProtocolHeader = None):
-    # A follower that sends no Atlas-Protocol header is a pre-1.1 release.
-    _note_follower(session, who, atlas_protocol, default=feed_schema.LEGACY_PROTOCOL)
+                 node_id: Annotated[str | None, Query(max_length=64)] = None,
+                 atlas_wire: WireHeader = None, atlas_protocol: LegacyHeader = None):
+    """Signed feed entries after `since`. Negotiated (design §3): the caller sends `Atlas-Wire: min=, max=`; the
+    answer carries `Atlas-Wire: use=, min=, max=`. A caller without it is a v0 build: 409 `wire_unsupported`
+    (`peer_v0`). Every item is the canonical signed row; wire 1 renders nothing, so no item has `renditions`."""
+    use = _negotiate_follower(st, session, who, atlas_wire, atlas_protocol)
+    response.headers[wire.HEADER] = wire.response_header(use, wire.profile(st))
+    response.headers["Vary"] = wire.HEADER
     origin = node_id or st.ctx.identity.node_id
     if origin == st.ctx.identity.node_id:
         rows = feed.read(session, since, limit)

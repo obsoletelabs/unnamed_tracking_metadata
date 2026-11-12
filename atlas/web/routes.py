@@ -804,7 +804,7 @@ def _edit_ctx(p: Page, mtype: str, **extra: Any) -> dict[str, Any]:
     extra.setdefault("rel_rows", _release_rows(None))
     return {"lbl": labels_for(p, mtype), "mtype": mtype,
             "mtype_label": media_type.label if media_type else mtype.replace("_", " ").title(),
-            "auto": proposals.can_auto_apply(p.st.ctx, p.me), "dates_gated": service.dates_gated(p.st.ctx),
+            "auto": proposals.can_auto_apply(p.st.ctx, p.me),
             "upstream": _upstream(p), **extra}
 
 
@@ -1190,7 +1190,7 @@ def propose_achievements(cid: str, p: Annotated[Page, Depends(user_form)],
         pr = proposals.create(p.session, p.st.ctx, p.me, "achievements", g.id,
                               {"items": items}, note)
     except AtlasError as exc:
-        raise HTTPException(409 if exc.code == "emit_protocol" else 400, str(exc)) from exc
+        raise HTTPException(409 if exc.code == "reserved_feature" else 400, str(exc)) from exc
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
@@ -1399,7 +1399,7 @@ def review_decide(pid: str, p: Annotated[Page, Depends(review_form)], decision: 
                          checked=checked == "on")
     except AtlasError as exc:
         raise HTTPException({"not_found": 404, "forbidden": 403}.get(
-            exc.code, 409 if exc.code in ("conflict", "emit_protocol") else 400), str(exc)) from exc
+            exc.code, 409 if exc.code in ("conflict", "reserved_feature") else 400), str(exc)) from exc
     return go("/review", "approved" if decision == "approve" else "rejected")
 
 
@@ -1408,7 +1408,7 @@ def review_revert(pid: str, p: Annotated[Page, Depends(review_form)], note: Anno
     try:
         pr = proposals.revert(p.session, p.st.ctx, p.me, pid, note)
     except AtlasError as exc:
-        raise HTTPException(409 if exc.code in ("conflict", "emit_protocol") else 404 if exc.code == "not_found" else 400,
+        raise HTTPException(409 if exc.code in ("conflict", "reserved_feature") else 404 if exc.code == "not_found" else 400,
                             str(exc)) from exc
     return go(f"/game/{pr.canonical_id}" if pr.canonical_id else "/review", "reverted")
 
@@ -1508,7 +1508,7 @@ def game_unlock(cid: str, p: Annotated[Page, Depends(review_form)], field: Annot
     try:
         service.clear_lock(p.session, p.st.ctx, cid, field)
     except AtlasError as exc:
-        raise HTTPException(409 if exc.code == "emit_protocol" else 404, str(exc)) from exc
+        raise HTTPException(409 if exc.code == "reserved_feature" else 404, str(exc)) from exc
     return go(f"/game/{cid}", "unlocked")
 
 
@@ -1561,7 +1561,6 @@ def _relations_page(p: Page, g: Canonical, *, q: str = "", kind: str = "", error
                   member_target=relations.MEMBER_TARGET, q=q, kind=kind if kind in relations.TYPES else "",
                   results=results, error=error, history=history,
                   history_titles={c: titles.get(c, "(new record)") for r in history for c in (r.from_id, r.to_id)},
-                  gated=relations.gated(p.st.ctx), gate_message=relations.gate_message(p.st.ctx),
                   local=p.st.ctx.settings.role != "authority")
 
 

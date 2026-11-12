@@ -23,6 +23,7 @@ from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -31,10 +32,10 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import client_changes, feed_schema, key_rotation, matching, service
+from . import client_changes, feed_schema, key_rotation, matching, service, wire
 from . import instruments as metric
 from .contract import SourceObservationV1
-from .feed_schema import APPLY, PARK, PROTOCOL, QUARANTINE
+from .feed_schema import APPLY, PARK, QUARANTINE
 from .models import (
     Achievement,
     AuditEntry,
@@ -52,7 +53,7 @@ from .models import (
     SyncFailure,
 )
 from .service import AtlasError, Ctx, keys_of
-from .signing import key_id_for
+from .signing import id_matches
 
 log = logging.getLogger("atlas.sync")
 
@@ -1146,6 +1147,8 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
             raise InvalidEntry(str(exc)) from exc
     elif kind == "key_rotation":
         return None  # Verified with the complete key history before any entry is applied.
+    elif kind == "wire_start":
+        return None  # C16 design §4.2: the boundary between an origin's v0 history and its wire entries; no state
     else:  # classify() parks unknown kinds; reaching here means the registry and this function disagree
         raise KeyError(f"no apply rule for feed kind {kind!r}")
     return None
@@ -1495,7 +1498,7 @@ def upstream_status(session: Session, ctx_or_settings: Any, node_id: str) -> dic
             "applied_head": applied, "parked": parked,
             "quarantined": {"count": quarantined_count, "oldest_seq": oldest}, "waiting": waiting,
             "refused": refused, "rewound": rewound, "upstream_protocol": upstream_protocol,
-            "own_protocol": PROTOCOL,
+            "upstream_wire": origin_wire(session, node_id), "own_wire": wire.DEFAULT.advertised(),
             "upstream_behind": claimed is not None and claimed < verified,
             "state": state, "in_sync": state == "in_sync"}
 
@@ -1817,26 +1820,89 @@ def waiting_groups(session: Session, node_id: str | None = None, *, name: str | 
     return out
 
 
-# ---- protocol negotiation (C1.3) ----------------------------------------------------------------------------
+# ---- wire negotiation (C16 §22, design §3) ---------------------------------------------------------------------
 
-def negotiate(info: dict[str, Any]) -> str:
-    """Return the upstream's protocol, or raise SyncRefused. A pre-A1 upstream advertises nothing: 1.0."""
-    own = feed_schema.parse_protocol(PROTOCOL)
-    raw = info.get("protocol")
-    if raw is None:
-        upstream, minimum = feed_schema.LEGACY_PROTOCOL, feed_schema.LEGACY_PROTOCOL
-    else:
-        upstream, minimum = raw, info.get("min_follower_protocol", feed_schema.LEGACY_PROTOCOL)
+@dataclass(frozen=True)
+class Upstream:
+    """What one upstream speaks, from its `/sync/info`: `use` > 0 and its wire range, or `use == 0` for a v0 upstream
+    (read through the legacy reader while `WIRE_MIN == 0`) with the protocol it advertised."""
+
+    use: int
+    range: wire.Range | None = None
+    legacy: str | None = None
+
+    @property
+    def label(self) -> str:
+        """How Admin and logs name it (design §2.3): "wire N" or "v0 (1.x)", never a bare number."""
+        return f"wire {self.use}" if self.use else f"v0 ({self.legacy or feed_schema.LEGACY_PROTOCOL})"
+
+
+def negotiate(info: dict[str, Any], prof: wire.WireProfile = wire.DEFAULT) -> Upstream:
+    """The follower half of the negotiation (design §3.2): the highest common wire with the upstream, a v0 upstream
+    read through the legacy reader (`use` 0), or SyncRefused naming both sides."""
     try:
-        u, m = feed_schema.parse_protocol(upstream), feed_schema.parse_protocol(minimum)
-    except ValueError as exc:
-        raise SyncRefused(f"upstream advertises a malformed federation protocol ({exc}); refusing to guess.",
-                          str(raw)[:16]) from exc
-    if own < m:
-        raise SyncRefused(f"upstream needs protocol ≥ {minimum}; this node speaks {PROTOCOL}. Upgrade Atlas.", upstream)
-    if u[0] < own[0] - 1:
-        raise SyncRefused(f"upstream protocol {upstream} is older than this node supports (N-1).", upstream)
-    return upstream
+        use, theirs = wire.upstream_wire(info, prof)
+    except wire.InvalidWire as exc:
+        raise SyncRefused(f"upstream advertises a malformed wire range ({exc}); refusing to guess.", "invalid") from exc
+    except wire.WireUnsupported as exc:
+        label = f"wire {exc.mine}" if exc.mine else "v0"
+        if exc.reason == "peer_too_new":  # the upstream only speaks wires older than this build speaks to
+            reason = (f"upstream speaks {label}; this node speaks wire {prof.speaks} and no longer reads it. Upgrade "
+                      "the upstream.")
+        else:
+            reason = f"upstream needs {label}; this node speaks wire {prof.speaks}. Upgrade Atlas."
+        raise SyncRefused(reason, label) from exc
+    if use:
+        return Upstream(use, theirs)
+    raw = info.get("protocol")
+    if raw is not None and not feed_schema.valid_protocol(raw):
+        raise SyncRefused(f"upstream advertises a malformed federation protocol ({str(raw)[:16]!r}); refusing to "
+                          "guess.", str(raw)[:16])
+    return Upstream(0, None, raw or feed_schema.LEGACY_PROTOCOL)
+
+
+def origin_wire(session: Session, node_id: str) -> dict[str, int] | None:
+    """The wire range a wire origin (or the relay that served it) advertised, as stored by the last pull; None for a
+    v0 origin or one never pulled. Display and `/sync/info.feeds[].wire` only: unsigned."""
+    raw = _state(session, "sync_wire:" + node_id)
+    try:
+        value = json.loads(raw) if raw else None
+        return wire.range_of(value).as_dict() if value is not None else None
+    except (ValueError, wire.InvalidWire):
+        return None
+
+
+def _check_floor(session: Session, node_id: str, upstream_url: str, up: Upstream, *, relay: bool) -> None:
+    """Design §4.10 rule 3, the sticky floor. A peer once seen speaking wire that now looks like v0 is refused
+    (`peer_downgraded`) until an administrator accepts the downgrade; a lower `max` is allowed but logged once. Rows
+    of an origin whose wire entries this node holds are never read through the v0 legacy reader (a v0 relay)."""
+    for peer in session.scalars(select(Peer).where(Peer.url == upstream_url)):
+        seen = peer.remote_wire or {}
+        high = seen.get("high") if type(seen.get("high")) is int else None
+        if high and not up.use and not seen.get("accept_downgrade"):
+            raise SyncRefused(f"peer {peer.name} was seen speaking wire {high} and now looks like v0: a downgraded build "
+                              "or interception. Accept the downgrade under Admin → Peers to read it again.",
+                              "peer_downgraded")
+        if high and up.range is not None and up.range.max < high and seen.get("alerted") != up.range.max:
+            log.warning("peer %s now advertises wire <= %s (was %s): downgraded build or interception", peer.name,
+                        up.range.max, high)
+    if not up.use and relay and _state(session, "sync_wire:" + node_id) is not None:
+        raise SyncRefused(f"{upstream_url} is a v0 relay, and this node already holds wire entries of {node_id[:16]}: "
+                          "they are never read through a v0 relay", "peer_downgraded")
+
+
+def _note_peer_wire(session: Session, upstream_url: str, up: Upstream) -> None:
+    """Remember what a peer speaks (design §2.3 rule 1): `remote_wire` for a wire peer, never an M.m; the v0
+    protocol in `remote_protocol` only for a v0 peer."""
+    for peer in session.scalars(select(Peer).where(Peer.url == upstream_url)):
+        if up.use and up.range is not None:
+            seen = dict(peer.remote_wire or {})
+            high = max(int(seen.get("high") or 0), up.range.max)
+            peer.remote_wire = {"min": up.range.min, "max": up.range.max, "use": up.use, "high": high,
+                                **({"alerted": up.range.max} if up.range.max < high else {})}
+            peer.remote_protocol = None
+        else:
+            peer.remote_protocol = (up.legacy or feed_schema.LEGACY_PROTOCOL)[:16]
 
 
 def _record_refusal(maker: sessionmaker[Session], node_id: str, upstream_url: str, exc: SyncRefused) -> None:
@@ -1845,7 +1911,6 @@ def _record_refusal(maker: sessionmaker[Session], node_id: str, upstream_url: st
         _set_state(session, "sync_refused:" + node_id, json.dumps(
             {"reason": exc.reason, "upstream_protocol": exc.upstream_protocol, "at": datetime.now(UTC).isoformat()},
             sort_keys=True))
-        _note_peer_protocol(session, node_id, upstream_url, exc.upstream_protocol)
         session.commit()
 
 
@@ -1859,15 +1924,36 @@ def _record_rewind(maker: sessionmaker[Session], node_id: str, exc: SyncRewound)
         session.commit()
 
 
-def _note_peer_protocol(session: Session, node_id: str, upstream_url: str, protocol: str) -> None:
-    for peer in session.scalars(select(Peer).where(Peer.node_id == node_id, Peer.url == upstream_url)):
-        peer.remote_protocol = protocol[:16]
-
-
 #: Additive `/sync/info` keys (C13 §3.4) remembered per feed: unsigned, display only.
 INFO_KEYS = ("introduced_through", "media_withheld")
 #: `/sync/info.records` (C13 §3.4), remembered as `sync_records:<feed>` for the caught-up line ("7 of 7 records").
 RECORD_COUNTS = ("live", "introduced", "not_federated")
+
+
+def _wire_refusal(resp: httpx.Response) -> str | None:
+    """The detail of an upstream's 409 `wire_unsupported` (design §6), or None for any other 409."""
+    try:
+        error = resp.json().get("error") or {}
+    except ValueError:
+        return None
+    if not isinstance(error, dict) or error.get("code") != "wire_unsupported":
+        return None
+    return f"upstream refused this node ({error.get('reason')}): {str(error.get('detail') or '')[:400]}"
+
+
+def _check_response_wire(resp: httpx.Response, use: int) -> None:
+    """A wire upstream answers with `Atlas-Wire: use=N`; a different `use` than negotiated is refused, never guessed
+    at (an answer without the header is accepted: a proxy may strip it, and every item is verified anyway)."""
+    raw = resp.headers.get(wire.HEADER)
+    if raw is None:
+        return
+    try:
+        got = dict(part.strip().split("=", 1) for part in raw.split(","))
+        served = int(got.get("use", use))
+    except ValueError as exc:
+        raise SyncError(f"upstream answered a malformed {wire.HEADER} header") from exc
+    if served != use:
+        raise SyncError(f"upstream served wire {served} where wire {use} was negotiated")
 
 
 def _note_info(maker: sessionmaker[Session], node_id: str, info: dict[str, Any]) -> None:
@@ -1982,6 +2068,7 @@ class _PullState:
     def __init__(self) -> None:
         self.relay = False
         self.backlog_full = False
+        self.legacy_upstream = False  # a v0 upstream, read through the legacy reader (design §3.2)
 
 
 _PULL_STATE: ContextVar[_PullState | None] = ContextVar("atlas_pull_state", default=None)
@@ -2040,7 +2127,7 @@ def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, ups
     (the first pull after adding a peer uses the probe timeout, C13 §7.3)."""
     keys = ctx.settings.trusted_keys if trusted is None else trusted
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    headers[feed_schema.PROTOCOL_HEADER] = PROTOCOL
+    headers[wire.HEADER] = wire.request_header()  # G-W6: a wire build never sends Atlas-Protocol
     state = _PULL_STATE.get() or _PullState()
     fetch_started = time.monotonic()
     info = client.get(f"{upstream_url}/api/v2/sync/info", headers=headers, timeout=timeout or 15)
@@ -2083,16 +2170,31 @@ def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, ups
         raise _refused("untrusted_key",
                        f"upstream key {node_id} is not trusted (pin it under Admin → Peers or in ATLAS_TRUSTED_KEYS)")
     try:
-        transport_protocol = negotiate(top)
+        upstream = negotiate(top)
+        with maker() as session:
+            _check_floor(session, node_id, upstream_url, upstream, relay=relay)
     except SyncRefused as exc:
         _record_refusal(maker, node_id, upstream_url, exc)
         raise
-    feed_protocol = meta.get("protocol") if relay else transport_protocol
-    if not feed_schema.valid_protocol(feed_protocol):
-        feed_protocol = None  # a relay that does not know what its authority speaks
+    state.legacy_upstream = upstream.use == 0
+    # What the feed's origin speaks (design §2.3): a wire relay reports `feeds[].wire` for wire origins and
+    # `feeds[].protocol` for v0 ones; a v0 relay knows only protocols. Stored for display, never compared.
+    origin_range: dict[str, int] | None = None
+    feed_protocol: str | None = None
+    if relay:
+        try:
+            origin_range = wire.range_of(meta["wire"]).as_dict() if meta.get("wire") is not None else None
+        except wire.InvalidWire:
+            origin_range = None
+        if origin_range is None and feed_schema.valid_protocol(meta.get("protocol")):
+            feed_protocol = meta["protocol"]
+    elif upstream.range is not None:
+        origin_range = upstream.range.as_dict()
+    else:
+        feed_protocol = upstream.legacy
 
     import base64
-    if key_id_for(base64.b64decode(pub)) != node_id:
+    if not id_matches(node_id, base64.b64decode(pub)):
         raise _refused("key_mismatch", "configured trusted key does not match its key id")
     try:
         history, signing_keys = key_rotation.validate_history(node_id, pub, meta.get("rotations", []),
@@ -2118,7 +2220,13 @@ def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, ups
         fetch_started = time.monotonic()
         resp = client.get(f"{upstream_url}/api/v2/sync/changes", params=params, headers=headers, timeout=timeout or 30)
         metric.federation_bytes.inc(len(resp.content), request="changes")
+        if resp.status_code == 409 and _wire_refusal(resp) is not None:
+            exc = SyncRefused(_wire_refusal(resp) or "", upstream.label)
+            _record_refusal(maker, node_id, upstream_url, exc)
+            raise exc
         resp.raise_for_status()
+        if upstream.use:
+            _check_response_wire(resp, upstream.use)
         page = resp.json()
         fetch_seconds += time.monotonic() - fetch_started
         entries = page["entries"]
@@ -2140,7 +2248,7 @@ def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, ups
         raise exc
     try:
         _store_and_apply(maker, ctx, node_id, pub, history, signing_keys, entries, since, advertised_head,
-                         relay, upstream_url, transport_protocol, feed_protocol)
+                         relay, upstream_url, upstream, feed_protocol, origin_range)
     except SyncRewound as exc:
         _record_rewind(maker, node_id, exc)
         raise
@@ -2149,7 +2257,8 @@ def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, ups
 
 def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: str, history: Any,
                      signing_keys: Any, entries: list[dict[str, Any]], since: int, advertised_head: Any,
-                     relay: bool, upstream_url: str, transport_protocol: str, feed_protocol: str | None) -> None:
+                     relay: bool, upstream_url: str, upstream: Upstream, feed_protocol: str | None,
+                     origin_range: dict[str, int] | None = None) -> None:
     with maker() as session:
         try:
             service.write_lock(session)  # SQLite: BEGIN IMMEDIATE (atlas.db); PostgreSQL: advisory lock
@@ -2206,9 +2315,12 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
             if not relay and entries and since < verified_head(session, node_id):
                 # The authority served the last entry this node had verified, unchanged: no longer rewound.
                 session.execute(NodeState.__table__.delete().where(NodeState.key == "sync_rewound:" + node_id))
-            if feed_protocol:
+            if origin_range is not None:  # design §2.3: a wire origin is never stored as an M.m
+                _set_state(session, "sync_wire:" + node_id, json.dumps(origin_range, sort_keys=True))
+                session.execute(NodeState.__table__.delete().where(NodeState.key == "sync_protocol:" + node_id))
+            elif feed_protocol:
                 _set_state(session, "sync_protocol:" + node_id, feed_protocol)
-            _note_peer_protocol(session, node_id, upstream_url, transport_protocol)
+            _note_peer_wire(session, upstream_url, upstream)
             session.commit()
         except Exception:
             session.rollback()
@@ -2689,7 +2801,7 @@ def reconcile(session: Session, client: httpx.Client, upstream_url: str, token: 
     """Compare this node's view of `node_id` with the upstream's (`/sync/digest`). Read-only."""
     local = view_digest(session, node_id)
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    headers[feed_schema.PROTOCOL_HEADER] = PROTOCOL
+    headers[wire.HEADER] = wire.request_header()
     params = {"node_id": node_id}  # an authority answers for its own feed, a relay for the retained one
     try:
         resp = client.get(f"{upstream_url}/api/v2/sync/digest", params=params, headers=headers, timeout=60)
@@ -2706,9 +2818,12 @@ def reconcile(session: Session, client: httpx.Client, upstream_url: str, token: 
 def replay_marker() -> str:
     from . import __version__
 
-    # the vocabularies are part of the registry: a release that learns a new value (platinum, 1.2) replays
+    # the vocabularies are part of the registry: a release that learns a new value replays; so is every nested
+    # member list, because a tolerant reader ignored members it did not know and applies them after an upgrade
     registry = feed_schema.markdown_table() + repr(sorted((k, sorted(v)) for k, v in feed_schema.vocabularies().items()))
-    return f"{__version__}|{PROTOCOL}|" + hashlib.sha256(registry.encode()).hexdigest()[:16]
+    registry += repr(sorted((k, sorted((p, sorted(m)) for p, m in s.nested.items()), sorted(s.fields))
+                            for k, s in feed_schema.FEED_KINDS.items()))
+    return f"{__version__}|wire{wire.WIRE_MAX}|" + hashlib.sha256(registry.encode()).hexdigest()[:16]
 
 
 def startup_replay(maker: sessionmaker[Session], ctx: Ctx) -> dict[str, Any] | None:

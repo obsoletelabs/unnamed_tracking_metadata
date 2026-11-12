@@ -137,7 +137,7 @@ def seed_multiplayer(session: Session, ctx: Ctx) -> None:
 # ---- schema administration ---------------------------------------------------------------------------
 
 def snapshot(session: Session) -> dict[str, Any]:
-    # `achievements` (C15 §4.1, registered under feed_schema.UNIFIED): left out of the signed copy below that protocol
+    # `achievements` (C15 §4.1): the per-type achievements flag, shipped in wire 1
     types = [{"key": t.key, "label": t.label, "enabled": t.enabled, "position": t.position, "labels": t.labels or {},
               "achievements": t.achievements is not False}
              for t in session.scalars(select(MediaType).where(MediaType.origin == "local"))]

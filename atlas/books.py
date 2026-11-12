@@ -3,7 +3,7 @@
 
 A book is a work-level record (`media_type = "book"`); its editions are the `editions[]` view (H11), never records.
 What a book observation adds travels in `observation.payload.ext.book` (`contract.BookInfoV1`), registered under the
-unified release version (`feed_schema.UNIFIED`, capability `book-v1`). The merge rules live in `atlas/merge.py`
+single wire version (wire 1, capability `book-v1`). The merge rules live in `atlas/merge.py`
 (`BOOK_LOCKS`, the ISBN-first `editions[]` view, `developer` derived from the first author)."""
 
 from __future__ import annotations

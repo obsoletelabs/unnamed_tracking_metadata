@@ -19,7 +19,7 @@ from typing import Any
 from sqlalchemy import delete, false, select
 from sqlalchemy.orm import Session
 
-from . import achievement_key, feed, feed_schema, media, vocab
+from . import achievement_key, feed, media, vocab
 from .merge import CLASS_RANK, source_class
 from .models import Achievement, AchievementSet, AchievementStat, AchievementText, Artwork, Canonical, RecordLive, now
 from .normalize import norm_namespace
@@ -138,9 +138,8 @@ def clean_artwork(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 ACH_KINDS = vocab.ACHIEVEMENT_KINDS
 ACH_TIERS = vocab.ACHIEVEMENT_TIERS  # bronze | silver | gold | platinum (C7.1)
-#: The tier that needs federation protocol 1.2 before an authority may publish it (C1.6, H13).
+#: The tier that marks completing the whole list (C7.1); signed with the `_requires` token `tier-platinum`.
 PLATINUM = "platinum"
-PLATINUM_PROTOCOL = vocab.VALUE_PROTOCOL[("achievement_tier", PLATINUM)]
 HIDDEN_NAME = "Hidden achievement"
 MAX_POINTS = 100000
 #: The item fields of the v1 `achievements` body (C2, C7): everything else stays local until body v2 (§12.4).
@@ -360,30 +359,6 @@ def artwork_v1(items: list[dict[str, Any]], *, source: str, settings: Any) -> tu
             continue
         out.append({k: it[k] for k in V1_ART_FIELDS if k in it})
     return out, withheld
-
-
-def platinum_gated(ctx: Ctx) -> bool:
-    """True while this node may not publish a platinum entry: it is an authority (its writes enter the
-    signed feed) and its `emit_protocol` is below 1.2 (C1.6, H13). Mirrors and local nodes sign nothing, so
-    platinum is never gated there; a mirror applies it from its upstream whatever its own settings say."""
-    if ctx.settings.role != "authority":
-        return False
-    current = feed_schema.emit_protocol(ctx.settings)
-    return feed_schema.parse_protocol(current) < feed_schema.parse_protocol(PLATINUM_PROTOCOL)
-
-
-def platinum_gate_message(ctx: Ctx) -> str:
-    return str(feed_schema.EmitGateError(feed_schema.VALUE_FEATURE[("achievement_tier", PLATINUM)],
-                                         PLATINUM_PROTOCOL, feed_schema.emit_protocol(ctx.settings)))
-
-
-def check_platinum_gate(ctx: Ctx, items: list[dict[str, Any]]) -> None:
-    """Refuse a list with a platinum entry before anything is written, while `platinum_gated` (C1.6).
-
-    Raises AtlasError with code `emit_protocol` (HTTP 409): the request is valid, this node's federation
-    settings are what stand in the way. More than one platinum entry is allowed (C7.1: the editor warns)."""
-    if any(isinstance(it, dict) and it.get("tier") == PLATINUM for it in items) and platinum_gated(ctx):
-        raise AtlasError(platinum_gate_message(ctx), "emit_protocol")
 
 
 def _texts_of(session: Session, ids: list[str]) -> dict[str, dict[str, dict[str, str]]]:
@@ -715,8 +690,6 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
     for it in items:
         if it.get("set", "base") not in known:
             raise AtlasError(f"achievement {it['name'][:60]!r} names the unknown set {it['set']!r}")
-    if log and redistributable:  # the list would be signed: refuse platinum before any row changes (C1.6)
-        check_platinum_gate(ctx, items)
     rows = list(session.scalars(select(Achievement).where(
         Achievement.canonical_id == cid, Achievement.source == source).order_by(Achievement.id)))
     by_id = {r.id: r for r in rows}

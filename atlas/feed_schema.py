@@ -1,71 +1,25 @@
-"""The federation wire, described once: protocol versions, feed kinds, their fields and vocabularies.
+"""The federation feed, described once: wire version, feed kinds, their fields and vocabularies.
 
 Every place that needs to know what a feed entry may contain reads this module: the follower's
-classification (`classify`), the authority's emission gate (`check_emit`), `/sync/info`
-(`kinds_advertised`), recovery (`promotion`) and the guide. Adding a field or a kind without
-listing it here makes followers of this release *park* it (fail closed) instead of silently
-dropping it. See CONTRACTS-v1 section C1 and docs/guide/federation.md "Compatibility and upgrades".
+classification (`classify`), the authority's signing check (`check_emit`), `/sync/info`
+(`kinds_advertised`), recovery (`promotion`) and the guide. See docs/guide/federation.md
+"Compatibility and upgrades", CONTRACT-C16 §22 and the C16 version-negotiation design §4.1.
 
-Rules (C1.1):
+Wire 1 (C16 Z1) collapses the v0 protocol steps 1.1-1.5 and every per-feature emission gate into one version:
 
-* A minor protocol bump adds something an older 1.1+ follower can safely park: a kind, a body
-  version, an `ext` member or a vocabulary value.
-* A major bump changes signature verification or the meaning of an existing field.
-* A field may be added in a later minor without parking 1.1 followers only if it is listed as
-  reserved-optional here first. In 1.1 that is `achievements.items[].key` only.
-
-Protocol 1.2 (C7.1) adds the achievement tier `platinum`. An entry that carries it also lists the
-`_requires` token `tier-platinum`, so a 1.1 follower parks the whole list (`unsupported_capability`)
-instead of dropping it, and this release applies it. A token-less platinum entry still parks a 1.1
-follower, as `unsupported_value`.
-
-Protocol 1.3 (C5.2) adds `observation.payload.ext.release` (partial and regional release dates), a
-`releases` lock and partial `release_date` lock values. An entry that carries any of them lists the
-`_requires` token `dates-v1`, so a 1.1 or 1.2 follower parks it (`unsupported_capability`) instead of
-stripping the dates or storing "2011" as a day-only `release_date`.
-
-Protocol 1.4 (C6.3) adds the feed kind `relation` (`{op: add|end, from, to, type, source}`): a directed
-relation between two works with a type from `vocab.RELATION_TYPES`. A 1.1-1.3 follower does not know the kind
-and parks it (`unsupported_kind`); an unknown type or op parks a 1.4 follower (`unsupported_value`). Below
-emit protocol 1.4 an authority keeps relations local (C1.6, H13): nothing is appended.
-
-Protocol 1.5 (CONTRACT-C13 §3.2) adds the feed kind `record` (`{canonical_id, media_type, title, provider_ids,
-because}`): a record introduced by identity only, signed before any other entry that names it, so a follower never
-receives artwork, achievements, custom values, locks, merges or relations for a game it has never heard of. A
-1.1-1.4 follower parks it (`unsupported_kind`); an unknown `because` parks a 1.5 follower (`unsupported_value`).
-
-Protocol 1.6 (C8.3) is the price channel: a *separate* signed channel (`/api/v2/sync/price-changes`, its own
-sequence, domain `atlas-price-v1`), never entries in this feed, announced by the capability `price-channel-v1`.
-This release designs and registers it (`PRICE_CHANNEL`) but does not emit it: `CHANNEL_ENABLED` is False, the
-capability is not advertised and the endpoint answers 404. The feed kind `price` is reserved, so a follower of this
-release parks a `price` entry that ever appears in the main feed (`unsupported_kind`), and this node refuses to sign
-one at any emit protocol.
-
-Protocols 1.7-1.9 are provisional (CONTRACT-C11 §1.4, H36): 1.7 adds the kinds `unmerge` and `distinct` and lock
-body version 2 (`_requires` `field-clear-v1` for an explicit clear, `merge-guard-v1` for the `_no_merge` guard); 1.8
-achievements body v2 (`ach-v2`); 1.9 artwork body v2 (`art-v2`, artwork kind `trailer`). The permanent `*_SINCE`
-maps record all of them and this release reserves them: a follower of this release parks them, and `check_emit`
-refuses them at every emit protocol. In particular a `lock` body naming `_no_merge` is never signed as a version 1
-body (it would park every pre-C11 follower).
-
-The price channel and the C11/C12 reservations were 1.5-1.8 until A19: C13's `record` took the first minor no
-release had advertised and each of them moved up one (CONTRACT-C13 §3.1, D13.1, owner decision H52). No release ever
-advertised or applied any of them, so no node disagrees about what those numbers mean.
-
-From A20 on (CONTRACT-C15 §4.1, C16) nothing takes a protocol minor of its own: every later construct is registered
-under `UNIFIED`, the one release version, which equals `PROTOCOL` until the version-unification PR changes both. A20
-registers one: the `schema.types[].achievements` member (`MEMBER_SINCE`), left out of the signed copy below `UNIFIED`.
-
-A21 (CONTRACT-C15 §2.3, §2.4, §4.1) registers the book model, every part of it under `UNIFIED`:
-
-* `observation.payload.ext.book` (`EXT_APPLY`), shipped under the capability `book-v1` (`TOKEN_SINCE`). It is a
-  *critical* member (C16 §4.1, `CRITICAL_EXT`): an `obs` that carries it is always signed with `_requires:
-  ["book-v1"]`, so a follower that cannot apply it parks the entry instead of stripping it and keeping a bare
-  record. `check_emit` refuses it below `UNIFIED` (`EmitGateError`); within one release that branch is dead code,
-  kept for the "books after a tagged release" path (T-B8).
-* the closed vocabularies `book_format` and `book_creator_role` (new vocabularies, not new values of old ones);
-* the lock fields `authors`, `subtitle`, `page_count` and `original_language` (`VALUE_SINCE`, refused below);
-* the `relation` member `position` (`MEMBER_SINCE`, only on `series_member`; left out of the signed copy below).
+* There is no emit protocol. A node signs every construct its release ships; which version a peer reads is
+  negotiated per request (`atlas.wire`). `SINCE` records the wire version that ships each construct: every
+  construct shipped so far, including those v0 releases introduced at protocols 1.2-1.5 and those C15 registered
+  under its unified version, is `1`.
+* Every entry a wire build signs carries `_wire` (the lowest wire version that reads it) in its envelope.
+* Readers are tolerant (W-2): an unknown member of a known body is ignored (`ignored_member` on the apply outcome;
+  the signed bytes are retained and re-classified after an upgrade), not parked. Must-understand constructs park an
+  older reader instead: a new kind, a higher body version, a new closed-vocabulary value, a new `_requires` token,
+  and *critical* members (`CRITICAL_EXT`), whose token `check_emit` always adds to `_requires`.
+* Constructs no release applies yet stay in `RESERVED_*`: a reader parks them and `check_emit` refuses them
+  (`ReservedConstructError`). The release that ships one moves it into `SINCE` at its own wire version.
+* The kind `wire_start` is the first entry a wire authority signs (`feed.ensure_wire_start`): its seq is the
+  point of no return between v0 history and wire entries.
 """
 
 from __future__ import annotations
@@ -77,101 +31,58 @@ from functools import cache
 from typing import Any
 
 from . import vocab
+from .wire import WIRE_MAX
 
 # ---- versions -------------------------------------------------------------------------------------------
 
-#: The federation wire protocol this release speaks and applies ("MAJOR.MINOR").
-PROTOCOL = "1.5"
-
-
-class UnifiedVersion(str):
-    """The one release version every construct added after A19 registers under (CONTRACT-C15 §4.1, C16).
-
-    A `str` that compares equal to its number, but is its own object, so a test can tell an entry registered as
-    `UNIFIED` from one that writes the same number as a literal (T-B9 checks identity, not equality)."""
-
-    __slots__ = ()
-
-    def __repr__(self) -> str:
-        return f"UNIFIED({str.__repr__(self)})"
-
-
-#: CONTRACT-C15 §4.1 / C16: no construct added after A19 takes a protocol minor of its own. Each one is registered
-#: under this constant, and nothing else: `MEMBER_SINCE` below, and the later C15 `TOKEN_SINCE` / `VALUE_SINCE` /
-#: `BODY_SINCE` entries. It equals `PROTOCOL` (the unification PR has one place to change, C16 §4.1 rule 6); writing a
-#: literal "1.6" for any of them is a test failure (`tests/test_a20_unified.py`, T-B9).
-UNIFIED: str = UnifiedVersion(PROTOCOL)
-#: Pre-A1 releases advertise no protocol; they speak this.
+#: What v0 releases before A1 speak (they advertise no protocol). Read only on the legacy (v0 upstream) path.
 LEGACY_PROTOCOL = "1.0"
 #: Version of the observation payload schema (`SourceObservationV1`).
 OBSERVATION_SCHEMA = 1
-#: Default lowest follower protocol an authority serves: the previous Atlas minor release (C1.3).
-DEFAULT_MIN_FOLLOWER_PROTOCOL = "1.0"
-#: Request header a follower sends so its upstream can show which followers still need an upgrade.
-PROTOCOL_HEADER = "Atlas-Protocol"
 
 #: Named optional features this node advertises and understands in `_requires`.
 CAPABILITIES: tuple[str, ...] = ("ext-v1", "dates-v1", "book-v1")
-#: Vocabulary tokens (C1.4 `_requires`) this release understands: one per value a later minor added, such
-#: as `tier-platinum` (1.2). They are not optional features, so `/sync/info.capabilities` does not list them.
+#: Vocabulary tokens (`_requires`) this release understands, one per value added after the first release, such
+#: as `tier-platinum`. They are not optional features, so `/sync/info.capabilities` does not list them.
 VOCAB_TOKENS: tuple[str, ...] = tuple(sorted(set(vocab.VALUE_TOKEN.values())))
-#: Operator-facing name of each gated vocabulary value, used in the emission gate's message.
-VALUE_FEATURE: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "the platinum achievement tier"}
-#: `_requires` tokens reserved by later protocol minors, with the protocol that ships them. A node
-#: never emits one before its `emit_protocol` reaches that protocol (H13); this release cannot apply them.
-RESERVED_TOKENS: dict[str, str] = {"tier-platinum": "1.2", "dates-v1": "1.3", "relation-v1": "1.4",
-                                   "price-channel-v1": "1.6", "field-clear-v1": "1.7", "merge-guard-v1": "1.7",
-                                   "ach-v2": "1.8", "art-v2": "1.9"}
 
-# Permanent maps (CONTRACT-C11 §1.4 rule 1): the protocol that introduced each gated construct. `check_emit`
-# consults them for the construct's whole life, so it keeps refusing it below that protocol after the construct
-# ships (an entry leaves RESERVED_* when its applying release merges, never these maps). The H52 shift (C13 §3.1)
-# moved the unreleased reservations up one minor; once a release that advertises any of them is tagged, its number
-# is permanent.
-#: Feed kinds added after 1.0.
-KIND_SINCE: dict[str, str] = {"relation": "1.4", "record": "1.5", "price": "1.6", "unmerge": "1.7", "distinct": "1.7"}
-#: `_requires` tokens.
-TOKEN_SINCE: dict[str, str] = {"tier-platinum": "1.2", "dates-v1": "1.3", "relation-v1": "1.4",
-                               "price-channel-v1": "1.6", "field-clear-v1": "1.7", "merge-guard-v1": "1.7",
-                               "ach-v2": "1.8", "art-v2": "1.9", "book-v1": UNIFIED}
-#: Closed-vocabulary values added after 1.0, as (vocabulary, value).
-VALUE_SINCE: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "1.2", ("lock_field", "_no_merge"): "1.7",
-                                           ("artwork_kind", "trailer"): "1.9"}
 #: C15 §2.3: the book lock fields (`merge.BOOK_LOCKS` is this tuple; `merge` imports this module lazily).
 BOOK_LOCK_FIELDS = ("authors", "subtitle", "page_count", "original_language")
-VALUE_SINCE.update({("lock_field", f): UNIFIED for f in BOOK_LOCK_FIELDS})
-#: Body versions above 1, as (kind, version).
-BODY_SINCE: dict[tuple[str, int], str] = {("lock", 2): "1.7", ("unlock", 2): "1.7", ("achievements", 2): "1.8",
-                                          ("artwork", 2): "1.9"}
-#: Members of known bodies added after A19, as (kind, path) -> protocol (always `UNIFIED`). A follower of this release
-#: accepts them (they are in the kind's `nested`/`fields`); `check_emit` leaves them out of the signed copy below their
-#: protocol, so a node that emits an older protocol never signs a member its followers would park
-#: (`unsupported_field`). CONTRACT-C15 §4.1: `schema.types[].achievements` (the per-type achievements flag, A20).
-MEMBER_SINCE: dict[tuple[str, str], str] = {("schema", "types[].achievements"): UNIFIED,
-                                           ("relation", "position"): UNIFIED}
-#: Every construct registered under `UNIFIED`, by map name and key (T-B9: each of them *is* `UNIFIED`).
-UNIFIED_CONSTRUCTS: tuple[tuple[str, Any], ...] = (
-    ("MEMBER_SINCE", ("schema", "types[].achievements")),
-    ("MEMBER_SINCE", ("relation", "position")),
-    ("TOKEN_SINCE", "book-v1"),
-    *(("VALUE_SINCE", ("lock_field", f)) for f in BOOK_LOCK_FIELDS),
-)
-#: C13 §3.2: the protocol of the `record` kind, and the reserved namespaces a `record` (or a bridge observation)
-#: never carries in `provider_ids`: an Atlas id or a curated namespace there could claim a follower's own record.
-RECORD_PROTOCOL = "1.5"
+#: Design §4.1: the wire version that ships each construct, keyed ("kind", name), ("token", name),
+#: ("value", (vocabulary, value)), ("body", (kind, version)) or ("member", (kind, path)). All 1 in wire 1.
+SINCE: dict[tuple[str, Any], int] = {
+    ("kind", "relation"): 1, ("kind", "record"): 1, ("kind", "wire_start"): 1,
+    ("token", "ext-v1"): 1, ("token", "tier-platinum"): 1, ("token", "dates-v1"): 1, ("token", "book-v1"): 1,
+    ("value", ("achievement_tier", "platinum")): 1,
+    **{("value", ("lock_field", f)): 1 for f in BOOK_LOCK_FIELDS},
+    ("member", ("schema", "types[].achievements")): 1, ("member", ("relation", "position")): 1,
+}
+#: Reserved constructs: designed, applied by no release yet. A reader parks them; `check_emit` refuses them.
+#: `price` belongs to its own channel (C8.3), so a price in the main feed parks instead of being dropped; `unmerge`,
+#: `distinct`, lock/unlock body 2 (`field-clear-v1`, `merge-guard-v1`), achievements body 2 (`ach-v2`) and artwork
+#: body 2 (`art-v2`, artwork kind `trailer`) are the C11/C12 reservations.
+RESERVED_KINDS: frozenset[str] = frozenset({"price", "unmerge", "distinct"})
+RESERVED_TOKENS: frozenset[str] = frozenset({"relation-v1", "price-channel-v1", "field-clear-v1", "merge-guard-v1",
+                                             "ach-v2", "art-v2"})
+RESERVED_VALUES: frozenset[tuple[str, str]] = frozenset({("lock_field", "_no_merge"), ("artwork_kind", "trailer")})
+RESERVED_BODIES: frozenset[tuple[str, int]] = frozenset({("lock", 2), ("unlock", 2), ("achievements", 2),
+                                                         ("artwork", 2)})
+#: C13 §3.2: the reserved namespaces a `record` (or a v0 bridge observation) never carries in `provider_ids`: an
+#: Atlas id or a curated namespace there could claim a follower's own record.
 RECORD_SOURCE = "atlas-record"
 RECORD_RESERVED_NAMESPACES = frozenset({"atlas", RECORD_SOURCE, "curator", "manual", "community"})
 RECORD_TITLE_MAX = 300
-#: The lock "field" of the C11 merge guard. Only ever a lock body version 2 (`merge-guard-v1`).
+#: The lock "field" of the C11 merge guard. Only ever a lock body version 2 (`merge-guard-v1`, reserved).
 NO_MERGE_FIELD = "_no_merge"
 
 _PROTOCOL = re.compile(r"(\d{1,4})\.(\d{1,4})\Z")
-ENVELOPE = ("_v", "_requires")
+#: Envelope members: never applied, removed before a body is applied.
+ENVELOPE = ("_v", "_requires", "_wire")
 MAX_REQUIRES, MAX_TOKEN = 16, 40
 
 
 def parse_protocol(value: Any) -> tuple[int, int]:
-    """'1.3' -> (1, 3). Anything else raises ValueError: a malformed version is never guessed at."""
+    """'1.3' -> (1, 3): a v0 node's protocol string (legacy reader only). Anything else raises ValueError."""
     match = _PROTOCOL.fullmatch(value) if isinstance(value, str) else None
     if match is None:
         raise ValueError(f"not a protocol version: {str(value)[:20]!r}")
@@ -186,21 +97,6 @@ def valid_protocol(value: Any) -> bool:
     return True
 
 
-def fmt(version: tuple[int, int]) -> str:
-    return f"{version[0]}.{version[1]}"
-
-
-def protocol_choices(low: str = LEGACY_PROTOCOL, high: str = PROTOCOL) -> list[str]:
-    """Every protocol from `low` to `high` within this release's major (and N-1 major's last minor)."""
-    lo, hi = parse_protocol(low), parse_protocol(high)
-    out = []
-    for major in range(lo[0], hi[0] + 1):
-        first = lo[1] if major == lo[0] else 0
-        last = hi[1] if major == hi[0] else first
-        out += [fmt((major, minor)) for minor in range(first, last + 1)]
-    return out
-
-
 # ---- feed kinds -----------------------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -208,7 +104,7 @@ class KindSpec:
     """One feed kind: what this release emits and applies, and the exact fields it understands."""
 
     name: str
-    since: str  # protocol that introduced the kind
+    since: int  # wire version that ships the kind
     emit: int  # highest body version this release writes
     apply: int  # highest body version this release applies
     fields: frozenset[str]  # top-level body fields (envelope keys excluded)
@@ -217,7 +113,7 @@ class KindSpec:
     nested: dict[str, frozenset[str]] = field(default_factory=dict)
     # path -> name of the closed vocabulary its values must belong to
     values: dict[str, str] = field(default_factory=dict)
-    # reserved-optional fields: a 1.1 follower accepts them (this release stores `items[].key`)
+    # reserved-optional fields (v0 history: a 1.1 follower accepted them; this release stores `items[].key`)
     optional: frozenset[str] = frozenset()
 
 
@@ -226,16 +122,15 @@ _OBSERVATION = frozenset({"id", "source_kind", "source", "source_scope", "extern
 #: What an observation payload may carry (the same keys `sync._valid_observation` accepts), plus `ext`.
 OBS_PAYLOAD = frozenset({"title", "platform", "platforms", "edition", "release_date", "provider_ids", "facts",
                          "source_updated_at", "available", "ext"})
-#: `ext` members this release applies (`release` since 1.3, `book` since `UNIFIED`) and the `_requires` token each
-#: one ships under.
+#: `ext` members this release applies and the `_requires` token each one ships under.
 EXT_APPLY: frozenset[str] = frozenset({"release", "book"})
 EXT_TOKENS = {"release": "dates-v1", "book": "book-v1"}
-#: C16 §4.1 critical-member rule: `ext` members whose being ignored would change what a record is (a book filed as a
-#: bare record with no authors or editions). `check_emit` always adds their token to `_requires`, at every protocol
-#: that may sign them, so a reader that cannot apply them parks the entry instead of stripping the member.
-CRITICAL_EXT: frozenset[str] = frozenset({"book"})
+#: Design §4.1 critical-member rule: `ext` members whose being ignored would change what a record is (a book filed as
+#: a bare record with no authors or editions; a partial release date read as a full day). `check_emit` always adds
+#: their token to `_requires`, so a reader that cannot apply them parks the entry instead of stripping the member.
+CRITICAL_EXT: frozenset[str] = frozenset({"release", "book"})
 _RELEASE = "observation.payload.ext.release"
-#: C5.1 shapes inside `ext.release`; an unknown member parks the entry (`unsupported_field`).
+#: C5.1 shapes inside `ext.release`; an unknown member is ignored (`ignored_member`).
 RELEASE_NESTED = {_RELEASE: frozenset({"first", "entries"}),
                   f"{_RELEASE}.first": frozenset({"date", "precision"}),
                   f"{_RELEASE}.entries[]": frozenset({"date", "precision", "platform", "region", "edition",
@@ -245,7 +140,7 @@ RELEASE_VALUES = {f"{_RELEASE}.first.precision": "date_precision",
                   f"{_RELEASE}.entries[].category": "release_category",
                   f"{_RELEASE}.entries[].region": "release_region"}
 _BOOK = "observation.payload.ext.book"
-#: C15 §2.3 shapes inside `ext.book` (`contract.BookInfoV1`); an unknown member parks the entry (`unsupported_field`).
+#: C15 §2.3 shapes inside `ext.book` (`contract.BookInfoV1`); an unknown member is ignored (`ignored_member`).
 #: Open maps (`authors[].ids`, `editions[].provider_ids`) are validated by the contract, not listed here.
 BOOK_NESTED = {_BOOK: frozenset({"authors", "subtitle", "original_language", "page_count", "series", "editions"}),
                f"{_BOOK}.authors[]": frozenset({"name", "role", "ids"}),
@@ -258,56 +153,52 @@ BOOK_VALUES = {f"{_BOOK}.authors[].role": "book_creator_role",
                f"{_BOOK}.editions[].published.precision": "date_precision"}
 
 FEED_KINDS: dict[str, KindSpec] = {spec.name: spec for spec in (
-    KindSpec("obs", "1.0", 1, 1, frozenset({"canonical_id", "media_type", "observation"}),
+    KindSpec("obs", 1, 1, 1, frozenset({"canonical_id", "media_type", "observation"}),
              "A redistributable source observation and the record it belongs to.",
              nested={"observation": _OBSERVATION, "observation.payload": OBS_PAYLOAD, **RELEASE_NESTED,
                      **BOOK_NESTED},
              values={"observation.source_kind": "source_kind", **RELEASE_VALUES, **BOOK_VALUES}),
-    KindSpec("artwork", "1.0", 1, 1, frozenset({"canonical_id", "source", "items"}),
+    KindSpec("artwork", 1, 1, 1, frozenset({"canonical_id", "source", "items"}),
              "The complete artwork set one source contributes to a record.",
              nested={"items[]": frozenset({"kind", "url", "priority", "width", "height"})},
              values={"items[].kind": "artwork_kind"}),
-    KindSpec("achievements", "1.0", 1, 1, frozenset({"canonical_id", "source", "items"}),
+    KindSpec("achievements", 1, 1, 1, frozenset({"canonical_id", "source", "items"}),
              "The complete achievement list one source contributes to a record.",
              nested={"items[]": frozenset({"name", "description", "external_id", "hidden", "icon_url",
                                            "locked_icon_url", "kind", "tier", "points", "global_percent", "key"})},
              values={"items[].kind": "achievement_kind", "items[].tier": "achievement_tier"},
              optional=frozenset({"items[].key"})),
-    KindSpec("custom", "1.0", 1, 1, frozenset({"canonical_id", "source", "values", "clear"}),
+    KindSpec("custom", 1, 1, 1, frozenset({"canonical_id", "source", "values", "clear"}),
              "Curated custom-field values set or cleared on a record."),
-    KindSpec("schema", "1.0", 1, 1, frozenset({"types", "fields"}),
+    KindSpec("schema", 1, 1, 1, frozenset({"types", "fields"}),
              "The authority's media types and custom-field definitions.",
              nested={"types[]": frozenset({"key", "label", "enabled", "position", "labels", "achievements"}),
                      "fields[]": frozenset({"media_type", "key", "label", "kind", "choices", "help", "public",
                                             "editable", "position"})},
              values={"fields[].kind": "field_kind"}),
-    KindSpec("merge", "1.0", 1, 1, frozenset({"src", "dst"}), "One record merged into another."),
-    KindSpec("detach", "1.0", 1, 1, frozenset({"observation_id", "canonical_id", "new_canonical_id"}),
+    KindSpec("merge", 1, 1, 1, frozenset({"src", "dst"}), "One record merged into another."),
+    KindSpec("detach", 1, 1, 1, frozenset({"observation_id", "canonical_id", "new_canonical_id"}),
              "One observation split off onto its own record."),
-    KindSpec("lock", "1.0", 1, 1, frozenset({"canonical_id", "field", "value"}), "A pinned field value.",
+    KindSpec("lock", 1, 1, 1, frozenset({"canonical_id", "field", "value"}), "A pinned field value.",
              values={"field": "lock_field"}),
-    KindSpec("unlock", "1.0", 1, 1, frozenset({"canonical_id", "field"}), "A pinned field value removed.",
+    KindSpec("unlock", 1, 1, 1, frozenset({"canonical_id", "field"}), "A pinned field value removed.",
              values={"field": "lock_field"}),
-    KindSpec("key_rotation", "1.0", 1, 1, frozenset({"key_id", "public_key"}),
+    KindSpec("key_rotation", 1, 1, 1, frozenset({"key_id", "public_key"}),
              "The authority's next signing key, signed by the current one."),
-    KindSpec("relation", "1.4", 1, 1, frozenset({"op", "from", "to", "type", "source", "position"}),
+    KindSpec("relation", 1, 1, 1, frozenset({"op", "from", "to", "type", "source", "position"}),
              "A relation between two works added or ended (`from` is the DLC, port, member...; `to` the parent). "
              "`position` (C15 §2.4, only on `series_member`): the member's place in the series.",
              values={"op": "relation_op", "type": "relation_type"}),
-    KindSpec("record", "1.5", 1, 1, frozenset({"canonical_id", "media_type", "title", "provider_ids", "because"}),
+    KindSpec("record", 1, 1, 1, frozenset({"canonical_id", "media_type", "title", "provider_ids", "because"}),
              "A record introduced by identity only: its id, type, display title and store ids.",
              values={"because": "record_because"}),
+    KindSpec("wire_start", 1, 1, 1, frozenset({"first_seq", "wire"}),
+             "The first entry a wire authority signs: the boundary between v0 history and wire entries.",
+             nested={"wire": frozenset({"min", "max"})}),
 )}
 
-#: Kinds reserved by later protocols. A follower of this release parks them; this node never emits them.
-#: (`relation` was reserved for 1.4 and shipped in A15.) `price` is reserved so that a price that reaches the main
-#: feed by mistake parks instead of being dropped: prices belong to their own channel (C8.3, `PRICE_CHANNEL`).
-#: `unmerge` and `distinct` (C11 §11.12, protocol 1.7 after the H52 shift) are reserved by A17: merge records,
-#: unmerge and rejections are local in this release; the federated kinds ship with C11-5.
-RESERVED_KINDS: dict[str, str] = {"price": "1.6", "unmerge": "1.7", "distinct": "1.7"}
 
-
-# ---- the price channel (C8.3, protocol 1.6 after the H52 shift; designed, emission disabled) -------------
+# ---- the price channel (C8.3; designed, emission disabled) ------------------------------------------------
 
 @dataclass(frozen=True)
 class ChannelSpec:
@@ -317,7 +208,7 @@ class ChannelSpec:
     the oldest retained entry gets `{"reset": true, "snapshot_url": ...}` and re-reads the snapshot."""
 
     name: str
-    since: str  # protocol that ships it
+    since: int | None  # wire version that ships it (None: reserved, no release ships it yet)
     capability: str  # advertised in /sync/info.capabilities only while CHANNEL_ENABLED
     endpoint: str
     snapshot: str
@@ -334,12 +225,12 @@ class ChannelSpec:
 PRICE_FIELDS = frozenset({"id", "canonical_id", "provider", "product_id", "package_id", "edition", "platform",
                           "region", "currency", "amount_minor", "base_amount_minor", "discount_pct", "availability",
                           "observed_at", "valid_until", "source_kind", "provenance", "license", "retention_days"})
-#: Whether this release emits the price channel. False in Release 0 (C8.3): no capability, endpoint 404, nothing
-#: signed. It is a constant, not a setting: turning it on needs the release that implements the channel.
+#: Whether this release emits the price channel. False (C8.3): no capability, endpoint 404, nothing signed. It is a
+#: constant, not a setting: turning it on needs the release that implements the channel.
 CHANNEL_ENABLED = False
 
 PRICE_CHANNEL = ChannelSpec(
-    name="price", since="1.6", capability="price-channel-v1", endpoint="/api/v2/sync/price-changes",
+    name="price", since=None, capability="price-channel-v1", endpoint="/api/v2/sync/price-changes",
     snapshot="/api/v2/sync/price-snapshot", sequence="price_feed_seq", domain=b"atlas-price-v1\n",
     cursor_suffix="#price", fields=PRICE_FIELDS,
     nested={"provenance": frozenset({"node", "method", "fetch_id"}),
@@ -421,11 +312,14 @@ def known_tokens() -> frozenset[str]:
     return frozenset(CAPABILITIES) | frozenset(VOCAB_TOKENS)
 
 
-# ---- classification (follower side, C1.4) ---------------------------------------------------------------
+# ---- classification (follower side) -----------------------------------------------------------------------
 
 APPLY, PARK, QUARANTINE = "apply", "parked", "quarantined"
 PARK_REASONS = ("unsupported_kind", "unsupported_version", "unsupported_capability", "unsupported_field",
                 "unsupported_value", "dropped_by_previous_release")
+#: The note on an `apply` outcome whose body had members this release does not know (design §4.1, W-2): they were
+#: left out of the applied body; the signed bytes are retained and re-classified after an upgrade.
+IGNORED_MEMBER = "ignored_member"
 #: `media_type_not_adopted` (CONTRACT-C15 §2.2, A20): an entry names a media type this node does not have and will not
 #: get from that feed (`inherit_schema` is off, or the feed's schema could not create it). Retried with backoff like
 #: every quarantined row, so it applies once an administrator creates the type locally.
@@ -435,9 +329,9 @@ QUARANTINE_REASONS = ("invalid", "apply_error", "skipped", "media_type_not_adopt
 @dataclass(frozen=True)
 class Outcome:
     action: str  # apply | parked | quarantined
-    reason: str = ""
+    reason: str = ""  # for "apply": "" or `ignored_member`
     detail: dict[str, Any] = field(default_factory=dict)
-    body: dict[str, Any] | None = None  # for "apply": the body to apply, ignorable extensions removed
+    body: dict[str, Any] | None = None  # for "apply": the body to apply, envelope and ignored members removed
 
     @property
     def message(self) -> str:
@@ -446,8 +340,12 @@ class Outcome:
             parts.append(f"kind {self.detail['kind']!r}")
         if "_v" in self.detail:
             parts.append(f"body version {self.detail['_v']}")
+        if "_wire" in self.detail:
+            parts.append(f"wire {self.detail['_wire']}")
         if self.detail.get("unknown"):
             parts.append("unknown: " + ", ".join(map(str, self.detail["unknown"]))[:400])
+        if self.detail.get("ignored"):
+            parts.append("ignored: " + ", ".join(map(str, self.detail["ignored"]))[:400])
         if self.detail.get("requires"):
             parts.append("requires: " + ", ".join(self.detail["requires"]))
         return "; ".join(parts)
@@ -489,11 +387,13 @@ def _requires(body: dict[str, Any]) -> list[str] | None:
     return raw
 
 
-def classify(kind: str, body: Any) -> Outcome:
-    """Decide what a follower of this release may do with one verified entry.
+def classify(kind: str, body: Any, *, wire_max: int = WIRE_MAX) -> Outcome:
+    """Decide what a follower of this release may do with one verified canonical entry.
 
-    `apply` carries the body to apply. `parked` blocks the applied head (the entry needs a newer
-    release). `quarantined` (`invalid`) is a known construct that fails validation; it does not block."""
+    `apply` carries the body to apply (envelope removed; with reason `ignored_member` when unknown members of the
+    known body were left out). `parked` blocks the applied head: the entry needs a newer release (a must-understand
+    construct, or a `_wire` above `wire_max` that no rendition covered). `quarantined` (`invalid`) is a known
+    construct that fails validation; it does not block."""
     spec = FEED_KINDS.get(kind)
     if spec is None:
         return _park("unsupported_kind", kind)
@@ -507,6 +407,13 @@ def classify(kind: str, body: Any) -> Outcome:
                      unknown=["_v is not a positive integer"])
     if version > spec.apply:
         return _park("unsupported_version", kind, _v=version)
+    if "_wire" in body:
+        wire = body["_wire"]
+        if type(wire) is not int or wire < 1:
+            return _park("unsupported_version", kind, _wire=str(wire)[:20],
+                         unknown=["_wire is not a positive integer"])
+        if wire > wire_max:  # readable only through a rendition this build was not given (design §4.4-§4.5)
+            return _park("unsupported_version", kind, _wire=wire)
     requires = _requires(body)
     if requires is None:
         return _park("unsupported_capability", kind,
@@ -516,32 +423,45 @@ def classify(kind: str, body: Any) -> Outcome:
     if unknown_tokens:
         return _park("unsupported_capability", kind, requires=unknown_tokens)
 
-    unknown: list[str] = sorted(k for k in body if k not in spec.fields and k not in ENVELOPE)
-    strip: list[tuple[dict[str, Any], str]] = []
+    # Tolerant reader (W-2): unknown members of a known body are ignored, never parked. A must-understand member
+    # reaches a reader only together with its `_requires` token, which parked above if this release lacks it.
+    ignored: list[str] = []
+    strip: list[tuple[str, str]] = []  # (path of the containing object, member)
+    for k in sorted(body):
+        if k not in spec.fields and k not in ENVELOPE:
+            ignored.append(k)
+            strip.append(("", k))
     for path, allowed in spec.nested.items():
         for where, obj in _members(body, path):
-            extra = sorted(k for k in obj if k not in allowed)
-            unknown += [f"{where}.{k}" for k in extra]
+            for k in sorted(obj):
+                if k not in allowed:
+                    ignored.append(f"{where}.{k}")
+                    strip.append((path, k))
     if kind == "obs":
         for where, payload in _members(body, "observation.payload"):
             for where_f, facts in _members(payload, "facts"):
-                unknown += [f"{where}.{where_f}.{k}" for k in sorted(facts) if k not in facts_fields()]
+                for k in sorted(facts):
+                    if k not in facts_fields():
+                        ignored.append(f"{where}.{where_f}.{k}")
+                        strip.append(("observation.payload.facts", k))
             ext = payload.get("ext")
             if ext is None:
                 continue
             if not isinstance(ext, dict):  # an extension shape this release does not know: fail closed
                 return _park("unsupported_field", kind, unknown=[f"{where}.ext (not an object)"])
+            must = []
             for member in sorted(ext):
                 if member in EXT_APPLY:
                     continue
                 if member in requires or EXT_TOKENS.get(member) in requires:
-                    unknown.append(f"{where}.ext.{member}")  # the authority says it must be understood
+                    must.append(f"{where}.ext.{member}")  # the authority says it must be understood
                 else:
-                    strip.append((payload, member))  # an optional extension this release may ignore
-    if unknown:
-        return _park("unsupported_field", kind, unknown=unknown[:50])
+                    ignored.append(f"{where}.ext.{member}")  # an optional extension this release may ignore
+                    strip.append(("observation.payload.ext", member))
+            if must:
+                return _park("unsupported_field", kind, unknown=must[:50])
 
-    vocab = vocabularies()
+    vocabs = vocabularies()
     unknown_values = []
     for path, name in spec.values.items():
         parent, _, leaf = path.rpartition(".")
@@ -552,90 +472,87 @@ def classify(kind: str, body: Any) -> Outcome:
             if not isinstance(value, str):  # a vocabulary encoded differently by a newer release: fail closed
                 unknown_values.append(f"{where + '.' if where else ''}{leaf} (not text)")
                 continue
-            if value not in vocab[name]:
+            if value not in vocabs[name]:
                 unknown_values.append(f"{where + '.' if where else ''}{leaf}={value[:40]}")
     if unknown_values:
         return _park("unsupported_value", kind, unknown=unknown_values[:50])
 
     if not strip and not any(k in body for k in ENVELOPE):
         return Outcome(APPLY, body=body)
-    prepared = copy.deepcopy(body)
+    prepared = copy.deepcopy(body) if strip else dict(body)
     for key in ENVELOPE:
         prepared.pop(key, None)
-    if strip:
-        payload = prepared["observation"]["payload"]
-        for _, member in strip:
-            payload["ext"].pop(member, None)
-        if not payload["ext"]:
+    for path, member in strip:
+        for _, obj in _members(prepared, path) if path else [("", prepared)]:
+            obj.pop(member, None)
+    for _, payload in _members(prepared, "observation.payload"):
+        if isinstance(payload.get("ext"), dict) and not payload["ext"]:
             payload.pop("ext")
+    if ignored:
+        return Outcome(APPLY, IGNORED_MEMBER, {"kind": kind[:64], "ignored": ignored[:50]}, body=prepared)
     return Outcome(APPLY, body=prepared)
 
 
-# ---- emission gate (authority side, C1.6 / H13) ---------------------------------------------------------
+# ---- signing check (authority side, design §4.1) ------------------------------------------------------------
 
-class EmitGateError(ValueError):
-    """The entry needs a newer protocol than this node's `emit_protocol` allows."""
+class FeedPolicyError(ValueError):
+    """An entry this node does not sign. Subclasses keep their own classes on purpose (C16 §4.1), so callers tell
+    them apart: `ReservedConstructError` (a construct no release applies yet), `scope.ScopeCeiling` (C14 §5.4) and
+    `feed.UnintroducedCanonical` (C13 §4.1)."""
 
-    def __init__(self, feature: str, needed: str, current: str):
-        self.feature, self.needed, self.current = feature, needed, current
-        super().__init__(f"{feature} needs federation protocol {needed}; this node emits {current}. "
-                         f"Raise federation emit protocol to {needed} first (Admin → Peers).")
+    code = "feed_policy"
 
-
-def emit_protocol(settings: Any) -> str:
-    """The effective emit protocol: the configured value, never below `min_follower_protocol` nor above
-    what this release speaks. Unset means `min_follower_protocol` (C1.6)."""
-    low = getattr(settings, "min_follower_protocol", DEFAULT_MIN_FOLLOWER_PROTOCOL) or DEFAULT_MIN_FOLLOWER_PROTOCOL
-    chosen = getattr(settings, "emit_protocol", None) or low
-    try:
-        value = max(parse_protocol(chosen), parse_protocol(low))
-    except ValueError:
-        value = parse_protocol(DEFAULT_MIN_FOLLOWER_PROTOCOL)
-    return fmt(min(value, parse_protocol(PROTOCOL)))
+    def __init__(self, feature: str, message: str | None = None):
+        self.feature = feature
+        super().__init__(message or f"{feature} is not signed into the feed by this release")
 
 
-def check_emit(kind: str, body: dict[str, Any], current: str) -> dict[str, Any]:
-    """Return the body to sign, or raise EmitGateError. Fail closed: an unknown kind is never emitted.
+class ReservedConstructError(FeedPolicyError):
+    """A reserved construct (`RESERVED_*`): no Atlas release applies it yet, so this node never signs it. Answered
+    as 409 `reserved_feature`."""
 
-    Features that need a newer protocol than `current`:
-    * a reserved kind, or a kind newer than `current` (`relation`, 1.4): refused; callers keep it local and
-      append nothing;
-    * a `_requires` token reserved for a later minor (`tier-platinum`, 1.2): refused;
-    * a vocabulary value a later minor added (`tier: "platinum"`, 1.2): refused with the operator-facing
-      message. At or above that protocol the value is signed and its token (`tier-platinum`) is added to
-      `_requires` (C1.4), so older followers park the entry with an explicit reason;
-    * `observation.payload.ext.release` (1.3): removed from the signed copy below 1.3 (stored locally in
-      full); at or above 1.3 signed with the `_requires` token `dates-v1`, so 1.1/1.2 followers park it;
-    * a `releases` lock or unlock, or a partial `release_date` lock value (1.3): refused below 1.3 (callers
-      check first and answer 409), signed with `dates-v1` at or above it.
+    code = "reserved_feature"
 
-    Bodies with none of these are returned unchanged, so version-1 bodies are signed exactly as before."""
-    have = parse_protocol(current)
+    def __init__(self, feature: str):
+        super().__init__(feature, f"{feature} is reserved for a later Atlas release; this release never signs it "
+                                  "into the feed.")
+
+
+def wire_of(kind: str, body: dict[str, Any]) -> int:
+    """The `_wire` of a body: the highest `SINCE` among its must-understand constructs (1 for everything in wire 1)."""
+    found = [SINCE.get(("kind", kind), 1)]
+    found += [SINCE.get(("token", t), 1) for t in body.get("_requires", []) or [] if isinstance(t, str)]
+    version = body.get("_v", 1)
+    if type(version) is int and version > 1:
+        found.append(SINCE.get(("body", (kind, version)), WIRE_MAX))
+    return max(found)
+
+
+def check_emit(kind: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Return the body to sign, or raise. Fail closed: an unregistered kind is never signed (ValueError), a reserved
+    construct never either (`ReservedConstructError`).
+
+    The returned body is a new top-level dict that carries `_wire` (every wire-signed entry does, design §4.1 CR-5)
+    and the `_requires` tokens its must-understand constructs need: a vocabulary value's token (`tier-platinum`), a
+    critical `ext` member's (`dates-v1`, `book-v1`) and a partial or regional release date lock's (`dates-v1`). The
+    caller's body and the locally stored state are untouched."""
     if kind in RESERVED_KINDS:
-        raise EmitGateError(f"feed kind {kind!r}", RESERVED_KINDS[kind], current)
+        raise ReservedConstructError(f"the feed kind {kind!r}")
     spec = FEED_KINDS.get(kind)
     if spec is None:
         raise ValueError(f"refusing to emit unregistered feed kind {kind!r}; add it to atlas/feed_schema.py")
-    since = KIND_SINCE.get(kind, spec.since)
-    if since and parse_protocol(since) > have:
-        raise EmitGateError(f"feed kind {kind!r}", since, current)
     version = body.get("_v", 1)
     if type(version) is not int or version > spec.emit:
-        # A body version this release does not write (lock v2, achievements v2, ...): never signed by it.
-        needed = BODY_SINCE.get((kind, version), PROTOCOL) if type(version) is int else PROTOCOL
-        raise EmitGateError(f"{kind} body version {str(version)[:8]}", needed, current)
+        if type(version) is int and (kind, version) in RESERVED_BODIES:
+            raise ReservedConstructError(f"{kind} body version {version}")
+        raise ValueError(f"refusing to emit {kind} body version {str(version)[:8]}: this release writes {spec.emit}")
     if kind in ("lock", "unlock") and body.get("field") == NO_MERGE_FIELD:
-        # C11 §11.12: the merge guard is a lock v2 construct. A v1 body naming it would park every follower
-        # before C11 on an unknown `lock_field` value, so it is refused at every protocol.
-        raise EmitGateError("the merge guard (_no_merge) as a version 1 lock", VALUE_SINCE[("lock_field", NO_MERGE_FIELD)],
-                            current)
+        # C11 §11.12: the merge guard is a lock v2 construct (reserved); a v1 body naming it would park every reader.
+        raise ReservedConstructError("the merge guard (_no_merge)")
     known = known_tokens()
     for token in body.get("_requires", []) or []:
-        needed = TOKEN_SINCE.get(token) or RESERVED_TOKENS.get(token)
-        if needed and parse_protocol(needed) > have:
-            raise EmitGateError(f"the {token!r} feature", needed, current)
-        if needed and token not in known:  # reserved and not applied by this release: never signed by it
-            raise EmitGateError(f"the {token!r} feature", needed, current)
+        if token in RESERVED_TOKENS or token not in known:
+            raise ReservedConstructError(f"the {str(token)[:40]!r} feature")
     needed_tokens: list[str] = []
     for path, name in spec.values.items():
         parent, _, leaf = path.rpartition(".")
@@ -643,66 +560,27 @@ def check_emit(kind: str, body: dict[str, Any], current: str) -> dict[str, Any]:
             value = obj.get(leaf)
             if not isinstance(value, str):
                 continue
-            needed = vocab.VALUE_PROTOCOL.get((name, value)) or VALUE_SINCE.get((name, value))
-            if needed is None:
-                continue
-            if parse_protocol(needed) > have:
-                raise EmitGateError(VALUE_FEATURE.get((name, value), f"the {name} value {value!r}"), needed, current)
+            if (name, value) in RESERVED_VALUES:
+                raise ReservedConstructError(f"the {name} value {value!r}")
             token = vocab.VALUE_TOKEN.get((name, value))
             if token and token not in needed_tokens:
                 needed_tokens.append(token)
-    dates_needed = parse_protocol(RESERVED_TOKENS["dates-v1"])
     if kind == "obs":
         payload = (body.get("observation") or {}).get("payload")
         ext_members = payload["ext"] if isinstance(payload, dict) and isinstance(payload.get("ext"), dict) else {}
-        for member in sorted(CRITICAL_EXT & set(ext_members)):
-            token = EXT_TOKENS[member]
-            if parse_protocol(TOKEN_SINCE[token]) > have:  # read at call time: moving UNIFIED moves this gate
-                raise EmitGateError(f"the {member!r} observation extension", TOKEN_SINCE[token], current)
-            needed_tokens.append(token)
-        if isinstance(payload, dict) and isinstance(payload.get("ext"), dict) and "release" in payload["ext"]:
-            if dates_needed > have:
-                body = copy.deepcopy(body)
-                ext = body["observation"]["payload"]["ext"]
-                ext.pop("release")
-                if not ext:
-                    body["observation"]["payload"].pop("ext")
-            else:
-                needed_tokens.append("dates-v1")
+        needed_tokens += [EXT_TOKENS[m] for m in sorted(CRITICAL_EXT & set(ext_members))]
     if kind in ("lock", "unlock") and _dates_lock(body):
-        if dates_needed > have:
-            raise EmitGateError("a partial or regional release date lock", RESERVED_TOKENS["dates-v1"], current)
         needed_tokens.append("dates-v1")
-    body = _strip_newer_members(kind, body, have)
     present = body.get("_requires") if isinstance(body.get("_requires"), list) else []
     missing = [t for t in dict.fromkeys(needed_tokens) if t not in present]
-    if missing:
-        body = {**body, "_requires": [*present, *missing]}  # a new top-level dict: the caller's copy is untouched
-    return body
-
-
-def _strip_newer_members(kind: str, body: dict[str, Any], have: tuple[int, int]) -> dict[str, Any]:
-    """`body` without the `MEMBER_SINCE` members newer than the emit protocol `have` (a deep copy when anything goes;
-    the caller's body and the locally stored state are untouched). Read at call time, so moving `UNIFIED` moves it."""
-    newer = [path for (k, path), since in MEMBER_SINCE.items() if k == kind and parse_protocol(since) > have]
-    if not newer:
-        return body
-    out = None
-    for path in newer:
-        parent, _, leaf = path.rpartition(".")
-        targets = _members(body, parent) if parent else [("", body)]
-        if not any(leaf in obj for _, obj in targets):
-            continue
-        if out is None:
-            out = copy.deepcopy(body)
-        for _, obj in _members(out, parent) if parent else [("", out)]:
-            obj.pop(leaf, None)
-    return body if out is None else out
+    out = {**body, "_requires": [*present, *missing]} if missing else {**body}
+    out["_wire"] = wire_of(kind, out)
+    return out
 
 
 def _dates_lock(body: dict[str, Any]) -> bool:
-    """A lock (or unlock) only a 1.3 follower reads correctly: the `releases` field, or a `release_date`
-    value that is not a full day ("2011" would become a day-only `release_date` on a 1.2 follower)."""
+    """A lock (or unlock) only a dates-aware reader reads correctly: the `releases` field, or a `release_date`
+    value that is not a full day ("2011" would become a day-only `release_date` on an older reader)."""
     field_name, value = body.get("field"), body.get("value")
     if field_name == "releases":
         return True
@@ -713,10 +591,10 @@ def _dates_lock(body: dict[str, Any]) -> bool:
 
 def markdown_table() -> str:
     """The kinds table in docs/guide/federation.md (tests/test_sync_compat.py checks the guide contains it)."""
-    rows = ["| Kind | Since | Emits / applies body version | Fields |", "| --- | --- | --- | --- |"]
+    rows = ["| Kind | Wire | Emits / applies body version | Fields |", "| --- | --- | --- | --- |"]
     for spec in FEED_KINDS.values():
         fields = ", ".join(f"`{f}`" for f in sorted(spec.fields))
         rows.append(f"| `{spec.name}` | {spec.since} | {spec.emit} / {spec.apply} | {fields} |")
-    for name, since in RESERVED_KINDS.items():
-        rows.append(f"| `{name}` | {since} (reserved) | not in this release | parked by this release |")
+    for name in sorted(RESERVED_KINDS):
+        rows.append(f"| `{name}` | reserved | not in this release | parked by this release |")
     return "\n".join(rows)

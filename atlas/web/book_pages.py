@@ -54,7 +54,7 @@ def _local(p: Page) -> bool:
 
 
 def _status(exc: AtlasError) -> int:
-    return 409 if exc.code in ("emit_protocol", "conflict") else 404 if exc.code == "not_found" else 400
+    return 409 if exc.code in ("reserved_feature", "conflict") else 404 if exc.code == "not_found" else 400
 
 
 # ---- authors -----------------------------------------------------------------------------------------------

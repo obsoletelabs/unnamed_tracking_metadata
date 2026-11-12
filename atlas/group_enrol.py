@@ -18,11 +18,11 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from . import group_crypto as gc
-from . import group_presets, groups, key_rotation
+from . import group_presets, groups, key_rotation, wire
 from .groups import GroupError, aware, utcnow
 from .models import GroupEnrolment, OwnerGroup, ulid
 from .settings import Settings
-from .signing import NodeIdentity, canonical_json, key_id_for
+from .signing import NodeIdentity, canonical_json, id_matches
 
 INVITE_TTL = timedelta(minutes=10)
 PENDING_TTL = timedelta(minutes=15)
@@ -132,7 +132,7 @@ def _fail(session: Session, row: GroupEnrolment, why: str) -> GroupError:
 def _joiner_key(joiner: dict) -> tuple[str, str]:
     """(key_id, public) of the joiner's current signing key from its own validated history (§1.7)."""
     node_id, root_public = joiner["node_id"], joiner["root_public_key"]
-    if key_id_for(gc.unb64(root_public, 32)) != node_id:
+    if not id_matches(node_id, gc.unb64(root_public, 32)):
         raise GroupCryptoMismatch("node_id is not the key id of root_public_key")
     history = joiner.get("rotations") or []
     tip = joiner.get("signing_key_id") or node_id
@@ -184,6 +184,10 @@ def hello(session: Session, settings: Settings, identity: NodeIdentity, body: An
         commit_j = body["commit_j"]
         if not isinstance(commit_j, str) or len(commit_j) != 64:
             raise GroupCryptoMismatch("commitment")
+        try:  # C16 design §5.2: the joiner names its wire range; a v0 joiner (none) cannot enrol with this node
+            wire.negotiate(wire.DEFAULT.speaks, wire.range_of(joiner.get("wire")))
+        except (wire.InvalidWire, wire.WireUnsupported):
+            raise GroupCryptoMismatch("wire_unsupported") from None
     except (GroupCryptoMismatch, KeyError, TypeError, AttributeError, gc.GroupCryptoError) as exc:
         raise _fail(session, row, f"hello:{str(exc)[:60]}") from None
     # §1.4 step 8 and the member rules, before anything is shown to the admin
@@ -479,7 +483,7 @@ def start_join(session: Session, settings: Settings, identity: NodeIdentity, url
                             "signing_key_id": identity.key_id,
                             "rotations": key_rotation.own_history(session, identity.node_id), "member": member,
                             "member_pop": gc.member_pop(identity.private, invite.group_id, member, identity.key_id),
-                            "atlas_protocol": "1.1", "group_protocol": groups.GROUP_PROTOCOL},
+                            "wire": wire.DEFAULT.speaks.as_dict()},
                  "commit_j": gc.commitment(nonce_j)}
     t1 = canonical_json(hello_obj)
     payload = {**hello_obj, "pop": gc.enrol_pop(identity.private, "joiner-hello", gc.sha256_hex(t1)),
@@ -523,7 +527,7 @@ def _verify_reply(invite: gc.Invite, t1: bytes, reply: dict) -> dict:
             raise GroupError("the answer comes from another node or group than the code names")
         if not groups.verify_genesis(genesis, invite.group_id):
             raise GroupError("the group genesis does not verify")
-        if gc.key_id_of(genesis["body"]["root_public_key"]) != invite.group_id:
+        if not gc.key_id_matches(genesis["body"]["root_public_key"], invite.group_id):
             raise GroupError("the genesis root key is not the group id")
         shadow = OwnerGroup(group_id=invite.group_id, genesis=genesis, succession=[], recovery=genesis["body"]["recovery"])
         previous = invite.group_id

@@ -85,9 +85,6 @@ MEDIA_ERRORS: tuple[str, ...] = (
 #: `gone` and `evicted` are not produced yet).
 MEDIA_STATES: tuple[str, ...] = ("cached", "pending", "failing", "gone", "evicted", "not_fetched", "blocked")
 
-#: The protocol that ships each vocabulary value a 1.1 follower does not know (C1.1, H13). The authority
-#: refuses to write such a value into its signed feed until its `emit_protocol` reaches this protocol.
-VALUE_PROTOCOL: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "1.2"}
 #: The `_requires` token an entry carries when it contains that value (C1.4), so an older follower parks it
 #: with an explicit reason instead of guessing.
 VALUE_TOKEN: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "tier-platinum"}

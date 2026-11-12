@@ -1,12 +1,15 @@
 """This node's append-only signed change feed.
 
 CONTRACT-C13 §4 (A19), "no orphans by construction": every entry that names a record is signed only after this feed
-has introduced that record (`ensure_introduced`), by an observation, a `record` entry (protocol 1.5), a bridge
-observation of the source `atlas-record` (below 1.5, opt-in), or the detach that created it. `emit` makes the call
-itself for every kind that names records, so no emitter can forget it, and refuses (fails closed) an entry naming a
-record that is still not introduced. Below 1.5 without the bridge nothing can introduce a record: it is marked
-`legacy_unintroduced` and the entry is signed as before (the behaviour old sources keep), and
-`atlas feed introduce --missing` publishes it once 1.5 or the bridge is available."""
+has introduced that record (`ensure_introduced`), by an observation, a `record` entry, or the detach that created it.
+`emit` makes the call itself for every kind that names records, so no emitter can forget it, and refuses (fails
+closed) an entry naming a record that is still not introduced.
+
+Wire 1 (C16 Z1): the first entry a wire authority signs is `wire_start` (`ensure_wire_start`), the boundary between
+v0 history and wire entries. There is no emit protocol any more, so a record is always introduced by a `record`
+entry: the v0 compatibility bridge (an `atlas-record` observation for 1.0-1.4 followers) and the `legacy`
+introduction are gone. Rows a v0 release marked `legacy_unintroduced` are still published by
+`atlas feed introduce --missing`."""
 
 from __future__ import annotations
 
@@ -37,33 +40,32 @@ VIA_OBS, VIA_RECORD, VIA_BRIDGE, VIA_DETACH, VIA_LEGACY = "obs", "record", "brid
 RECORD_DOMAIN = b"atlas-record-obs\n"
 
 
-class UnintroducedCanonical(feed_schema.EmitGateError):
+class UnintroducedCanonical(feed_schema.FeedPolicyError):
     """An entry names a record this feed never introduced (C13 §4.1 fail-closed gate)."""
 
-    def __init__(self, cid: str, current: str):
-        self.feature, self.needed, self.current, self.canonical_id = "unintroduced canonical", "1.5", current, cid
-        ValueError.__init__(self, f"unintroduced canonical {cid}: introduce it (raise the emit protocol to 1.5 or "
-                                  "enable the bridge) before signing entries that name it")
+    code = "unintroduced_canonical"
+
+    def __init__(self, cid: str):
+        self.canonical_id = cid
+        super().__init__("unintroduced canonical", f"unintroduced canonical {cid}: introduce it before signing "
+                                                   "entries that name it")
 
 
 def emit(session: Session, ctx: Any, kind: str, body: dict[str, Any]) -> int:
-    """Append an entry under this node's configured emit protocol (C1.6). Raises
-    `feed_schema.EmitGateError` for a feature its followers may not understand yet.
+    """Append an entry. Raises a `feed_schema.FeedPolicyError` for an entry this node does not sign (a reserved
+    construct, a scope ceiling, an unintroduced record).
 
     Every record the entry names is introduced first (C13 §4.1), in the same transaction and therefore at a lower
     sequence. An observation introduces its own record."""
-    protocol = feed_schema.emit_protocol(ctx.settings)
     names = named(kind, body)
     scope_gate(session, kind, body, names)
     for cid in names:
         ensure_introduced(session, ctx, cid, BECAUSE.get(kind, "sidecar"))
     for cid in names:
         row = session.get(FeedIntroduced, cid)
-        record = session.get(Canonical, cid)
-        mode = introduction_mode(ctx.settings, record.media_type if record is not None else None)
-        if row is None or (row.via == VIA_LEGACY and mode != VIA_LEGACY):
-            raise UnintroducedCanonical(cid, protocol)
-    seq = append(session, ctx.identity, kind, body, protocol=protocol)
+        if row is None or row.via == VIA_LEGACY:
+            raise UnintroducedCanonical(cid)
+    seq = append(session, ctx.identity, kind, body)
     if kind == "obs" and isinstance(body.get("canonical_id"), str):
         mark(session, body["canonical_id"], seq, VIA_OBS)
     return seq
@@ -107,14 +109,51 @@ def emit_or_local(session: Session, ctx: Any, kind: str, body: dict[str, Any]) -
         return None
 
 
-def append(session: Session, identity: NodeIdentity, kind: str, body: dict[str, Any], *,
-           protocol: str = feed_schema.PROTOCOL) -> int:
+def append(session: Session, identity: NodeIdentity, kind: str, body: dict[str, Any]) -> int:
     """Append an entry. Holds a row lock so seq order equals commit order (gap-free).
 
-    Fails closed: a kind missing from `atlas/feed_schema.py`, or a construct newer than `protocol`, is
-    never signed. Version-1 bodies are signed exactly as before (no envelope keys are added)."""
-    body = feed_schema.check_emit(kind, body, protocol)
+    Fails closed: a kind missing from `atlas/feed_schema.py`, or a reserved construct, is never signed. Every entry
+    carries `_wire` (`feed_schema.check_emit`); the first one this build signs is preceded by `wire_start`."""
+    body = feed_schema.check_emit(kind, body)
+    if kind != "wire_start":
+        ensure_wire_start(session, identity)
     return append_unchecked(session, identity, kind, body)
+
+
+#: `NodeState` key holding the seq of this feed's `wire_start` entry (C16 `first_v1_seq`, the point of no return).
+WIRE_START = "wire_start_seq"
+
+
+def wire_start_seq(session: Session) -> int | None:
+    row = session.get(NodeState, WIRE_START)
+    return int(row.value) if row is not None and str(row.value).isdigit() else None
+
+
+def ensure_wire_start(session: Session, identity: NodeIdentity) -> int:
+    """Sign `wire_start` unless this feed already has it (design §4.2): before the first wire entry, in the caller's
+    transaction, so it is the lowest wire seq. Its seq is recorded as `wire_start_seq` (C16 `first_v1_seq`)."""
+    have = wire_start_seq(session)
+    if have is not None:
+        return have
+    from .wire import WIRE_MAX, WIRE_MIN_PEER
+
+    # Take the feed lock before choosing the seq, then look again: a concurrent writer may have signed it (and
+    # advanced the head) while this transaction waited.
+    head = session.execute(select(NodeState).where(NodeState.key == "feed_seq").with_for_update()
+                           .execution_options(populate_existing=True)).scalar_one_or_none()
+    again = session.execute(select(NodeState).where(NodeState.key == WIRE_START)
+                            .execution_options(populate_existing=True)).scalar_one_or_none()
+    if again is not None and str(again.value).isdigit():
+        return int(again.value)
+    seq = (int(head.value) if head is not None else 0) + 1
+    body = feed_schema.check_emit("wire_start", {"first_seq": seq, "wire": {"min": WIRE_MIN_PEER, "max": WIRE_MAX}})
+    got = append_unchecked(session, identity, "wire_start", body)
+    if got != seq:  # the feed lock is taken inside append_unchecked: a concurrent writer cannot interleave here
+        raise RuntimeError("wire_start was not signed at the next seq")
+    session.merge(NodeState(key=WIRE_START, value=str(seq)))
+    session.flush()
+    log.info("wire_start signed at seq %s: entries from here on are wire entries (first_v1_seq)", seq)
+    return seq
 
 
 def append_unchecked(session: Session, identity: NodeIdentity, kind: str, body: dict[str, Any]) -> int:
@@ -175,34 +214,10 @@ def named(kind: str, body: dict[str, Any]) -> list[str]:
     return out
 
 
-def bridged_types(settings: Any) -> list[str]:
-    """CONTRACT-C15 §4.1: the media types the bridge carries (`federation_bridge_media_types`). Unset or empty means
-    the default, games only: every caller (`bridges`, `introduce`, Admin → Peers) reads it through here so they
-    cannot disagree (Settings also refuses an empty list)."""
-    allowed = [t for t in (getattr(settings, "federation_bridge_media_types", None) or []) if t]
-    return allowed or ["game"]
-
-
-def bridges(settings: Any, media_type: str | None) -> bool:
-    """CONTRACT-C15 §4.1: whether the bridge may introduce a record of `media_type` (`federation_bridge_media_types`,
-    games only by default: a 1.0 follower would file any bridged observation as a game). None = the node-wide
-    question (is the bridge on at all), used where no record is in hand."""
-    if media_type is None:
-        return True
-    return (media_type or "game") in bridged_types(settings)
-
-
-def introduction_mode(settings: Any, media_type: str | None = None) -> str:
-    """What `ensure_introduced` emits (C13 §4.1, first matching row wins): the bridge observation while it is on, some
-    follower may be below 1.5 and the record's type is bridged (C15 §4.1); else a `record` at emit protocol 1.5 or
-    above; else nothing (`legacy`). Without `media_type` it answers for the node as a whole."""
-    low = feed_schema.parse_protocol(getattr(settings, "min_follower_protocol", None) or "1.0")
-    record = feed_schema.parse_protocol(feed_schema.RECORD_PROTOCOL)
-    if getattr(settings, "federation_bridge_record_obs", False) and low < record and bridges(settings, media_type):
-        return VIA_BRIDGE
-    if feed_schema.parse_protocol(feed_schema.emit_protocol(settings)) >= record:
-        return VIA_RECORD
-    return VIA_LEGACY
+def introduction_mode(settings: Any = None, media_type: str | None = None) -> str:
+    """What `ensure_introduced` emits: always a `record` entry in wire 1 (C16 Z1; the v0 bridge and the `legacy`
+    mode were the emit-protocol gates). Kept as a function so callers read one answer."""
+    return VIA_RECORD
 
 
 def record_obs_id(feed_node_id: str, cid: str) -> str:
@@ -343,7 +358,7 @@ def project_now(session: Session, ctx: Any, record: Canonical) -> bool:
 def ensure_introduced(session: Session, ctx: Any, cid: str, because: str) -> int | None:
     """Introduce `cid` on this feed unless it already is (C13 §4.1). Returns the seq signed, or None.
 
-    The bridge observation or `record` is signed in the caller's transaction, before the entry that needs it."""
+    The `record` is signed in the caller's transaction, before the entry that needs it."""
     row = session.get(FeedIntroduced, cid)
     if row is not None and row.via != VIA_LEGACY:
         return None
@@ -352,36 +367,13 @@ def ensure_introduced(session: Session, ctx: Any, cid: str, because: str) -> int
         return None  # nothing to introduce; the gate in `emit` refuses the entry
     if record.scope_ceiling:
         return None  # CONTRACT-C14 §5.4: never introduced, never marked, in any mode (Publish lifts it first)
-    mode = introduction_mode(ctx.settings, record.media_type)  # C15 §4.1: the bridge carries only some types
-    if mode == VIA_LEGACY:
-        mark(session, cid, None, VIA_LEGACY, because)
-        return None
-    project_now(session, ctx, record)
+    mode = introduction_mode(ctx.settings, record.media_type)
     body = record_body(session, ctx.settings, record, because)
-    obs = _identity_observation(session, ctx, body)
-    if mode == VIA_BRIDGE:
-        seq = append(session, ctx.identity, "obs", {
-            "canonical_id": cid, "media_type": body["media_type"],
-            "observation": {"id": obs.id, "source_kind": obs.source_kind, "source": obs.source,
-                            "source_scope": obs.source_scope, "external_id": obs.external_id,
-                            "payload": obs.payload, "source_updated_at": None,
-                            "observed_at": obs.observed_at.isoformat()}},
-            protocol=feed_schema.emit_protocol(ctx.settings))
-    else:
-        seq = append(session, ctx.identity, "record", body, protocol=feed_schema.emit_protocol(ctx.settings))
+    _identity_observation(session, ctx, body)
+    seq = append(session, ctx.identity, "record", body)
     mark(session, cid, seq, mode, because)
     log.info("introduced %s on the feed at seq %s (%s, because %s)", cid, seq, mode, because)
     return seq
-
-
-def bridge_skipped(session: Session, settings: Any) -> int:
-    """C15 §4.1 (Admin → Peers): while the bridge is on, the live records it does not carry because their media type
-    is not in `federation_bridge_media_types` (they get a `record` instead when the emit protocol allows it). 0 when
-    the bridge is not in use."""
-    if introduction_mode(settings) != VIA_BRIDGE:
-        return 0
-    return session.scalar(select(func.count()).select_from(Canonical).where(
-        Canonical.merged_into.is_(None), Canonical.media_type.not_in(bridged_types(settings)))) or 0
 
 
 # ---- `atlas feed introduce` (C13 §4.2) ---------------------------------------------------------------------
@@ -394,18 +386,6 @@ INTRODUCE_BATCH = 500
 
 class IntroduceRefused(ValueError):
     pass
-
-
-def _unbridgeable(settings: Any) -> list[str] | None:
-    """C15 §4.1: the bridged media types when records of other types cannot be introduced at all (the bridge is the
-    node's mode and the emit protocol is below 1.5, so they stay `legacy`); None otherwise. `introduce` leaves those
-    records out, or it would never finish."""
-    if settings is None or introduction_mode(settings) != VIA_BRIDGE:
-        return None
-    record = feed_schema.parse_protocol(feed_schema.RECORD_PROTOCOL)
-    if feed_schema.parse_protocol(feed_schema.emit_protocol(settings)) >= record:  # other types get a `record`
-        return None
-    return bridged_types(settings)
 
 
 def candidates(session: Session, scope: str, after: str = "", limit: int | None = None,
@@ -422,16 +402,12 @@ def candidates(session: Session, scope: str, after: str = "", limit: int | None 
     else:
         query = query.where(Canonical.merged_into.is_(None), Canonical.id.not_in(introduced),
                             Canonical.id.not_in(publicly_absent()))
-    if (bridged := _unbridgeable(settings)) is not None:
-        query = query.where(Canonical.media_type.in_(bridged))
     query = query.where(Canonical.scope_ceiling.is_(None)).order_by(Canonical.id)  # C14 §5.4: never introduced
     return list(session.scalars(query.limit(limit) if limit else query))
 
 
 def unintroduced_count(session: Session, scope: str = "all", settings: Any = None) -> int:
     query = select(func.count()).select_from(Canonical).where(Canonical.scope_ceiling.is_(None))
-    if (bridged := _unbridgeable(settings)) is not None:
-        query = query.where(Canonical.media_type.in_(bridged))
     if scope == "missing":  # merged ones too (see `candidates`)
         query = query.where(Canonical.id.in_(select(FeedIntroduced.canonical_id)
                                              .where(FeedIntroduced.via == VIA_LEGACY)))
@@ -461,10 +437,6 @@ def introduce_batch(session: Session, ctx: Any, scope: str, *, limit: int = INTR
         raise ValueError("scope is missing or all")
     if ctx.settings.role != "authority":
         raise IntroduceRefused("only an authority signs a feed; this node's role is " + ctx.settings.role)
-    if introduction_mode(ctx.settings) == VIA_LEGACY:
-        raise IntroduceRefused("nothing can introduce a record at emit protocol "
-                               f"{feed_schema.emit_protocol(ctx.settings)}: raise the emit protocol to 1.5 or enable "
-                               "the bridge (ATLAS_FEDERATION_BRIDGE_RECORD_OBS=true)")
     from .service import write_lock
 
     write_lock(session)

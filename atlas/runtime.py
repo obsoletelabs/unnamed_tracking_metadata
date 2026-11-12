@@ -207,7 +207,7 @@ REGISTRY: tuple[Spec, ...] = (
     S("mail_from", "From address", "Email", "str", max_len=200),
 )
 BY_KEY = {s.key: s for s in REGISTRY}
-EXTRA = {"logo_hash", "emit_protocol"}  # stored like settings but edited by dedicated controls, not the form
+EXTRA = {"logo_hash"}  # stored like settings but edited by dedicated controls, not the form
 PERCENT = {"auto_match_threshold", "review_threshold"}  # stored as 50..100, used as 0.5..1.0
 
 

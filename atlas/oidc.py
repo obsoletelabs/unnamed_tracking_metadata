@@ -34,7 +34,7 @@ from .models import (
     now,
 )
 from .service import AtlasError, Ctx
-from .signing import NodeIdentity, key_id_for, load_identity
+from .signing import NodeIdentity, id_matches, load_identity
 
 CODE_TTL = timedelta(minutes=5)
 ACCESS_TTL = timedelta(hours=1)
@@ -91,7 +91,7 @@ def unverified_kid(token: str) -> str | None:
     except (ValueError, TypeError, IndexError):
         return None
     kid = header.get("kid") if isinstance(header, dict) else None
-    return kid if isinstance(kid, str) and re.fullmatch(r"[0-9a-f]{16}", kid) else None
+    return kid if isinstance(kid, str) and re.fullmatch(r"[0-9a-f]{16}(?:[0-9a-f]{48})?", kid) else None  # D5 ids
 
 
 def pairwise_subject(key: bytes, user_id: str, node_id: str) -> str:
@@ -378,7 +378,7 @@ def probe_issuer(http: Any, issuer_url: str) -> dict[str, Any]:
         key = next(k for k in keys if isinstance(k, dict) and k.get("kty") == "OKP" and k.get("crv") == "Ed25519")
         raw = b64u_dec(key["x"])
         pub = base64.b64encode(raw).decode()
-        if key_id_for(raw) != key.get("kid"):
+        if not id_matches(key.get("kid"), raw):
             raise AtlasError("the key id does not match the key")
         node_id, pinned = key["kid"], pub
         node = disc.get("atlas_node")

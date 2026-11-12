@@ -448,8 +448,6 @@ def create(session: Session, ctx: Ctx, user: User, kind: str, canonical_id: str 
                          reason="email_unverified")
     try:
         payload = _validate(session, kind, canonical_id, payload)
-        if kind == "achievements":  # refused at submission, not only when a reviewer approves it (C1.6)
-            facets.check_platinum_gate(ctx, payload["items"])
     except AtlasError as exc:
         exc.detail.setdefault("reason", "unknown_game" if exc.code == "not_found" else "invalid")
         raise

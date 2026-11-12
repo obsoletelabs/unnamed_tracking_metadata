@@ -66,6 +66,7 @@ from .models import (
     now,
 )
 from .settings import GROUP_SOURCE, PROVIDER_SOURCES
+from .signing import ID_PATTERN
 
 log = logging.getLogger("atlas.assist")
 
@@ -75,7 +76,7 @@ REASONS = ("waiting_for_record", "media_missing", "user", "merge_hint")
 WANTS = ("record", "artwork", "achievements")
 ID_RE = re.compile(r"^atlas:[0-9a-z]{26}\Z")
 SHA_RE = re.compile(r"^[0-9a-f]{64}\Z")
-NODE_RE = re.compile(r"^[0-9a-f]{16}\Z")
+NODE_RE = re.compile(r"^" + ID_PATTERN + r"\Z")
 GROUP_PREFIX = "group:"
 FIND_MAX = 100
 BLOB_CHUNK = 192 * 1024

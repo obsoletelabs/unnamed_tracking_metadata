@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 from starlette.concurrency import run_in_threadpool
 
-from .. import assist, group_channel, group_enrol, groups, key_rotation, ratelimit
+from .. import assist, group_channel, group_enrol, group_schema, groups, key_rotation, ratelimit, wire
 from .. import group_crypto as gc
 from ..models import GroupNonce, OwnerGroup
 from ..signing import NodeIdentity, canonical_json
@@ -235,8 +235,8 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
             except IntegrityError:
                 session.rollback()
                 error = "replay"
-        if error is None and inner["proto"].split(".")[0] != groups.GROUP_PROTOCOL.split(".")[0]:
-            error = "protocol"
+        if error is None and group_schema.proto_use(inner["proto"]) is None:
+            error = "wire_unsupported"  # design §5.2: a v0 member ("1.0") or a wire this build does not speak
         if error is None and (inner["op"] not in CALL_OPS or (left and inner["op"] not in LEFT_OPS)):
             error = "not_found"
         if error is None and throttled:
@@ -267,8 +267,7 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
 def _op(session, st: AppState, group: OwnerGroup, identity: NodeIdentity, inner: dict, cert: dict) -> Any:
     op, params = inner["op"], inner["params"]
     if op == "hello":
-        return {**group_channel.hello_result(identity), "group_protocol": groups.GROUP_PROTOCOL,
-                "min_group_protocol": groups.MIN_GROUP_PROTOCOL, "ops": list(CALL_OPS), "node_id": identity.node_id}
+        return {**group_channel.hello_result(identity), "ops": list(CALL_OPS), "node_id": identity.node_id}
     if op == "state":
         groups.refresh(session, group, identity.node_id, settings=st.ctx.settings)
         state = groups.export_state(session, group, identity)
@@ -420,8 +419,8 @@ def call(session, settings, identity: NodeIdentity, group: OwnerGroup, member: d
     `nonce` (16 bytes) lets a caller bind what the answer signs to the request (an `assist.fetch` bundle names it)."""
     nonce = nonce if nonce is not None and len(nonce) == 16 else secrets.token_bytes(16)
     inner = {"v": 1, "g": group.group_id, "n": identity.node_id, "aud": member["node_id"], "k": identity.key_id,
-             "t": int(now if now is not None else time.time()), "r": gc.b64(nonce), "proto": groups.GROUP_PROTOCOL,
-             "op": op, "params": params}
+             "t": int(now if now is not None else time.time()), "r": gc.b64(nonce),
+             "proto": group_schema.proto_of(wire.WIRE_MAX), "op": op, "params": params}
     sealed = gc.seal_request(member["box_public_key"], group.group_id, member["node_id"],
                              gc.sign_request(identity.private, inner))
     try:

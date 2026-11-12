@@ -1549,8 +1549,10 @@ WAKE = threading.Event()  # set by an inbound `notify`: the loop runs its next r
 
 
 def hello_result(identity: Any) -> dict:
-    """The `hello` op answer: protocol, kinds, the profile schema and capabilities (§3.5)."""
-    return {"group_protocol": group_schema.PROTOCOL, "min_group_protocol": group_schema.MIN_PROTOCOL,
+    """The `hello` op answer: the wire range, kinds, the profile schema and capabilities (§3.5, C16 design §5.2)."""
+    from . import wire
+
+    return {"wire": wire.DEFAULT.speaks.as_dict(),
             "node": {"node_id": identity.node_id, "signing_key_id": identity.key_id},
             "kinds": group_schema.kinds_advertised(), "profile_schema": profile_schema.SCHEMA_VERSION,
             "profile_fields": profile_schema.fields(), "capabilities": list(group_schema.CAPABILITIES_GROUP),
@@ -1595,6 +1597,7 @@ def sync(session: Session, settings: Any, identity: Any, group: OwnerGroup, http
                 _HELLO[node] = (time.monotonic(), hello if isinstance(hello, dict) else {})
             hello = _HELLO[node][1]
             if "heads" not in (hello.get("ops") or []) or group_schema.negotiate(hello) is None:
+                _HELLO.pop(node, None)  # design §4.10 rule 4: ask again next round (the member may have upgraded)
                 outcomes[node] = "protocol"
                 continue
             heads = call(session, settings, identity, group, member, "heads", {}, http)

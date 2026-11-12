@@ -130,7 +130,7 @@ async def _form_field(request: Request, name: str) -> str | None:
 # ---- B: start (§5.3 steps 1-3) --------------------------------------------------------------------------------
 
 @router.post("/me/linked-nodes/link")
-def link_start(p: Annotated[Ctx, Depends(user_form)], node_id: Annotated[str, Form(max_length=16)],
+def link_start(p: Annotated[Ctx, Depends(user_form)], node_id: Annotated[str, Form(max_length=64)],
                password: Annotated[str, Form(max_length=256)] = ""):
     throttle(p, f"group-link:{p.me.id}", 10, 3600)
 
@@ -243,7 +243,7 @@ def start_continue(request: Request, p: Annotated[Ctx, Depends(page)]):
 
 
 @router.post("/group/signin")
-def signin_button(p: Annotated[Ctx, Depends(csrf_form)], node_id: Annotated[str, Form(max_length=16)]):
+def signin_button(p: Annotated[Ctx, Depends(csrf_form)], node_id: Annotated[str, Form(max_length=64)]):
     """A login-page button (only while `group_signin_public` is on, H27)."""
     s, settings, identity = p.session, p.st.ctx.settings, p.st.ctx.identity
     throttle(p, f"group-signin:{client_ip(p.request)}", 20, 600)
@@ -260,7 +260,7 @@ def signin_button(p: Annotated[Ctx, Depends(csrf_form)], node_id: Annotated[str,
 # ---- A: the start ticket ("Open <node> signed in", §5.5 item 1) ------------------------------------------------
 
 @router.post("/me/linked-nodes/open")
-def open_signed_in(p: Annotated[Ctx, Depends(user_form)], node_id: Annotated[str, Form(max_length=16)]):
+def open_signed_in(p: Annotated[Ctx, Depends(user_form)], node_id: Annotated[str, Form(max_length=64)]):
     s, identity = p.session, p.st.ctx.identity
     throttle(p, f"group-open:{p.me.id}", 20, 600)
     if p.login is not None and p.login.via_group is not None:
@@ -517,7 +517,7 @@ def _signin_finish(request: Request, p: Ctx, group, a: dict):
         state = verify_assertion(s, settings, identity, group, a, request.cookies.get(BIND_COOKIE), "signin")
         user, provisioned = group_signin.signin_user(s, settings, identity, group, a)
     except (LinkRefused, group_signin.SigninRefused) as exc:
-        groups.audit(s, None, "group_signin_refused", b.get("iss_node", "")[:16],
+        groups.audit(s, None, "group_signin_refused", b.get("iss_node", "")[:64],
                      {"reason": str(exc)[:120], "idp_node": b.get("iss_node"), "jti": b.get("jti")})
         resp = render(p, "login.html", status=400, anon_csrf=True, next="/", error=str(exc))
         resp.delete_cookie(BIND_COOKIE, path="/group/")

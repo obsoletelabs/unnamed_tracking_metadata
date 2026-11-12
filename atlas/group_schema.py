@@ -26,17 +26,14 @@ from .feed_schema import (
     _invalid,
     _park,
     _requires,
-    parse_protocol,
-    valid_protocol,
 )
+from .signing import ID_PATTERN
 
 HELD = "held"
-PROTOCOL = "1.0"
-MIN_PROTOCOL = "1.0"
 CAPABILITIES_GROUP = ("seal-x25519-chacha20poly1305-v1", "store-forward-v1", "assert-link-v1")
-HLC = re.compile(r"^[0-9]{13}-[0-9a-f]{4}-[0-9a-f]{16}\Z")
+HLC = re.compile(r"^[0-9]{13}-[0-9a-f]{4}-" + ID_PATTERN + r"\Z")
 ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}\Z")
-NODE = re.compile(r"^[0-9a-f]{16}\Z")
+NODE = re.compile(r"^" + ID_PATTERN + r"\Z")
 EPOCH = re.compile(r"^[0-9a-f]{8}\Z")
 CAUSES = ("user", "import", "default", "migration")
 MAX_BASE = 8
@@ -45,7 +42,7 @@ NODE_SCOPE = "_node"
 
 
 def _spec(name: str, fields: set[str], summary: str) -> KindSpec:
-    return KindSpec(name=name, since=PROTOCOL, emit=1, apply=1, fields=frozenset(fields | {"issued_at"}),
+    return KindSpec(name=name, since=1, emit=1, apply=1, fields=frozenset(fields | {"issued_at"}),
                     summary=summary)
 
 
@@ -65,7 +62,7 @@ PROFILE_KINDS = ("profile.field.set", "profile.field.clear", "profile.conflict.r
 ACCOUNT_KINDS = (*PROFILE_KINDS, "account.link", "account.unlink", "account.signout_all", "account.assert_issued")
 MINT_NONCE = re.compile(r"^[0-9a-f]{32}\Z")
 HASH = re.compile(r"^[0-9a-f]{64}\Z")
-# Reserved for later minors (D10.24): a 1.0 node parks them, blocking only their own stream.
+# Reserved for a later wire (D10.24): a node of this release parks them, blocking only their own stream.
 RESERVED = ("profile.list.upsert", "profile.list_item.upsert", "profile.list_item.delete", "admin.setting.set",
             "profile.avatar.blob")
 EPOCH_REASONS = ("first", "restore", "rotation", "manual", "promotion")
@@ -76,26 +73,34 @@ def kinds_advertised() -> dict[str, dict[str, int]]:
     return {name: {"emit": s.emit, "apply": s.apply} for name, s in GROUP_KINDS.items()}
 
 
-def acceptable(proto: Any, low: str = MIN_PROTOCOL, high: str = PROTOCOL) -> bool:
-    """C1.3 for the group line: a well-formed protocol between this node's minimum and its own (N-1 included)."""
-    if not valid_protocol(proto):
-        return False
-    return parse_protocol(low) <= parse_protocol(proto) <= parse_protocol(high)
+def proto_of(use: int) -> str:
+    """The inner `proto` of a group call (design §5.2): `w<use>`, inside the signed, sealed request."""
+    return f"w{use}"
 
 
-def negotiate(remote: dict[str, Any], low: str = MIN_PROTOCOL, high: str = PROTOCOL) -> str | None:
-    """The protocol to speak with a member from its `hello`, or None when there is no overlap (fail closed)."""
+def proto_use(proto: Any, prof: Any = None) -> int | None:
+    """The wire a group call's inner `proto` names, when this build speaks it; None otherwise (a v0 member sends
+    "1.0", which is never a wire)."""
+    from . import wire
+
+    prof = prof or wire.DEFAULT
+    if not isinstance(proto, str) or not proto.startswith("w") or not proto[1:].isdigit() or len(proto) > 5:
+        return None
+    use = int(proto[1:])
+    return use if prof.min_peer <= use <= prof.max else None
+
+
+def negotiate(remote: dict[str, Any], prof: Any = None) -> int | None:
+    """The wire to speak with a member from its `hello` (`wire: {min, max}`), or None when there is no overlap or
+    the member is v0 (it answers `group_protocol` only): fail closed."""
+    from . import wire
+
+    prof = prof or wire.DEFAULT
     try:
-        theirs, their_min = remote["group_protocol"], remote["min_group_protocol"]
-    except (KeyError, TypeError):
+        theirs = wire.range_of(remote.get("wire") if isinstance(remote, dict) else None)
+        return wire.negotiate(prof.speaks, theirs)
+    except (wire.InvalidWire, wire.WireUnsupported):
         return None
-    if not (valid_protocol(theirs) and valid_protocol(their_min)):
-        return None
-    top = min(parse_protocol(theirs), parse_protocol(high))
-    bottom = max(parse_protocol(their_min), parse_protocol(low))
-    if top < bottom:
-        return None
-    return f"{top[0]}.{top[1]}"
 
 
 def _hlc_ok(value: Any) -> bool:
@@ -208,4 +213,4 @@ def _invalid_reason(kind: str, b: dict) -> str | None:
     return None
 
 
-__all__ = ["APPLY", "HELD", "PARK", "QUARANTINE", "GROUP_KINDS", "classify", "acceptable", "negotiate"]
+__all__ = ["APPLY", "HELD", "PARK", "QUARANTINE", "GROUP_KINDS", "classify", "proto_of", "proto_use", "negotiate"]

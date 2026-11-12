@@ -29,19 +29,9 @@ class Settings(BaseSettings):
     # Entries a follower keeps downloading, verifying and relaying past the first parked one (C1.4, H10).
     sync_max_parked_backlog: int = Field(default=50_000, ge=1)
     client_changes_retain_days: int = Field(default=90, ge=1, le=3650)  # local client change log (C3.2)
-    # Lowest follower protocol this node serves; followers below it refuse to sync (C1.3).
-    min_follower_protocol: str = "1.0"
-    # Highest protocol this node's own feed may use. Unset = min_follower_protocol. Raised in Admin → Peers.
-    emit_protocol: str | None = None
+    # C16 Z1: `min_follower_protocol`, `emit_protocol` and the v0 bridge settings are gone; the wire version is
+    # negotiated per request (`atlas.wire`). Leftover environment values and rows are ignored and logged at start.
     # CONTRACT-C13 (A19). Environment settings in this release, like A17/A18's (amendment A19).
-    # H54: below protocol 1.5, introduce records with an ordinary 1.0 observation of the source `atlas-record`
-    # (every follower applies it). Off by default: it publishes titles and store ids as an observation.
-    federation_bridge_record_obs: bool = False
-    # CONTRACT-C15 §4.1 (A20): the media types the bridge introduces. A 1.0 follower files every observation as a game
-    # (its old fallback), so by default only games are bridged; a record of another type is introduced with a
-    # `record` (which a 1.0 follower parks) when the emit protocol allows one, and otherwise not at all. Admin → Peers
-    # counts the skipped records.
-    federation_bridge_media_types: list[str] = Field(default_factory=lambda: ["game"])
     # H55: `referenced` introduces a record when a signed entry first names it; `all` introduces every live record,
     # provider imports included. The safe default is `referenced` (owner decision pending).
     federation_introduce: Literal["referenced", "all"] = "referenced"
@@ -275,30 +265,8 @@ class Settings(BaseSettings):
     def contact(cls, v: str) -> str:
         return check_contact(v)
 
-    @field_validator("federation_bridge_media_types")
-    @classmethod
-    def bridge_media_types(cls, v: list[str]) -> list[str]:
-        """C15 §4.1: an empty list would bridge nothing, not even games; refuse it rather than read it two ways."""
-        cleaned = [t.strip() for t in v if isinstance(t, str) and t.strip()]
-        if not cleaned:
-            raise ValueError("federation_bridge_media_types must name at least one media type (default [\"game\"])")
-        return cleaned
-
-    @field_validator("min_follower_protocol", "emit_protocol")
-    @classmethod
-    def protocol_version(cls, v: str | None) -> str | None:
-        from .feed_schema import PROTOCOL, parse_protocol
-
-        if v is None or v == "":
-            return None
-        if parse_protocol(v) > parse_protocol(PROTOCOL):
-            raise ValueError(f"this release speaks federation protocol {PROTOCOL} at most")
-        return v
-
     @model_validator(mode="after")
     def check(self) -> Settings:
-        if self.min_follower_protocol is None:
-            self.min_follower_protocol = "1.0"
         if self.review_threshold > self.auto_match_threshold:
             raise ValueError("review_threshold must not exceed auto_match_threshold")
         from .merge import CLASS_RANK, LOCK_FIELDS

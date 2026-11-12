@@ -20,9 +20,9 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import feed_schema, sync
+from . import sync, wire
 from .models import Peer, ReplicatedFeed
-from .signing import key_id_for
+from .signing import id_matches
 
 #: §7.1: the probe asks for the entries after this sequence, so it learns the head (and proves the sync scope)
 #: without downloading anything.
@@ -61,7 +61,7 @@ def node_kind(info: dict) -> str:
 
 def verified(node_id: object, key: object) -> bool:
     try:
-        return isinstance(node_id, str) and isinstance(key, str) and key_id_for(base64.b64decode(key)) == node_id
+        return isinstance(node_id, str) and isinstance(key, str) and id_matches(node_id, base64.b64decode(key))
     except ValueError:
         return False
 
@@ -131,7 +131,7 @@ def probe_head(http: httpx.Client, target: str, headers: dict) -> tuple[int | No
     (None, False) for a 401/403; (None, None) when the call failed otherwise."""
     try:
         resp = http.get(f"{target}/api/v2/sync/changes", params={"since": PROBE_SINCE, "limit": 1},
-                        headers={**headers, "Atlas-Protocol": feed_schema.PROTOCOL}, timeout=PROBE_TIMEOUT)
+                        headers={**headers, wire.HEADER: wire.request_header()}, timeout=PROBE_TIMEOUT)
     except httpx.HTTPError:
         return None, None
     if resp.status_code in (401, 403):
@@ -162,12 +162,11 @@ def probe(session: Session, http: httpx.Client, target: str, token: str | None, 
         raise ProbeError("it did not answer in time (unreachable)", unreachable=True) from exc
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
         raise ProbeError(str(exc)) from exc
-    raw = info.get("protocol")
     try:
-        sync.negotiate(info)
-        protocol_ok = True
-    except sync.SyncRefused:
-        protocol_ok = False
+        upstream = sync.negotiate(info)
+        protocol_ok, label = True, upstream.label
+    except sync.SyncRefused as exc:
+        protocol_ok, label = False, str(exc.upstream_protocol)[:32]
     if not protocol_ok:
         for o in options:
             o["warnings"].append("protocol_refused")
@@ -177,7 +176,7 @@ def probe(session: Session, http: httpx.Client, target: str, token: str | None, 
     best = next((o for o in options if o["recommended"]), None)
     return {"node": {"node_id": str(info["node_id"]), "fp": fingerprint(str(info["node_id"])),
                      "name": str(info.get("name") or "")[:80], "role": info.get("role", "?"), "kind": node_kind(info),
-                     "protocol": str(raw or feed_schema.LEGACY_PROTOCOL)[:16], "protocol_ok": protocol_ok},
+                     "protocol": label, "protocol_ok": protocol_ok},
             "token": {"read": True, "sync": can_sync},
             "records": {k: records[k] for k in sync.RECORD_COUNTS} if records else None,
             "feeds": options, "default_feed": best["node_id"] if best else None, "info": info}

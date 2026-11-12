@@ -146,7 +146,7 @@ class ReleaseInfoV1(BaseModel):
         return out
 
 
-# ---- ext.book (CONTRACT-C15 §2.3, registered under feed_schema.UNIFIED) ------------------------------------
+# ---- ext.book (CONTRACT-C15 §2.3, wire 1) ------------------------------------------------------------------
 
 MAX_AUTHORS, MAX_BOOK_EDITIONS, MAX_PAGES = 30, 50, 100_000
 #: The whole `ext.book` member, JSON-encoded, is at most this large (C15 §2.3).
@@ -310,7 +310,7 @@ class BookInfoV1(BaseModel):
 
 class ObservationExtV1(BaseModel):
     """Optional observation extensions (C1.4 `ext`). `release` shipped with protocol 1.3; `book` (C15 §2.3) is
-    registered under the unified release version (`feed_schema.UNIFIED`) and always signed with `_requires: book-v1`."""
+    shipped in wire 1 and always signed with `_requires: book-v1` (a critical member)."""
 
     model_config = ConfigDict(extra="forbid")
 

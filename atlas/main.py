@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -34,6 +35,7 @@ from . import (
     ratelimit,
     relations,
     sync,
+    wire,
 )
 from . import (
     metrics as telemetry,
@@ -73,7 +75,7 @@ from .web.social import router as social_router
 
 log = logging.getLogger("atlas")
 _STATUS = {"invalid": 400, "forbidden": 403, "not_found": 404, "conflict": 409,
-           "emit_protocol": 409,  # a valid request this node cannot publish yet (C1.6)
+           "reserved_feature": 409,  # a valid request for a construct reserved for a later release
            "scope_ceiling": 409,  # C14 §5.4: a mixed entry (ceiling'd + public record) is never signed
            # C11 §11.9-11.12: merge / unmerge / lock refusals
            "distinct": 409, "merge_too_large": 409, "already_reverted": 409, "unmerge_blocked": 409,
@@ -425,6 +427,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if (rebuilt := dates_rebuild.finish_pending(maker, settings)) is not None and not rebuilt.get("busy"):
         log.info("re-derived %d record(s) after a downgrade and re-upgrade (%d changed)", rebuilt["rebuilt"],
                  rebuilt["changed"])
+    with maker() as s:  # C16 §4.7: a build below the database's wire high-water mark refuses to start
+        wire.check_high_water(s, restoring=bool(getattr(settings, "restoring", False)))
+        wire.log_ignored(s, dict(os.environ), log)
+        s.commit()
     with maker() as s:
         identity = load_identity(s, settings)
         _warn_key_at_rest(settings, signing_key_at_rest(s))
@@ -540,6 +546,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "nav_pages": [], "p": _AnonPage()}, status_code=exc.status_code, headers=exc.headers)
         resp.headers["Cache-Control"] = "no-store"
         return resp
+
+    @app.exception_handler(wire.WireUnsupported)
+    async def _wire_unsupported(_: Request, exc: wire.WireUnsupported):
+        # design §6: 409, never 426; the contract is `code` + `reason`. The body names both ranges.
+        prof = wire.profile(app.state.atlas)
+        return JSONResponse({"error": exc.body()}, status_code=409,
+                            headers={wire.HEADER: f"min={prof.min_peer}, max={prof.max}", "Cache-Control": "no-store"})
+
+    @app.exception_handler(wire.InvalidWire)
+    async def _invalid_wire(_: Request, exc: wire.InvalidWire):
+        return JSONResponse({"error": {"code": "invalid_wire", "message": str(exc)}}, status_code=400,
+                            headers={"Cache-Control": "no-store"})
 
     @app.exception_handler(AtlasError)
     @app.exception_handler(merges.MergeError)
