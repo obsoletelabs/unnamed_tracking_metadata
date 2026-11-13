@@ -98,7 +98,27 @@ def test_backfill_measures_images_cached_before_the_upgrade(session, ctx, tmp_pa
     rows = arts(session, cid)
     p = rows["https://img.test/p.png"]
     assert (p.width, p.height, p.declared_width, p.declared_height, p.aspect) == (200, 300, 10, 10, "portrait")
-    assert rows["https://img.test/gone.png"].last_error == "storage" and media.pending_backfill(session) == 0
+    # a remote, proxy-fetched image whose blob went missing is recoverable: the stale hash is cleared so
+    # `cache_pending` treats it as uncached and fetches it again, rather than being stuck forever (review
+    # finding: a recoverable remote image stayed permanently uncached after the missing-file detection).
+    gone = rows["https://img.test/gone.png"]
+    assert gone.blob_hash is None and gone.last_error is None and gone.fail_count == 0
+    assert media.pending_backfill(session) == 0
+
+
+def test_backfill_cannot_recover_a_missing_local_upload(session, ctx, tmp_path, maker):
+    """A local-only upload (this node's own `/media/<sha256>`) has no remote source to refetch: if its file is
+    gone, it stays a terminal `storage` error instead of being retried forever."""
+    cid = seed(session, ctx)
+    s = ctx.settings.model_copy(update={"media_dir": str(tmp_path)})
+    own_url = media.own_media_base(s) + "0" * 64
+    session.add(Artwork(canonical_id=cid, source="manual", kind="poster", url=own_url, blob_hash="0" * 64))
+    session.commit()
+    assert media.backfill(maker, s) == 0
+    rows = arts(session, cid)
+    art = rows[own_url]
+    assert art.last_error == "storage" and art.blob_hash == "0" * 64
+    assert media.pending_backfill(session) == 0
 
 
 # ---- duplicates (§12.5.4) ------------------------------------------------------------------------------------

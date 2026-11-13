@@ -513,7 +513,14 @@ def backfill(maker: sessionmaker[Session], settings: Settings, *, limit: int = 2
                 break
             found = find_blob(settings, art.blob_hash or "")
             if found is None:
-                art.last_error = "storage"
+                if is_upload(settings, art.url):
+                    # A local-only upload has no remote source to recover from: the file is simply gone.
+                    art.last_error = "storage"
+                else:
+                    # Recoverable: the remote source may still be healthy. Clear the stale hash so
+                    # `cache_pending` treats this row as uncached and fetches it again.
+                    art.blob_hash = art.content_type = art.size_bytes = art.cached_at = None
+                    art.fail_count, art.next_try_at, art.last_error = 0, None, None
                 continue
             data = found[0].read_bytes()
             try:
