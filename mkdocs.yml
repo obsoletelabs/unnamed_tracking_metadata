@@ -63,8 +63,10 @@ nav:
       - Security: security.md
   - Integrations:
       - Tracking App: tracking-app.md
+      - Client API (connectors): client-api.md
       - Achievements: achievements.md
       - Relationships and editions: relations.md
+      - Books: books.md
       - Metadata providers: providers.md
       - Prices: prices.md
       - Extending: extending.md

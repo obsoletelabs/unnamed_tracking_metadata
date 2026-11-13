@@ -1,0 +1,284 @@
+{
+  "request": {
+    "items": [
+      {
+        "media_type": "game",
+        "provider_ids": {
+          "fixturegames": "LF-1001"
+        }
+      },
+      {
+        "provider_ids": {
+          "atlas": "atlas:01kdvdna84000000000000000t"
+        }
+      },
+      {
+        "media_type": "book",
+        "provider_ids": {
+          "fixturebooks": "LK-0001"
+        }
+      },
+      {
+        "media_type": "game",
+        "title": "Quiet Orbit"
+      },
+      {
+        "provider_ids": {
+          "fixturegames": "NOPE-0000"
+        }
+      }
+    ]
+  },
+  "response": {
+    "results": [
+      {
+        "assigned": true,
+        "candidates": [
+          {
+            "id": "atlas:01kdvdna5a000000000000000h",
+            "score": 1.0
+          }
+        ],
+        "canonical_id": "atlas:01kdvdna5a000000000000000h",
+        "confidence": 1.0,
+        "conflict": null,
+        "game": {
+          "custom": {},
+          "description": "A short synthetic puzzle game for the Atlas client fixtures.",
+          "developer": "Glowmoth Studio",
+          "features": [
+            "Single-player"
+          ],
+          "first_release": {
+            "date": "2019-03-14",
+            "precision": "day"
+          },
+          "genres": [
+            "Puzzle",
+            "Adventure"
+          ],
+          "id": "atlas:01kdvdna5a000000000000000h",
+          "languages": [
+            "English"
+          ],
+          "media_type": "game",
+          "provider_ids": {
+            "fixturegames": "LF-1001-DUP"
+          },
+          "publisher": "Harbour Lights Interactive",
+          "redirected_from": null,
+          "release_date": "2019-03-14",
+          "release_year": 2019,
+          "sources": [
+            "fixturegames"
+          ],
+          "title": "Lanternfall (duplicate entry)",
+          "updated_at": "2026-01-01T00:00:00+00:00",
+          "version": 5
+        },
+        "matched_keys": [
+          {
+            "canonical_id": "atlas:01kdvdna5a000000000000000h",
+            "external_id": "LF-1001",
+            "namespace": "fixturegames"
+          }
+        ],
+        "method": "crosswalk",
+        "reason": "crosswalk",
+        "redirected_from": null,
+        "tier": "id"
+      },
+      {
+        "assigned": true,
+        "candidates": [
+          {
+            "id": "atlas:01kdvdna5a000000000000000h",
+            "score": 1.0
+          }
+        ],
+        "canonical_id": "atlas:01kdvdna5a000000000000000h",
+        "confidence": 1.0,
+        "conflict": null,
+        "game": {
+          "custom": {},
+          "description": "A short synthetic puzzle game for the Atlas client fixtures.",
+          "developer": "Glowmoth Studio",
+          "features": [
+            "Single-player"
+          ],
+          "first_release": {
+            "date": "2019-03-14",
+            "precision": "day"
+          },
+          "genres": [
+            "Puzzle",
+            "Adventure"
+          ],
+          "id": "atlas:01kdvdna5a000000000000000h",
+          "languages": [
+            "English"
+          ],
+          "media_type": "game",
+          "provider_ids": {
+            "fixturegames": "LF-1001-DUP"
+          },
+          "publisher": "Harbour Lights Interactive",
+          "redirected_from": null,
+          "release_date": "2019-03-14",
+          "release_year": 2019,
+          "sources": [
+            "fixturegames"
+          ],
+          "title": "Lanternfall (duplicate entry)",
+          "updated_at": "2026-01-01T00:00:00+00:00",
+          "version": 5
+        },
+        "matched_keys": [
+          {
+            "canonical_id": "atlas:01kdvdna5a000000000000000h",
+            "external_id": "atlas:01kdvdna84000000000000000t",
+            "namespace": "atlas"
+          }
+        ],
+        "method": "crosswalk",
+        "reason": "redirect",
+        "redirected_from": "atlas:01kdvdna84000000000000000t",
+        "tier": "id"
+      },
+      {
+        "assigned": true,
+        "candidates": [
+          {
+            "id": "atlas:01kdvdna9c000000000000000y",
+            "score": 1.0
+          }
+        ],
+        "canonical_id": "atlas:01kdvdna9c000000000000000y",
+        "confidence": 1.0,
+        "conflict": null,
+        "game": {
+          "authors": [
+            {
+              "name": "Ada Quillfeather",
+              "role": "author"
+            },
+            {
+              "name": "Tomas Vell",
+              "role": "translator"
+            }
+          ],
+          "custom": {},
+          "description": "A synthetic novel about a lighthouse, for the Atlas client fixtures.",
+          "developer": "Ada Quillfeather",
+          "editions": [
+            {
+              "format": "hardcover",
+              "isbn_10": "0000000116",
+              "isbn_13": "9780000000118",
+              "language": "en",
+              "name": "Hardcover, Harbour Press 2005",
+              "pages": 412,
+              "provider_ids": {
+                "fixturebooks_edition": "LK-0001-HC"
+              },
+              "published": {
+                "date": "2005",
+                "precision": "year"
+              },
+              "publisher": "Harbour Press",
+              "sources": [
+                "fixturebooks"
+              ]
+            },
+            {
+              "format": "paperback",
+              "isbn_10": "0000000108",
+              "isbn_13": "9780000000101",
+              "language": "en",
+              "name": "Paperback, Harbour Press 2006",
+              "pages": 428,
+              "provider_ids": {
+                "fixturebooks_edition": "LK-0001-PB"
+              },
+              "published": {
+                "date": "2006-02",
+                "precision": "month"
+              },
+              "publisher": "Harbour Press",
+              "sources": [
+                "fixturebooks"
+              ]
+            }
+          ],
+          "features": [
+            "Lighthouses",
+            "Fiction"
+          ],
+          "first_release": {
+            "date": "2005-08-14",
+            "precision": "day"
+          },
+          "id": "atlas:01kdvdna9c000000000000000y",
+          "media_type": "book",
+          "original_language": "en",
+          "page_count": 412,
+          "provider_ids": {
+            "fixturebooks": "LK-0001"
+          },
+          "redirected_from": null,
+          "release_date": "2005-08-14",
+          "release_year": 2005,
+          "sources": [
+            "fixturebooks"
+          ],
+          "subtitle": "A Novel of Small Lights",
+          "title": "The Lamp Keeper",
+          "updated_at": "2026-01-01T00:00:00+00:00",
+          "version": 4
+        },
+        "matched_keys": [
+          {
+            "canonical_id": "atlas:01kdvdna9c000000000000000y",
+            "external_id": "LK-0001",
+            "namespace": "fixturebooks"
+          }
+        ],
+        "method": "crosswalk",
+        "reason": "crosswalk",
+        "redirected_from": null,
+        "tier": "id"
+      },
+      {
+        "assigned": false,
+        "candidates": [
+          {
+            "id": "atlas:01kdvdna76000000000000000q",
+            "score": 0.7
+          }
+        ],
+        "canonical_id": null,
+        "confidence": 0.7,
+        "conflict": null,
+        "game": null,
+        "matched_keys": [],
+        "method": "none",
+        "reason": "ambiguous",
+        "redirected_from": null,
+        "tier": "weak"
+      },
+      {
+        "assigned": false,
+        "candidates": [],
+        "canonical_id": null,
+        "confidence": 0.0,
+        "conflict": null,
+        "game": null,
+        "matched_keys": [],
+        "method": "none",
+        "reason": "none",
+        "redirected_from": null,
+        "tier": "none"
+      }
+    ]
+  }
+}

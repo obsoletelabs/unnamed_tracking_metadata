@@ -17,6 +17,11 @@
 <input id="{{ r.name }}-{{ f.key }}" name="{{ f.key }}" type="password" autocomplete="off" maxlength="300" placeholder="{{ 'Enter a new value to replace it' if (f.stored or f.env) else 'Not set' }}"{{ ' disabled' if not can_store }}>
 {% if f.stored %}<label><input type="checkbox" name="clear_{{ f.key }}"> Remove the stored value (falls back to the environment)</label>{% endif %}
 {% endfor %}
+{% for f in r.plain %}
+<label for="{{ r.name }}-{{ f.key }}">{{ f.label }} <span class="hint">{{ 'Stored in the database' if f.stored else ('Set' if f.value else 'Not set: nothing identifies this node') }}</span></label>
+<p class="small muted" id="{{ r.name }}-{{ f.key }}-help">{{ r.explain }}</p>
+<input id="{{ r.name }}-{{ f.key }}" name="{{ f.key }}" type="text" inputmode="email" autocomplete="off" spellcheck="false" maxlength="200" value="{{ f.value }}" placeholder="Not set" aria-describedby="{{ r.name }}-{{ f.key }}-help">
+{% endfor %}
 {% if r.toggle %}<label><input type="checkbox" name="{{ r.toggle.key }}"{{ ' checked' if r.toggle.on }}> {{ r.toggle.label }}</label>{% endif %}
 <p><button type="submit">Save {{ r.label }}</button>{% if r.importable %} <a class="btn secondary" href="/admin/import?provider={{ r.name }}">Import</a>{% endif %}</p>
 <p class="small muted">Environment: {% for v in r.needs %}<code>{{ v }}</code>{{ ', ' if not loop.last }}{% endfor %}{% if r.optional %}; optional {{ r.optional|join(', ') }}{% endif %}. Access terms and limits: <a href="{{ docs }}/providers.md" rel="noopener">Metadata providers</a>.</p>

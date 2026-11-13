@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% from "macros.html" import cover %}
+{% from "macros.html" import cover, csrf %}
 {% block content %}
 <section class="card home-hero">
   <h1>{{ s.tagline }}</h1>
   <p class="muted">One record per title, combined from providers and the community, with each field traced to its source.</p>
   <form action="/search" method="get" role="search">
-    <div class="row"><input type="search" name="q" placeholder="Search games, anime, films, or TV shows" maxlength="200" aria-label="Search media"><button type="submit">Search</button></div>
+    <div class="row"><input type="search" name="q" placeholder="Search by title, author or ISBN" maxlength="200" aria-label="Search media"><button type="submit">Search</button></div>
   </form>
   <nav class="media-type-nav" aria-label="Browse by media type">
     <a href="/search">All media <span>{{ totals.records }}</span></a>
@@ -13,6 +13,24 @@
   </nav>
   <p class="small muted">{{ totals.records }} records · {{ totals.artwork }} images cached · {{ totals.contributors }} contributors</p>
 </section>
+{% if first_run %}
+<section class="card first-run" aria-labelledby="first-run-h" data-first-run>
+  <h2 id="first-run-h" class="flush-top">Start your catalogue</h2>
+  <p class="muted small">This node works on its own: no other node and no provider key are needed.</p>
+  <div class="cols">
+    <div data-first-run-game><h3>Add a game</h3>
+      <p class="small">Type in what you know; providers can fill in the rest later.</p>
+      {% if p.user %}<a class="btn" href="/new?type=game">Add a game</a>{% else %}<a class="btn" href="/login?next=/new">Sign in to add a game</a>{% endif %}</div>
+    {% if first_run.isbn and 'book' in first_run.types %}<div data-first-run-book><h3>Add a book by ISBN</h3>
+      <p class="small">The ISBN is looked up on Open Library and the book comes in with its authors, editions and cover.</p>
+      {% if p.user and p.can_review %}<form method="post" action="/import/isbn" data-isbn-import>{{ csrf(p.csrf) }}<input type="hidden" name="provider" value="openlibrary"><input type="hidden" name="next" value="record">
+        <div class="row"><div class="grow"><label for="first-isbn">ISBN <span class="hint">10 or 13 digits</span></label><input id="first-isbn" type="text" name="isbn" maxlength="40" inputmode="numeric" autocomplete="off" spellcheck="false" required></div>
+        <div class="align-end"><button type="submit">Add the book</button></div></div></form>
+      {% elif p.user %}<p class="small muted">Ask a curator to add books by ISBN, or <a href="/new?type=book">add one by hand</a>.</p>
+      {% else %}<a class="btn secondary" href="/login?next=/">Sign in to add a book</a>{% endif %}</div>{% endif %}
+  </div>
+</section>
+{% endif %}
 <h2>Recently updated</h2>
 {% if recent %}
 <ul class="grid">{% for g in recent %}

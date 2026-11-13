@@ -50,8 +50,9 @@ def mock(routes: dict[str, object], calls: list[httpx.Request] | None = None) ->
 # ---- registry -----------------------------------------------------------------------------------------
 
 def test_registry_adds_new_sources_only_when_configured():
-    off = build_registry(build_settings())
-    assert set(off) == {"steam"}  # keyless new sources are opt-in; a keyed one needs its key
+    off = build_registry(build_settings(openlibrary_enabled=False))
+    assert set(off) == {"steam"}  # a keyed source needs its key; Open Library is on unless switched off (D15.7)
+    assert set(build_registry(build_settings())) == {"steam", "openlibrary"}
     on = build_registry(build_settings(tgdb_api_key="k", openlibrary_enabled=True))
     assert isinstance(on["tgdb"], TheGamesDb) and isinstance(on["openlibrary"], OpenLibrary)
     assert media_types(on["openlibrary"]) == ("book",) and media_types(on["steam"]) == ("game",)
@@ -93,16 +94,19 @@ def test_tgdb_error_status_and_unknown_game():
 
 # ---- Open Library -------------------------------------------------------------------------------------
 
-def test_openlibrary_search_and_fetch_from_recorded_answers():
-    client = mock({"/works/OL893414W.json": fixture("openlibrary-work-OL893414W.json"),
-                   "search.json": fixture("openlibrary-search-dune.json")})
-    found = OpenLibrary().search(client, "dune herbert")
-    assert found and found[0].external_id == "OL893414W" and found[0].title == "Dune"
-    assert found[0].release_date is None and found[0].release == {"first": {"date": "1965", "precision": "year"}}
-    got = OpenLibrary().fetch(client, "OL893414W")
-    assert got.facts["developer"] == "Frank Herbert" and got.facts["description"].startswith("Set on the desert planet")
-    assert got.artwork[0]["url"] == "https://covers.openlibrary.org/b/id/11481354-L.jpg"
-    assert OpenLibrary().fetch(client, "../etc") is None and OpenLibrary().fetch(client, "OL1M") is None  # works only
+def test_openlibrary_search_and_fetch_from_synthetic_answers():
+    """The Open Library adapter itself is covered by tests/test_a22_openlibrary.py (synthetic fixtures; Open Library
+    answers are not committed, D15.2); this keeps the registry-level smoke check."""
+    from .test_a22_openlibrary import W1, fixture_client, ol
+
+    client = fixture_client()
+    found = ol().search(client, "salt cartographer")
+    assert found and found[0].external_id == W1 and found[0].title == "The Salt Cartographer"
+    assert found[0].release_date is None and found[0].release == {"first": {"date": "1987", "precision": "year"}}
+    got = ol().fetch(client, W1)
+    assert got.facts["developer"] == "Ione Marsh" and got.facts["description"].startswith("An invented novel")
+    assert got.artwork[0]["url"] == "https://covers.openlibrary.org/b/id/9900001-L.jpg"
+    assert ol().fetch(client, "../etc") is None and ol().fetch(client, "OL1A") is None  # works, editions, ISBNs
     assert Fetcher(build_settings(), {}).as_batch("openlibrary", [got]) is not None
 
 
@@ -110,22 +114,27 @@ def test_book_import_needs_a_book_media_type(site):
     from atlas import importer
     from atlas.models import MediaType
 
-    client = mock({"/works/OL893414W.json": fixture("openlibrary-work-OL893414W.json"),
-                   "search.json": fixture("openlibrary-search-dune.json")})
+    from .test_a22_openlibrary import W1, fixture_client, ol
+
     st = site.st
-    st.providers.client = client
-    st.providers.providers["openlibrary"] = OpenLibrary()
+    st.providers.client = fixture_client()
+    st.providers.providers["openlibrary"] = ol()
+    with st.maker() as s:  # A21 seeds `book` as a built-in; a node that deleted it cannot import books
+        s.delete(s.get(MediaType, "book"))
+        s.commit()
     with st.maker() as s:
         with pytest.raises(service.AtlasError, match="media type 'book'"):
-            importer.import_from_provider(st, s, "openlibrary", "OL893414W")
+            importer.import_from_provider(st, s, "openlibrary", W1)
         s.rollback()
     with st.maker() as s:
-        s.add(MediaType(key="book", label="Book", position=9, labels={"developer": "Author"}, origin="local"))
+        from atlas import custom
+
+        custom.seed(s)
         s.commit()
     with st.maker() as s:
-        got = importer.import_from_provider(st, s, "openlibrary", "OL893414W")
+        got = importer.import_from_provider(st, s, "openlibrary", W1)
         s.commit()
-        assert got.row.media_type == "book" and got.row.view["title"] == "Dune"
+        assert got.row.media_type == "book" and got.row.view["title"] == "The Salt Cartographer"
 
 
 # ---- Wikidata -----------------------------------------------------------------------------------------
@@ -240,12 +249,15 @@ def test_integrations_page_lists_the_access_matrix_and_toggles_keyless_sources(s
     for label in ("TheGamesDB", "Open Library", "Wikidata", "Epic Games Store", "itch.io", "GOG"):
         assert label in page
     assert "ATLAS_TGDB_API_KEY" in page and "terms forbid scraping" in page and "No adapter" in page
-    assert site.st.providers.crossref_source is None and "openlibrary" not in site.st.providers.providers
+    assert site.st.providers.crossref_source is None and "openlibrary" in site.st.providers.providers  # on (D15.7)
     t = token(site, "/admin/integrations")
     assert site.post("/admin/integrations/wikidata", data={"csrf": t, "wikidata_enabled": "on"}).status_code == 303
+    assert site.post("/admin/integrations/openlibrary", data={"csrf": t}).status_code == 303  # unticked: off
+    site.get("/admin/integrations")
+    assert isinstance(site.st.providers.crossref_source, Wikidata) and "openlibrary" not in site.st.providers.providers
     assert site.post("/admin/integrations/openlibrary", data={"csrf": t, "openlibrary_enabled": "on"}).status_code == 303
     site.get("/admin/integrations")
-    assert isinstance(site.st.providers.crossref_source, Wikidata) and "openlibrary" in site.st.providers.providers
+    assert "openlibrary" in site.st.providers.providers
     site.post("/admin/integrations/wikidata", data={"csrf": t})  # unticked: off again
     site.get("/admin/integrations")
     assert site.st.providers.crossref_source is None

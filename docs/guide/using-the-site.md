@@ -2,7 +2,7 @@
 
 ## Browsing
 
-Anyone can search and read games, anime, movies and TV shows, along with their artwork, discussions and public profiles. The home page links to each media type, and its browse page lists the latest records. A record page shows merged facts, identifiers (with links where they exist), a **Where this came from** table, and recent changes. Games also show achievements and store links.
+Anyone can search and read games, books, anime, movies and TV shows, along with their artwork, discussions and public profiles. The home page links to each media type, and its browse page lists the latest records. A record page shows merged facts, identifiers (with links where they exist), a **Where this came from** table, and recent changes. Games also show achievements and store links; books show their authors, series and an editions table (see [Books](books.md)). A search box also takes an ISBN, and the Book tab can be filtered by author.
 
 ![Atlas home page with a centered search panel above recently updated records](img/01-home.png)
 

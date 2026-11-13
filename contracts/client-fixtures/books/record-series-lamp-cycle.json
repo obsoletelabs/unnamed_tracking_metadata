@@ -1,0 +1,44 @@
+{
+  "custom": {},
+  "id": "atlas:01kdvdnac60000000000000017",
+  "media_type": "series",
+  "provider_ids": {
+    "fixturebooks": "SER-LAMP"
+  },
+  "redirected_from": null,
+  "relations": {
+    "children": [],
+    "counts": {
+      "children": 0,
+      "members": 2,
+      "members_of": 0,
+      "parents": 0
+    },
+    "members": [
+      {
+        "id": "atlas:01kdvdna9c000000000000000y",
+        "media_type": "book",
+        "position": "1",
+        "title": "The Lamp Keeper",
+        "type": "series_member"
+      },
+      {
+        "id": "atlas:01kdvdnab80000000000000014",
+        "media_type": "book",
+        "position": "2",
+        "title": "The Far Light",
+        "type": "series_member"
+      }
+    ],
+    "members_of": [],
+    "parents": [],
+    "truncated": false
+  },
+  "sources": [
+    "fixturebooks"
+  ],
+  "title": "The Lamp Cycle",
+  "unmerged": [],
+  "updated_at": "2026-01-01T00:00:00+00:00",
+  "version": 4
+}

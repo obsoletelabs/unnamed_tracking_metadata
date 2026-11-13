@@ -1,0 +1,38 @@
+{
+  "custom": {},
+  "developer": "Stillwater Labs",
+  "first_release": {
+    "date": "2023",
+    "precision": "year"
+  },
+  "genres": [
+    "Simulation"
+  ],
+  "id": "atlas:01kdvdna76000000000000000q",
+  "media_type": "game",
+  "provider_ids": {
+    "fixturegames": "QO-3003"
+  },
+  "redirected_from": null,
+  "relations": {
+    "children": [],
+    "counts": {
+      "children": 0,
+      "members": 0,
+      "members_of": 0,
+      "parents": 0
+    },
+    "members": [],
+    "members_of": [],
+    "parents": [],
+    "truncated": false
+  },
+  "release_year": 2023,
+  "sources": [
+    "fixturegames"
+  ],
+  "title": "Quiet Orbit",
+  "unmerged": [],
+  "updated_at": "2026-01-01T00:00:00+00:00",
+  "version": 2
+}

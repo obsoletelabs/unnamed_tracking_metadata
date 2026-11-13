@@ -32,6 +32,8 @@ class ProviderResult:
     custom: dict[str, Any] = field(default_factory=dict)  # values for admin-defined fields, e.g. crossplay
     artwork: list[dict[str, Any]] = field(default_factory=list)
     achievements: list[dict[str, Any]] = field(default_factory=list)
+    # C15 §2.3 `ext.book` (Open Library): authors, subtitle, editions. Already validated by the adapter.
+    book: dict[str, Any] | None = None
 
     def to_item(self) -> dict[str, Any]:
         item: dict[str, Any] = {"external_id": self.external_id, "title": self.title}
@@ -41,6 +43,8 @@ class ProviderResult:
             item["release_date"] = self.release_date
         if self.release:
             item["ext"] = {"release": self.release}
+        if self.book:
+            item.setdefault("ext", {})["book"] = self.book
         if self.provider_ids:
             item["provider_ids"] = self.provider_ids
         facts = {k: v for k, v in self.facts.items() if v not in (None, "", [])}
@@ -53,6 +57,8 @@ class Provider(Protocol):
     name: str
     redistributable: bool
     requests_per_minute: int
+    #: the media types the provider describes (C15 §3.3); the importer files its records under the first one
+    media_types: tuple[str, ...]
 
     def search(self, client: httpx.Client, query: str) -> list[ProviderResult]: ...
 
@@ -152,6 +158,18 @@ def redact_urls(text: str) -> str:
     return _QUERY.sub(r"\1", text)
 
 
+#: Where Atlas lives; providers that ask clients to identify themselves get it in the User-Agent (C15 §3.2).
+PROJECT_URL = "https://github.com/obsoletelabs/unnamed_tracking_metadata"
+
+
+def user_agent(contact: str | None = None) -> str:
+    """`atlas-metadata/<version> (+<project URL>[; <contact>])` (C15 §3.2). The contact is the operator's
+    `provider_contact`, passed only to the providers that ask for one (Open Library); never `node_operator`."""
+    from .. import __version__
+
+    return f"atlas-metadata/{__version__} (+{PROJECT_URL}" + (f"; {contact})" if contact else ")")
+
+
 #: The provider an adapter call belongs to, set by the Fetcher; labels upstream-request metrics (#71).
 CURRENT_PROVIDER: contextvars.ContextVar[str] = contextvars.ContextVar("atlas_provider", default="other")
 
@@ -189,16 +207,26 @@ def _outcome(exc: BaseException | None, status: int | None) -> str:
 
 
 def get_json(client: httpx.Client, method: str, url: str, **kw: Any) -> Any:
+    return get_response(client, method, url, **kw).json()
+
+
+def get_response(client: httpx.Client, method: str, url: str, *, allow: tuple[int, ...] = (), **kw: Any
+                 ) -> httpx.Response:
+    """One request, counted and timed. Redirects are never followed here (an adapter decides, C15 §3.1); a status in
+    `allow` (a redirect, a 404 meaning "no such record") is returned instead of raised. A 2xx body must be JSON."""
     from ..instruments import provider_request_duration, provider_requests
 
     provider = CURRENT_PROVIDER.get()
     started, status, failure = time.monotonic(), None, None
     try:
-        resp = client.request(method, url, timeout=kw.pop("timeout", 10), **kw)
+        resp = client.request(method, url, timeout=kw.pop("timeout", 10), follow_redirects=False, **kw)
         status = resp.status_code
         _record_quota(provider, resp.headers)
+        if status in allow:
+            return resp
         resp.raise_for_status()
-        return resp.json()
+        resp.json()  # a 2xx that is not JSON is a bad payload, counted as such
+        return resp
     except httpx.HTTPStatusError as exc:
         failure = exc
         raise ProviderError(f"{redact_urls(url)}: HTTP {exc.response.status_code}") from None

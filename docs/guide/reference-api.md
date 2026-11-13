@@ -11,7 +11,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `GET` | `/health` | public | Liveness: the process is up. |
 | `GET` | `/ready` | public | Readiness: 503 when the database does not answer or migrations are pending; `degraded` (200) when only artwork storage is unwritable. |
 | `GET` | `/schema` | public | Media types and custom fields this node describes (public ones only). |
-| `GET` | `/site` | public | Name, theme, navigation, role, registration and email policy of this node. |
+| `GET` | `/site` | public | Name, theme, navigation, role, registration and email policy of this node, and `client_api` (CONTRACT-C15 §9.1): the client API `version` (`1.0`), `min_supported`, `capabilities` (`books`, `pairing`, `etag`, `batch`, `public_read`) and `deprecations`. See [Client API](client-api.md). |
 
 ## read
 
@@ -19,16 +19,30 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | --- | --- | --- | --- |
 | `GET` | `/artwork/{art_id}/image` | read | One image: its cached bytes, or a redirect to the original public address while it is not cached. |
 | `GET` | `/games` | read | Search records by title (`q`, optional `type`, `limit`, `offset`) and/or by first release (`released_from`, `released_to`: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; a record matches when its whole release period is inside the range). `sort`: `relevance`, `title`, `release` or `-release` (year before month before day, unknown last); `relevance` re-ranks exact and prefix matches within each page of the title order, so page with `title` or `release` for a stable order. `q` is required unless a release filter is given (a blank `q` lists recent records, as before). Includes `custom` values. |
-| `GET` | `/games/{cid}` | read | One record. Follows merge redirects (`redirected_from`). ETag = id-version. Release dates: `first_release` (`{date, precision}`), `release_year`, `releases` (up to five `{date, precision, platform?, region?, edition?, category}`) and the unchanged day-only `release_date`, present only when the first release is known to the day. `relations`: `parents`, `children`, `members_of`, `members` (each `{id, type, title, media_type}`, ordered by type then id, at most 200) with `counts` and `truncated`; `editions` when known. See [Relationships](relations.md). |
+| `POST` | `/games/batch` | read | Up to 200 records by id in one call (`{ids}`), in request order: `{requested, status: ok\|not_found, game}`, each `game` exactly as `GET /games/{cid}` answers it (redirects followed). See [Client API](client-api.md). |
+| `GET` | `/games/{cid}` | read | One record. Follows merge redirects (`redirected_from`). ETag = id-version; a matching `If-None-Match` answers `304` with no body. Release dates: `first_release` (`{date, precision}`), `release_year`, `releases` (up to five `{date, precision, platform?, region?, edition?, category}`) and the unchanged day-only `release_date`, present only when the first release is known to the day. `relations`: `parents`, `children`, `members_of`, `members` (each `{id, type, title, media_type}`, ordered by type then id, at most 200) with `counts` and `truncated`; `editions` when known. See [Relationships](relations.md). |
 | `GET` | `/games/{cid}/achievements` | read | Merged achievement list: name, description, kind, tier, points, icons, global percent, and a stable `key` (`ak1:…`) with `keys` and `key_identity`. Hidden ones are redacted unless `reveal=all` or `reveal=<id or key>,…` is sent with a signed-in user's token or a curator token. No per-user progress. See [Achievements](achievements.md). |
-| `GET` | `/games/{cid}/artwork` | read | Artwork in its long-standing order (community choice, trust, priority) with `primary`, the first image per kind in it, as before; `best`, the C12 quality pick per kind; `?order=quality` sorts the list (and `primary`) by the C12 ranking. `media_url` once cached, and `image_url` always. |
+| `GET` | `/games/{cid}/artwork` | read | Artwork in its long-standing order (community choice, trust, priority) with `primary`, the first image per kind in it, as before; `best`, the C12 quality pick per kind; `?order=quality` sorts the list (and `primary`) by the C12 ranking. `media_url` once cached, and `image_url` always. `primary_by_role`: one artwork id per role (`cover`, `background`, `icon`, `logo`) from the C12 ranking, or null (CONTRACT-C15 §10.1). |
 | `GET` | `/games/{cid}/explain` | read | Which source and rule produced each field (provenance). |
 | `GET` | `/games/{cid}/prices` | read | The newest observed price of every offer of a record, one per provider, product, package, edition, platform, region and currency (optional `region`, `currency`, `provider`). Integer minor units with the ISO 4217 `exponent`, exact decimal strings, `sale`, `stale`. Non-redistributable prices only for curator tokens. Not part of the record's view; never in the feed. See [Prices](prices.md). |
 | `GET` | `/games/{cid}/prices/history` | read | Retained price observations of a record in one `region` (required), newest first, filtered by `currency`, `provider`, `product_id`, `edition`, `platform`, `since`, `until`; at most 1000 per page, follow `next_cursor`. With `currency`, `lowest` is the lowest retained price (the historical low within retention). See [Prices](prices.md). |
 | `GET` | `/games/{cid}/provenance` | read | Why each field has its value: winning source, trust class, reason, runners-up, conflicts, plus recent decisions, merges and distinct marks. `detail=values` (curate) adds candidate values. |
 | `GET` | `/games/{cid}/relations` | read | The relation graph around a record: `depth` hops (1-4) in both directions, at most `limit` (200) records, deterministic order, `truncated` when more exists; plus the record's `editions`. See [Relationships](relations.md). |
 | `GET` | `/media/{digest}` | read | A cached, verified image. Immutable; `nosniff`. |
+| `GET` | `/records` | read | Alias of `GET /games` (same handler, same answer). `/games` is not deprecated. |
+| `POST` | `/records/batch` | read | Alias of `POST /games/batch`. |
+| `GET` | `/records/{cid}` | read | Alias of `GET /games/{cid}`, `If-None-Match` included. |
+| `GET` | `/records/{cid}/achievements` | read | Alias of `GET /games/{cid}/achievements`. |
+| `GET` | `/records/{cid}/artwork` | read | Alias of `GET /games/{cid}/artwork`. |
+| `GET` | `/records/{cid}/relations` | read | Alias of `GET /games/{cid}/relations`. |
 | `POST` | `/resolve` | read | Batch (max `max_resolve`): Atlas ids, provider ids and titles to canonical ids, with `reason` (id, redirect, crosswalk, conflict, type_mismatch, exact, fuzzy, ambiguous, none), `tier`, `matched_keys`, `conflict` and `redirected_from`. A conflict returns no id. Read-only. See [Tracking App](tracking-app.md#resolving-ids-post-resolve). |
+
+## client
+
+| Method | Path | Scope | What it does |
+| --- | --- | --- | --- |
+| `POST` | `/client/pair` | public | Start pairing a device (no token): a user code (`XXXX-XXXX`), `verify_url` (+ `verify_url_complete` and a `qr_svg` of it), a `poll_token`, `expires_in` (600) and `interval` (5). At most 20 open per node; anonymous per-address budget. See [Client API](client-api.md#pairing). |
+| `POST` | `/client/pair/poll` | public | Poll a pairing (no token): `status` `pending`, `slow_down` (interval +5 s), `approved` (with a personal read `token`, once), `denied` or `expired`. |
 
 ## write
 

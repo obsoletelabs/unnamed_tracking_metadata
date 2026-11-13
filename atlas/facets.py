@@ -443,6 +443,25 @@ def achievement_list(session: Session, cid: str, source: str) -> dict[str, Any]:
     return {"items": achievement_items(rows, session), "sets": set_items(session, cid, source)}
 
 
+class AchievementsNotApplicable(AtlasError):
+    """CONTRACT-C15 §2.7: the record's media type has `achievements = false`. Code `invalid`: the curator API answers
+    400, a follower quarantines the entry as `invalid` (it never waits), and an import skips the list."""
+
+    def __init__(self, media_type: str, label: str):
+        super().__init__(f"achievements do not apply to {label} records (media type {media_type!r})", "invalid",
+                         media_type=media_type)
+
+
+def require_achievements(session: Session, record: Canonical) -> None:
+    from .custom import achievements_apply
+
+    if not achievements_apply(session, record.media_type):
+        from .models import MediaType
+
+        row = session.get(MediaType, record.media_type)
+        raise AchievementsNotApplicable(record.media_type, (row.label if row is not None else record.media_type).lower())
+
+
 def _live(session: Session, cid: str) -> Canonical:
     row = session.get(Canonical, cid)
     if row is None or row.merged_into:
@@ -496,6 +515,9 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
         select(Artwork).where(Artwork.canonical_id == cid, Artwork.source == source))}
     wanted = {(i["kind"], i["url"]) for i in items}
     held: set[tuple[str, str]] = set()
+    # one age for every image this call adds: `legacy_art_rank` orders by age, and per-row clock reads would rank
+    # one batch by how fine the host clock is (equal on a coarse clock, insertion order on a fine one)
+    added_at = now()
     for key, art in existing.items():
         if key not in wanted:
             session.delete(art)
@@ -521,7 +543,7 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
             art = Artwork(canonical_id=cid, source=source, kind=i["kind"], url=i["url"],
                           priority=i["priority"], width=i.get("width"), height=i.get("height"),
                           declared_width=i.get("width"), declared_height=i.get("height"),
-                          redistributable=redistributable)
+                          redistributable=redistributable, created_at=added_at)
             adopt_local_blob(ctx, art)
             session.add(art)
         for field in _ART_FIELDS:
@@ -679,7 +701,8 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
     percent arrives without a date: a mirror passes the date of the signed entry's origin timestamp, so the
     authority and every mirror store the same date (§12.1.6)."""
     write_lock(session)
-    _live(session, cid)
+    record = _live(session, cid)
+    require_achievements(session, record)
     source = norm_namespace(source)
     items = clean_achievements(items)
     set_rows = clean_sets(sets)
@@ -902,14 +925,14 @@ def _lang_match(have: str | None, want: str | None) -> int:
 def art_rank(settings: Any, a: Artwork, *, region: str | None = None, lang: str | None = None,
              with_duplicate: bool = True) -> tuple[Any, ...]:
     """§12.5.7, smaller is better: curator first, then the community's `preferred`, then not a duplicate, role fit,
-    class, trust, region and language match, priority, measured pixels; ties break on url and source only, values
-    that are the same on every node."""
+    class, trust, region and language match, priority, measured pixels; ties break on url, source and kind only,
+    values that are the same on every node."""
     cls = CLASS_RANK[source_class(a.source)]
     fit = role_fit(a)
     pixels = (a.width or 0) * (a.height or 0) if a.aspect is not None else 0
     return (cls != CLASS_RANK["curator"], not a.preferred, with_duplicate and a.duplicate_of is not None,
             fit is False, -cls, -settings.trust(a.source), -_region_match(a.region, region),
-            -_lang_match(a.locale, lang), a.priority, -pixels, a.url, a.source)
+            -_lang_match(a.locale, lang), a.priority, -pixels, a.url, a.source, a.kind)
 
 
 def dedupe(session: Session, settings: Any, cid: str) -> None:
@@ -952,8 +975,9 @@ def near_duplicates(rows: list[Artwork]) -> dict[str, str]:
 def legacy_art_rank(settings: Any, a: Artwork) -> tuple[Any, ...]:
     """The order `GET /games/{cid}/artwork` has always listed images in, across kinds (before C12): the community's
     `preferred` first, then trust, priority and age; url and source only break the remaining ties. Clients that
-    take the first image rely on it, so it stays the API default (C12 §12.5.7, amendment A18 #18)."""
-    return (not a.preferred, -settings.trust(a.source), a.priority, a.created_at, a.url, a.source)
+    take the first image rely on it, so it stays the API default (C12 §12.5.7, amendment A18 #18). The images one
+    `set_artwork` call adds share one age, so within a batch url, source and kind decide, whatever the host clock."""
+    return (not a.preferred, -settings.trust(a.source), a.priority, a.created_at, a.url, a.source, a.kind)
 
 
 ART_ORDERS = ("legacy", "quality")
@@ -1109,7 +1133,12 @@ def achievement_listing(session: Session, ctx: Ctx, cid: str, *, reveal: bool | 
         raise AtlasError(f"order must be one of {ORDERS}")
     want = clean_locale(lang, "lang") if lang else None
     from . import scope
+    from .custom import achievements_apply
 
+    record = session.get(Canonical, cid)
+    if record is not None and not achievements_apply(session, record.media_type):
+        # C15 §2.7: the rows are kept (retyping back shows them again) but nothing is listed
+        return {"sets": [], "results": [], "lang": want, "revealed_any": False, "applicable": False}
     q = select(Achievement).where(Achievement.canonical_id == cid)
     if not include_retired:
         q = q.where(Achievement.retired_at.is_(None))
@@ -1266,7 +1295,7 @@ def achievement_listing(session: Session, ctx: Ctx, cid: str, *, reveal: bool | 
     for s in set_order:
         del s["_position"]
     return {"sets": set_order, "results": entries, "lang": want,
-            "revealed_any": any(e["revealed"] for e in entries)}
+            "revealed_any": any(e["revealed"] for e in entries), "applicable": True}
 
 
 def merged_achievements(session: Session, ctx: Ctx, cid: str, *, reveal: bool | set[str] = False,

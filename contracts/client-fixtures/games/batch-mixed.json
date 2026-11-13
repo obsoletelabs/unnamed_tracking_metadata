@@ -1,0 +1,165 @@
+{
+  "request": {
+    "ids": [
+      "atlas:01kdvdna5a000000000000000h",
+      "atlas:01kdvdna84000000000000000t",
+      "atlas:00000000000000000000000000",
+      "atlas:01kdvdna68000000000000000m"
+    ]
+  },
+  "response": {
+    "results": [
+      {
+        "game": {
+          "custom": {},
+          "description": "A short synthetic puzzle game for the Atlas client fixtures.",
+          "developer": "Glowmoth Studio",
+          "features": [
+            "Single-player"
+          ],
+          "first_release": {
+            "date": "2019-03-14",
+            "precision": "day"
+          },
+          "genres": [
+            "Puzzle",
+            "Adventure"
+          ],
+          "id": "atlas:01kdvdna5a000000000000000h",
+          "languages": [
+            "English"
+          ],
+          "media_type": "game",
+          "provider_ids": {
+            "fixturegames": "LF-1001-DUP"
+          },
+          "publisher": "Harbour Lights Interactive",
+          "redirected_from": null,
+          "relations": {
+            "children": [],
+            "counts": {
+              "children": 0,
+              "members": 0,
+              "members_of": 0,
+              "parents": 0
+            },
+            "members": [],
+            "members_of": [],
+            "parents": [],
+            "truncated": false
+          },
+          "release_date": "2019-03-14",
+          "release_year": 2019,
+          "sources": [
+            "fixturegames"
+          ],
+          "title": "Lanternfall (duplicate entry)",
+          "unmerged": [],
+          "updated_at": "2026-01-01T00:00:00+00:00",
+          "version": 5
+        },
+        "requested": "atlas:01kdvdna5a000000000000000h",
+        "status": "ok"
+      },
+      {
+        "game": {
+          "custom": {},
+          "description": "A short synthetic puzzle game for the Atlas client fixtures.",
+          "developer": "Glowmoth Studio",
+          "features": [
+            "Single-player"
+          ],
+          "first_release": {
+            "date": "2019-03-14",
+            "precision": "day"
+          },
+          "genres": [
+            "Puzzle",
+            "Adventure"
+          ],
+          "id": "atlas:01kdvdna5a000000000000000h",
+          "languages": [
+            "English"
+          ],
+          "media_type": "game",
+          "provider_ids": {
+            "fixturegames": "LF-1001-DUP"
+          },
+          "publisher": "Harbour Lights Interactive",
+          "redirected_from": "atlas:01kdvdna84000000000000000t",
+          "relations": {
+            "children": [],
+            "counts": {
+              "children": 0,
+              "members": 0,
+              "members_of": 0,
+              "parents": 0
+            },
+            "members": [],
+            "members_of": [],
+            "parents": [],
+            "truncated": false
+          },
+          "release_date": "2019-03-14",
+          "release_year": 2019,
+          "sources": [
+            "fixturegames"
+          ],
+          "title": "Lanternfall (duplicate entry)",
+          "unmerged": [],
+          "updated_at": "2026-01-01T00:00:00+00:00",
+          "version": 5
+        },
+        "requested": "atlas:01kdvdna84000000000000000t",
+        "status": "ok"
+      },
+      {
+        "game": null,
+        "requested": "atlas:00000000000000000000000000",
+        "status": "not_found"
+      },
+      {
+        "game": {
+          "custom": {},
+          "developer": "Brassfin Games",
+          "first_release": {
+            "date": "2021-11",
+            "precision": "month"
+          },
+          "genres": [
+            "Strategy"
+          ],
+          "id": "atlas:01kdvdna68000000000000000m",
+          "media_type": "game",
+          "provider_ids": {
+            "fixturegames": "CT-2002"
+          },
+          "redirected_from": null,
+          "relations": {
+            "children": [],
+            "counts": {
+              "children": 0,
+              "members": 0,
+              "members_of": 0,
+              "parents": 0
+            },
+            "members": [],
+            "members_of": [],
+            "parents": [],
+            "truncated": false
+          },
+          "release_year": 2021,
+          "sources": [
+            "fixturegames"
+          ],
+          "title": "Copper Tide",
+          "unmerged": [],
+          "updated_at": "2026-01-01T00:00:00+00:00",
+          "version": 2
+        },
+        "requested": "atlas:01kdvdna68000000000000000m",
+        "status": "ok"
+      }
+    ]
+  }
+}

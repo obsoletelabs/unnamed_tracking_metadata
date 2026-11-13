@@ -31,6 +31,19 @@ jobs:
           name: python-package
           path: dist/*
           if-no-files-found: error
+      - name: Client API fixtures release asset (CONTRACT-C15 section 9.3)
+        run: |
+          uv sync --frozen
+          version="0.0.0+${GITHUB_SHA::12}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version="${GITHUB_REF_NAME#v}"; fi
+          uv run python tools/export_client_fixtures.py --out "$RUNNER_TEMP/client-fixtures" --archive client-dist --version "$version"
+          # the committed fixtures must be what this commit generates (the test suite checks it too)
+          diff -r contracts/client-fixtures "$RUNNER_TEMP/client-fixtures"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-fixtures
+          path: client-dist/*
+          if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -43,7 +56,11 @@ jobs:
         with:
           name: python-package
           path: dist
-      - name: Attach the wheel and sdist to the GitHub release
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-fixtures
+          path: dist
+      - name: Attach the wheel, sdist and client fixtures (client-fixtures-<version>.tar.gz + .sha256) to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

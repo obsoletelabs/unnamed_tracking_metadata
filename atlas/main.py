@@ -55,6 +55,7 @@ from .web.account import router as account_router
 from .web.achievements import router as achievements_router
 from .web.admin import router as admin_router
 from .web.backups import router as backups_router
+from .web.book_pages import router as book_router
 from .web.deps import LoginRequired, MfaRequired
 from .web.federation import router as federation_router
 from .web.group import router as group_web_router
@@ -63,6 +64,7 @@ from .web.importing import router as import_router
 from .web.mfa import router as mfa_router
 from .web.node_links import router as node_links_router
 from .web.oidc import router as oidc_router
+from .web.pairing import router as pair_router
 from .web.profile_pages import router as profile_router
 from .web.routes import router as web_router
 from .web.routes import web_headers
@@ -257,6 +259,19 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st
         sync.startup_replay(maker, ctx)
     except Exception as exc:
         log.warning("startup replay failed: %s", exc)
+    from . import doctor
+
+    def media_type_scan() -> None:
+        # C15 §2.2: count records an older release filed as games by mistake (`atlas doctor media-types`), at
+        # startup and whenever the set of known media types changed since the last scan (a seeded or new type)
+        try:
+            with maker() as session:
+                doctor.startup_scan(session)
+                session.commit()
+        except Exception as exc:
+            log.warning("media type scan failed: %s", exc)
+
+    media_type_scan()
     with httpx.Client() as client:
         while not stop.is_set():
             wait = delay
@@ -273,6 +288,7 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st
             except Exception as exc:  # keep serving local data through any upstream failure
                 log.warning("sync failed: %s", exc)
                 wait = min(delay * 4, 900)
+            media_type_scan()  # a schema this round may have brought a type that makes old misfiles reportable
             if st is not None and enrich.enabled(ctx.settings):  # C13 §5.1 step 4, H56: off by default
                 try:
                     enrich.run(maker, st)
@@ -486,6 +502,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(social_router)
     app.include_router(federation_router)
     app.include_router(import_router)
+    app.include_router(book_router)
+    app.include_router(pair_router)
     app.include_router(backups_router)
     app.include_router(oidc_router)
     app.include_router(group_router)

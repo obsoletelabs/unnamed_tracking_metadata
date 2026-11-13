@@ -32,6 +32,11 @@ TOGGLE_OF: dict[str, tuple[str, str]] = {
     "wikidata": ("wikidata_enabled", "Suggest store links from Wikidata"),
 }
 TOGGLES = tuple(field for field, _label in TOGGLE_OF.values())
+# provider -> plain (non-secret) text settings an administrator edits there, stored as-is: (setting field, label)
+PLAIN_OF: dict[str, tuple[tuple[str, str], ...]] = {
+    "openlibrary": (("provider_contact", "Contact sent to Open Library (an e-mail address or https:// URL)"),),
+}
+PLAIN_FIELDS = tuple(field for fields in PLAIN_OF.values() for field, _label in fields)
 
 # Known stores for linking ids: namespace -> (name, url template or None)
 STORES: dict[str, tuple[str, str | None]] = {
@@ -78,4 +83,13 @@ def apply(settings: Settings, overrides: dict[str, Any]) -> Settings:
     for field in TOGGLES:
         if isinstance(overrides.get(PREFIX + field), bool):
             update[field] = overrides[PREFIX + field]
+    from .settings import check_contact
+
+    for field in PLAIN_FIELDS:
+        raw = overrides.get(PREFIX + field)
+        if isinstance(raw, str):
+            try:  # model_copy does not validate: a stored value is checked again before it reaches a header
+                update[field] = check_contact(raw)
+            except ValueError:
+                continue
     return settings.model_copy(update=update) if update else settings

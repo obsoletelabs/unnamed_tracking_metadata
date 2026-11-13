@@ -92,15 +92,29 @@ SCALAR_FIELDS = {
 UNION_FIELDS = ("platforms", "genres", "themes", "tags", "features", "languages", "aliases")
 #: C5.2: lock fields that are neither scalar nor a string list. A `releases` lock holds up to five entries.
 RELEASE_LOCKS = ("releases",)
+#: CONTRACT-C15 §2.3: book fields read from `ext.book`, each merged by priority (the highest-ranked observation that
+#: states it wins as a whole; an author list is never interleaved) and lockable. They are not `SCALAR_FIELDS`: a
+#: scalar lock must be a string, and `authors` is a list of objects and `page_count` a number (`service.clean_lock`
+#: holds them to the `ext.book` rules). Registered under the unified release version (`feed_schema.BOOK_LOCK_FIELDS`).
+BOOK_LOCKS = ("authors", "subtitle", "page_count", "original_language")
 #: Every field a curator may lock (the `lock` feed kind's vocabulary). `release_date` locks the first release:
 #: its value may be partial ("2011"); `releases` (protocol 1.3) pins the dated releases.
-LOCK_FIELDS = (*SCALAR_FIELDS, *UNION_FIELDS, *RELEASE_LOCKS)
+LOCK_FIELDS = (*SCALAR_FIELDS, *UNION_FIELDS, *RELEASE_LOCKS, *BOOK_LOCKS)
 #: View keys derived from the release dates (C5.2). `release_date` stays day-only for older clients.
 RELEASE_VIEW_KEYS = ("first_release", "release_year", "releases")
 
 
+def book_of(payload: dict[str, Any]) -> dict[str, Any]:
+    """An observation payload's `ext.book` member, or {} (C15 §2.3)."""
+    ext = payload.get("ext")
+    book = ext.get("book") if isinstance(ext, dict) else None
+    return book if isinstance(book, dict) else {}
+
+
 def _value(obs: Obs, field: str) -> Any:
     p = obs.payload
+    if field in BOOK_LOCKS:
+        return book_of(p).get(field)
     if field in ("title", "release_date"):
         return p.get(field)
     if field == "platforms":
@@ -202,6 +216,19 @@ def merge(observations: list[Obs], locks: dict[str, Any], *, prefs: dict[str, li
         if won is not None:
             view[field], explain[field] = won
 
+    for field in BOOK_LOCKS:  # C15 §2.3: present only when some observation (or a lock) states it
+        if field in locks:
+            if locks[field] is CLEARED:
+                explain[field] = {"strategy": "cleared", "reason": "lock"}
+            else:
+                view[field] = locks[field]
+                explain[field] = {"strategy": "lock", "reason": "lock"}
+            continue
+        won = _priority(field, ranked, prefs)
+        if won is not None:
+            view[field], explain[field] = won
+    _derive_developer(view, explain, locks)
+
     for field in UNION_FIELDS:
         if field in locks:
             if locks[field] is CLEARED:
@@ -272,6 +299,18 @@ def merge(observations: list[Obs], locks: dict[str, Any], *, prefs: dict[str, li
     return view, explain
 
 
+def _derive_developer(view: dict[str, Any], explain: dict[str, Any], locks: dict[str, Any]) -> None:
+    """C15 §2.2: `developer` stays the single "primary creator" string. When no observation states one (and no lock
+    pins or clears it), it is the first author's name, so consumers that read `developer` (older host plugins,
+    search tiles) show an author."""
+    if "developer" in view or "developer" in locks:
+        return
+    authors = view.get("authors")
+    if isinstance(authors, list) and authors and isinstance(authors[0], dict) and authors[0].get("name"):
+        view["developer"] = authors[0]["name"]
+        explain["developer"] = {"strategy": "derived", "reason": "derived", "from": "authors"}
+
+
 def _bound(explain: dict[str, Any]) -> None:
     """Keep explain within MAX_EXPLAIN_BYTES: union members go first (§11.7.2)."""
     if len(json.dumps(explain, separators=(",", ":"), default=str)) <= MAX_EXPLAIN_BYTES:
@@ -290,31 +329,87 @@ def conflict_fields(explain: dict[str, Any]) -> list[str]:
 MAX_EDITIONS = 50
 
 
-def _editions(ranked: list[Obs]) -> list[dict[str, Any]]:
-    """C6.1: the record's editions, from the `edition` its observations name. An edition is never a separate
-    record or a relation target; per-edition dates are `releases[].edition` (C5.1).
+#: C15 §2.6: the members a book edition adds to an `editions[]` entry, in display order (present only when known).
+EDITION_DETAIL = ("isbn_13", "isbn_10", "format", "publisher", "published", "pages", "language")
 
-    Names are grouped by casefold with whitespace collapsed; the spelling of the most trusted observation is
-    shown. `provider_ids` maps each source namespace to *that edition's* id there (the observation's own id;
-    the most trusted wins), never ids the observation only cross-references. Sorted by name."""
-    groups: dict[str, dict[str, Any]] = {}
-    for o in ranked:  # highest rank first
-        name = " ".join(str(o.payload.get("edition") or "").split())
-        if not name:
+
+def _edition_name(entry: dict[str, Any]) -> str:
+    """The source's edition label, or "<Format>, <publisher> <year>" synthesised from what it states (C15 §2.6)."""
+    name = " ".join(str(entry.get("name") or "").split())
+    if name:
+        return name
+    published = entry.get("published")
+    year = str(published.get("date", ""))[:4] if isinstance(published, dict) else ""
+    tail = " ".join(p for p in (str(entry.get("publisher") or ""), year) if p)
+    head = str(entry.get("format") or "").capitalize()
+    return ", ".join(p for p in (head, tail) if p) or (f"ISBN {entry['isbn_13']}" if entry.get("isbn_13") else "")
+
+
+def _edition_claims(o: Obs) -> list[tuple[str, str | None, dict[str, Any], dict[str, str]]]:
+    """(name, isbn_13, details, provider_ids) for each edition an observation names: its own `edition` (the C6.1
+    path, the observation's own id) and each `ext.book.editions[]` entry (C15 §2.6)."""
+    out: list[tuple[str, str | None, dict[str, Any], dict[str, str]]] = []
+    name = " ".join(str(o.payload.get("edition") or "").split())
+    if name:
+        out.append((name, None, {}, {norm_namespace(o.source): o.external_id}))
+    for entry in book_of(o.payload).get("editions") or []:
+        if not isinstance(entry, dict):
             continue
-        key = name.casefold()
+        label = _edition_name(entry)
+        isbn = entry.get("isbn_13") if isinstance(entry.get("isbn_13"), str) else None
+        if not label and not isbn:
+            continue
+        ids = {k: v for k, v in (entry.get("provider_ids") or {}).items() if isinstance(v, str)}
+        if isinstance(entry.get("key"), str):
+            ids.setdefault(f"{norm_namespace(o.source)}_edition"[:50], entry["key"])
+        details = {k: entry[k] for k in EDITION_DETAIL if entry.get(k) not in (None, "")}
+        out.append((label, isbn, details, ids))
+    return out
+
+
+def _editions(ranked: list[Obs]) -> list[dict[str, Any]]:
+    """C6.1 / C15 §2.6: the record's editions. An edition is never a separate record or a relation target;
+    per-edition dates are `releases[].edition` (C5.1).
+
+    ISBN first: an edition with an `isbn_13` groups by that ISBN only (two sources naming one ISBN differently are one
+    edition; two printings both called "Paperback" with different ISBNs stay two). An edition without one groups by
+    its name (casefold, whitespace collapsed), as before, and joins an ISBN group only when exactly one ISBN group
+    carries that name. Within a group the most trusted observation's spelling and details win; `provider_ids` maps
+    each namespace to *that edition's* id there (the most trusted wins), never ids an observation only
+    cross-references. At most `MAX_EDITIONS`, sorted by name."""
+    groups: dict[str, dict[str, Any]] = {}  # "isbn:<13>" or "name:<casefold>"
+    named_isbn: dict[str, set[str]] = {}  # casefold name -> ISBN group keys carrying it
+
+    def claim(key: str, name: str, details: dict[str, Any], ids: dict[str, str], source: str) -> None:
         found = groups.get(key)
         if found is None:
             if len(groups) >= MAX_EDITIONS:
-                continue
+                return
             found = groups[key] = {"name": name, "provider_ids": {}, "sources": []}
-        found["provider_ids"].setdefault(norm_namespace(o.source), o.external_id)
-        if o.source not in found["sources"]:
-            found["sources"].append(o.source)
+        for k, v in details.items():
+            found.setdefault(k, v)
+        for ns, ident in ids.items():
+            found["provider_ids"].setdefault(ns, ident)
+        if source not in found["sources"]:
+            found["sources"].append(source)
+
+    names_only: list[tuple[str, str, dict[str, Any], dict[str, str], str]] = []
+    for o in ranked:  # highest rank first
+        for name, isbn, details, ids in _edition_claims(o):
+            if isbn:
+                claim(f"isbn:{isbn}", name, details, ids, o.source)
+                named_isbn.setdefault(name.casefold(), set()).add(f"isbn:{isbn}")
+            else:
+                names_only.append((name, name.casefold(), details, ids, o.source))
+    for name, folded, details, ids, source in names_only:  # rank order kept
+        targets = named_isbn.get(folded, set())
+        claim(next(iter(targets)) if len(targets) == 1 else f"name:{folded}", name, details, ids, source)
     out = []
-    for item in sorted(groups.values(), key=lambda g: (g["name"].casefold(), g["name"])):
-        out.append({"name": item["name"], "provider_ids": dict(sorted(item["provider_ids"].items())),
-                    "sources": sorted(item["sources"])})
+    for item in sorted(groups.values(), key=lambda g: (g["name"].casefold(), g["name"], g.get("isbn_13") or "")):
+        entry = {"name": item["name"], "provider_ids": dict(sorted(item["provider_ids"].items())),
+                 "sources": sorted(item["sources"])}
+        entry.update({k: item[k] for k in EDITION_DETAIL if k in item})
+        out.append(entry)
     return out
 
 

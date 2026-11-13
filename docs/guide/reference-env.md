@@ -41,6 +41,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_MIN_FOLLOWER_PROTOCOL` | `1.0` | Lowest federation protocol a follower must speak to sync from this node (followers below it refuse). Default: the previous release's protocol. |
 | `ATLAS_EMIT_PROTOCOL` | — | Newest federation protocol this node's own feed may use. Unset = `min_follower_protocol`. Raise it in Admin → Peers once every follower is upgraded. **live** |
 | `ATLAS_FEDERATION_BRIDGE_RECORD_OBS` | `false` | Authority, emit protocol below 1.5: introduce a record its feed never signed (only provider data) with an ordinary observation of the source `atlas-record` (title and store ids), which every follower release applies. Off: such records reach followers only once the emit protocol is 1.5 (`record` entries). See [Changes waiting for their game](federation.md#changes-waiting-for-their-game). |
+| `ATLAS_FEDERATION_BRIDGE_MEDIA_TYPES` | `['game']` | The media types the bridge introduces (JSON list). A 1.0 follower files every bridged observation as a game, so other types get a `record` (emit protocol 1.5) or are not introduced; Admin → Peers counts them. An empty list is refused. See [Changes waiting for their game](federation.md#changes-waiting-for-their-game). |
 | `ATLAS_FEDERATION_INTRODUCE` | `referenced` | Authority: `referenced` introduces a record when a signed entry first names it; `all` also introduces every record made from provider data alone as it is created. |
 | `ATLAS_FEDERATION_SNAPSHOT_FIELDS` | `['title', 'provider_ids']` | What a `record` (or bridge observation) carries besides the id and media type: a JSON list, a subset of `title` and `provider_ids`. |
 | `ATLAS_SYNC_MAX_OPEN_FAILURES` | `10000` | Follower: open waiting and quarantined entries per upstream feed before it stops applying that feed and reports `backlog_full` (nothing is lost; the entries stay retained). |
@@ -94,7 +95,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | --- | --- | --- |
 | `ATLAS_AUTO_MATCH_THRESHOLD` | `0.85` | Confidence (0.5–1.0) at or above which an incoming record is merged into an existing one automatically. Editable as a percentage in Admin → Settings. **live** |
 | `ATLAS_REVIEW_THRESHOLD` | `0.6` | Confidence below the auto threshold but above this opens a possible-duplicate review. **live** |
-| `ATLAS_SOURCE_TRUST` | `{'curator': 100, 'manual': 90, 'community': 85, 'igdb': 70, 'steam': 65, 'gog': 60, 'rawg': 50}` | JSON object of source name → trust weight used to choose between conflicting values (higher wins). Reserved names need the `curate` scope to submit. |
+| `ATLAS_SOURCE_TRUST` | `{'curator': 100, 'manual': 90, 'community': 85, 'igdb': 70, 'steam': 65, 'gog': 60, 'openlibrary': 55, 'rawg': 50}` | JSON object of source name → trust weight used to choose between conflicting values (higher wins). Reserved names need the `curate` scope to submit. |
 | `ATLAS_DEFAULT_TRUST` | `40` | Trust for sources not listed in `source_trust` (apps and plugins submitting data). |
 | `ATLAS_REDISTRIBUTABLE_SOURCES` | `['community', 'curator', 'manual']` | Sources whose curated observations are published on the change feed. Provider data (Steam, IGDB…) is never federated. |
 | `ATLAS_FIELD_SOURCE_PREFERENCE` | — | JSON object of field → list of sources, best first, for example `{"description": ["igdb", "steam"]}`. It reorders sources of the `provider` trust class only: it never lifts a provider above community or curator data (see Matching and provenance). |
@@ -117,6 +118,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_METRICS_CACHE_SECONDS` | `300` | How long the expensive `/metrics` collectors (catalogue aggregates, the media directory walk) are cached in each process; 0 recomputes them on every scrape. |
 | `ATLAS_ACHIEVEMENT_PERCENT_MAX_AGE_DAYS` | `30` | Days after which an achievement's rarity is shown as stale and a fresher value from another source wins (C12 §12.1.6). |
 | `ATLAS_ACHIEVEMENT_RETIRED_RETENTION_DAYS` | `180` | Days a retired achievement row (one its source no longer lists) is kept, with its id and key, before it is deleted (C12 §12.1.3, H37). |
+| `ATLAS_PUBLIC_READ` | `false` | Let anonymous clients read the client API subset (`/site`, search, records, batch, relations, artwork, achievements, resolve, changes) without a token, 60 requests a minute per address. Off by default (CONTRACT-C15 D15.15); editable in Admin → Settings. **live** |
 
 ## Providers
 
@@ -127,7 +129,8 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_IGDB_CLIENT_ID` | — | Twitch client id; with the secret enables the IGDB provider. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value. |
 | `ATLAS_IGDB_CLIENT_SECRET` | — | Twitch client secret for IGDB. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value. |
 | `ATLAS_TGDB_API_KEY` | — | TheGamesDB API v1 key (requested from TheGamesDB; it has a monthly allowance); enables the TheGamesDB provider. Its data is kept on this node only. Can also be set in [Admin → Integrations](administering.md#integrations) (stored encrypted; needs `ATLAS_SECRET_KEY`), which overrides this value. See [Metadata providers](providers.md). |
-| `ATLAS_OPENLIBRARY_ENABLED` | `false` | Use Open Library (keyless, CC0) to search and import books. Needs a `book` media type. Can also be switched in [Admin → Integrations](administering.md#integrations). |
+| `ATLAS_OPENLIBRARY_ENABLED` | `true` | Use Open Library (keyless) to search and import books: on by default, so a fresh node can add a book by ISBN with no configuration. At most one request a second per process; Open Library data stays on this node. Can also be switched in [Admin → Integrations](administering.md#integrations). See [Books](books.md#open-library). |
+| `ATLAS_PROVIDER_CONTACT` | — | An e-mail address or `https://` URL sent in the User-Agent to providers that ask clients to identify themselves (Open Library). Empty by default: nothing about the operator is sent unless you set it (it is never taken from `ATLAS_NODE_OPERATOR`). Can also be set in [Admin → Integrations](administering.md#integrations). |
 | `ATLAS_WIKIDATA_ENABLED` | `false` | Suggest store links (GOG, Epic, itch.io, TheGamesDB, Steam) from the ids a game already has, using Wikidata (keyless, CC0). Can also be switched in [Admin → Integrations](administering.md#integrations). |
 | `ATLAS_PRICE_SOURCES` | — | Comma-separated price sources `atlas prices fetch` may query, e.g. `steam`. Empty: price fetching is off. Read the source's terms in [Prices](prices.md#fetching-prices-from-a-store) first. |
 | `ATLAS_PROVIDER_TTL_SECONDS` | `604800` | How long a provider answer is cached. |

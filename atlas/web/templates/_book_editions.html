@@ -1,0 +1,17 @@
+{# A book's editions as a table (CONTRACT-C15 §2.6, §5): format, publisher, date (the shared formatter), pages,
+   language and ISBN-13 with a copy button. Each row keeps the #edition-N anchor the edition cards had. #}
+<div class="rel-group book-editions" id="editions">
+<h3>Editions <span class="muted small">{{ v.editions|length }}</span></h3>
+<div class="table-scroll"><table class="editions data-cards" data-book-editions><thead><tr><th>Edition</th><th>Format</th><th>Publisher</th><th>Published</th><th>Pages</th><th>Language</th><th>ISBN-13</th></tr></thead><tbody>
+{% for e in v.editions %}<tr id="edition-{{ loop.index }}">
+<td data-label="Edition"><strong>{{ e.name }}</strong></td>
+<td data-label="Format"{% if not e.format %} class="empty"{% endif %}>{{ (e.format or '')|replace('_', ' ')|capitalize }}</td>
+<td data-label="Publisher"{% if not e.publisher %} class="empty"{% endif %}>{{ e.publisher or '' }}</td>
+{% set pub = e.published if e.published is mapping else none %}<td data-label="Published"{% if not (pub and pub.date) %} class="empty"{% endif %}>{% if pub and pub.date %}<time datetime="{{ pub.date }}" data-precision="{{ pub.precision }}">{{ release_text(pub.date, pub.precision, prefs) }}</time>{% endif %}</td>
+<td data-label="Pages"{% if not e.pages %} class="empty"{% endif %}>{{ e.pages or '' }}</td>
+<td data-label="Language"{% if not e.language %} class="empty"{% endif %}>{% if e.language %}<span title="{{ e.language }}">{{ language_name(e.language) }}</span>{% endif %}</td>
+<td data-label="ISBN-13"{% if not e.isbn_13 %} class="empty"{% endif %}>{% if e.isbn_13 %}<code class="isbn" id="isbn-{{ e.isbn_13 }}">{{ e.isbn_13 }}</code> <button class="secondary small" type="button" data-copy="isbn-{{ e.isbn_13 }}" aria-label="Copy ISBN {{ e.isbn_13 }}">Copy</button>{% endif %}</td>
+</tr>{% endfor %}
+</tbody></table></div>
+<p class="small muted">Editions are printings and formats of this same book; search by any of their ISBNs finds it.</p>
+</div>

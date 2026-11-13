@@ -51,6 +51,21 @@ body (it would park every pre-C11 follower).
 The price channel and the C11/C12 reservations were 1.5-1.8 until A19: C13's `record` took the first minor no
 release had advertised and each of them moved up one (CONTRACT-C13 §3.1, D13.1, owner decision H52). No release ever
 advertised or applied any of them, so no node disagrees about what those numbers mean.
+
+From A20 on (CONTRACT-C15 §4.1, C16) nothing takes a protocol minor of its own: every later construct is registered
+under `UNIFIED`, the one release version, which equals `PROTOCOL` until the version-unification PR changes both. A20
+registers one: the `schema.types[].achievements` member (`MEMBER_SINCE`), left out of the signed copy below `UNIFIED`.
+
+A21 (CONTRACT-C15 §2.3, §2.4, §4.1) registers the book model, every part of it under `UNIFIED`:
+
+* `observation.payload.ext.book` (`EXT_APPLY`), shipped under the capability `book-v1` (`TOKEN_SINCE`). It is a
+  *critical* member (C16 §4.1, `CRITICAL_EXT`): an `obs` that carries it is always signed with `_requires:
+  ["book-v1"]`, so a follower that cannot apply it parks the entry instead of stripping it and keeping a bare
+  record. `check_emit` refuses it below `UNIFIED` (`EmitGateError`); within one release that branch is dead code,
+  kept for the "books after a tagged release" path (T-B8).
+* the closed vocabularies `book_format` and `book_creator_role` (new vocabularies, not new values of old ones);
+* the lock fields `authors`, `subtitle`, `page_count` and `original_language` (`VALUE_SINCE`, refused below);
+* the `relation` member `position` (`MEMBER_SINCE`, only on `series_member`; left out of the signed copy below).
 """
 
 from __future__ import annotations
@@ -67,6 +82,25 @@ from . import vocab
 
 #: The federation wire protocol this release speaks and applies ("MAJOR.MINOR").
 PROTOCOL = "1.5"
+
+
+class UnifiedVersion(str):
+    """The one release version every construct added after A19 registers under (CONTRACT-C15 §4.1, C16).
+
+    A `str` that compares equal to its number, but is its own object, so a test can tell an entry registered as
+    `UNIFIED` from one that writes the same number as a literal (T-B9 checks identity, not equality)."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return f"UNIFIED({str.__repr__(self)})"
+
+
+#: CONTRACT-C15 §4.1 / C16: no construct added after A19 takes a protocol minor of its own. Each one is registered
+#: under this constant, and nothing else: `MEMBER_SINCE` below, and the later C15 `TOKEN_SINCE` / `VALUE_SINCE` /
+#: `BODY_SINCE` entries. It equals `PROTOCOL` (the unification PR has one place to change, C16 §4.1 rule 6); writing a
+#: literal "1.6" for any of them is a test failure (`tests/test_a20_unified.py`, T-B9).
+UNIFIED: str = UnifiedVersion(PROTOCOL)
 #: Pre-A1 releases advertise no protocol; they speak this.
 LEGACY_PROTOCOL = "1.0"
 #: Version of the observation payload schema (`SourceObservationV1`).
@@ -77,7 +111,7 @@ DEFAULT_MIN_FOLLOWER_PROTOCOL = "1.0"
 PROTOCOL_HEADER = "Atlas-Protocol"
 
 #: Named optional features this node advertises and understands in `_requires`.
-CAPABILITIES: tuple[str, ...] = ("ext-v1", "dates-v1")
+CAPABILITIES: tuple[str, ...] = ("ext-v1", "dates-v1", "book-v1")
 #: Vocabulary tokens (C1.4 `_requires`) this release understands: one per value a later minor added, such
 #: as `tier-platinum` (1.2). They are not optional features, so `/sync/info.capabilities` does not list them.
 VOCAB_TOKENS: tuple[str, ...] = tuple(sorted(set(vocab.VALUE_TOKEN.values())))
@@ -99,13 +133,29 @@ KIND_SINCE: dict[str, str] = {"relation": "1.4", "record": "1.5", "price": "1.6"
 #: `_requires` tokens.
 TOKEN_SINCE: dict[str, str] = {"tier-platinum": "1.2", "dates-v1": "1.3", "relation-v1": "1.4",
                                "price-channel-v1": "1.6", "field-clear-v1": "1.7", "merge-guard-v1": "1.7",
-                               "ach-v2": "1.8", "art-v2": "1.9"}
+                               "ach-v2": "1.8", "art-v2": "1.9", "book-v1": UNIFIED}
 #: Closed-vocabulary values added after 1.0, as (vocabulary, value).
 VALUE_SINCE: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "1.2", ("lock_field", "_no_merge"): "1.7",
                                            ("artwork_kind", "trailer"): "1.9"}
+#: C15 §2.3: the book lock fields (`merge.BOOK_LOCKS` is this tuple; `merge` imports this module lazily).
+BOOK_LOCK_FIELDS = ("authors", "subtitle", "page_count", "original_language")
+VALUE_SINCE.update({("lock_field", f): UNIFIED for f in BOOK_LOCK_FIELDS})
 #: Body versions above 1, as (kind, version).
 BODY_SINCE: dict[tuple[str, int], str] = {("lock", 2): "1.7", ("unlock", 2): "1.7", ("achievements", 2): "1.8",
                                           ("artwork", 2): "1.9"}
+#: Members of known bodies added after A19, as (kind, path) -> protocol (always `UNIFIED`). A follower of this release
+#: accepts them (they are in the kind's `nested`/`fields`); `check_emit` leaves them out of the signed copy below their
+#: protocol, so a node that emits an older protocol never signs a member its followers would park
+#: (`unsupported_field`). CONTRACT-C15 §4.1: `schema.types[].achievements` (the per-type achievements flag, A20).
+MEMBER_SINCE: dict[tuple[str, str], str] = {("schema", "types[].achievements"): UNIFIED,
+                                           ("relation", "position"): UNIFIED}
+#: Every construct registered under `UNIFIED`, by map name and key (T-B9: each of them *is* `UNIFIED`).
+UNIFIED_CONSTRUCTS: tuple[tuple[str, Any], ...] = (
+    ("MEMBER_SINCE", ("schema", "types[].achievements")),
+    ("MEMBER_SINCE", ("relation", "position")),
+    ("TOKEN_SINCE", "book-v1"),
+    *(("VALUE_SINCE", ("lock_field", f)) for f in BOOK_LOCK_FIELDS),
+)
 #: C13 §3.2: the protocol of the `record` kind, and the reserved namespaces a `record` (or a bridge observation)
 #: never carries in `provider_ids`: an Atlas id or a curated namespace there could claim a follower's own record.
 RECORD_PROTOCOL = "1.5"
@@ -176,9 +226,14 @@ _OBSERVATION = frozenset({"id", "source_kind", "source", "source_scope", "extern
 #: What an observation payload may carry (the same keys `sync._valid_observation` accepts), plus `ext`.
 OBS_PAYLOAD = frozenset({"title", "platform", "platforms", "edition", "release_date", "provider_ids", "facts",
                          "source_updated_at", "available", "ext"})
-#: `ext` members this release applies (`release` since 1.3) and the `_requires` token each one ships under.
-EXT_APPLY: frozenset[str] = frozenset({"release"})
-EXT_TOKENS = {"release": "dates-v1"}
+#: `ext` members this release applies (`release` since 1.3, `book` since `UNIFIED`) and the `_requires` token each
+#: one ships under.
+EXT_APPLY: frozenset[str] = frozenset({"release", "book"})
+EXT_TOKENS = {"release": "dates-v1", "book": "book-v1"}
+#: C16 §4.1 critical-member rule: `ext` members whose being ignored would change what a record is (a book filed as a
+#: bare record with no authors or editions). `check_emit` always adds their token to `_requires`, at every protocol
+#: that may sign them, so a reader that cannot apply them parks the entry instead of stripping the member.
+CRITICAL_EXT: frozenset[str] = frozenset({"book"})
 _RELEASE = "observation.payload.ext.release"
 #: C5.1 shapes inside `ext.release`; an unknown member parks the entry (`unsupported_field`).
 RELEASE_NESTED = {_RELEASE: frozenset({"first", "entries"}),
@@ -189,12 +244,25 @@ RELEASE_VALUES = {f"{_RELEASE}.first.precision": "date_precision",
                   f"{_RELEASE}.entries[].precision": "date_precision",
                   f"{_RELEASE}.entries[].category": "release_category",
                   f"{_RELEASE}.entries[].region": "release_region"}
+_BOOK = "observation.payload.ext.book"
+#: C15 §2.3 shapes inside `ext.book` (`contract.BookInfoV1`); an unknown member parks the entry (`unsupported_field`).
+#: Open maps (`authors[].ids`, `editions[].provider_ids`) are validated by the contract, not listed here.
+BOOK_NESTED = {_BOOK: frozenset({"authors", "subtitle", "original_language", "page_count", "series", "editions"}),
+               f"{_BOOK}.authors[]": frozenset({"name", "role", "ids"}),
+               f"{_BOOK}.series": frozenset({"name", "position"}),
+               f"{_BOOK}.editions[]": frozenset({"key", "name", "isbn_13", "isbn_10", "format", "publisher",
+                                                 "published", "pages", "language", "provider_ids"}),
+               f"{_BOOK}.editions[].published": frozenset({"date", "precision"})}
+BOOK_VALUES = {f"{_BOOK}.authors[].role": "book_creator_role",
+               f"{_BOOK}.editions[].format": "book_format",
+               f"{_BOOK}.editions[].published.precision": "date_precision"}
 
 FEED_KINDS: dict[str, KindSpec] = {spec.name: spec for spec in (
     KindSpec("obs", "1.0", 1, 1, frozenset({"canonical_id", "media_type", "observation"}),
              "A redistributable source observation and the record it belongs to.",
-             nested={"observation": _OBSERVATION, "observation.payload": OBS_PAYLOAD, **RELEASE_NESTED},
-             values={"observation.source_kind": "source_kind", **RELEASE_VALUES}),
+             nested={"observation": _OBSERVATION, "observation.payload": OBS_PAYLOAD, **RELEASE_NESTED,
+                     **BOOK_NESTED},
+             values={"observation.source_kind": "source_kind", **RELEASE_VALUES, **BOOK_VALUES}),
     KindSpec("artwork", "1.0", 1, 1, frozenset({"canonical_id", "source", "items"}),
              "The complete artwork set one source contributes to a record.",
              nested={"items[]": frozenset({"kind", "url", "priority", "width", "height"})},
@@ -209,7 +277,7 @@ FEED_KINDS: dict[str, KindSpec] = {spec.name: spec for spec in (
              "Curated custom-field values set or cleared on a record."),
     KindSpec("schema", "1.0", 1, 1, frozenset({"types", "fields"}),
              "The authority's media types and custom-field definitions.",
-             nested={"types[]": frozenset({"key", "label", "enabled", "position", "labels"}),
+             nested={"types[]": frozenset({"key", "label", "enabled", "position", "labels", "achievements"}),
                      "fields[]": frozenset({"media_type", "key", "label", "kind", "choices", "help", "public",
                                             "editable", "position"})},
              values={"fields[].kind": "field_kind"}),
@@ -222,8 +290,9 @@ FEED_KINDS: dict[str, KindSpec] = {spec.name: spec for spec in (
              values={"field": "lock_field"}),
     KindSpec("key_rotation", "1.0", 1, 1, frozenset({"key_id", "public_key"}),
              "The authority's next signing key, signed by the current one."),
-    KindSpec("relation", "1.4", 1, 1, frozenset({"op", "from", "to", "type", "source"}),
-             "A relation between two works added or ended (`from` is the DLC, port, member...; `to` the parent).",
+    KindSpec("relation", "1.4", 1, 1, frozenset({"op", "from", "to", "type", "source", "position"}),
+             "A relation between two works added or ended (`from` is the DLC, port, member...; `to` the parent). "
+             "`position` (C15 §2.4, only on `series_member`): the member's place in the series.",
              values={"op": "relation_op", "type": "relation_type"}),
     KindSpec("record", "1.5", 1, 1, frozenset({"canonical_id", "media_type", "title", "provider_ids", "because"}),
              "A record introduced by identity only: its id, type, display title and store ids.",
@@ -309,6 +378,8 @@ def vocabularies() -> dict[str, Any]:
         "price_availability": frozenset(vocab.PRICE_AVAILABILITY),
         "price_source_kind": frozenset(vocab.PRICE_SOURCE_KINDS),
         "record_because": frozenset(vocab.RECORD_BECAUSE),
+        "book_format": frozenset(vocab.BOOK_FORMATS),
+        "book_creator_role": frozenset(vocab.BOOK_CREATOR_ROLES),
     }
 
 
@@ -355,7 +426,10 @@ def known_tokens() -> frozenset[str]:
 APPLY, PARK, QUARANTINE = "apply", "parked", "quarantined"
 PARK_REASONS = ("unsupported_kind", "unsupported_version", "unsupported_capability", "unsupported_field",
                 "unsupported_value", "dropped_by_previous_release")
-QUARANTINE_REASONS = ("invalid", "apply_error", "skipped")
+#: `media_type_not_adopted` (CONTRACT-C15 §2.2, A20): an entry names a media type this node does not have and will not
+#: get from that feed (`inherit_schema` is off, or the feed's schema could not create it). Retried with backoff like
+#: every quarantined row, so it applies once an administrator creates the type locally.
+QUARANTINE_REASONS = ("invalid", "apply_error", "skipped", "media_type_not_adopted")
 
 
 @dataclass(frozen=True)
@@ -580,6 +654,12 @@ def check_emit(kind: str, body: dict[str, Any], current: str) -> dict[str, Any]:
     dates_needed = parse_protocol(RESERVED_TOKENS["dates-v1"])
     if kind == "obs":
         payload = (body.get("observation") or {}).get("payload")
+        ext_members = payload["ext"] if isinstance(payload, dict) and isinstance(payload.get("ext"), dict) else {}
+        for member in sorted(CRITICAL_EXT & set(ext_members)):
+            token = EXT_TOKENS[member]
+            if parse_protocol(TOKEN_SINCE[token]) > have:  # read at call time: moving UNIFIED moves this gate
+                raise EmitGateError(f"the {member!r} observation extension", TOKEN_SINCE[token], current)
+            needed_tokens.append(token)
         if isinstance(payload, dict) and isinstance(payload.get("ext"), dict) and "release" in payload["ext"]:
             if dates_needed > have:
                 body = copy.deepcopy(body)
@@ -593,11 +673,31 @@ def check_emit(kind: str, body: dict[str, Any], current: str) -> dict[str, Any]:
         if dates_needed > have:
             raise EmitGateError("a partial or regional release date lock", RESERVED_TOKENS["dates-v1"], current)
         needed_tokens.append("dates-v1")
+    body = _strip_newer_members(kind, body, have)
     present = body.get("_requires") if isinstance(body.get("_requires"), list) else []
     missing = [t for t in dict.fromkeys(needed_tokens) if t not in present]
     if missing:
         body = {**body, "_requires": [*present, *missing]}  # a new top-level dict: the caller's copy is untouched
     return body
+
+
+def _strip_newer_members(kind: str, body: dict[str, Any], have: tuple[int, int]) -> dict[str, Any]:
+    """`body` without the `MEMBER_SINCE` members newer than the emit protocol `have` (a deep copy when anything goes;
+    the caller's body and the locally stored state are untouched). Read at call time, so moving `UNIFIED` moves it."""
+    newer = [path for (k, path), since in MEMBER_SINCE.items() if k == kind and parse_protocol(since) > have]
+    if not newer:
+        return body
+    out = None
+    for path in newer:
+        parent, _, leaf = path.rpartition(".")
+        targets = _members(body, parent) if parent else [("", body)]
+        if not any(leaf in obj for _, obj in targets):
+            continue
+        if out is None:
+            out = copy.deepcopy(body)
+        for _, obj in _members(out, parent) if parent else [("", out)]:
+            obj.pop(leaf, None)
+    return body if out is None else out
 
 
 def _dates_lock(body: dict[str, Any]) -> bool:

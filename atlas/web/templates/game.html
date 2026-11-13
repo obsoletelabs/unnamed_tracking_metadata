@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "macros.html" import csrf, chips %}
+{% import "_book.html" as bk with context %}
 {% block title %}{{ v.get('title') }}{% if mtype_label and g.media_type != 'game' %} · {{ mtype_label }}{% endif %} · {{ app_name }}{% endblock %}
 {% block content %}
 {% if redirected_from %}<div class="flash">This record was merged; you were redirected from <code>{{ redirected_from }}</code>.</div>{% endif %}
@@ -16,19 +17,21 @@
   <div>
     <h1>{{ v.get('title') }}{% if g.media_type != 'game' %} <span class="badge">{{ mtype_label }}</span>{% endif %}</h1>
     {% if scope_info %}<p class="scope-line" data-scope-widest="{{ scope_info.widest }}"><span class="badge scope scope-{{ scope_info.badge.key }}" title="{{ scope_info.badge.help }}">{{ scope_info.badge.label }}</span> <span class="small muted" data-scope-line>{{ scope_info.line }}</span>{% if scope_info.ceiling %} <span class="small">· {% if scope_info.ceiling == 'local' %}Kept on this node only{% elif scope_info.ceiling == 'group' %}Shared with your nodes only{% else %}Only for one account{% endif %}</span>{% endif %}</p>{% endif %}
+    {% if book %}{{ bk.head() }}{% endif %}
     {% if rel.parents %}<p class="part-of">{% for r in rel.parents %}{{ rel_labels[r.type][0] }} <a href="/game/{{ r.id }}">{{ r.title or r.id }}</a>{{ '; ' if not loop.last }}{% endfor %}</p>{% endif %}
     {{ chips(v.get('platforms')) }}
     <dl class="facts">
       {% set first = v.get('first_release') or ({'date': v.release_date, 'precision': 'day'} if v.get('release_date') else none) %}
       {% if first %}<dt>{{ lbl.release_date }}</dt><dd><time datetime="{{ first.date }}" data-precision="{{ first.precision }}">{{ release_text(first.date, first.precision, prefs) }}</time></dd>{% endif %}
-      {% if v.get('developer') %}<dt>{{ lbl.developer }}</dt><dd>{{ v.developer }}</dd>{% endif %}
+      {% if book %}{{ bk.facts() }}{% endif %}
+      {% if v.get('developer') and not (book and book.byline) %}<dt>{{ lbl.developer }}</dt><dd>{{ v.developer }}</dd>{% endif %}
       {% if v.get('publisher') %}<dt>{{ lbl.publisher }}</dt><dd>{{ v.publisher }}</dd>{% endif %}
       {% if v.get('series') %}<dt>{{ lbl.series }}</dt><dd>{{ v.series }}</dd>{% endif %}
       {% if v.get('genres') %}<dt>{{ lbl.genres }}</dt><dd>{{ chips(v.genres) }}</dd>{% endif %}
       {% if v.get('themes') %}<dt>{{ lbl.themes }}</dt><dd>{{ chips(v.themes) }}</dd>{% endif %}
       {% if v.get('tags') %}<dt>{{ lbl.tags }}</dt><dd>{{ chips(v.tags) }}</dd>{% endif %}
       {% if v.get('features') %}<dt>{{ lbl.features }}</dt><dd>{{ chips(v.features) }}</dd>{% endif %}
-      {% if v.get('languages') %}<dt>{{ lbl.languages }}</dt><dd>{{ chips(v.languages) }}</dd>{% endif %}
+      {% if v.get('languages') %}<dt>{{ lbl.languages }}</dt><dd>{{ chips(v.languages|map('language_name')|unique|list if book else v.languages) }}</dd>{% endif %}
       {% if v.get('age_rating') %}<dt>{{ lbl.age_rating }}</dt><dd>{{ v.age_rating }}</dd>{% endif %}
       {% if v.get('critic_score') is not none %}<dt>{{ lbl.critic_score }}</dt><dd>{{ v.critic_score }}/100</dd>{% endif %}
       {% if v.get('user_score') is not none %}<dt>{{ lbl.user_score }}</dt><dd>{{ v.user_score }}/100</dd>{% endif %}
@@ -43,6 +46,7 @@
     {% for r in v.releases %}<tr><td><time datetime="{{ r.date }}" data-precision="{{ r.precision }}">{{ release_text(r.date, r.precision, prefs) }}</time></td><td>{{ r.platform or '' }}</td><td>{{ region_name(r.region) }}</td><td>{% if r.edition and v.get('editions') %}<a href="#editions">{{ r.edition }}</a>{% else %}{{ r.edition or '' }}{% endif %}</td><td>{{ category_name(r.category) }}</td></tr>{% endfor %}
     </tbody></table>{% endif %}
     {% if v.get('description') %}<p>{{ v.description }}</p>{% endif %}
+    {% if book %}{{ bk.credit() }}{{ bk.curate() }}{% endif %}
     <div class="actions-bar">
     {% if p.user %}<a class="btn" href="/game/{{ g.id }}/edit">Suggest an edit</a>{% else %}<a class="btn" href="/login?next=/game/{{ g.id }}/edit">Sign in to suggest an edit</a>{% endif %}
     {% if p.user and lists_on and g.media_type == 'game' %}
@@ -63,7 +67,7 @@
   {% if rel_total %}<li><a href="#related">Related <span class="count">{{ rel_total }}</span></a></li>{% endif %}
   {% if v.get('editions') %}<li><a href="#editions">Editions <span class="count">{{ v.editions|length }}</span></a></li>{% endif %}
   <li><a href="#artwork">Artwork <span class="count">{{ art_total }}</span></a></li>
-  {% if g.media_type == 'game' %}<li><a href="#achievements">Achievements <span class="count">{{ (ach_all or achievements)|length }}</span></a></li>{% endif %}
+  {% if g.media_type == 'game' and ach_applicable is not false %}<li><a href="#achievements">Achievements <span class="count">{{ (ach_all or achievements)|length }}</span></a></li>{% endif %}
   <li><a href="#sources">Sources</a></li>
   {% if comments_on %}<li><a href="#discussion">Discussion</a></li>{% endif %}
   {% if p.can_review %}<li><a href="#curation">Curation</a></li>{% endif %}
@@ -121,7 +125,7 @@
 </form></details>
 {% endif %}
 
-{% if g.media_type == 'game' %}<h2 id="achievements">Achievements{% if ach_scope %} <span class="badge scope scope-{{ ach_scope.key }}" title="{{ ach_scope.help }}">{{ ach_scope.label }}</span>{% endif %}</h2>
+{% if g.media_type == 'game' and ach_applicable is not false %}<h2 id="achievements">Achievements{% if ach_scope %} <span class="badge scope scope-{{ ach_scope.key }}" title="{{ ach_scope.help }}">{{ ach_scope.label }}</span>{% endif %}</h2>
 {% set ach_all = ach_all if ach_all is defined else achievements %}
 {% if ach_all %}
 {# U1 summary. Counts only: a hidden achievement's name and text never appear here. §8.2: each count is a filter link. #}

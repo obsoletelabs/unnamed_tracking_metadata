@@ -1,0 +1,99 @@
+{
+ "bad_isbn": "9780009900113",
+ "isbn10_hardcover": "0099001209",
+ "isbn_old": "9780009900150",
+ "isbn_paperback": "9780009900112",
+ "note": "how tests/test_a22_openlibrary.py's fake transport answers; written by tools/record_openlibrary_fixtures.py",
+ "routes": [
+  {
+   "file": "search_salt_cartographer.json",
+   "path": "/search.json",
+   "q": "salt cartographer"
+  },
+  {
+   "file": "search_empty.json",
+   "path": "/search.json",
+   "q": "no such book anywhere"
+  },
+  {
+   "file": "http_429.json",
+   "headers": {
+    "Retry-After": "30"
+   },
+   "path": "/search.json",
+   "q": "busy",
+   "status": 429
+  },
+  {
+   "file": "search_key_OL9900000001W.json",
+   "path": "/search.json",
+   "q": "key:\"/works/OL9900000001W\""
+  },
+  {
+   "file": "search_key_OL9900000003W.json",
+   "path": "/search.json",
+   "q": "key:\"/works/OL9900000003W\""
+  },
+  {
+   "file": "search_key_OL9900000004W.json",
+   "path": "/search.json",
+   "q": "key:\"/works/OL9900000004W\""
+  },
+  {
+   "file": "search_key_OL9900000005W.json",
+   "path": "/search.json",
+   "q": "key:\"/works/OL9900000005W\""
+  },
+  {
+   "file": "work_OL9900000001W.json",
+   "path": "/works/OL9900000001W.json"
+  },
+  {
+   "file": "work_redirect.json",
+   "path": "/works/OL9900000002W.json"
+  },
+  {
+   "file": "work_no_dates.json",
+   "path": "/works/OL9900000003W.json"
+  },
+  {
+   "file": "work_free_text_dates.json",
+   "path": "/works/OL9900000004W.json"
+  },
+  {
+   "file": "work_many_authors.json",
+   "path": "/works/OL9900000005W.json"
+  },
+  {
+   "file": "editions_OL9900000001W.json",
+   "path": "/works/OL9900000001W/editions.json"
+  },
+  {
+   "file": "editions_empty.json",
+   "path": "/works/OL9900000003W/editions.json"
+  },
+  {
+   "file": "editions_OL9900000004W.json",
+   "path": "/works/OL9900000004W/editions.json"
+  },
+  {
+   "headers": {
+    "Location": "https://openlibrary.org/books/OL9900000011M.json"
+   },
+   "path": "/isbn/9780009900112.json",
+   "status": 302
+  },
+  {
+   "file": "isbn_9780009900112.json",
+   "path": "/books/OL9900000011M.json"
+  },
+  {
+   "file": "edition_isbn10_only.json",
+   "path": "/books/OL9900000012M.json"
+  },
+  {
+   "file": "edition_bad_isbn.json",
+   "path": "/books/OL9900000013M.json"
+  }
+ ]
+}

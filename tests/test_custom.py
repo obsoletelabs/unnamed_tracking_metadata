@@ -73,7 +73,7 @@ def test_type_rules(session, ctx):
 def test_builtin_media_baselines_are_seeded_and_stable(session, ctx):
     custom.seed(session)
     assert {row.key for row in session.scalars(select(MediaType))} == {"game", "anime", "movie", "tv_show", "series",
-                                                                       "collection"}
+                                                                       "collection", "book"}
     assert session.get(MediaType, "movie").labels["developer"] == "Director"
     assert session.get(MediaType, "tv_show").labels["publisher"] == "Network"
     expected = {

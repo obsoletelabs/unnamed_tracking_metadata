@@ -9,7 +9,8 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45  # the suite alone took 27-30 min on the base branch; C14-1 adds ~40 tests
+    # The suite runs 23-29 min on hosted runners (u3/A20); 30 cancelled the post-pytest steps after a green run.
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16
@@ -41,6 +42,19 @@ jobs:
           path: |
             tests/fixtures/resolve-contract-v1.json
             tests/fixtures/resolve-contract-v1.json.sha256
+      - name: Client fixtures archive, as the release builds it (package.yml, C15 section 9.3)
+        run: |
+          uv run python tools/export_client_fixtures.py --out "$RUNNER_TEMP/client-fixtures" --archive "$RUNNER_TEMP/client-dist" --version "0.0.0+${GITHUB_SHA::12}"
+          diff -r contracts/client-fixtures "$RUNNER_TEMP/client-fixtures"
+          ls -l "$RUNNER_TEMP/client-dist"
+      - name: Client API contract (C15 section 9.3, copied by atlas-connectors into contract/)
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-api-v1
+          path: |
+            contracts/openapi-client-v1.json
+            contracts/openapi-client-v1.json.sha256
+            contracts/client-fixtures
       - name: Multi-authority HTTP and restore drills
         run: |
           uv run python -m tools.multinode_drill --postgres-admin-url "$ATLAS_TEST_PG_URL" --output topology-postgres.json

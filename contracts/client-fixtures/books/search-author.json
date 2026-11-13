@@ -1,0 +1,106 @@
+{
+  "results": [
+    {
+      "authors": [
+        {
+          "name": "Ada Quillfeather",
+          "role": "author"
+        }
+      ],
+      "custom": {},
+      "developer": "Ada Quillfeather",
+      "id": "atlas:01kdvdnab80000000000000014",
+      "media_type": "book",
+      "provider_ids": {
+        "fixturebooks": "FL-0003"
+      },
+      "redirected_from": null,
+      "sources": [
+        "fixturebooks"
+      ],
+      "title": "The Far Light",
+      "updated_at": "2026-01-01T00:00:00+00:00",
+      "version": 3
+    },
+    {
+      "authors": [
+        {
+          "name": "Ada Quillfeather",
+          "role": "author"
+        },
+        {
+          "name": "Tomas Vell",
+          "role": "translator"
+        }
+      ],
+      "custom": {},
+      "description": "A synthetic novel about a lighthouse, for the Atlas client fixtures.",
+      "developer": "Ada Quillfeather",
+      "editions": [
+        {
+          "format": "hardcover",
+          "isbn_10": "0000000116",
+          "isbn_13": "9780000000118",
+          "language": "en",
+          "name": "Hardcover, Harbour Press 2005",
+          "pages": 412,
+          "provider_ids": {
+            "fixturebooks_edition": "LK-0001-HC"
+          },
+          "published": {
+            "date": "2005",
+            "precision": "year"
+          },
+          "publisher": "Harbour Press",
+          "sources": [
+            "fixturebooks"
+          ]
+        },
+        {
+          "format": "paperback",
+          "isbn_10": "0000000108",
+          "isbn_13": "9780000000101",
+          "language": "en",
+          "name": "Paperback, Harbour Press 2006",
+          "pages": 428,
+          "provider_ids": {
+            "fixturebooks_edition": "LK-0001-PB"
+          },
+          "published": {
+            "date": "2006-02",
+            "precision": "month"
+          },
+          "publisher": "Harbour Press",
+          "sources": [
+            "fixturebooks"
+          ]
+        }
+      ],
+      "features": [
+        "Lighthouses",
+        "Fiction"
+      ],
+      "first_release": {
+        "date": "2005-08-14",
+        "precision": "day"
+      },
+      "id": "atlas:01kdvdna9c000000000000000y",
+      "media_type": "book",
+      "original_language": "en",
+      "page_count": 412,
+      "provider_ids": {
+        "fixturebooks": "LK-0001"
+      },
+      "redirected_from": null,
+      "release_date": "2005-08-14",
+      "release_year": 2005,
+      "sources": [
+        "fixturebooks"
+      ],
+      "subtitle": "A Novel of Small Lights",
+      "title": "The Lamp Keeper",
+      "updated_at": "2026-01-01T00:00:00+00:00",
+      "version": 4
+    }
+  ]
+}

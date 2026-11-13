@@ -30,6 +30,7 @@ class TheGamesDb:
     redistributable = False
     requests_per_minute = 20  # a monthly allowance, not a per-second limit: stay low
     media_types = ("game",)
+    media_types = ("game",)
 
     def __init__(self, api_key: str) -> None:
         self.key = api_key
