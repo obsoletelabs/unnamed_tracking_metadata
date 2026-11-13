@@ -26,6 +26,8 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --frozen --extra dev
       - run: uv run ruff check atlas tests tools e2e
+      - name: Release gates (C16 section 10.1; their negative controls run first, in the test suite)
+        run: uv run pytest -q tests/test_release_gates.py && uv run python tools/release_gates.py
       - run: uv run pytest -q
       - name: Shared vocabulary file matches atlas/vocab.py (C7.4)
         run: uv run python -m tools.vocab_check check && python3 -I tools/vocab_check.py verify contracts/vocab-v1.json

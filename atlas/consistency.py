@@ -125,6 +125,15 @@ def _achievements_on_merged(session: Session, sample: int):
     return _ids(session, q, sample), "achievements left on a merged record are invisible; a merge moves them"
 
 
+def _upgrade_unfinished(session: Session, sample: int):
+    """C16 §6.3 item 6: an upgrade journal still unfinished after 24 hours."""
+    from . import upgrade
+
+    state = upgrade.status(session) if upgrade.overdue(session) else None
+    found = (1, [f"{state['stage']}: {state['last_error'] or 'running'}"]) if state else (0, [])
+    return found, "the upgrade to wire 1 has not finished; see `atlas status` (Admin) for the stage and its last error"
+
+
 CHECKS: dict[str, Callable[..., Any]] = {
     "crosswalk_to_merged_record": _crosswalk_to_merged,
     "crosswalk_to_missing_record": _crosswalk_dangling,
@@ -136,6 +145,7 @@ CHECKS: dict[str, Callable[..., Any]] = {
     "artwork_cached_file_missing": _artwork_blob_missing,
     "media_file_unreferenced": _orphan_blobs,
     "sync_entries_parked_or_quarantined": _parked_or_quarantined,
+    "upgrade_unfinished": _upgrade_unfinished,
 }
 #: Findings that are expected in normal operation and do not fail `atlas check`.
 INFORMATIONAL = frozenset({"media_file_unreferenced", "sync_entries_parked_or_quarantined"})

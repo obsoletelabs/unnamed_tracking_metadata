@@ -109,8 +109,29 @@ Restore into a **fresh, empty** database of the same Atlas version:
     atlas migrate
     ```
 
-3. Start Atlas. Your accounts, records, tokens, settings, pages and **node identity** are back. Mirrors that follow you carry on
-   from the same feed position with the same key; nobody has to re-pin anything.
+3. Start Atlas. Your accounts, records, tokens, settings, pages and **node identity** are back; nobody has to re-pin anything.
+   An **authority starts feed-frozen** (see below): it serves its feed but signs nothing until you resume it.
+
+### Restoring an authority: the feed freeze
+
+Every backup is behind the feed as soon as the node signs one more entry. If a restored authority signed on from its backup it
+would reuse sequence numbers that followers already hold with other bytes: a fork nobody notices. So an authority restored from
+**any** archive (the point-of-no-return backup and scheduled ones included) writes `feed_restored` and refuses to sign:
+a write that would sign answers `409 feed_frozen`, `/ready` says `degraded`, and Admin → status shows `feed_frozen`. Saves that
+are never signed are unaffected. While frozen the node records, per sync token, how far each follower asked
+(`follower_since:<token id>`; a follower asks one entry below what it verified). Lift the freeze with one of:
+
+- `atlas feed resume --from-node URL_OR_PEER` (repeatable; without it every configured peer is tried). The node fetches its own
+  signed entries above the restored head from nodes that retained them, checks every signature and the numbering, takes the
+  longest tail, writes it into its feed **verbatim** (never re-signed), applies it, and unfreezes. A tail that contains a key
+  rotation needs the rotated private key; otherwise the command stops and says so.
+- `atlas feed resume --confirm-no-follower-ahead`: your statement that no follower ever pulled above the restored head
+  (audited). It is refused while a recorded follower position is above the head and names the token; add
+  `--revoke-follower TOKEN_ID` to revoke a follower you have lost.
+
+`atlas feed resume --status` shows the freeze and the recorded follower positions. A follower that was ahead of a restored
+authority which was already resumed without the tail reports `fork` at its next poll (every pull re-checks the last entry it
+verified), instead of keeping both histories.
 
 With Docker, run the restore in a one-off container that mounts the folder holding the archive, for example
 `docker compose run --rm -v "$PWD/backups:/restore:ro" migrate atlas backup restore /restore/manual.tar.gz`. The image runs
@@ -212,8 +233,13 @@ Updates should be rare. When you do one:
    production.
 3. On an authority run migrations explicitly (`docker compose run --rm migrate`, or `atlas migrate`), then restart. The compose
    file already does this in the `migrate` service and keeps `ATLAS_AUTO_MIGRATE=false` on the app.
-4. Migrations only go forward. To go back you restore the pre-upgrade backup into a database at the old version, which is why
-   step 1 matters.
+4. Migrations only go forward. Before this release signs its first wire entry (the point of no return, `first_v1_seq` in the
+   upgrade journal) restoring the pre-upgrade backup is a safe way back. After it, go back with the downgrade path
+   (`atlas migrate --revision <pre-upgrade revision>`, then the old binary; it keeps the signed feed) or roll forward: a
+   restore is feed-frozen and resumes from the followers' copy of the tail (see Restore). An authority with a feed and
+   `ATLAS_BACKUP_DIR` set takes one more backup automatically at that moment. The upgrade finishes in the background (the
+   journal, `NodeState upgrade_v1`): until every stage is done `/ready` answers `degraded` and Admin → status shows the
+   stage; `atlas check` warns when it is older than 24 hours.
 5. Upgrade followers/relays before activating a new signing key or other incompatible feed behavior.
    Confirm all understand successor proofs before using Admin → Signing keys.
 

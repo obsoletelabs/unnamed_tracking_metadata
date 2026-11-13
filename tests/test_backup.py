@@ -77,8 +77,10 @@ def _epoch(dump):
 
 def _same_except_epoch(restored, before):
     """A restore keeps every row except the client change log epoch, which it renews (C3.2)."""
-    strip = {**restored, "node_state": [r for r in restored["node_state"] if r[0] != client_changes.EPOCH]}
-    assert strip == {**before, "node_state": [r for r in before["node_state"] if r[0] != client_changes.EPOCH]}
+    # ... and an authority is feed-frozen by the restore (C16 §6.4): `feed_restored` is the only other new row
+    renewed = (client_changes.EPOCH, "feed_restored")
+    strip = {**restored, "node_state": [r for r in restored["node_state"] if r[0] not in renewed]}
+    assert strip == {**before, "node_state": [r for r in before["node_state"] if r[0] not in renewed]}
     assert _epoch(before) and _epoch(restored) and _epoch(restored) != _epoch(before)
 
 

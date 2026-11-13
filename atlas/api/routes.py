@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ from .. import (
     relations,
     service,
     sync,
+    upgrade,
     vocab,
     wire,
 )
@@ -62,6 +64,7 @@ from ..service import AtlasError
 from ..signing import load_identity, signing_key_at_rest
 from .deps import AppState, count_client, get_session, require, state
 
+log = logging.getLogger("atlas")
 router = APIRouter(prefix="/api/v2")
 
 Sess = Annotated[Session, Depends(get_session, scope="function")]
@@ -188,11 +191,14 @@ def status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("
             "upstream_cursors": cursors, "sync_failures": sync.open_failures(session),
             # "encrypted" (enc:v1, ATLAS_SECRET_KEY) or "plaintext" (legacy; every backup holds the key) (C9.1)
             "signing_key_at_rest": signing_key_at_rest(session),
+            # C16: the upgrade journal's progress, and a restored authority's paused signing (null when neither)
+            "upgrade": upgrade.status(session), "feed_frozen": feed.frozen(session),
             # named heads per upstream (observed, downloaded, verified, applied, parked, quarantined)
             "upstreams": sync.status(session, st.ctx)["upstreams"],
             # the detail the public /ready deliberately leaves out
             "checks": {"database": "ok" if ready.database else "unavailable", "schema": ready.schema,
                        "media": "ok" if ready.media else "unwritable", "readiness": ready.status,
+                       "feed": "frozen" if ready.frozen else "ok",
                        "provider_failures": st.providers.failure_counts()}}
 
 
@@ -1847,6 +1853,27 @@ def _cached_digest(st: AppState, session: Session, node_id: str | None) -> dict[
     return {**result, "cached_seconds": 0.0}
 
 
+def _note_follower_since(session: Session, who: auth.Principal, since: int) -> None:
+    """C16 §6.4 rule 2: the authority's evidence of how far each follower got (`follower_since:<token id>`, the
+    highest `since` it asked for). A wire follower asks for `verified - 1`, so the evidence is one below what it
+    verified. Written in the request's own transaction and only when it grows, so a poll costs a write only when the
+    follower advanced; it never fails the pull."""
+    token = who.token_id
+    if not token or since <= 0:
+        return
+    key = f"follower_since:{token}"
+    try:
+        with session.begin_nested():
+            row = session.get(NodeState, key)
+            if row is None:
+                session.add(NodeState(key=key, value=str(since)))
+            elif not (str(row.value).isdigit() and int(row.value) >= since):
+                row.value = str(since)
+            session.flush()
+    except SQLAlchemyError:  # a concurrent poll of the same token wrote it first
+        log.debug("could not record the follower position", exc_info=True)
+
+
 @router.get("/sync/changes", tags=["federation"])
 def sync_changes(st: St, session: Sess, response: Response,
                  who: Annotated[auth.Principal, Depends(require("sync"))],
@@ -1861,6 +1888,7 @@ def sync_changes(st: St, session: Sess, response: Response,
     response.headers["Vary"] = wire.HEADER
     origin = node_id or st.ctx.identity.node_id
     if origin == st.ctx.identity.node_id:
+        _note_follower_since(session, who, since)
         rows = feed.read(session, since, limit)
         head = feed.head_seq(session)
     else:
