@@ -9,7 +9,8 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The suite runs 23-29 min on hosted runners (u3/A20); 30 cancelled the post-pytest steps after a green run.
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16

@@ -56,9 +56,10 @@ def emit(session: Session, ctx: Any, kind: str, body: dict[str, Any]) -> int:
     names = named(kind, body)
     for cid in names:
         ensure_introduced(session, ctx, cid, BECAUSE.get(kind, "sidecar"))
-    mode = introduction_mode(ctx.settings)
     for cid in names:
         row = session.get(FeedIntroduced, cid)
+        record = session.get(Canonical, cid)
+        mode = introduction_mode(ctx.settings, record.media_type if record is not None else None)
         if row is None or (row.via == VIA_LEGACY and mode != VIA_LEGACY):
             raise UnintroducedCanonical(cid, protocol)
     seq = append(session, ctx.identity, kind, body, protocol=protocol)
@@ -135,12 +136,30 @@ def named(kind: str, body: dict[str, Any]) -> list[str]:
     return out
 
 
-def introduction_mode(settings: Any) -> str:
-    """What `ensure_introduced` emits (C13 §4.1, first matching row wins): the bridge observation while it is on and
-    some follower may be below 1.5; else a `record` at emit protocol 1.5 or above; else nothing (`legacy`)."""
+def bridged_types(settings: Any) -> list[str]:
+    """CONTRACT-C15 §4.1: the media types the bridge carries (`federation_bridge_media_types`). Unset or empty means
+    the default, games only: every caller (`bridges`, `introduce`, Admin → Peers) reads it through here so they
+    cannot disagree (Settings also refuses an empty list)."""
+    allowed = [t for t in (getattr(settings, "federation_bridge_media_types", None) or []) if t]
+    return allowed or ["game"]
+
+
+def bridges(settings: Any, media_type: str | None) -> bool:
+    """CONTRACT-C15 §4.1: whether the bridge may introduce a record of `media_type` (`federation_bridge_media_types`,
+    games only by default: a 1.0 follower would file any bridged observation as a game). None = the node-wide
+    question (is the bridge on at all), used where no record is in hand."""
+    if media_type is None:
+        return True
+    return (media_type or "game") in bridged_types(settings)
+
+
+def introduction_mode(settings: Any, media_type: str | None = None) -> str:
+    """What `ensure_introduced` emits (C13 §4.1, first matching row wins): the bridge observation while it is on, some
+    follower may be below 1.5 and the record's type is bridged (C15 §4.1); else a `record` at emit protocol 1.5 or
+    above; else nothing (`legacy`). Without `media_type` it answers for the node as a whole."""
     low = feed_schema.parse_protocol(getattr(settings, "min_follower_protocol", None) or "1.0")
     record = feed_schema.parse_protocol(feed_schema.RECORD_PROTOCOL)
-    if getattr(settings, "federation_bridge_record_obs", False) and low < record:
+    if getattr(settings, "federation_bridge_record_obs", False) and low < record and bridges(settings, media_type):
         return VIA_BRIDGE
     if feed_schema.parse_protocol(feed_schema.emit_protocol(settings)) >= record:
         return VIA_RECORD
@@ -236,7 +255,7 @@ def ensure_introduced(session: Session, ctx: Any, cid: str, because: str) -> int
     record = session.get(Canonical, cid)
     if record is None:
         return None  # nothing to introduce; the gate in `emit` refuses the entry
-    mode = introduction_mode(ctx.settings)
+    mode = introduction_mode(ctx.settings, record.media_type)  # C15 §4.1: the bridge carries only some types
     if mode == VIA_LEGACY:
         mark(session, cid, None, VIA_LEGACY, because)
         return None
@@ -257,6 +276,16 @@ def ensure_introduced(session: Session, ctx: Any, cid: str, because: str) -> int
     return seq
 
 
+def bridge_skipped(session: Session, settings: Any) -> int:
+    """C15 §4.1 (Admin → Peers): while the bridge is on, the live records it does not carry because their media type
+    is not in `federation_bridge_media_types` (they get a `record` instead when the emit protocol allows it). 0 when
+    the bridge is not in use."""
+    if introduction_mode(settings) != VIA_BRIDGE:
+        return 0
+    return session.scalar(select(func.count()).select_from(Canonical).where(
+        Canonical.merged_into.is_(None), Canonical.media_type.not_in(bridged_types(settings)))) or 0
+
+
 # ---- `atlas feed introduce` (C13 §4.2) ---------------------------------------------------------------------
 
 INTRODUCED_THROUGH = "introduced_through"
@@ -269,7 +298,20 @@ class IntroduceRefused(ValueError):
     pass
 
 
-def candidates(session: Session, scope: str, after: str = "", limit: int | None = None) -> list[Canonical]:
+def _unbridgeable(settings: Any) -> list[str] | None:
+    """C15 §4.1: the bridged media types when records of other types cannot be introduced at all (the bridge is the
+    node's mode and the emit protocol is below 1.5, so they stay `legacy`); None otherwise. `introduce` leaves those
+    records out, or it would never finish."""
+    if settings is None or introduction_mode(settings) != VIA_BRIDGE:
+        return None
+    record = feed_schema.parse_protocol(feed_schema.RECORD_PROTOCOL)
+    if feed_schema.parse_protocol(feed_schema.emit_protocol(settings)) >= record:  # other types get a `record`
+        return None
+    return bridged_types(settings)
+
+
+def candidates(session: Session, scope: str, after: str = "", limit: int | None = None,
+               settings: Any = None) -> list[Canonical]:
     """Records `introduce` would publish, in id order after `after`. `missing`: named by a signed entry while
     nothing could introduce them (`legacy_unintroduced`), merged since or not: a follower's entries that name a
     merged-away record (its artwork, the merge itself) wait for it, and its `record` lets them apply in feed order
@@ -281,12 +323,16 @@ def candidates(session: Session, scope: str, after: str = "", limit: int | None 
                                              .where(FeedIntroduced.via == VIA_LEGACY)))
     else:
         query = query.where(Canonical.merged_into.is_(None), Canonical.id.not_in(introduced))
+    if (bridged := _unbridgeable(settings)) is not None:
+        query = query.where(Canonical.media_type.in_(bridged))
     query = query.order_by(Canonical.id)
     return list(session.scalars(query.limit(limit) if limit else query))
 
 
-def unintroduced_count(session: Session, scope: str = "all") -> int:
+def unintroduced_count(session: Session, scope: str = "all", settings: Any = None) -> int:
     query = select(func.count()).select_from(Canonical)
+    if (bridged := _unbridgeable(settings)) is not None:
+        query = query.where(Canonical.media_type.in_(bridged))
     if scope == "missing":  # merged ones too (see `candidates`)
         query = query.where(Canonical.id.in_(select(FeedIntroduced.canonical_id)
                                              .where(FeedIntroduced.via == VIA_LEGACY)))
@@ -314,13 +360,13 @@ def introduce_batch(session: Session, ctx: Any, scope: str, *, limit: int = INTR
     cursor_key = f"{INTRODUCE_CURSOR}:{scope}"
     state = session.get(NodeState, cursor_key)
     after = state.value if state is not None else ""
-    rows = candidates(session, scope, after, limit)
+    rows = candidates(session, scope, after, limit, ctx.settings)
     signed = 0
     for row in rows:
         if ensure_introduced(session, ctx, row.id, "backfill") is not None:
             signed += 1
         after = row.id
-    left = unintroduced_count(session, scope)
+    left = unintroduced_count(session, scope, ctx.settings)
     done = left == 0
     if done:
         session.execute(NodeState.__table__.delete().where(NodeState.key == cursor_key))

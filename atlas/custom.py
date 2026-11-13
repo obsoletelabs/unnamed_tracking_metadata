@@ -126,7 +126,9 @@ def seed_multiplayer(session: Session, ctx: Ctx) -> None:
 # ---- schema administration ---------------------------------------------------------------------------
 
 def snapshot(session: Session) -> dict[str, Any]:
-    types = [{"key": t.key, "label": t.label, "enabled": t.enabled, "position": t.position, "labels": t.labels or {}}
+    # `achievements` (C15 §4.1, registered under feed_schema.UNIFIED): left out of the signed copy below that protocol
+    types = [{"key": t.key, "label": t.label, "enabled": t.enabled, "position": t.position, "labels": t.labels or {},
+              "achievements": t.achievements is not False}
              for t in session.scalars(select(MediaType).where(MediaType.origin == "local"))]
     fields = [{"media_type": f.media_type, "key": f.key, "label": f.label, "kind": f.kind, "choices": f.choices or [],
                "help": f.help, "public": f.public, "editable": f.editable, "position": f.position}
@@ -179,6 +181,8 @@ def apply_snapshot(session: Session, snap: dict[str, Any], node_id: str | None =
         elif node_id:
             existing.origin_node = node_id
         existing.label, existing.enabled, existing.position, existing.labels = label, enabled, position, labels
+        # C15 §2.7: absent (an older authority) means true, as on every type before A20
+        existing.achievements = t.get("achievements", True) is not False
         keep_t.add(key)
     session.flush()
     for t in session.scalars(select(MediaType).where(MediaType.origin == "upstream")).all():
@@ -273,7 +277,8 @@ def check_field(media_type: Any, key: Any, label: Any, kind: Any, choices: Any, 
 
 
 def save_type(session: Session, ctx: Ctx, key: str, label: str, *, enabled: bool = True, position: int = 100,
-              labels: dict[str, str] | None = None) -> MediaType:
+              labels: dict[str, str] | None = None, achievements: bool | None = None) -> MediaType:
+    """Create or edit a local type. `achievements` None keeps the type's flag (true for a new type)."""
     key, label, enabled, position, labels = check_type(key, label, enabled, position, labels)
     if key in BUILTIN_MEDIA_TYPES:
         enabled = True  # built-in types are always available
@@ -285,9 +290,20 @@ def save_type(session: Session, ctx: Ctx, key: str, label: str, *, enabled: bool
         row = MediaType(key=key, origin="local")
         session.add(row)
     row.label, row.enabled, row.position, row.labels = label, enabled, position, labels
+    if achievements is not None:
+        row.achievements = bool(achievements)
+    elif row.achievements is None:
+        row.achievements = True
     session.flush()
     publish(session, ctx)
     return row
+
+
+def achievements_apply(session: Session, media_type: str | None) -> bool:
+    """CONTRACT-C15 §2.7: whether achievements apply to records of `media_type`. Driven by the type's flag, never by
+    its name; a type this node does not know (or no type) counts as applicable, as before A20."""
+    row = session.get(MediaType, media_type or "game")
+    return True if row is None or row.achievements is None else bool(row.achievements)
 
 
 def delete_type(session: Session, ctx: Ctx, key: str) -> None:

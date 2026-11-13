@@ -62,7 +62,7 @@
   {% if rel_total %}<li><a href="#related">Related <span class="count">{{ rel_total }}</span></a></li>{% endif %}
   {% if v.get('editions') %}<li><a href="#editions">Editions <span class="count">{{ v.editions|length }}</span></a></li>{% endif %}
   <li><a href="#artwork">Artwork <span class="count">{{ art_total }}</span></a></li>
-  {% if g.media_type == 'game' %}<li><a href="#achievements">Achievements <span class="count">{{ (ach_all or achievements)|length }}</span></a></li>{% endif %}
+  {% if g.media_type == 'game' and ach_applicable is not false %}<li><a href="#achievements">Achievements <span class="count">{{ (ach_all or achievements)|length }}</span></a></li>{% endif %}
   <li><a href="#sources">Sources</a></li>
   {% if comments_on %}<li><a href="#discussion">Discussion</a></li>{% endif %}
   {% if p.can_review %}<li><a href="#curation">Curation</a></li>{% endif %}
@@ -119,7 +119,7 @@
 </form></details>
 {% endif %}
 
-{% if g.media_type == 'game' %}<h2 id="achievements">Achievements</h2>
+{% if g.media_type == 'game' and ach_applicable is not false %}<h2 id="achievements">Achievements</h2>
 {% set ach_all = ach_all if ach_all is defined else achievements %}
 {% if ach_all %}
 {# U1 summary. Counts only: a hidden achievement's name and text never appear here. §8.2: each count is a filter link. #}

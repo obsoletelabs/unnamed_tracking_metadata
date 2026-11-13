@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # H54: below protocol 1.5, introduce records with an ordinary 1.0 observation of the source `atlas-record`
     # (every follower applies it). Off by default: it publishes titles and store ids as an observation.
     federation_bridge_record_obs: bool = False
+    # CONTRACT-C15 §4.1 (A20): the media types the bridge introduces. A 1.0 follower files every observation as a game
+    # (its old fallback), so by default only games are bridged; a record of another type is introduced with a
+    # `record` (which a 1.0 follower parks) when the emit protocol allows one, and otherwise not at all. Admin → Peers
+    # counts the skipped records.
+    federation_bridge_media_types: list[str] = Field(default_factory=lambda: ["game"])
     # H55: `referenced` introduces a record when a signed entry first names it; `all` introduces every live record,
     # provider imports included. The safe default is `referenced` (owner decision pending).
     federation_introduce: Literal["referenced", "all"] = "referenced"
@@ -220,6 +225,15 @@ class Settings(BaseSettings):
     @classmethod
     def strip_slash(cls, v: str) -> str:
         return v.rstrip("/")
+
+    @field_validator("federation_bridge_media_types")
+    @classmethod
+    def bridge_media_types(cls, v: list[str]) -> list[str]:
+        """C15 §4.1: an empty list would bridge nothing, not even games; refuse it rather than read it two ways."""
+        cleaned = [t.strip() for t in v if isinstance(t, str) and t.strip()]
+        if not cleaned:
+            raise ValueError("federation_bridge_media_types must name at least one media type (default [\"game\"])")
+        return cleaned
 
     @field_validator("min_follower_protocol", "emit_protocol")
     @classmethod

@@ -38,7 +38,9 @@ def type_save(p: Annotated[Ctx, Depends(admin_form)], f: Annotated[dict[str, str
     labels = {k[6:]: v for k, v in f.items() if k.startswith("label_")}
     try:
         custom.save_type(p.session, p.st.ctx, f.get("key", ""), f.get("label", ""), enabled=f.get("enabled") == "on",
-                         position=int(f.get("position") or 100), labels=labels)
+                         position=int(f.get("position") or 100), labels=labels,
+                         # C15 §2.7: only the type page has the checkbox; the "new type" form keeps the default (on)
+                         achievements=f.get("achievements") == "on" if f.get("achievements_shown") else None)
     except (AtlasError, ValueError) as exc:
         p.session.rollback()
         raise (_err(exc) if isinstance(exc, AtlasError) else HTTPException(400, "Order must be a number.")) from exc

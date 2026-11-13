@@ -51,6 +51,10 @@ body (it would park every pre-C11 follower).
 The price channel and the C11/C12 reservations were 1.5-1.8 until A19: C13's `record` took the first minor no
 release had advertised and each of them moved up one (CONTRACT-C13 §3.1, D13.1, owner decision H52). No release ever
 advertised or applied any of them, so no node disagrees about what those numbers mean.
+
+From A20 on (CONTRACT-C15 §4.1, C16) nothing takes a protocol minor of its own: every later construct is registered
+under `UNIFIED`, the one release version, which equals `PROTOCOL` until the version-unification PR changes both. A20
+registers one: the `schema.types[].achievements` member (`MEMBER_SINCE`), left out of the signed copy below `UNIFIED`.
 """
 
 from __future__ import annotations
@@ -67,6 +71,25 @@ from . import vocab
 
 #: The federation wire protocol this release speaks and applies ("MAJOR.MINOR").
 PROTOCOL = "1.5"
+
+
+class UnifiedVersion(str):
+    """The one release version every construct added after A19 registers under (CONTRACT-C15 §4.1, C16).
+
+    A `str` that compares equal to its number, but is its own object, so a test can tell an entry registered as
+    `UNIFIED` from one that writes the same number as a literal (T-B9 checks identity, not equality)."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return f"UNIFIED({str.__repr__(self)})"
+
+
+#: CONTRACT-C15 §4.1 / C16: no construct added after A19 takes a protocol minor of its own. Each one is registered
+#: under this constant, and nothing else: `MEMBER_SINCE` below, and the later C15 `TOKEN_SINCE` / `VALUE_SINCE` /
+#: `BODY_SINCE` entries. It equals `PROTOCOL` (the unification PR has one place to change, C16 §4.1 rule 6); writing a
+#: literal "1.6" for any of them is a test failure (`tests/test_a20_unified.py`, T-B9).
+UNIFIED: str = UnifiedVersion(PROTOCOL)
 #: Pre-A1 releases advertise no protocol; they speak this.
 LEGACY_PROTOCOL = "1.0"
 #: Version of the observation payload schema (`SourceObservationV1`).
@@ -106,6 +129,13 @@ VALUE_SINCE: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "1.
 #: Body versions above 1, as (kind, version).
 BODY_SINCE: dict[tuple[str, int], str] = {("lock", 2): "1.7", ("unlock", 2): "1.7", ("achievements", 2): "1.8",
                                           ("artwork", 2): "1.9"}
+#: Members of known bodies added after A19, as (kind, path) -> protocol (always `UNIFIED`). A follower of this release
+#: accepts them (they are in the kind's `nested`/`fields`); `check_emit` leaves them out of the signed copy below their
+#: protocol, so a node that emits an older protocol never signs a member its followers would park
+#: (`unsupported_field`). CONTRACT-C15 §4.1: `schema.types[].achievements` (the per-type achievements flag, A20).
+MEMBER_SINCE: dict[tuple[str, str], str] = {("schema", "types[].achievements"): UNIFIED}
+#: Every construct registered under `UNIFIED`, by map name and key (T-B9: each of them *is* `UNIFIED`).
+UNIFIED_CONSTRUCTS: tuple[tuple[str, Any], ...] = (("MEMBER_SINCE", ("schema", "types[].achievements")),)
 #: C13 §3.2: the protocol of the `record` kind, and the reserved namespaces a `record` (or a bridge observation)
 #: never carries in `provider_ids`: an Atlas id or a curated namespace there could claim a follower's own record.
 RECORD_PROTOCOL = "1.5"
@@ -209,7 +239,7 @@ FEED_KINDS: dict[str, KindSpec] = {spec.name: spec for spec in (
              "Curated custom-field values set or cleared on a record."),
     KindSpec("schema", "1.0", 1, 1, frozenset({"types", "fields"}),
              "The authority's media types and custom-field definitions.",
-             nested={"types[]": frozenset({"key", "label", "enabled", "position", "labels"}),
+             nested={"types[]": frozenset({"key", "label", "enabled", "position", "labels", "achievements"}),
                      "fields[]": frozenset({"media_type", "key", "label", "kind", "choices", "help", "public",
                                             "editable", "position"})},
              values={"fields[].kind": "field_kind"}),
@@ -355,7 +385,10 @@ def known_tokens() -> frozenset[str]:
 APPLY, PARK, QUARANTINE = "apply", "parked", "quarantined"
 PARK_REASONS = ("unsupported_kind", "unsupported_version", "unsupported_capability", "unsupported_field",
                 "unsupported_value", "dropped_by_previous_release")
-QUARANTINE_REASONS = ("invalid", "apply_error", "skipped")
+#: `media_type_not_adopted` (CONTRACT-C15 §2.2, A20): an entry names a media type this node does not have and will not
+#: get from that feed (`inherit_schema` is off, or the feed's schema could not create it). Retried with backoff like
+#: every quarantined row, so it applies once an administrator creates the type locally.
+QUARANTINE_REASONS = ("invalid", "apply_error", "skipped", "media_type_not_adopted")
 
 
 @dataclass(frozen=True)
@@ -593,11 +626,31 @@ def check_emit(kind: str, body: dict[str, Any], current: str) -> dict[str, Any]:
         if dates_needed > have:
             raise EmitGateError("a partial or regional release date lock", RESERVED_TOKENS["dates-v1"], current)
         needed_tokens.append("dates-v1")
+    body = _strip_newer_members(kind, body, have)
     present = body.get("_requires") if isinstance(body.get("_requires"), list) else []
     missing = [t for t in dict.fromkeys(needed_tokens) if t not in present]
     if missing:
         body = {**body, "_requires": [*present, *missing]}  # a new top-level dict: the caller's copy is untouched
     return body
+
+
+def _strip_newer_members(kind: str, body: dict[str, Any], have: tuple[int, int]) -> dict[str, Any]:
+    """`body` without the `MEMBER_SINCE` members newer than the emit protocol `have` (a deep copy when anything goes;
+    the caller's body and the locally stored state are untouched). Read at call time, so moving `UNIFIED` moves it."""
+    newer = [path for (k, path), since in MEMBER_SINCE.items() if k == kind and parse_protocol(since) > have]
+    if not newer:
+        return body
+    out = None
+    for path in newer:
+        parent, _, leaf = path.rpartition(".")
+        targets = _members(body, parent) if parent else [("", body)]
+        if not any(leaf in obj for _, obj in targets):
+            continue
+        if out is None:
+            out = copy.deepcopy(body)
+        for _, obj in _members(out, parent) if parent else [("", out)]:
+            obj.pop(leaf, None)
+    return body if out is None else out
 
 
 def _dates_lock(body: dict[str, Any]) -> bool:

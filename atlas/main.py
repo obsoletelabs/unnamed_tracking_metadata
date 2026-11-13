@@ -243,6 +243,19 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st
         sync.startup_replay(maker, ctx)
     except Exception as exc:
         log.warning("startup replay failed: %s", exc)
+    from . import doctor
+
+    def media_type_scan() -> None:
+        # C15 §2.2: count records an older release filed as games by mistake (`atlas doctor media-types`), at
+        # startup and whenever the set of known media types changed since the last scan (a seeded or new type)
+        try:
+            with maker() as session:
+                doctor.startup_scan(session)
+                session.commit()
+        except Exception as exc:
+            log.warning("media type scan failed: %s", exc)
+
+    media_type_scan()
     with httpx.Client() as client:
         while not stop.is_set():
             wait = delay
@@ -259,6 +272,7 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st
             except Exception as exc:  # keep serving local data through any upstream failure
                 log.warning("sync failed: %s", exc)
                 wait = min(delay * 4, 900)
+            media_type_scan()  # a schema this round may have brought a type that makes old misfiles reportable
             if st is not None and enrich.enabled(ctx.settings):  # C13 §5.1 step 4, H56: off by default
                 try:
                     enrich.run(maker, st)
