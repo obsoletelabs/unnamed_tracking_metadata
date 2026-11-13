@@ -51,8 +51,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PREVIOUS = "62c73f36e7de4a0bd6b814a7dd992eacc7a670e1"
 #: The other real v0 build: A12 (federation protocol 1.1, migration head 0030), the build the owner's live follower
 #: runs. Its exact commit c91b631 is no longer on any branch of `origin` (the A12 branch was rebased); CI runs the
-#: rebased A12 head 71893c1 (same head 0030 and protocol 1.1) until the owner pins c91b631 with a tag (`skew/a12`).
-A12_PREVIOUS = "71893c17f58e13a31ca5c727abc9c9c186267a66"
+#: rebased A12 head f6a7dc5 (same head 0030 and protocol 1.1) until the owner pins c91b631 with a tag (`skew/a12`).
+A12_PREVIOUS = "f6a7dc5c05a8e5ec5d74d3ef2922744e77e5130a"
 
 _SETUP = r"""
 import json, sys
