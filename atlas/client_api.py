@@ -22,8 +22,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-VERSION = "1.0"
-MIN_SUPPORTED = "1.0"
+from . import wire
+
+#: The single version (C16): the client API major is the wire major, so a wire bump is a client-api bump.
+VERSION = f"{wire.WIRE_MAX}.0"
+MIN_SUPPORTED = VERSION
 CLIENT_TAG = "client"
 #: Items per `POST /games/batch` (and `/records/batch`) call; `/resolve` follows the `max_resolve` setting.
 BATCH_ITEMS = 200

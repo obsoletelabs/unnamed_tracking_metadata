@@ -2365,6 +2365,44 @@
             }
           },
           {
+            "description": "C14: only records whose ceiling is `group`, `local` or `private`, or `public` (no ceiling and at least one public item). Only for callers with scope detail; ignored otherwise.",
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "C14: only records whose ceiling is `group`, `local` or `private`, or `public` (no ceiling and at least one public item). Only for callers with scope detail; ignored otherwise.",
+              "title": "Scope"
+            }
+          },
+          {
+            "description": "C14: only records with at least one `group` or `local` item. Only for callers with scope detail; ignored otherwise.",
+            "in": "query",
+            "name": "has",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "C14: only records with at least one `group` or `local` item. Only for callers with scope detail; ignored otherwise.",
+              "title": "Has"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,
@@ -2473,7 +2511,7 @@
     },
     "/api/v2/games/{cid}": {
       "get": {
-        "description": "One record. `relations` (C6.3) lists its active relations: `parents` (this record is a DLC, port,\nremake... of them), `children` (theirs to this one), `members_of` (the series and collections it is in) and\n`members` (when this record is a series or collection). Each list is ordered by type, then id, and holds\nat most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions.\n\nThe `ETag` is `\"<id>-<version>\"`. With a matching `If-None-Match` (weak comparison, `*` too) the answer is `304`\nwith no body (CONTRACT-C15 §10.1). The version moves with every change of this record's own data (fields,\ncustom values, artwork, achievements, its relations); a title change of a *related* record moves that record's\nversion, not this one, so a client showing related titles refreshes them from those records.",
+        "description": "One record. `relations` (C6.3) lists its active relations: `parents` (this record is a DLC, port,\nremake... of them), `children` (theirs to this one), `members_of` (the series and collections it is in) and\n`members` (when this record is a series or collection). Each list is ordered by type, then id, and holds\nat most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions.\n\nThe `ETag` is `\"<id>-<version>\"`. With a matching `If-None-Match` (weak comparison, `*` too) the answer is `304`\nwith no body (CONTRACT-C15 §10.1). The version moves with every change of this record's own data (fields,\ncustom values, artwork, achievements, its relations); a title change of a *related* record moves that record's\nversion, not this one, so a client showing related titles refreshes them from those records.\n\nC14 (additive): `scope {ceiling, widest, counts}` for callers with scope detail only; for anyone else the key\nis absent. A record this caller may not see is the same 404 as an unknown one.",
         "operationId": "get_game_api_v2_games__cid__get",
         "parameters": [
           {
@@ -3149,6 +3187,44 @@
             }
           },
           {
+            "description": "C14: only records whose ceiling is `group`, `local` or `private`, or `public` (no ceiling and at least one public item). Only for callers with scope detail; ignored otherwise.",
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "C14: only records whose ceiling is `group`, `local` or `private`, or `public` (no ceiling and at least one public item). Only for callers with scope detail; ignored otherwise.",
+              "title": "Scope"
+            }
+          },
+          {
+            "description": "C14: only records with at least one `group` or `local` item. Only for callers with scope detail; ignored otherwise.",
+            "in": "query",
+            "name": "has",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "C14: only records with at least one `group` or `local` item. Only for callers with scope detail; ignored otherwise.",
+              "title": "Has"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,
@@ -3257,7 +3333,7 @@
     },
     "/api/v2/records/{cid}": {
       "get": {
-        "description": "One record. `relations` (C6.3) lists its active relations: `parents` (this record is a DLC, port,\nremake... of them), `children` (theirs to this one), `members_of` (the series and collections it is in) and\n`members` (when this record is a series or collection). Each list is ordered by type, then id, and holds\nat most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions.\n\nThe `ETag` is `\"<id>-<version>\"`. With a matching `If-None-Match` (weak comparison, `*` too) the answer is `304`\nwith no body (CONTRACT-C15 §10.1). The version moves with every change of this record's own data (fields,\ncustom values, artwork, achievements, its relations); a title change of a *related* record moves that record's\nversion, not this one, so a client showing related titles refreshes them from those records.",
+        "description": "One record. `relations` (C6.3) lists its active relations: `parents` (this record is a DLC, port,\nremake... of them), `children` (theirs to this one), `members_of` (the series and collections it is in) and\n`members` (when this record is a series or collection). Each list is ordered by type, then id, and holds\nat most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions.\n\nThe `ETag` is `\"<id>-<version>\"`. With a matching `If-None-Match` (weak comparison, `*` too) the answer is `304`\nwith no body (CONTRACT-C15 §10.1). The version moves with every change of this record's own data (fields,\ncustom values, artwork, achievements, its relations); a title change of a *related* record moves that record's\nversion, not this one, so a client showing related titles refreshes them from those records.\n\nC14 (additive): `scope {ceiling, widest, counts}` for callers with scope detail only; for anyone else the key\nis absent. A record this caller may not see is the same 404 as an unknown one.",
         "operationId": "get_game_api_v2_records__cid__get",
         "parameters": [
           {

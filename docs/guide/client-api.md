@@ -7,7 +7,7 @@ generated [API reference](reference-api.md).
 
 ## What the contract promises
 
-The client API has its own version, separate from the federation protocol and the plugin API. It starts at **1.0**.
+The client API shares the single Atlas version (the wire version, C16): its major is the federation wire major, so it is **1.0** while the wire is 1. It is still separate from the plugin API version.
 
 1. **Additive only within v1.** New fields, endpoints and query parameters may appear at any time. A client must
    ignore members it does not know.
