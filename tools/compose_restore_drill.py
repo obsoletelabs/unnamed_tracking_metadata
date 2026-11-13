@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -144,9 +145,35 @@ class Stack:
         raise DrillError("atlas did not become healthy:\n" + self.run("logs", "--tail", "60", check=False))
 
 
+def to_lf(data: bytes) -> bytes:
+    """Normalize CRLF to LF. A shell script checked out with CRLF (the common Windows `core.autocrlf=true`,
+    with no applicable .gitattributes) fails at `set -eu` ("invalid option") before it does anything."""
+    return data.replace(b"\r\n", b"\n")
+
+
+def project_probe_cmd(project: str) -> str:
+    """The shell command that proves `docker compose` resolved to this drill's own project before anything
+    destructive runs. The project name is passed on the command line, not only through `env=`, because a
+    shell that is actually the Windows WSL launcher starts a separate Linux environment that does not inherit
+    the parent process's environment."""
+    return f"COMPOSE_PROJECT_NAME={shlex.quote(project)} docker compose config --format json"
+
+
+def restore_cmd(project: str, dump: str) -> str:
+    """The shell command that runs the shipped, unmodified `restore.sh` with the project name forced across
+    the shell boundary the same way `project_probe_cmd` verified."""
+    return f"COMPOSE_PROJECT_NAME={shlex.quote(project)} sh restore.sh {shlex.quote(dump)}"
+
+
 def prepare(folder: Path, image: str) -> None:
     for name in ("compose.yaml", "Caddyfile", "restore.sh"):
         shutil.copy(AUTHORITY / name, folder / name)
+    # `restore.sh` is invoked with a POSIX shell below. A checkout with the common Windows setting
+    # `core.autocrlf=true` (and no applicable .gitattributes) gives CRLF line endings, which fail at
+    # `set -eu` ("invalid option") before the restore ever runs. The Git blob itself is LF; force that for
+    # this disposable copy regardless of how it was checked out.
+    restore_sh = folder / "restore.sh"
+    restore_sh.write_bytes(to_lf(restore_sh.read_bytes()))
     (folder / "compose.override.yaml").write_text(OVERRIDE, encoding="utf-8")
     (folder / "backups").mkdir()
     repo, _, tag = image.rpartition(":") if ":" in image.rsplit("/", 1)[-1] else (image, "", "latest")
@@ -217,9 +244,25 @@ def run(image: str) -> dict:
             shell = shutil.which("sh") or shutil.which("bash")
             if shell is None:
                 raise DrillError("restore.sh needs a POSIX shell (sh)")
-            p = subprocess.run([shell, "restore.sh", "backups/drill.dump"], cwd=folder, env=stack.env,
+            # On Windows, `bash` may resolve to the WSL launcher: it runs the command in a separate Linux
+            # environment that does not inherit COMPOSE_PROJECT_NAME (or the rest of `env=`) from this
+            # process, so `docker compose` there falls back to the `name: atlas` in compose.yaml instead of
+            # this drill's own random project. Pass the project name on the command line, which crosses
+            # that boundary either way, and verify it actually took before running anything destructive:
+            # restore.sh drops and recreates a database, and a stray real "atlas" project on the same host
+            # must never be touched.
+            probe = subprocess.run([shell, "-c", project_probe_cmd(project)], cwd=folder, env=stack.env,
+                                   capture_output=True, text=True, timeout=60)
+            seen_project = json.loads(probe.stdout).get("name") if probe.returncode == 0 and probe.stdout else None
+            if seen_project != project:
+                raise DrillError(
+                    f"the restore.sh shell did not resolve to the drill's own compose project {project!r} "
+                    f"(saw {seen_project!r}); refusing to run restore.sh against the wrong stack:\n"
+                    f"{probe.stdout[-500:]}\n{probe.stderr[-500:]}")
+            cmd = restore_cmd(project, "backups/drill.dump")
+            p = subprocess.run([shell, "-c", cmd], cwd=folder, env=stack.env,
                                capture_output=True, text=True, timeout=600)
-            log.append(f"$ sh restore.sh backups/drill.dump -> {p.returncode}")
+            log.append(f"$ {cmd} -> {p.returncode}")
             if p.returncode != 0:
                 raise DrillError(f"restore.sh failed:\n{p.stdout[-2000:]}\n{p.stderr[-2000:]}")
             stack.wait_healthy()
