@@ -195,6 +195,18 @@ def strip_ids(provider_ids: Any, limit: int = 32) -> dict[str, str]:
     return out
 
 
+def _signed_key(session: Session, cid: str, namespace: str, ids: list[str]) -> str:
+    """The one work key of `namespace` a record signs (`ids` in lexical order). When it holds several, the ids the
+    provider itself currently answers for this record (a current observation from that source) come first, so a
+    merged-away id kept as an alias (C15 §3.3, `importer._keep_alias`) is never signed in place of the live id."""
+    if len(ids) == 1:
+        return ids[0]
+    answered = set(session.scalars(select(Observation.external_id).where(
+        Observation.canonical_id == cid, Observation.source == namespace, Observation.is_current.is_(True),
+        Observation.external_id.in_(ids))))
+    return next((i for i in ids if i in answered), ids[0])
+
+
 def record_body(session: Session, settings: Any, row: Canonical, because: str) -> dict[str, Any]:
     """The identity of a record as this node signs it (C13 §3.2): its id and type, and, as
     `federation_snapshot_fields` allows, its display title and store ids. No provider content."""
@@ -202,9 +214,12 @@ def record_body(session: Session, settings: Any, row: Canonical, because: str) -
     title = (row.view or {}).get("title") if "title" in fields else ""
     keys: dict[str, str] = {}
     if "provider_ids" in fields:
+        held_ids: dict[str, list[str]] = {}
         for cw in session.scalars(select(Crosswalk).where(Crosswalk.canonical_id == row.id, Crosswalk.variant == "")
                                   .order_by(Crosswalk.namespace, Crosswalk.external_id)):
-            keys.setdefault(cw.namespace, cw.external_id)
+            held_ids.setdefault(cw.namespace, []).append(cw.external_id)
+        for ns, ids in held_ids.items():
+            keys[ns] = _signed_key(session, row.id, ns, ids)
         if "isbn" not in keys:
             # C15 §2.5: `provider_ids` holds one value per namespace, so a book's `record` carries at most one ISBN:
             # one this record itself holds as an `isbn` edition row, the first in `editions[]` order. An ISBN the

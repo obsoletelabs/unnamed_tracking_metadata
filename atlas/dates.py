@@ -629,6 +629,32 @@ def parse_entry(text: Any, prefs: Any = None, *, any_year: bool = False) -> Entr
     return EntryResult(error=f"{raw} is not a date this field accepts ({placeholder(prefs)})")
 
 
+_LOOSE_PREFIX = re.compile(r"^(?:circa|ca\.|c\.|c|copyright|cop\.|©|\(c\)|p)\s*(?=\d)", re.IGNORECASE)
+_LOOSE_YEAR = re.compile(r"(?<!\d)(\d{4})(?!\d)", re.ASCII)
+
+
+def parse_loose(text: Any, *, any_year: bool = False) -> PartialDate | None:
+    """A bibliographic date as free text ("1965", "August 1965", "Aug 01, 1965", "c1965", "[1965?]", "Spring 1965")
+    at the precision it proves (C15 §3.3), or None. Nothing is invented: a copyright or circa year is that year, an
+    `a/b/yyyy` date that reads as two different days is only its year, a range or two years is dropped. Release
+    dates keep the C5.1 year range unless `any_year`."""
+    if not isinstance(text, str):
+        return None
+    raw = " ".join(text.split()).strip(" .;,:[]()?")
+    raw = _LOOSE_PREFIX.sub("", raw).strip(" .;,:[]()?")
+    if not raw or len(raw) > 64:
+        return None
+    got = parse_entry(raw, any_year=any_year)
+    if got.ok is not None:
+        return got.ok
+    if got.ambiguous is not None and got.ambiguous[0].value[:4] == got.ambiguous[1].value[:4]:
+        return try_parse(got.ambiguous[0].value[:4], "year", any_year=any_year)
+    years = set(_LOOSE_YEAR.findall(raw))
+    if len(years) != 1:
+        return None
+    return try_parse(years.pop(), "year", any_year=any_year)
+
+
 def region_name(code: str | None) -> str:
     if not code:
         return ""

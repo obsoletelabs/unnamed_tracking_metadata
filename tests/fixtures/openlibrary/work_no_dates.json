@@ -1,0 +1,28 @@
+{
+ "authors": [
+  {
+   "author": {
+    "key": "/authors/OL9900000003A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  }
+ ],
+ "created": {
+  "type": "/type/datetime",
+  "value": "2024-01-02T03:04:05.000000"
+ },
+ "description": "Plain text description.",
+ "key": "/works/OL9900000003W",
+ "last_modified": {
+  "type": "/type/datetime",
+  "value": "2025-06-07T08:09:10.000000"
+ },
+ "latest_revision": 3,
+ "revision": 3,
+ "title": "An Undated Ledger",
+ "type": {
+  "key": "/type/work"
+ }
+}

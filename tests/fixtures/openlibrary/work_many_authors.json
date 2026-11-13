@@ -1,0 +1,268 @@
+{
+ "authors": [
+  {
+   "author": {
+    "key": "/authors/OL9900000101A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000102A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000103A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000104A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000105A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000106A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000107A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000108A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000109A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000110A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000111A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000112A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000113A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000114A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000115A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000116A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000117A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000118A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000119A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000120A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000121A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000122A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000123A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000124A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000125A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000126A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000127A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000128A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000129A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000130A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000131A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  }
+ ],
+ "created": {
+  "type": "/type/datetime",
+  "value": "2024-01-02T03:04:05.000000"
+ },
+ "first_publish_date": "2003",
+ "key": "/works/OL9900000005W",
+ "last_modified": {
+  "type": "/type/datetime",
+  "value": "2025-06-07T08:09:10.000000"
+ },
+ "latest_revision": 3,
+ "revision": 3,
+ "title": "Collected Voices",
+ "type": {
+  "key": "/type/work"
+ }
+}

@@ -1,0 +1,51 @@
+{
+ "authors": [
+  {
+   "author": {
+    "key": "/authors/OL9900000001A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  },
+  {
+   "author": {
+    "key": "/authors/OL9900000002A"
+   },
+   "type": {
+    "key": "/type/author_role"
+   }
+  }
+ ],
+ "covers": [
+  9900001,
+  9900002
+ ],
+ "created": {
+  "type": "/type/datetime",
+  "value": "2024-01-02T03:04:05.000000"
+ },
+ "description": {
+  "type": "/type/text",
+  "value": "An invented novel about a surveyor charting a coast that the sea takes back each winter."
+ },
+ "first_publish_date": "March 1987",
+ "key": "/works/OL9900000001W",
+ "last_modified": {
+  "type": "/type/datetime",
+  "value": "2025-06-07T08:09:10.000000"
+ },
+ "latest_revision": 3,
+ "revision": 3,
+ "subjects": [
+  "Maps",
+  "Coasts",
+  "Fiction",
+  "Surveyors"
+ ],
+ "subtitle": "Maps of a Drowned Coast",
+ "title": "The Salt Cartographer",
+ "type": {
+  "key": "/type/work"
+ }
+}

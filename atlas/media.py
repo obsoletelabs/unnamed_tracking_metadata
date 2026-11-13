@@ -146,10 +146,41 @@ def _status_code(status: int) -> str:
     return "status_5xx" if status >= 500 else "status_4xx"
 
 
-def _request(client: httpx.Client, url: str, settings: Settings) -> bytes:
+def fetch_options(settings: Settings, source: str) -> tuple[str, tuple[str, ...]]:
+    """(User-Agent, follow_hosts) for downloading an image of `source`: a provider that asks clients to identify
+    themselves (Open Library, C15 §3.2) gets the operator's `provider_contact`; the redirect hosts come from the
+    source's media policy."""
+    from .providers.base import user_agent
+
+    contact = settings.provider_contact if source in CONTACT_SOURCES else None
+    return user_agent(contact or None), policy(settings, source).follow_hosts
+
+
+#: sources whose image downloads carry `provider_contact` in the User-Agent (C15 §3.2), with the hosts (and their
+#: subdomains) that get it: the contact goes to the provider that asked for it, never to a redirect host of another
+#: service (covers.openlibrary.org redirects to archive.org, which gets the plain versioned User-Agent)
+CONTACT_HOSTS: dict[str, tuple[str, ...]] = {"openlibrary": ("openlibrary.org",)}
+CONTACT_SOURCES = frozenset(CONTACT_HOSTS)
+
+
+def _host_in(host: str, hosts: tuple[str, ...]) -> bool:
+    return any(host == h or host.endswith("." + h) for h in hosts)
+
+
+def _request(client: httpx.Client, url: str, settings: Settings, *, user_agent: str | None = None,
+             follow_hosts: tuple[str, ...] = (), agent_hosts: tuple[str, ...] = ()) -> bytes:
+    """Download one image. `follow_hosts`, when given, limits where a redirect may lead (each hop is still checked
+    by `check_url`). `agent_hosts`, when given, are the only hosts `user_agent` is sent to; any other hop gets the
+    plain versioned User-Agent."""
+    from .providers.base import user_agent as default_agent
+
+    plain = default_agent()
+    custom = user_agent or plain
     deadline = time.monotonic() + settings.media_fetch_deadline_s
     first_scheme = None
-    for _ in range(MAX_REDIRECTS + 1):
+    for hop in range(MAX_REDIRECTS + 1):
+        if hop and follow_hosts and not _host_in((urlsplit(url).hostname or "").lower(), follow_hosts):
+            raise MediaError("redirect to a host this source does not use", "host_not_allowed")
         scheme, host, port, ip = check_url(url, settings)
         if first_scheme == "https" and scheme != "https":
             raise MediaError("redirect from https to http refused", "https_required")
@@ -158,6 +189,7 @@ def _request(client: httpx.Client, url: str, settings: Settings) -> bytes:
         target = f"{scheme}://{ip if ':' not in ip else '[' + ip + ']'}:{port}{parts.path or '/'}"
         if parts.query:
             target += "?" + parts.query
+        agent = custom if not agent_hosts or _host_in(host.lower(), agent_hosts) else plain
         if not _take_rate(host, settings):
             raise MediaError("too many requests to this host; retried later", "timeout", deferred=True)
         slot = _slot(host, settings)
@@ -166,8 +198,7 @@ def _request(client: httpx.Client, url: str, settings: Settings) -> bytes:
         try:
             left = max(0.1, deadline - time.monotonic())
             timeout = httpx.Timeout(min(READ_TIMEOUT, left), connect=min(CONNECT_TIMEOUT, left))
-            with client.stream("GET", target, headers={"Host": host, "Accept": "image/*",
-                                                       "User-Agent": "atlas-metadata/2"},
+            with client.stream("GET", target, headers={"Host": host, "Accept": "image/*", "User-Agent": agent},
                                extensions={"sni_hostname": host}, timeout=timeout, follow_redirects=False) as resp:
                 if resp.status_code in (301, 302, 303, 307, 308):
                     loc = resp.headers.get("location")
@@ -557,7 +588,9 @@ def cache_one(session: Session, settings: Settings, art: Artwork, client: httpx.
         got = _from_peer(session, settings, art, client)
         if got is not None:
             return got, "peer"
-        got = _request(client, art.url, settings)
+        agent, follow = fetch_options(settings, art.source)
+        got = _request(client, art.url, settings, user_agent=agent, follow_hosts=follow,
+                       agent_hosts=CONTACT_HOSTS.get(art.source, ()))
         art.fetched_from = "origin"
         return got, "origin"
 

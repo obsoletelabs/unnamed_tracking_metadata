@@ -90,7 +90,9 @@ def test_cross_provider_merge_via_api(tmp_path):
     app.state.atlas.providers.client = make_client(calls)
     h = {"Authorization": "Bearer " + "a" * 40}
     with TestClient(app) as c:
-        assert {p["name"] for p in c.get("/api/v2/providers", headers=h).json()["results"]} == {"steam", "rawg", "igdb"}
+        # Open Library is on by default (C15 D15.7)
+        assert {p["name"] for p in c.get("/api/v2/providers", headers=h).json()["results"]} == {
+            "steam", "rawg", "igdb", "openlibrary"}
         found = c.get("/api/v2/providers/steam/search?q=portal", headers=h).json()["results"]
         assert found[0]["external_id"] == "620"
         a = c.post("/api/v2/providers/steam/fetch", json={"external_id": "620"}, headers=h).json()

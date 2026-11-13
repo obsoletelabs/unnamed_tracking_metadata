@@ -75,6 +75,10 @@ def providers_here(settings: Any) -> frozenset[str]:
 
 def valid_id(namespace: str, external_id: str) -> bool:
     rule = _PROVIDER_ID.get(namespace)
+    if namespace == "openlibrary":  # a work, an edition or an ISBN (C15 §3.3); never an author id
+        from .providers.openlibrary import OpenLibrary
+
+        return bool(_SAFE_ID.match(external_id)) and OpenLibrary.valid_id(external_id)
     return bool(_SAFE_ID.match(external_id)) and (rule is None or bool(rule.match(external_id)))
 
 
@@ -194,6 +198,9 @@ def run(maker: sessionmaker[Session], st: Any, *, limit: int = RUN_LIMIT, now: d
                 session.commit()
                 out["deferred"] += 1
                 continue
+            # the allowance taken stays taken; commit it now so the write lock is not held while the provider is
+            # fetched (Open Library's pacer may wait several seconds before each request; review of #139)
+            session.commit()
             done += 1
             try:
                 with session.begin_nested():

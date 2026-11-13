@@ -16,7 +16,7 @@ from .. import instruments as m
 from ..contract import ObservationBatchV1
 from ..models import ProviderCache, now
 from ..settings import Settings
-from .base import CURRENT_PROVIDER, Provider, ProviderError, ProviderResult
+from .base import CURRENT_PROVIDER, Provider, ProviderError, ProviderResult, user_agent
 from .igdb import Igdb
 from .openlibrary import OpenLibrary
 from .rawg import Rawg
@@ -39,7 +39,8 @@ def build_registry(settings: Settings) -> dict[str, Provider]:
     if settings.tgdb_api_key:
         reg["tgdb"] = TheGamesDb(settings.tgdb_api_key)
     if settings.openlibrary_enabled:
-        reg["openlibrary"] = OpenLibrary()
+        # the operator's provider_contact identifies the node to Open Library (C15 §3.2); empty unless set
+        reg["openlibrary"] = OpenLibrary(contact=settings.provider_contact or None)
     return reg
 
 
@@ -51,6 +52,14 @@ def build_crossref(settings: Settings) -> Wikidata | None:
 def media_types(p: Provider) -> tuple[str, ...]:
     """The media types a provider describes; providers that do not say are game sources."""
     return tuple(getattr(p, "media_types", ("game",)))
+
+
+def valid_id(p: Any, external_id: str) -> bool:
+    """The Fetcher's id rule plus the adapter's own (`valid_id`, e.g. Open Library's work/edition/ISBN rule)."""
+    if not _SAFE_ID.match(external_id):
+        return False
+    check = getattr(p, "valid_id", None)
+    return True if check is None else bool(check(external_id))
 
 
 @dataclass
@@ -77,7 +86,8 @@ class Fetcher:
     def __init__(self, settings: Settings, providers: dict[str, Provider], client: httpx.Client | None = None,
                  clock=time.monotonic) -> None:
         self.settings, self.providers = settings, providers
-        self.client = client or httpx.Client(headers={"User-Agent": "atlas-metadata/2"})
+        # no contact here: only providers that ask for one (Open Library) send `provider_contact`, per request
+        self.client = client or httpx.Client(headers={"User-Agent": user_agent()})
         self._budgets: dict[tuple[str, str], _Budget] = {}
         self._lock = threading.Lock()
         self._clock = clock
@@ -155,7 +165,13 @@ class Fetcher:
             else:
                 one = p.fetch(self.client, arg)
                 results = [one] if one else []
-        except ProviderError:
+        except ProviderError as exc:
+            if getattr(exc, "held_back", False):  # the adapter's own pacing said "not now": not an upstream failure
+                m.provider_backoff.inc(provider=p.name, reason="budget_exhausted")
+                if stale is not None:
+                    m.provider_cache.inc(provider=p.name, result="stale")
+                    return stale, "stale_served"
+                raise
             with self._lock:
                 self._failure_counts[p.name] = self._failure_counts.get(p.name, 0) + 1
             b.failures += 1
@@ -186,8 +202,8 @@ class Fetcher:
         p = self.providers.get(provider)
         if p is None:
             raise ProviderError(f"provider {provider!r} is not configured on this node")
-        if external_id is not None and not _SAFE_ID.match(str(external_id)):
-            raise ProviderError("invalid provider id")
+        if external_id is not None and not valid_id(p, str(external_id)):
+            raise ProviderError("invalid provider id")  # before any request, and never a strike against the circuit
         if bool(query) == bool(external_id):
             raise ProviderError("give exactly one of query or external_id")
         if query:
@@ -281,7 +297,9 @@ class Fetcher:
                 seen.add(r.external_id)
                 items.append(r.to_item())
         host = self.settings.public_url.split("://", 1)[-1]
+        p = self.providers.get(provider)
         return ObservationBatchV1.model_validate({
             "connection": {"source_kind": "metadata", "source": provider, "source_scope": host},
+            "media_type": media_types(p)[0] if p is not None else "game",  # C15 §3.3: the provider's type
             "observations": items,
         })

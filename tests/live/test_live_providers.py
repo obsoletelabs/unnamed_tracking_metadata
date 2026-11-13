@@ -9,9 +9,8 @@ import os
 import pytest
 
 from atlas import importer, main, price_sources, service
-from atlas.providers import Fetcher, build_registry
+from atlas.providers import build_registry
 from atlas.providers.igdb import Igdb
-from atlas.providers.openlibrary import OpenLibrary
 from atlas.providers.rawg import Rawg
 from atlas.providers.steam import Steam
 from atlas.providers.tgdb import TheGamesDb
@@ -99,13 +98,15 @@ def test_thegamesdb(client, report, tmp_path):
     assert view["title"] == "Portal 2"
 
 
+@pytest.mark.skipif(os.environ.get("ATLAS_LIVE_OPENLIBRARY") != "1",
+                    reason="Open Library is checked on manual dispatch only (C15 §3.4): the Live Open Library workflow "
+                           "or python -m tools.openlibrary_live_smoke (set ATLAS_LIVE_OPENLIBRARY=1 here)")
 def test_openlibrary(client, report):
-    found = OpenLibrary().search(client, "Dune Frank Herbert")
-    assert any(f.external_id == "OL893414W" for f in found)
-    r = OpenLibrary().fetch(client, "OL893414W")
-    assert r is not None and r.title == "Dune" and r.facts["developer"] == "Frank Herbert"
-    shape(report, "openlibrary", r)
-    assert Fetcher(build_settings(), {}).as_batch("openlibrary", [r]) is not None
+    from tools.openlibrary_live_smoke import run
+
+    got = run(os.environ.get("ATLAS_PROVIDER_CONTACT") or None, client)
+    report["openlibrary"] = got["checks"]  # counts and ids only
+    assert got["ok"], got["checks"]
 
 
 def test_wikidata_crossref(client, report):

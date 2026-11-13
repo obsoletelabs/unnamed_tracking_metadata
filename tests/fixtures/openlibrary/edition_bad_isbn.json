@@ -1,0 +1,27 @@
+{
+ "isbn_13": [
+  "9780009900113"
+ ],
+ "key": "/books/OL9900000013M",
+ "languages": [
+  {
+   "key": "/languages/eng"
+  }
+ ],
+ "latest_revision": 2,
+ "physical_format": "Audio CD",
+ "publish_date": "2019-05",
+ "publishers": [
+  "Gullwing Audio"
+ ],
+ "revision": 2,
+ "title": "The Salt Cartographer",
+ "type": {
+  "key": "/type/edition"
+ },
+ "works": [
+  {
+   "key": "/works/OL9900000001W"
+  }
+ ]
+}
