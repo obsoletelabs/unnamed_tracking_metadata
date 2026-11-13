@@ -70,7 +70,7 @@ disposable folder, SQLite and synthetic data on loopback. It checks that:
   the upgraded node then follows both its v0 authority and the wire-1 authority that refused it.
 
 The Federation lab workflow runs it twice after the scenarios, against the 1.0 release (`62c73f3`, schema 0020) and
-the A12 1.1 build (schema 0030; the rebased A12 head `f6a7dc5`, since the exact A12 commit is no longer on a
+the A12 1.1 build (schema 0030; the rebased A12 head `485d0cc`, since the exact A12 commit is no longer on a
 branch), and uploads `skew-v0-wire1.json` and `skew-a12-wire1.json`. The same upgrade from both schemas is tested on
 SQLite and PostgreSQL by `tests/test_c16_export_verify.py`. See
 [Compatibility and upgrades](federation.md#compatibility-and-upgrades).
