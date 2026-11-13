@@ -192,6 +192,30 @@ def test_a_snapshot_left_behind_by_a_crashed_compaction_is_not_counted_twice(tmp
     assert metrics.collect(tmp_path, now=now)["atlas_x_total"]["series"] == [[["ok"], 5]]
 
 
+def test_a_paused_worker_that_resumes_after_folding_is_not_stuck_or_double_counted(tmp_path):
+    """Review finding: a worker that only misses heartbeats (paused or stalled, not stopped) can be folded into
+    retired.json like a dead one. If it then resumes and writes the same PROCESS_TOKEN filename again, `collect`
+    must read its fresher, cumulative counters instead of ignoring the file forever because its name is already
+    in `folded` -- and must not add the stale fold on top of them (the worker's own counter already includes it,
+    since it never restarted)."""
+    now = 5_000_000.0
+    metrics.write_snapshot(tmp_path, {"atlas_x_total": family("counter", [[["ok"], 1]])}, token="w", now=now - 500)
+    assert metrics.compact(tmp_path, now=now) == 1
+    assert not (tmp_path / "worker-w.json").exists()
+    assert metrics.collect(tmp_path, now=now)["atlas_x_total"]["series"] == [[["ok"], 1]]
+
+    # the same process (same token) resumes and reports its own, further-advanced cumulative counter
+    metrics.write_snapshot(tmp_path, {"atlas_x_total": family("counter", [[["ok"], 2]])}, token="w", now=now + 1)
+    got = metrics.collect(tmp_path, now=now + 1)["atlas_x_total"]["series"]
+    assert got == [[["ok"], 2]]  # not stuck at 1, and not double-counted as 3
+    assert metrics.workers(tmp_path, now=now + 1) == 1
+
+    # a later compaction replaces the stale fold for this worker rather than folding it twice
+    assert metrics.compact(tmp_path, now=now + 1 + metrics.STALE_AFTER + 1) == 1
+    assert metrics.collect(tmp_path, now=now + 1 + metrics.STALE_AFTER + 1)["atlas_x_total"]["series"] == \
+        [[["ok"], 2]]
+
+
 def test_half_written_and_foreign_shaped_snapshots_are_skipped(tmp_path):
     now = 4_000_000.0
     metrics.write_snapshot(tmp_path, {"atlas_x_total": family("counter", [[["ok"], 1]])}, token="a", now=now)
