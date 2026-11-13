@@ -255,8 +255,11 @@ def _counters_only(families: dict[str, Any]) -> dict[str, Any]:
 
 def compact(directory: str | Path, *, now: float | None = None, stale_after: float = STALE_AFTER) -> int:
     """Fold snapshots of stopped workers into `retired.json`, so the directory does not grow with every restart
-    and their counters keep counting. Crash-safe: the retired file lists what it folded, and a listed worker file
-    is ignored by `collect` even if deleting it failed. Returns the number of snapshots folded."""
+    and their counters keep counting. Crash-safe: deleting a folded worker file is retried next time if it
+    failed before. `folded` keeps one entry per worker file (replaced, not summed, since a worker's own counters
+    are cumulative since its process start): a worker that is only paused or stalled, not stopped, keeps its file
+    and is left alone here, so `collect` reads its resumed, fresher counters instead of the stale fold. Returns
+    the number of snapshots folded in this call."""
     path = Path(directory)
     now = now or time.time()
     lock = path / _LOCK
@@ -273,24 +276,25 @@ def compact(directory: str | Path, *, now: float | None = None, stale_after: flo
         return 0
     try:
         os.close(fd)
-        retired = _read(path / RETIRED) or {"folded": [], "families": {}}
-        folded = set(retired["folded"])
-        dead = []
+        retired = _read(path / RETIRED) or {"folded": {}}
+        folded: dict[str, Any] = dict(retired.get("folded", {}))
+        stale = []
         for file in sorted(path.glob("worker-*.json")):
-            if file.name in folded:
-                dead.append((file, None))
-                continue
             data = _read(file)
-            if data and now - float(data.get("heartbeat", 0)) > stale_after:
-                dead.append((file, data))
-        fresh = [d for _, d in dead if d is not None]
-        if fresh:
-            families = merge([(retired["families"], False)] + [(_counters_only(d["families"]), False) for d in fresh])
-            names = sorted(folded | {f.name for f, d in dead if d is not None})
-            _write_atomic(path / RETIRED, {"folded": names[-10_000:], "families": families})
-        for file, _ in dead:
+            if data is None:
+                continue  # a half-written or foreign file: leave it for a later pass, never fold blindly
+            if now - float(data.get("heartbeat", 0)) > stale_after:
+                stale.append((file, data))
+        for file, data in stale:
+            folded[file.name] = {"heartbeat": data.get("heartbeat", 0), "families": _counters_only(data["families"])}
+        if len(folded) > 10_000:  # bounded: drop the longest-retired entries first
+            for name in sorted(folded, key=lambda n: folded[n].get("heartbeat", 0))[: len(folded) - 10_000]:
+                del folded[name]
+        if stale or len(folded) != len(retired.get("folded", {})):
+            _write_atomic(path / RETIRED, {"folded": folded})
+        for file, _ in stale:
             file.unlink(missing_ok=True)
-        return len(fresh)
+        return len(stale)
     finally:
         lock.unlink(missing_ok=True)
 
@@ -298,16 +302,20 @@ def compact(directory: str | Path, *, now: float | None = None, stale_after: flo
 def collect(directory: str | Path, *, now: float | None = None, stale_after: float = STALE_AFTER) -> dict[str, Any]:
     path = Path(directory)
     now = now or time.time()
-    retired = _read(path / RETIRED) or {"folded": [], "families": {}}
-    folded = set(retired.get("folded", []))
-    items: list[tuple[dict[str, Any], bool]] = [(retired.get("families", {}), False)]
+    retired = _read(path / RETIRED) or {"folded": {}}
+    folded = retired.get("folded", {})
+    items: list[tuple[dict[str, Any], bool]] = []
+    live_names: set[str] = set()
     for file in sorted(path.glob("worker-*.json")):
-        if file.name in folded:
-            continue
         data = _read(file)
         if data is None:
             continue
+        live_names.add(file.name)
         items.append((data.get("families", {}), now - float(data.get("heartbeat", 0)) <= stale_after))
+    for name, entry in folded.items():
+        if name in live_names:
+            continue  # the worker resumed and wrote a fresh file: its own snapshot already covers this folding
+        items.append((entry.get("families", {}), False))
     return merge(items)
 
 
