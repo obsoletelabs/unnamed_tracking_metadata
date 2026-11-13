@@ -8,7 +8,7 @@ import re
 from sqlalchemy import select
 
 from atlas import runtime
-from atlas.models import AuditEntry, Token, User
+from atlas.models import AuditEntry, Token, User, now
 
 from .test_web import fresh, signup, token
 from .test_web import site as web_site  # noqa: F401  (the fixture, re-exported under another name)
@@ -54,9 +54,17 @@ def test_off_by_default_members_get_read_only_and_a_clear_reason(web_site):  # n
     assert web_site.get(SYNC, headers=api).status_code == 403
 
 
+def _verify(site, name="bob") -> None:
+    with site.st.maker() as s:
+        user = s.scalars(select(User).where(User.username == name)).one()
+        user.email, user.email_verified_at = f"{name}@example.test", now()
+        s.commit()
+
+
 def test_enabled_member_creates_a_sync_token_that_follows_but_never_writes(web_site):  # noqa: F811
     setp(web_site, self_service_sync_tokens=True)
     bob = _member(web_site)
+    _verify(web_site)
     assert 'value="sync"' in bob.get("/me").text
     r = _create(bob, "sync")
     assert r.status_code == 200 and "Use it with the address" in r.text
@@ -94,6 +102,28 @@ def test_unverified_member_is_refused_when_the_node_requires_verification(web_si
     page = bob.get("/me").text
     assert 'value="sync"' not in page and "confirm your email address first" in page
     assert _create(bob, "sync").status_code == 403
+
+
+def test_unverified_member_is_refused_even_when_verification_is_optional(web_site):  # noqa: F811
+    """Review finding: `mail.is_verified` means "contribution is allowed under the node's policy", which is
+    true for everyone once verification is optional or off -- not "this account's own email is verified". Self-
+    service sync tokens are advertised ("sync tokens are for verified accounts") as needing the latter,
+    independent of the node's general policy, in every verification mode."""
+    bob = _member(web_site)
+    for mode in ("optional", "off"):
+        setp(web_site, self_service_sync_tokens=True, email_verification=mode)
+        page = bob.get("/me").text
+        assert 'value="sync"' not in page and "confirm your email address first" in page
+        assert _create(bob, "sync").status_code == 403
+        with web_site.st.maker() as s:
+            assert s.scalars(select(Token).where(Token.name == "my node")).first() is None
+    # an unverified member can still mint a plugin read token, and read the public API, in optional mode
+    secret = _secret(_create(bob, "read").text)
+    assert web_site.get("/api/v2/games?q=hades", headers={"Authorization": f"Bearer {secret}"}).status_code == 200
+    assert web_site.get(SYNC, headers={"Authorization": f"Bearer {secret}"}).status_code == 403
+    # once verified, the same member can mint a sync token in optional mode
+    _verify(web_site)
+    assert _create(bob, "sync").status_code == 200
 
 
 def test_admin_tokens_page_explains_the_flow(web_site):  # noqa: F811

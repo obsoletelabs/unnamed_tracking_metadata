@@ -978,7 +978,7 @@ def sync_token_refusal(p: Page) -> str | None:
     if not p.st.ctx.settings.self_service_sync_tokens:
         return ("this node does not let members create sync tokens. An administrator can turn on \"Members may "
                 "create their own sync tokens\" (Admin → Settings) or create one for you under Admin → Tokens")
-    if not mail.is_verified(p.st.ctx.settings, p.me):
+    if not mail.account_verified(p.me):
         return "confirm your email address first: sync tokens are for verified accounts"
     return None
 
