@@ -23,12 +23,9 @@ router = APIRouter()
 KIND_CHOICES = (("", "Not set"), ("progression", "Progression"), ("missable", "Missable"),
                 ("win_condition", "Win condition"))
 # Platinum (C7.1) marks completing the whole list. The choice approach follows the external contribution in
-# obsoletelabs/unnamed_tracking_metadata#110; here it is also gated by the federation emit protocol (C1.6).
+# obsoletelabs/unnamed_tracking_metadata#110.
 TIER_CHOICES = (("", "Not set"), ("bronze", "Bronze"), ("silver", "Silver"), ("gold", "Gold"),
                 ("platinum", "Platinum"))
-# SPEC-UI-POLISH-PASS §3.6 (D5): the gate stays in code until the version-unification PR; the UI names no protocol.
-PLATINUM_GATED_NOTE = ("Platinum cannot be published by this node yet: it needs every follower on this Atlas release. "
-                       "An administrator turns it on under Admin → Peers → Compatibility once they are upgraded.")
 EXTRA_PLATINUM_NOTE = ("Another row is already platinum. Platinum usually marks completing the whole list; "
                        "keep more than one only if the game really has several.")
 FIELDS = ("kind", "tier", "points", "hidden", "icon_url", "locked_icon_url")
@@ -156,7 +153,7 @@ COLLAPSE_AFTER = 8
 def _editor_ctx(p: Page, g: Any, rows: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
     _decorate(p, g.id, rows)
     return {"g": g, "title": g.view.get("title"), "rows": rows, "kinds": KIND_CHOICES, "tiers": TIER_CHOICES,
-            "platinum_gated": facets.platinum_gated(p.st.ctx), "others": _others(p, g.id), "max_rows": MAX_ROWS,
+            "others": _others(p, g.id), "max_rows": MAX_ROWS,
             "ach_collapsed": len(rows) > COLLAPSE_AFTER, "ach_sets": _set_choices(p, g.id), "set_of": set_of,
             **extra}
 
@@ -276,9 +273,7 @@ async def _read_rows(p: Page, form: Any) -> tuple[list[dict[str, Any]], list[dic
         item, more = _clean_row(row)
         problems += more
         if row["tier"] == facets.PLATINUM:
-            if facets.platinum_gated(p.st.ctx):
-                problems.append(PLATINUM_GATED_NOTE)
-            elif platinum_seen:
+            if platinum_seen:
                 row["notes"].append(EXTRA_PLATINUM_NOTE)  # a warning, not a refusal (C7.1)
             platinum_seen = True
         # two rows may share a name when they are different achievements (different external ids, C12 §12.1.4)

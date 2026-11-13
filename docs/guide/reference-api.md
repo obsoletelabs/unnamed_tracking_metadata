@@ -8,10 +8,10 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
-| `GET` | `/health` | public | Liveness: the process is up. |
+| `GET` | `/health` | public | Liveness: the process is up, and `wire`: the wire range this build speaks. |
 | `GET` | `/ready` | public | Readiness: 503 when the database does not answer or migrations are pending; `degraded` (200) when only artwork storage is unwritable. |
 | `GET` | `/schema` | public | Media types and custom fields this node describes (public ones only). |
-| `GET` | `/site` | public | Name, theme, navigation, role, registration and email policy of this node. |
+| `GET` | `/site` | public | Name, theme, navigation, role, registration and email policy of this node, and `client_api` (CONTRACT-C15 §9.1): the client API `version` (`1.0`), `min_supported`, `capabilities` (`books`, `pairing`, `etag`, `batch`, `public_read`) and `deprecations`. See [Client API](client-api.md). |
 
 ## read
 
@@ -19,16 +19,30 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | --- | --- | --- | --- |
 | `GET` | `/artwork/{art_id}/image` | read | One image: its cached bytes, or a redirect to the original public address while it is not cached. |
 | `GET` | `/games` | read | Search records by title (`q`, optional `type`, `limit`, `offset`) and/or by first release (`released_from`, `released_to`: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; a record matches when its whole release period is inside the range). `sort`: `relevance`, `title`, `release` or `-release` (year before month before day, unknown last); `relevance` re-ranks exact and prefix matches within each page of the title order, so page with `title` or `release` for a stable order. `q` is required unless a release filter is given (a blank `q` lists recent records, as before). Includes `custom` values. |
-| `GET` | `/games/{cid}` | read | One record. Follows merge redirects (`redirected_from`). ETag = id-version. Release dates: `first_release` (`{date, precision}`), `release_year`, `releases` (up to five `{date, precision, platform?, region?, edition?, category}`) and the unchanged day-only `release_date`, present only when the first release is known to the day. `relations`: `parents`, `children`, `members_of`, `members` (each `{id, type, title, media_type}`, ordered by type then id, at most 200) with `counts` and `truncated`; `editions` when known. See [Relationships](relations.md). |
+| `POST` | `/games/batch` | read | Up to 200 records by id in one call (`{ids}`), in request order: `{requested, status: ok\|not_found, game}`, each `game` exactly as `GET /games/{cid}` answers it (redirects followed). See [Client API](client-api.md). |
+| `GET` | `/games/{cid}` | read | One record. Follows merge redirects (`redirected_from`). ETag = id-version; a matching `If-None-Match` answers `304` with no body. Release dates: `first_release` (`{date, precision}`), `release_year`, `releases` (up to five `{date, precision, platform?, region?, edition?, category}`) and the unchanged day-only `release_date`, present only when the first release is known to the day. `relations`: `parents`, `children`, `members_of`, `members` (each `{id, type, title, media_type}`, ordered by type then id, at most 200) with `counts` and `truncated`; `editions` when known. See [Relationships](relations.md). |
 | `GET` | `/games/{cid}/achievements` | read | Merged achievement list: name, description, kind, tier, points, icons, global percent, and a stable `key` (`ak1:…`) with `keys` and `key_identity`. Hidden ones are redacted unless `reveal=all` or `reveal=<id or key>,…` is sent with a signed-in user's token or a curator token. No per-user progress. See [Achievements](achievements.md). |
-| `GET` | `/games/{cid}/artwork` | read | Artwork in its long-standing order (community choice, trust, priority) with `primary`, the first image per kind in it, as before; `best`, the C12 quality pick per kind; `?order=quality` sorts the list (and `primary`) by the C12 ranking. `media_url` once cached, and `image_url` always. |
+| `GET` | `/games/{cid}/artwork` | read | Artwork in its long-standing order (community choice, trust, priority) with `primary`, the first image per kind in it, as before; `best`, the C12 quality pick per kind; `?order=quality` sorts the list (and `primary`) by the C12 ranking. `media_url` once cached, and `image_url` always. `primary_by_role`: one artwork id per role (`cover`, `background`, `icon`, `logo`) from the C12 ranking, or null (CONTRACT-C15 §10.1). |
 | `GET` | `/games/{cid}/explain` | read | Which source and rule produced each field (provenance). |
 | `GET` | `/games/{cid}/prices` | read | The newest observed price of every offer of a record, one per provider, product, package, edition, platform, region and currency (optional `region`, `currency`, `provider`). Integer minor units with the ISO 4217 `exponent`, exact decimal strings, `sale`, `stale`. Non-redistributable prices only for curator tokens. Not part of the record's view; never in the feed. See [Prices](prices.md). |
 | `GET` | `/games/{cid}/prices/history` | read | Retained price observations of a record in one `region` (required), newest first, filtered by `currency`, `provider`, `product_id`, `edition`, `platform`, `since`, `until`; at most 1000 per page, follow `next_cursor`. With `currency`, `lowest` is the lowest retained price (the historical low within retention). See [Prices](prices.md). |
 | `GET` | `/games/{cid}/provenance` | read | Why each field has its value: winning source, trust class, reason, runners-up, conflicts, plus recent decisions, merges and distinct marks. `detail=values` (curate) adds candidate values. |
 | `GET` | `/games/{cid}/relations` | read | The relation graph around a record: `depth` hops (1-4) in both directions, at most `limit` (200) records, deterministic order, `truncated` when more exists; plus the record's `editions`. See [Relationships](relations.md). |
 | `GET` | `/media/{digest}` | read | A cached, verified image. Immutable; `nosniff`. |
+| `GET` | `/records` | read | Alias of `GET /games` (same handler, same answer). `/games` is not deprecated. |
+| `POST` | `/records/batch` | read | Alias of `POST /games/batch`. |
+| `GET` | `/records/{cid}` | read | Alias of `GET /games/{cid}`, `If-None-Match` included. |
+| `GET` | `/records/{cid}/achievements` | read | Alias of `GET /games/{cid}/achievements`. |
+| `GET` | `/records/{cid}/artwork` | read | Alias of `GET /games/{cid}/artwork`. |
+| `GET` | `/records/{cid}/relations` | read | Alias of `GET /games/{cid}/relations`. |
 | `POST` | `/resolve` | read | Batch (max `max_resolve`): Atlas ids, provider ids and titles to canonical ids, with `reason` (id, redirect, crosswalk, conflict, type_mismatch, exact, fuzzy, ambiguous, none), `tier`, `matched_keys`, `conflict` and `redirected_from`. A conflict returns no id. Read-only. See [Tracking App](tracking-app.md#resolving-ids-post-resolve). |
+
+## client
+
+| Method | Path | Scope | What it does |
+| --- | --- | --- | --- |
+| `POST` | `/client/pair` | public | Start pairing a device (no token): a user code (`XXXX-XXXX`), `verify_url` (+ `verify_url_complete` and a `qr_svg` of it), a `poll_token`, `expires_in` (600) and `interval` (5). At most 20 open per node; anonymous per-address budget. See [Client API](client-api.md#pairing). |
+| `POST` | `/client/pair/poll` | public | Poll a pairing (no token): `status` `pending`, `slow_down` (interval +5 s), `approved` (with a personal read `token`, once), `denied` or `expired`. |
 
 ## write
 
@@ -50,15 +64,15 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `PUT` | `/games/{cid}/custom` | curate | Set or clear curated custom-field values. |
 | `GET` | `/games/{cid}/decisions` | curate | Match decisions for a record and the records merged into it, newest first. |
 | `DELETE` | `/games/{cid}/locks/{field}` | curate | Remove a pinned field value. |
-| `PUT` | `/games/{cid}/locks/{field}` | curate | Pin a field value; it beats every merged value. `release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; `releases` takes a list of up to five release entries. A year/month `release_date` lock or a `releases` lock needs `emit_protocol` 1.3 on an authority (else 409 `emit_protocol`). `{"clear": true}` marks the field deliberately empty on this node. |
+| `PUT` | `/games/{cid}/locks/{field}` | curate | Pin a field value; it beats every merged value. `release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; `releases` takes a list of up to five release entries. A year/month `release_date` lock or a `releases` lock is signed with `_requires: [dates-v1]`. `{"clear": true}` marks the field deliberately empty on this node (federating a clear is reserved: 409 `reserved_feature`). |
 | `POST` | `/games/{cid}/merge` | curate | Merge a record into another (leaves a redirect and a merge record that can be undone). `dry_run=1` previews the survivor's view and every field change; `override_distinct` merges records marked as different works. |
 | `GET` | `/games/{cid}/observations` | curate | Raw source records behind a record (current and superseded). |
 | `GET` | `/games/{cid}/provenance/observations` | curate | Every observation of a record, newest first, paged. |
-| `PUT` | `/games/{cid}/relations` | curate | Replace the record's own outgoing relations (`{relations: [{to, type}]}`, at most 200). Self relations, cycles, a second parent of the same kind and memberships that do not point at a series or collection are refused and nothing changes. Published at `emit_protocol` 1.4, kept local below: the answer says `published: false` with `reason` (`emit_protocol` with `pending`, or `local_node`), and `changed.published` counts relations stored while gated that this call signed. |
+| `PUT` | `/games/{cid}/relations` | curate | Replace the record's own outgoing relations (`{relations: [{to, type}]}`, at most 200). Self relations, cycles, a second parent of the same kind and memberships that do not point at a series or collection are refused and nothing changes. Signed on an authority: the answer says `published: false` with `reason` (`pending` with the count of relations an older release stored unsigned, or `local_node`), and `changed.published` counts those this call signed. |
 | `PUT` | `/games/{cid}/scope` | curate | Keep a record on this node only (`{ceiling: "local"}`) or publish it (`{ceiling: null}`), CONTRACT-C14 §5.3. A record this feed already introduced cannot be kept back (409 `conflict`). See [Scopes and sharing](scopes.md). |
 | `GET` | `/merges` | curate | Merge records of a record (`canonical_id`). |
 | `GET` | `/merges/{merge_id}` | curate | One merge record with its item counts. |
-| `POST` | `/merges/{merge_id}/unmerge` | curate | Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published needs `emit_protocol` 1.7 (409 `emit_protocol`). |
+| `POST` | `/merges/{merge_id}/unmerge` | curate | Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published cannot be undone yet: the `unmerge` feed kind is reserved (409 `reserved_feature`). |
 | `GET` | `/observations/{oid}/decision` | curate | The newest match decision recorded for one observation. |
 | `POST` | `/observations/{oid}/detach` | curate | Split one source record off onto its own record. |
 | `POST` | `/prices` | curate | Store up to 500 price observations (integer minor units; floats, unknown currencies or regions and inconsistent discounts are a 422). Per item: `stored`, `duplicate`, `conflict`, `unknown_record`, `expired` or `invalid`. Nothing is published. See [Prices](prices.md). |
@@ -80,22 +94,22 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
-| `GET` | `/sync/changes` | sync | Signed entries after `since`; optional `node_id` selects a retained original authority feed. |
+| `GET` | `/sync/changes` | sync | Signed entries after `since`; optional `node_id` selects a retained original authority feed. Negotiated: the caller sends `Atlas-Wire: min=, max=` and the answer carries `Atlas-Wire: use=, min=, max=`; no header (a v0 build) or no overlap is 409 `wire_unsupported`, a malformed header 400 `invalid_wire`. |
 | `GET` | `/sync/digest` | sync | Digest of the replicated observations of this node's feed (or a retained one with `node_id`), for `atlas sync reconcile`. Observations only; cached up to 60 s (`cached_seconds`). |
-| `GET` | `/sync/info` | read | Stable trust root, current signer, signed successor proofs, available original feeds, and the federation protocol, feed kinds and capabilities this node speaks. Since protocol 1.5 also `own_head` (this node's own feed head), `introduced_through` (from that seq on, every game the feed names was introduced first; null until `atlas feed introduce` finished once), `media_withheld` and, per retained feed, `feeds[].empty`; an authority adds `records` (`live`, `introduced`, `not_federated`). Additive: older followers ignore them. |
+| `GET` | `/sync/info` | read | Stable trust root, current signer, signed successor proofs, available original feeds, `wire` (the wire range this node speaks, `{min, max, reads_v0, serves_v0}`), the frozen v0 tombstone (`protocol`, `min_follower_protocol`: `2.0`, so a pre-wire build refuses itself), feed kinds and capabilities. Also `own_head` (this node's own feed head), `introduced_through` (from that seq on, every game the feed names was introduced first; null until `atlas feed introduce` finished once), `media_withheld` and, per retained feed, `feeds[].empty`; an authority adds `records` (`live`, `introduced`, `not_federated`). Additive: older followers ignore them. |
 | `GET` | `/sync/media/{digest}` | sync | The bytes of a cached image this node may hand to peers, by its lowercase SHA-256: an artwork row that is redistributable, not local-only, of a source that federates, licensed `cc0` or `owner_upload` (or a curated row of unknown licence when `ATLAS_FEDERATION_MEDIA_UNKNOWN_LICENCE` is on). Followers fetch replicated images here first and check the hash. 404 otherwise. |
-| `GET` | `/sync/price-changes` | sync | The price channel (protocol 1.6, capability `price-channel-v1`). Designed but disabled in this release: always 404. |
+| `GET` | `/sync/price-changes` | sync | The price channel (reserved, capability `price-channel-v1`). Designed but disabled in this release: always 404. |
 
 ## admin
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
 | `GET` | `/admin/peers/probe` | admin | Look a node up before following it (read-only): its id and protocol, what the token can do, its record counts and the feeds it offers, with a recommended one. The peer's token goes in the `Atlas-Peer-Token` header. 400 bad address, 502 not verifiable, 504 no answer. |
-| `GET` | `/prices/status` | admin | Stored price observations, how many the next purge removes, retention bounds, and the price channel's state (protocol 1.6, disabled in this release). |
+| `GET` | `/prices/status` | admin | Stored price observations, how many the next purge removes, retention bounds, and the price channel's state (reserved, disabled in this release). |
 | `GET` | `/status` | admin | Role, feed head, replication cursors, the number of feed entries that failed to apply and the named heads per upstream. |
 | `GET` | `/sync/failures` | admin | Mirrored feed entries that could not be applied and still need attention: parked (need a newer release), quarantined, or waiting for their game (`disposition` `wait`, `waiting_for`); `next_try_at` for quarantined ones. |
 | `POST` | `/sync/failures/retry` | admin | Retry failed mirrored entries now, whatever their backoff. |
-| `GET` | `/sync/status` | admin | Protocol versions, named heads (observed, downloaded, verified, applied), parked, quarantined and waiting entries per upstream, the protocol each follower last spoke, and (additive) `peers[]`: each peer's id, name, what it follows, its status `{code, label, tone, detail, action}` and its waiting groups `waiting[]` (see [Peer status](federation.md#peer-status)). |
+| `GET` | `/sync/status` | admin | This node's wire range, named heads (observed, downloaded, verified, applied), parked, quarantined and waiting entries per upstream, each follower's negotiated wire, omissions and refusals, and (additive) `peers[]`: each peer's id, name, what it follows, its status `{code, label, tone, detail, action}` and its waiting groups `waiting[]` (see [Peer status](federation.md#peer-status)). |
 | `GET` | `/tokens` | admin | List API tokens. |
 | `POST` | `/tokens` | admin | Create a token; the secret is returned once. |
 | `DELETE` | `/tokens/{tid}` | admin | Revoke a token. |

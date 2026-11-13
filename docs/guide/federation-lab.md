@@ -56,7 +56,7 @@ Every scenario ends with assertions on node databases: observation rows by id, c
 | Wrong authority | `test_faults.py` | A URL serving another authority, a wrong pinned key and a relay that lacks the pinned feed are all refused |
 | Revoked credential | `test_faults.py` | A revoked sync token stops replication without damage; a replacement resumes it |
 | Version skew | `test_version_skew.py` | See below |
-| Changes for a game never introduced (release-blocking) | `test_c13_live_regression.py` | The live failure: artwork for a game the authority knows only from a provider waits on every follower (not quarantined, cursor at head, state `waiting`); raising the emit protocol to 1.5 and `atlas feed introduce --missing` introduce the game and the next sync applies game and artwork everywhere, the plain nodes through the mirror. The same shape against real 1.0 and 1.1 followers: `python -m tools.skew_drill --scenario records --previous-dir <release>` |
+| Changes for a game never introduced (release-blocking) | `test_c13_live_regression.py` | The live failure: artwork for a game the authority knows only from a provider waits on every follower (not quarantined, cursor at head, state `waiting`); `atlas feed introduce --missing` introduces the game and the next sync applies game and artwork everywhere, the plain nodes through the mirror. |
 
 ### Version skew and the expected failures
 
@@ -65,7 +65,7 @@ A newer authority will emit things an older follower does not understand: new en
 Before the compatibility gate a follower logged and skipped such entries while its cursor moved past them. Now it **parks** them ([Compatibility and upgrades](federation.md#compatibility-and-upgrades)):
 
 * `test_unknown_entry_kind_is_not_silently_dropped`: an unknown kind is parked (`unsupported_kind`); the cursor stops before it and the follower's status names it.
-* `test_unknown_observation_field_is_not_silently_dropped`: an observation with an unknown payload field is parked (`unsupported_field`).
+* `test_unknown_observation_field_is_ignored_not_dropped`: an observation with an unknown payload field applies without it (`ignored_member`, tolerant readers).
 * `test_mirror_relays_newer_entries_verbatim`: a parked mirror still retains and relays the entry and everything after it byte for byte; the entry after it waits instead of being applied out of order.
 * `test_skipping_a_parked_entry_lets_the_rest_apply_and_is_audited`: the operator escape hatch.
 * A known kind from the same authority applies normally.
@@ -74,7 +74,7 @@ The assertions use `disposition()` and fail on `"dropped"`; "applied", "blocked"
 
 The rewound-authority scenario (`test_rewound_authority_is_not_silently_ignored_by_an_up_to_date_follower`) now passes too: a follower compares the advertised head with the entries it already verified and reports a fork or rewind instead of success. Recovering from it is still #15 / #24.
 
-A real mixed-version check against the previous release is the separate `skew-1.0` drill: see [Release verification](release-verification.md#version-skew-drill).
+A real mixed-version check against the previous release is the separate skew drill (v0 against wire 1): see [Release verification](release-verification.md#version-skew-drill).
 
 For a real mixed-version network, build a second virtual environment from the older or newer release and run one node from it by setting `ATLAS_LAB_PYTHON_<NODE>` (for example `ATLAS_LAB_PYTHON_LOCAL=/path/to/older/venv/bin/python`) or passing `Lab(pythons={"local": "..."})`. That node's server then runs the other release; the lab itself, its direct database reads and its seeding still use the current code, so this suits releases with the same database schema.
 

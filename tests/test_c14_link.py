@@ -124,8 +124,9 @@ def test_link_envelope_vectors_sign_t_and_v():
     """T-K18: pinned canonical vectors; `t` and `_v` are signed; the group verifier refuses a link object."""
     k = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
     pub = lc.public_b64(k)
-    kid = lc.key_id(pub)
+    kid = lc.key_id(pub, like="0" * 16)  # the pinned vectors are a pre-D5 (64-bit id) link; new links get 256-bit
     assert (pub, kid) == ("A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=", "56475aa75463474c")
+    assert lc.key_id(pub).startswith(kid) and len(lc.key_id(pub)) == 64
     body = {"link_id": "01J00000000000000000000000", "node_id": kid,
             "subject": "8c3a0f62-1e7b-8d4f-a5c2-3b9e1d7f0a64", "seq": 1, "kind": "edit",
             "canonical_id": "atlas:01j00000000000000000000000", "payload": {"developer": "Supergiant Games"},
@@ -163,6 +164,7 @@ def test_link_disabled_main_advertises_nothing(tmp_path):
             link_client.start(s, off.nst.ctx.settings, off.nst.ctx.identity, off.nst.http, MAIN)
     with Pair(tmp_path, name="on") as on:  # links are on by default on an authority (H73), provider off
         doc = on.main.get("/.well-known/openid-configuration").json()
+        assert doc["atlas_link"]["wire"]["max"] == 1  # C16: discovery names the wire range
         assert doc["atlas_link"]["v"] == 1 and doc["dpop_signing_alg_values_supported"] == ["EdDSA"]
         assert link.DEVICE_GRANT in doc["grant_types_supported"] and "pairwise" in doc["subject_types_supported"]
         assert "sync" not in json.dumps(doc["atlas_link"])  # H68: no link sync member

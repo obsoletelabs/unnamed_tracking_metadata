@@ -1,0 +1,3909 @@
+{
+  "components": {
+    "schemas": {
+      "BatchBody": {
+        "additionalProperties": false,
+        "properties": {
+          "ids": {
+            "description": "Atlas ids (merged ids are followed). Duplicates are answered twice.",
+            "items": {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "title": "BatchBody",
+        "type": "object"
+      },
+      "ClientAchievements": {
+        "additionalProperties": true,
+        "properties": {
+          "applicable": {
+            "description": "False when achievements do not apply to the record's type (books).",
+            "title": "Applicable",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "redirected_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redirected From"
+          },
+          "results": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "redirected_from",
+          "applicable",
+          "total",
+          "results"
+        ],
+        "title": "ClientAchievements",
+        "type": "object"
+      },
+      "ClientApiInfo": {
+        "additionalProperties": true,
+        "properties": {
+          "capabilities": {
+            "description": "`books`, `pairing`, `etag`, `batch`, `public_read`; more may appear. Unknown ones are ignored.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "deprecations": {
+            "description": "Announced deprecations; empty in v1.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Deprecations",
+            "type": "array"
+          },
+          "limits": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`batch_items`: ids per batch call (200); `anonymous_items`: the cap on batch ids and resolve items for a call without a token under `public_read` (25). Absent on older nodes.",
+            "title": "Limits"
+          },
+          "min_supported": {
+            "description": "The oldest client-api version this node still answers for.",
+            "title": "Min Supported",
+            "type": "string"
+          },
+          "version": {
+            "description": "`major.minor`. A client refuses a node whose major differs from its own.",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "min_supported",
+          "capabilities",
+          "deprecations"
+        ],
+        "title": "ClientApiInfo",
+        "type": "object"
+      },
+      "ClientArtwork": {
+        "additionalProperties": true,
+        "properties": {
+          "cached": {
+            "title": "Cached",
+            "type": "boolean"
+          },
+          "duplicate_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duplicate Of"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "image_url": {
+            "description": "`/api/v2/artwork/<id>/image`: the bytes, or a 307 to the provider. Follow that redirect without the Authorization header (§8.4).",
+            "title": "Image Url",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`key_art`, `banner`, `logo`, `icon`, `screenshot`, `hero`, `poster`; may grow.",
+            "title": "Kind",
+            "type": "string"
+          },
+          "media_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`/api/v2/media/<sha256>` when cached here (read token, immutable).",
+            "title": "Media Url"
+          },
+          "public_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The same bytes without a token, when served.",
+            "title": "Public Url"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "url",
+          "source",
+          "cached",
+          "media_url",
+          "image_url"
+        ],
+        "title": "ClientArtwork",
+        "type": "object"
+      },
+      "ClientArtworkList": {
+        "additionalProperties": true,
+        "properties": {
+          "best": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClientArtwork"
+            },
+            "description": "Kind → the C12 §12.5.7 pick.",
+            "title": "Best",
+            "type": "object"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "order": {
+            "title": "Order",
+            "type": "string"
+          },
+          "primary": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClientArtwork"
+            },
+            "description": "Kind → the first image of that kind in `results`.",
+            "title": "Primary",
+            "type": "object"
+          },
+          "primary_by_role": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "description": "Role (`cover`, `background`, `icon`, `logo`) → the artwork id to show, from the C12 ranking, or null.",
+            "title": "Primary By Role",
+            "type": "object"
+          },
+          "redirected_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redirected From"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ClientArtwork"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "redirected_from",
+          "order",
+          "primary",
+          "best",
+          "primary_by_role",
+          "results"
+        ],
+        "title": "ClientArtworkList",
+        "type": "object"
+      },
+      "ClientBatch": {
+        "additionalProperties": true,
+        "properties": {
+          "results": {
+            "description": "One per requested id, in request order.",
+            "items": {
+              "$ref": "#/components/schemas/ClientBatchItem"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "ClientBatch",
+        "type": "object"
+      },
+      "ClientBatchItem": {
+        "additionalProperties": true,
+        "properties": {
+          "game": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClientRecord"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "As `GET /games/{id}` answers it (redirects followed)."
+          },
+          "requested": {
+            "description": "The id as sent.",
+            "title": "Requested",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "not_found"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requested",
+          "status",
+          "game"
+        ],
+        "title": "ClientBatchItem",
+        "type": "object"
+      },
+      "ClientChangedCanonical": {
+        "properties": {
+          "id": {
+            "description": "Canonical Atlas ID touched by the feed page.",
+            "title": "Id",
+            "type": "string"
+          },
+          "merged_into": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Redirect destination when this record was merged.",
+            "title": "Merged Into"
+          },
+          "version": {
+            "description": "Current client-visible version of this canonical record.",
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "merged_into"
+        ],
+        "title": "ClientChangedCanonical",
+        "type": "object"
+      },
+      "ClientChangesPage": {
+        "description": "`feed=signed` (the default, unchanged v1): a page of the signed federation feed.",
+        "examples": [
+          {
+            "feed": "signed",
+            "has_more": false,
+            "head": 124,
+            "local_feed": true,
+            "next_cursor": 124,
+            "node_id": "atlas-authority",
+            "results": [
+              {
+                "id": "atlas:0123456789abcdefghijklmnop",
+                "version": 8
+              },
+              {
+                "id": "atlas:1123456789abcdefghijklmnop",
+                "merged_into": "atlas:2123456789abcdefghijklmnop",
+                "version": 5
+              }
+            ]
+          }
+        ],
+        "properties": {
+          "feed": {
+            "const": "signed",
+            "default": "signed",
+            "description": "Which change log this page reads.",
+            "title": "Feed",
+            "type": "string"
+          },
+          "has_more": {
+            "description": "Whether another page is available from the current feed snapshot.",
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "head": {
+            "description": "Highest feed sequence currently retained by the selected node.",
+            "title": "Head",
+            "type": "integer"
+          },
+          "local_feed": {
+            "default": true,
+            "description": "Hint: this node also serves `feed=local`, which covers every change including provider imports. Recommended for clients.",
+            "title": "Local Feed",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "description": "Pass this value as `since` for the next page.",
+            "title": "Next Cursor",
+            "type": "integer"
+          },
+          "node_id": {
+            "description": "Authority feed selected for this page.",
+            "title": "Node Id",
+            "type": "string"
+          },
+          "results": {
+            "description": "Unique canonical records touched by this page.",
+            "items": {
+              "$ref": "#/components/schemas/ClientChangedCanonical"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "node_id",
+          "head",
+          "next_cursor",
+          "has_more",
+          "results"
+        ],
+        "title": "ClientChangesPage",
+        "type": "object"
+      },
+      "ClientCreator": {
+        "additionalProperties": true,
+        "properties": {
+          "ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Ids",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "role": {
+            "description": "`book_creator_role`; may grow (§9.2 item 2).",
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "role"
+        ],
+        "title": "ClientCreator",
+        "type": "object"
+      },
+      "ClientEdition": {
+        "additionalProperties": true,
+        "properties": {
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`book_format`; may grow (§9.2 item 2).",
+            "title": "Format"
+          },
+          "isbn_10": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isbn 10"
+          },
+          "isbn_13": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isbn 13"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "pages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pages"
+          },
+          "provider_ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Provider Ids",
+            "type": "object"
+          },
+          "published": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published"
+          },
+          "publisher": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publisher"
+          }
+        },
+        "title": "ClientEdition",
+        "type": "object"
+      },
+      "ClientRecord": {
+        "additionalProperties": true,
+        "description": "One record, as `GET /games/{id}` (and each `game` of a batch or resolve answer) returns it. Members with no\nvalue are left out; clients read them with defaults.",
+        "properties": {
+          "authors": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ClientCreator"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Books: ordered creators.",
+            "title": "Authors"
+          },
+          "custom": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "developer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Developer"
+          },
+          "editions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ClientEdition"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Editions"
+          },
+          "features": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Features"
+          },
+          "first_release": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "C5 partial date `{date, precision}`.",
+            "title": "First Release"
+          },
+          "genres": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Genres"
+          },
+          "id": {
+            "description": "`atlas:<ulid>`. Permanent; a merged id keeps resolving (`redirected_from`).",
+            "title": "Id",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "original_language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Language"
+          },
+          "page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "platforms": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platforms"
+          },
+          "provider_ids": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Ids"
+          },
+          "publisher": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publisher"
+          },
+          "redirected_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The id asked for, when it was merged into this record.",
+            "title": "Redirected From"
+          },
+          "relations": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClientRelations"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`GET /games/{id}` and batch only."
+          },
+          "release_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Day-precise first release only (`YYYY-MM-DD`).",
+            "title": "Release Date"
+          },
+          "release_year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Year"
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sources"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "version": {
+            "description": "Moves with every client-visible change; the ETag is `\"<id>-<version>\"`.",
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "redirected_from",
+          "media_type"
+        ],
+        "title": "ClientRecord",
+        "type": "object"
+      },
+      "ClientRelationGraph": {
+        "additionalProperties": true,
+        "properties": {
+          "edges": {
+            "description": "`{from, to, type, position?}`.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Edges",
+            "type": "array"
+          },
+          "editions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ClientEdition"
+            },
+            "title": "Editions",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "nodes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "redirected_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redirected From"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "redirected_from",
+          "nodes",
+          "edges",
+          "truncated"
+        ],
+        "title": "ClientRelationGraph",
+        "type": "object"
+      },
+      "ClientRelationRef": {
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "media_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Type"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Place in a series (`series_member` only).",
+            "title": "Position"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ],
+        "title": "ClientRelationRef",
+        "type": "object"
+      },
+      "ClientRelations": {
+        "additionalProperties": true,
+        "properties": {
+          "children": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ClientRelationRef"
+            },
+            "title": "Children",
+            "type": "array"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "Counts",
+            "type": "object"
+          },
+          "members": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ClientRelationRef"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "members_of": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ClientRelationRef"
+            },
+            "title": "Members Of",
+            "type": "array"
+          },
+          "parents": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ClientRelationRef"
+            },
+            "title": "Parents",
+            "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "title": "ClientRelations",
+        "type": "object"
+      },
+      "ClientSearch": {
+        "additionalProperties": true,
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ClientRecord"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "ClientSearch",
+        "type": "object"
+      },
+      "ClientSite": {
+        "additionalProperties": true,
+        "properties": {
+          "client_api": {
+            "$ref": "#/components/schemas/ClientApiInfo"
+          },
+          "contract": {
+            "description": "The general `/api/v2` contract marker (1). Clients read `client_api`.",
+            "title": "Contract",
+            "type": "integer"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "media_types": {
+            "description": "Enabled media type keys. A client maps an unknown one to \"other\" (§9.2 item 2).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Media Types",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "role",
+          "kind",
+          "node_id",
+          "media_types",
+          "contract",
+          "client_api"
+        ],
+        "title": "ClientSite",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "LocalChangedCanonical": {
+        "properties": {
+          "causes": {
+            "description": "Why the record changed within this page, sorted: feed, replicated, local, provider, merge or detach. Informational; refresh the record whatever it is.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Causes",
+            "type": "array"
+          },
+          "id": {
+            "description": "Canonical Atlas ID touched by the feed page.",
+            "title": "Id",
+            "type": "string"
+          },
+          "merged_into": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Redirect destination when this record was merged.",
+            "title": "Merged Into"
+          },
+          "version": {
+            "description": "Current client-visible version of this canonical record.",
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "merged_into",
+          "causes"
+        ],
+        "title": "LocalChangedCanonical",
+        "type": "object"
+      },
+      "LocalChangesPage": {
+        "description": "`feed=local`: a page of this node's local, unsigned client change log (C3.2).",
+        "examples": [
+          {
+            "epoch": "9c41e07a5b2d8f13",
+            "feed": "local",
+            "has_more": true,
+            "head": 9123,
+            "next_cursor": 9000,
+            "node_id": "3f2a9c0d1e2b4a55",
+            "reset": false,
+            "results": [
+              {
+                "causes": [
+                  "provider"
+                ],
+                "id": "atlas:0123456789abcdefghijklmnop",
+                "version": 14
+              }
+            ]
+          }
+        ],
+        "properties": {
+          "epoch": {
+            "description": "Identifies this incarnation of the log. It changes whenever the log is recreated or rewound (a downgrade and re-upgrade, a restore, a recovered node). Store it with `next_cursor` and send it back as `epoch`.",
+            "title": "Epoch",
+            "type": "string"
+          },
+          "feed": {
+            "const": "local",
+            "description": "Which change log this page reads.",
+            "title": "Feed",
+            "type": "string"
+          },
+          "has_more": {
+            "description": "Whether another page is available from the current log snapshot.",
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "head": {
+            "description": "Highest sequence in this node's local change log.",
+            "title": "Head",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "description": "Pass this value as `since` for the next page.",
+            "title": "Next Cursor",
+            "type": "integer"
+          },
+          "node_id": {
+            "description": "This node. The local log is never federated, so it has no other origin.",
+            "title": "Node Id",
+            "type": "string"
+          },
+          "reset": {
+            "description": "True when `since` cannot be continued (pruned, the log was recreated, or `epoch` differs). `results` is then empty: store `next_cursor`, then re-read every cached record.",
+            "title": "Reset",
+            "type": "boolean"
+          },
+          "results": {
+            "description": "Unique canonical records changed in this page.",
+            "items": {
+              "$ref": "#/components/schemas/LocalChangedCanonical"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "feed",
+          "node_id",
+          "epoch",
+          "head",
+          "next_cursor",
+          "has_more",
+          "reset",
+          "results"
+        ],
+        "title": "LocalChangesPage",
+        "type": "object"
+      },
+      "PairBody": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "description": "What the person will see on the approval page and on their token list, e.g. `Jellyfin on nas`. Printable, at most 64 characters.",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "PairBody",
+        "type": "object"
+      },
+      "PairStarted": {
+        "properties": {
+          "code": {
+            "description": "The user code to show (`XXXX-XXXX`, Crockford base32, 40 bits). Single use.",
+            "title": "Code",
+            "type": "string"
+          },
+          "expires_in": {
+            "description": "Seconds until the code and the poll token expire (at most 600).",
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "interval": {
+            "description": "Seconds to wait between polls (5).",
+            "title": "Interval",
+            "type": "integer"
+          },
+          "poll_token": {
+            "description": "Secret for `POST /client/pair/poll`. Keep it; never show it.",
+            "title": "Poll Token",
+            "type": "string"
+          },
+          "qr_svg": {
+            "description": "An inline SVG QR code of `verify_url_complete`, drawn dark on white. Show the code next to it.",
+            "title": "Qr Svg",
+            "type": "string"
+          },
+          "verify_url": {
+            "description": "Where the person approves: `<public_url>/pair`, signed in.",
+            "title": "Verify Url",
+            "type": "string"
+          },
+          "verify_url_complete": {
+            "description": "The same address with the code filled in (what the QR encodes).",
+            "title": "Verify Url Complete",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "verify_url",
+          "verify_url_complete",
+          "qr_svg",
+          "poll_token",
+          "expires_in",
+          "interval"
+        ],
+        "title": "PairStarted",
+        "type": "object"
+      },
+      "PollAnswer": {
+        "properties": {
+          "expires_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          },
+          "status": {
+            "description": "`pending`: ask again after `interval`. `slow_down`: you polled too fast; `interval` grew by 5 s. `approved`: `token` is the new read token (shown once). `denied`: the person refused (or their token limit was reached, `reason: token_limit`). `expired`: unknown, used or expired; start again.",
+            "enum": [
+              "pending",
+              "slow_down",
+              "approved",
+              "denied",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`approved` only: a personal token with scope `read`.",
+            "title": "Token"
+          },
+          "token_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Id"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "PollAnswer",
+        "type": "object"
+      },
+      "PollBody": {
+        "additionalProperties": false,
+        "properties": {
+          "poll_token": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Poll Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "poll_token"
+        ],
+        "title": "PollBody",
+        "type": "object"
+      },
+      "ResolveCandidate": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "score"
+        ],
+        "title": "ResolveCandidate",
+        "type": "object"
+      },
+      "ResolveConflict": {
+        "properties": {
+          "canonical_ids": {
+            "description": "Every record the client's ids point at.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Canonical Ids",
+            "type": "array"
+          },
+          "own": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The record the item's own `namespace`/`external_id` points at: a hint for a curator, never something to assign.",
+            "title": "Own"
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The open `id_conflict` review covering these records, if any.",
+            "title": "Review Id"
+          }
+        },
+        "required": [
+          "canonical_ids",
+          "own",
+          "review_id"
+        ],
+        "title": "ResolveConflict",
+        "type": "object"
+      },
+      "ResolveItem": {
+        "properties": {
+          "developer": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Developer"
+          },
+          "external_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Id"
+          },
+          "media_type": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Type"
+          },
+          "namespace": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9._-]{1,50}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Namespace of `external_id`: a provider or source key, or `atlas` for an Atlas id.",
+            "title": "Namespace"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "provider_ids": {
+            "anyOf": [
+              {
+                "maxProperties": 32,
+                "patternProperties": {
+                  "^[a-z0-9._-]{1,50}$": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Every id the client holds, `{namespace: id}`. `atlas` is an Atlas id and is followed through merges.",
+            "title": "Provider Ids"
+          },
+          "release_date": {
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`YYYY`, `YYYY-MM` or `YYYY-MM-DD`; only the year is used.",
+            "title": "Release Date"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Title evidence. Never used when an id matches, and ignored when it is a placeholder such as `Steam app 12345`.",
+            "title": "Title"
+          }
+        },
+        "title": "ResolveItem",
+        "type": "object"
+      },
+      "ResolveMatchedKey": {
+        "properties": {
+          "canonical_id": {
+            "description": "The live record this key points at, after merge redirects.",
+            "title": "Canonical Id",
+            "type": "string"
+          },
+          "external_id": {
+            "title": "External Id",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "external_id",
+          "canonical_id"
+        ],
+        "title": "ResolveMatchedKey",
+        "type": "object"
+      },
+      "ResolveRequest": {
+        "properties": {
+          "include_view": {
+            "default": true,
+            "title": "Include View",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ResolveItem"
+            },
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ResolveRequest",
+        "type": "object"
+      },
+      "ResolveResponse": {
+        "examples": [
+          {
+            "results": [
+              {
+                "assigned": false,
+                "candidates": [
+                  {
+                    "id": "atlas:0123456789abcdefghijklmnop",
+                    "score": 1.0
+                  },
+                  {
+                    "id": "atlas:1123456789abcdefghijklmnop",
+                    "score": 1.0
+                  }
+                ],
+                "confidence": 0.9,
+                "conflict": {
+                  "canonical_ids": [
+                    "atlas:0123456789abcdefghijklmnop",
+                    "atlas:1123456789abcdefghijklmnop"
+                  ],
+                  "own": "atlas:0123456789abcdefghijklmnop"
+                },
+                "matched_keys": [
+                  {
+                    "canonical_id": "atlas:0123456789abcdefghijklmnop",
+                    "external_id": "620",
+                    "namespace": "steam"
+                  },
+                  {
+                    "canonical_id": "atlas:1123456789abcdefghijklmnop",
+                    "external_id": "72",
+                    "namespace": "igdb"
+                  }
+                ],
+                "method": "none",
+                "reason": "conflict",
+                "tier": "id"
+              }
+            ]
+          }
+        ],
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ResolveResult"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "ResolveResponse",
+        "type": "object"
+      },
+      "ResolveResult": {
+        "properties": {
+          "assigned": {
+            "description": "`canonical_id` is not null.",
+            "title": "Assigned",
+            "type": "boolean"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ResolveCandidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "canonical_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set only when the evidence allows assigning it (see `reason`).",
+            "title": "Canonical Id"
+          },
+          "confidence": {
+            "title": "Confidence",
+            "type": "number"
+          },
+          "conflict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolveConflict"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set only for `reason: conflict`."
+          },
+          "game": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The record (as `GET /games/{id}`) when `include_view` and `canonical_id` is set.",
+            "title": "Game"
+          },
+          "matched_keys": {
+            "description": "The client's ids that Atlas knows, and where each points.",
+            "items": {
+              "$ref": "#/components/schemas/ResolveMatchedKey"
+            },
+            "title": "Matched Keys",
+            "type": "array"
+          },
+          "method": {
+            "description": "Pre-C4 field, kept for old clients. `none` whenever `canonical_id` is null, conflicts included.",
+            "enum": [
+              "crosswalk",
+              "exact",
+              "fuzzy",
+              "none"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why. Clients auto-assign only `id`, `redirect`, `crosswalk` and `exact`; never `conflict`, `type_mismatch` or `ambiguous`.",
+            "enum": [
+              "id",
+              "redirect",
+              "crosswalk",
+              "conflict",
+              "type_mismatch",
+              "exact",
+              "fuzzy",
+              "ambiguous",
+              "none"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "redirected_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Atlas id the client sent when it was merged into `canonical_id` (`reason: redirect`).",
+            "title": "Redirected From"
+          },
+          "tier": {
+            "description": "Evidence tier: `id` (identity keys only, never the title), `strong` (title evidence that may assign), `weak` (title candidates that must not be assigned), `none`.",
+            "enum": [
+              "id",
+              "strong",
+              "weak",
+              "none"
+            ],
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical_id",
+          "method",
+          "confidence",
+          "candidates",
+          "assigned",
+          "reason",
+          "tier",
+          "redirected_from",
+          "matched_keys",
+          "conflict"
+        ],
+        "title": "ResolveResult",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "The subset of Atlas `/api/v2` that external tools are written against (CONTRACT-C15 §9-§10). Generated by `tools/gen_docs.py --client-openapi`; additive within v1: clients ignore unknown members and map unknown vocabulary values to \"other\". Send `Authorization: Bearer <token>` (a personal read token, e.g. from pairing), unless the node lists the `public_read` capability.",
+    "license": {
+      "name": "CC0-1.0",
+      "url": "https://creativecommons.org/publicdomain/zero/1.0/"
+    },
+    "title": "Atlas client API (client-api v1)",
+    "version": "1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v2/artwork/{art_id}/image": {
+      "get": {
+        "description": "The image of one artwork row (C12 §12.5.5, §12.5.8, §12.7.2, H50).\n\n* the cached bytes of a `proxy` source (`public, max-age=300`, digest as ETag);\n* otherwise, for a provider row (a `redirect` source, or a `proxy` source not cached yet), a 307 to the\n  original (`private, max-age=300`, unchanged), but only when its host is in the source's `redirect_hosts` or\n  in the admin's explicit `media_allowed_hosts`: there is no open redirect;\n* 404 for any other host, for a source that is `none`, and for an uncached curated, community or uploaded\n  image (those are only ever served from this node's cache).",
+        "operationId": "get_artwork_image_api_v2_artwork__art_id__image_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "art_id",
+            "required": true,
+            "schema": {
+              "title": "Art Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "image/*": {}
+            },
+            "description": "The image bytes."
+          },
+          "307": {
+            "description": "To the provider's host. Follow it once, without Authorization."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Artwork Image",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/changes": {
+      "get": {
+        "description": "Return current versions of canonical records touched by a bounded feed page.\n\nThe sequence cursor is independent of timestamps and includes merge redirects.\nClients should retain `next_cursor` and request the next page while `has_more` is true.\nThe two feeds have separate cursors; never pass a cursor from one to the other.",
+        "operationId": "client_changes_api_v2_changes_get",
+        "parameters": [
+          {
+            "description": "Last `next_cursor` stored by the client.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Last `next_cursor` stored by the client.",
+              "minimum": 0,
+              "title": "Since",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum feed events in this page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "Maximum feed events in this page.",
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Optional authority node whose replicated feed is retained here. Not allowed with `feed=local`.",
+            "in": "query",
+            "name": "node_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional authority node whose replicated feed is retained here. Not allowed with `feed=local`.",
+              "title": "Node Id"
+            }
+          },
+          {
+            "description": "`local` pages this node's local change log, which also covers provider imports, local edits, merges and detaches (recommended). Omit it, or pass `signed`, for the signed feed (unchanged v1 behaviour).",
+            "in": "query",
+            "name": "feed",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "signed",
+                    "local"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`local` pages this node's local change log, which also covers provider imports, local edits, merges and detaches (recommended). Omit it, or pass `signed`, for the signed feed (unchanged v1 behaviour).",
+              "title": "Feed"
+            }
+          },
+          {
+            "description": "`feed=local` only: the `epoch` stored with `since`. When it differs from the log's current epoch the page is a `reset`. Always send it.",
+            "in": "query",
+            "name": "epoch",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`feed=local` only: the `epoch` stored with `since`. When it differs from the log's current epoch the page is a `reset`. Always send it.",
+              "title": "Epoch"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "local": {
+                    "summary": "feed=local: every change on this node (recommended)",
+                    "value": {
+                      "epoch": "9c41e07a5b2d8f13",
+                      "feed": "local",
+                      "has_more": true,
+                      "head": 9123,
+                      "next_cursor": 9000,
+                      "node_id": "3f2a9c0d1e2b4a55",
+                      "reset": false,
+                      "results": [
+                        {
+                          "causes": [
+                            "provider"
+                          ],
+                          "id": "atlas:0123456789abcdefghijklmnop",
+                          "version": 14
+                        }
+                      ]
+                    }
+                  },
+                  "signed": {
+                    "summary": "Default (v1): the signed feed",
+                    "value": {
+                      "feed": "signed",
+                      "has_more": false,
+                      "head": 124,
+                      "local_feed": true,
+                      "next_cursor": 124,
+                      "node_id": "atlas-authority",
+                      "results": [
+                        {
+                          "id": "atlas:0123456789abcdefghijklmnop",
+                          "version": 8
+                        },
+                        {
+                          "id": "atlas:1123456789abcdefghijklmnop",
+                          "merged_into": "atlas:2123456789abcdefghijklmnop",
+                          "version": 5
+                        }
+                      ]
+                    }
+                  }
+                },
+                "schema": {
+                  "discriminator": {
+                    "mapping": {
+                      "local": "#/components/schemas/LocalChangesPage",
+                      "signed": "#/components/schemas/ClientChangesPage"
+                    },
+                    "propertyName": "feed"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ClientChangesPage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LocalChangesPage"
+                    }
+                  ],
+                  "title": "Response Client Changes Api V2 Changes Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List canonical records changed since a client cursor",
+        "tags": [
+          "games",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/client/pair": {
+      "post": {
+        "description": "Public. Start pairing a tool with a person's account (CONTRACT-C15 §10.1): show `code` and `qr_svg` to the\nperson, who approves at `verify_url` while signed in; then poll `POST /client/pair/poll` every `interval`\nseconds. The token minted on approval is a **personal read token** of the approving account (listed and\nrevocable on their profile, counted in their limit of 10). At most 20 pairings are open per node and 3 per\naddress (429 beyond); calls count on the anonymous per-address budget (60 a minute).",
+        "operationId": "client_pair_api_v2_client_pair_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairStarted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start pairing a client (device code)",
+        "tags": [
+          "client"
+        ]
+      }
+    },
+    "/api/v2/client/pair/poll": {
+      "post": {
+        "description": "Public. The state of a pairing started with `POST /client/pair` (always 200; read `status`). Polling faster\nthan `interval` answers `slow_down` and widens it by 5 seconds. `approved` carries the new token once; the\npairing is then gone (`expired`).",
+        "operationId": "client_pair_poll_api_v2_client_pair_poll_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PollBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PollAnswer"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Poll a pairing",
+        "tags": [
+          "client"
+        ]
+      }
+    },
+    "/api/v2/games": {
+      "get": {
+        "operationId": "list_games_api_v2_games_get",
+        "parameters": [
+          {
+            "description": "Title search. Required unless a release or author filter is given. A valid ISBN-10 or ISBN-13 (hyphens allowed) answers the book that edition belongs to, alone. With `type=book` the words of the authors' names match too.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "Title search. Required unless a release or author filter is given. A valid ISBN-10 or ISBN-13 (hyphens allowed) answers the book that edition belongs to, alone. With `type=book` the words of the authors' names match too.",
+              "maxLength": 200,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Books only (C15 §5): records with a creator whose name has a word starting with this text (casefold, accents ignored). Without `type` it means `type=book`; another type is refused (400).",
+            "in": "query",
+            "name": "author",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Books only (C15 §5): records with a creator whose name has a word starting with this text (casefold, accents ignored). Without `type` it means `type=book`; another type is refused (400).",
+              "title": "Author"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "description": "`YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Only records whose first release lies entirely on or after the start of this period.",
+            "in": "query",
+            "name": "released_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 10,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Only records whose first release lies entirely on or after the start of this period.",
+              "title": "Released From"
+            }
+          },
+          {
+            "description": "`YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Only records whose first release lies entirely on or before the end of this period. A year-only release matches a filter on its year, never one on a single month of it.",
+            "in": "query",
+            "name": "released_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 10,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Only records whose first release lies entirely on or before the end of this period. A year-only release matches a filter on its year, never one on a single month of it.",
+              "title": "Released To"
+            }
+          },
+          {
+            "description": "`release` orders by the start of the first release, year before month before day, unknown last; `-release` newest first. `relevance` ranks exact and prefix title matches first *within each page* of the title order, so pages with `offset` follow the title order; use `title` or `release` for a stable order across pages.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "relevance",
+              "description": "`release` orders by the start of the first release, year before month before day, unknown last; `-release` newest first. `relevance` ranks exact and prefix title matches first *within each page* of the title order, so pages with `offset` follow the title order; use `title` or `release` for a stable order across pages.",
+              "enum": [
+                "relevance",
+                "title",
+                "release",
+                "-release"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 100000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "C14: only records whose ceiling is `group`, `local` or `private`, or `public` (no ceiling and at least one public item). Only for callers with scope detail; ignored otherwise.",
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "C14: only records whose ceiling is `group`, `local` or `private`, or `public` (no ceiling and at least one public item). Only for callers with scope detail; ignored otherwise.",
+              "title": "Scope"
+            }
+          },
+          {
+            "description": "C14: only records with at least one `group` or `local` item. Only for callers with scope detail; ignored otherwise.",
+            "in": "query",
+            "name": "has",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "C14: only records with at least one `group` or `local` item. Only for callers with scope detail; ignored otherwise.",
+              "title": "Has"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientSearch"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Games",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/games/batch": {
+      "post": {
+        "description": "Up to 200 records in one call (CONTRACT-C15 §10.1), in request order: each item is `{requested, status,\ngame}`, `status` `ok` with the record exactly as `GET /games/{id}` answers it (merge redirects followed,\n`redirected_from` set), or `not_found` with `game: null`. Read-only; one item never fails the batch. An\nanonymous (`public_read`) caller sends at most `client_api.limits.anonymous_items` ids (413 beyond).",
+        "operationId": "batch_games_api_v2_games_batch_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientBatch"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read up to 200 records at once",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/games/{cid}": {
+      "get": {
+        "description": "One record. `relations` (C6.3) lists its active relations: `parents` (this record is a DLC, port,\nremake... of them), `children` (theirs to this one), `members_of` (the series and collections it is in) and\n`members` (when this record is a series or collection). Each list is ordered by type, then id, and holds\nat most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions.\n\nThe `ETag` is `\"<id>-<version>\"`. With a matching `If-None-Match` (weak comparison, `*` too) the answer is `304`\nwith no body (CONTRACT-C15 §10.1). The version moves with every change of this record's own data (fields,\ncustom values, artwork, achievements, its relations); a title change of a *related* record moves that record's\nversion, not this one, so a client showing related titles refreshes them from those records.\n\nC14 (additive): `scope {ceiling, widest, counts}` for callers with scope detail only; for anyone else the key\nis absent. A record this caller may not see is the same 404 as an unknown one.",
+        "operationId": "get_game_api_v2_games__cid__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "An ETag from an earlier answer: `304 Not Modified` (no body) while the record is unchanged.",
+            "in": "header",
+            "name": "if-none-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2000,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An ETag from an earlier answer: `304 Not Modified` (no body) while the record is unchanged.",
+              "title": "If-None-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "304": {
+            "description": "`If-None-Match` matched the current ETag: no body."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Game",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/games/{cid}/achievements": {
+      "get": {
+        "description": "Hidden achievements come back redacted. `reveal=all` or `reveal=<id or key>,...` unlocks their real text, but\nonly for a signed-in user's own token or a curator/admin token; any other caller still gets the redacted rows.\nA response that reveals anything is `Cache-Control: private, no-store` (C12 §12.1.8).\n\nEach entry carries a stable `key` (`ak1:…`, the smallest of `keys`, the stored keys of the rows merged into it)\nand `key_identity` (null while redacted). `id` stays for older clients and is deprecated as an identity.\n\nC12 (additive): `sets` lists the record's achievement sets (base game, DLC, editions, platforms) and every\nentry names its `set`, `status`, `rarity` (percent, source, as_of, stale, band) and `lang`. `set`, `platform`,\n`lang`, `order` and `include_retired` (curators only) select and arrange; `sets_elsewhere` names DLC sets\nlisted on another record that point at this one.\n\nLarge catalogues can be read in pages: pass `limit` (at most 200) and `offset`, and follow `next_offset` until it\nis null. The order is stable, so pages never overlap or skip. Without `limit` the whole list is returned.\n\nC15 §2.7 (additive): `applicable` is false when achievements do not apply to the record's media type (the type's\n`achievements` flag); the lists are then empty. Stored rows are kept and come back if the type changes.",
+        "operationId": "get_achievements_api_v2_games__cid__achievements_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reveal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2000,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reveal"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Only this set (`<source>/<key>` or `<key>`).",
+            "in": "query",
+            "name": "set",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this set (`<source>/<key>` or `<key>`).",
+              "title": "Set"
+            }
+          },
+          {
+            "description": "Only sets that apply to this platform.",
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 50,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only sets that apply to this platform.",
+              "title": "Platform"
+            }
+          },
+          {
+            "description": "Prefer artwork (or text) in this language tag.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 35,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Prefer artwork (or text) in this language tag.",
+              "title": "Lang"
+            }
+          },
+          {
+            "description": "`rarity` (default), `source` (the provider's list order) or `name`.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 10,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`rarity` (default), `source` (the provider's list order) or `name`.",
+              "title": "Order"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_retired",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Retired",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAchievements"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Achievements",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/games/{cid}/artwork": {
+      "get": {
+        "description": "Every image of a record. By default `results` keeps its pre-C12 order (community choice, trust, priority,\nage) and `primary` is the first of each kind in it, as before. `best` is always the C12 §12.5.7 pick of each\nkind (curator, community choice, role fit, class, trust, region and language match, priority, measured size);\n`order=quality` sorts `results` (and so `primary`) by that ranking too. `region` and `lang` only steer the\nC12 ranking. Exact duplicates are left out unless `include_duplicates=1`. Curator tokens also see\n`near_duplicate_of` (a perceptual match, reported and never hidden).\n\n`primary_by_role` (CONTRACT-C15 §10.1) names one artwork id per display role, from the C12 ranking whatever\n`order` says: `cover` (`key_art` then `poster` for games, `poster` first for every other type, so a book's\ncover), `background` (`hero`, `banner`, `screenshot`), `icon` and `logo`; null when the record has none.",
+        "operationId": "get_artwork_api_v2_games__cid__artwork_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Prefer artwork of this region (`ww`, `eu`, `na`, `asia`, `oce`, `latam` or ISO 3166-1 alpha-2).",
+            "in": "query",
+            "name": "region",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Prefer artwork of this region (`ww`, `eu`, `na`, `asia`, `oce`, `latam` or ISO 3166-1 alpha-2).",
+              "title": "Region"
+            }
+          },
+          {
+            "description": "Prefer artwork (or text) in this language tag.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 35,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Prefer artwork (or text) in this language tag.",
+              "title": "Lang"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_duplicates",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Duplicates",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "`legacy` (default): the order this list has always had, so a client that takes the first image keeps getting the same one. `quality`: the C12 §12.5.7 ranking (curator, community choice, role fit, class, trust, region and language, priority, measured size); `results` and `primary` both follow it.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "legacy",
+              "description": "`legacy` (default): the order this list has always had, so a client that takes the first image keeps getting the same one. `quality`: the C12 §12.5.7 ranking (curator, community choice, role fit, class, trust, region and language, priority, measured size); `results` and `primary` both follow it.",
+              "enum": [
+                "legacy",
+                "quality"
+              ],
+              "title": "Order",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientArtworkList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Artwork",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/games/{cid}/relations": {
+      "get": {
+        "description": "The relation graph around a record (C6.3), breadth first up to `depth` hops and `limit` records, for\nnavigation between a game, its DLC, ports, remakes, series and collections. `truncated` says that more\nexists. Deterministic order.",
+        "operationId": "get_relations_api_v2_games__cid__relations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Hops to follow in both directions.",
+            "in": "query",
+            "name": "depth",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "description": "Hops to follow in both directions.",
+              "maximum": 4,
+              "minimum": 1,
+              "title": "Depth",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Most records returned.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "Most records returned.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientRelationGraph"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Relations",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/media/{digest}": {
+      "get": {
+        "operationId": "get_media_api_v2_media__digest__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "digest",
+            "required": true,
+            "schema": {
+              "title": "Digest",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "image/*": {}
+            },
+            "description": "The image bytes (immutable)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Media",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/records": {
+      "get": {
+        "operationId": "list_games_api_v2_records_get",
+        "parameters": [
+          {
+            "description": "Title search. Required unless a release or author filter is given. A valid ISBN-10 or ISBN-13 (hyphens allowed) answers the book that edition belongs to, alone. With `type=book` the words of the authors' names match too.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "Title search. Required unless a release or author filter is given. A valid ISBN-10 or ISBN-13 (hyphens allowed) answers the book that edition belongs to, alone. With `type=book` the words of the authors' names match too.",
+              "maxLength": 200,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Books only (C15 §5): records with a creator whose name has a word starting with this text (casefold, accents ignored). Without `type` it means `type=book`; another type is refused (400).",
+            "in": "query",
+            "name": "author",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Books only (C15 §5): records with a creator whose name has a word starting with this text (casefold, accents ignored). Without `type` it means `type=book`; another type is refused (400).",
+              "title": "Author"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "description": "`YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Only records whose first release lies entirely on or after the start of this period.",
+            "in": "query",
+            "name": "released_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 10,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Only records whose first release lies entirely on or after the start of this period.",
+              "title": "Released From"
+            }
+          },
+          {
+            "description": "`YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Only records whose first release lies entirely on or before the end of this period. A year-only release matches a filter on its year, never one on a single month of it.",
+            "in": "query",
+            "name": "released_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 10,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Only records whose first release lies entirely on or before the end of this period. A year-only release matches a filter on its year, never one on a single month of it.",
+              "title": "Released To"
+            }
+          },
+          {
+            "description": "`release` orders by the start of the first release, year before month before day, unknown last; `-release` newest first. `relevance` ranks exact and prefix title matches first *within each page* of the title order, so pages with `offset` follow the title order; use `title` or `release` for a stable order across pages.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "relevance",
+              "description": "`release` orders by the start of the first release, year before month before day, unknown last; `-release` newest first. `relevance` ranks exact and prefix title matches first *within each page* of the title order, so pages with `offset` follow the title order; use `title` or `release` for a stable order across pages.",
+              "enum": [
+                "relevance",
+                "title",
+                "release",
+                "-release"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 100000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "C14: only records whose ceiling is `group`, `local` or `private`, or `public` (no ceiling and at least one public item). Only for callers with scope detail; ignored otherwise.",
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "C14: only records whose ceiling is `group`, `local` or `private`, or `public` (no ceiling and at least one public item). Only for callers with scope detail; ignored otherwise.",
+              "title": "Scope"
+            }
+          },
+          {
+            "description": "C14: only records with at least one `group` or `local` item. Only for callers with scope detail; ignored otherwise.",
+            "in": "query",
+            "name": "has",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "C14: only records with at least one `group` or `local` item. Only for callers with scope detail; ignored otherwise.",
+              "title": "Has"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientSearch"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search records (alias of GET /games)",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/records/batch": {
+      "post": {
+        "description": "Up to 200 records in one call (CONTRACT-C15 §10.1), in request order: each item is `{requested, status,\ngame}`, `status` `ok` with the record exactly as `GET /games/{id}` answers it (merge redirects followed,\n`redirected_from` set), or `not_found` with `game: null`. Read-only; one item never fails the batch. An\nanonymous (`public_read`) caller sends at most `client_api.limits.anonymous_items` ids (413 beyond).",
+        "operationId": "batch_games_api_v2_records_batch_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientBatch"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read up to 200 records at once (alias of POST /games/batch)",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/records/{cid}": {
+      "get": {
+        "description": "One record. `relations` (C6.3) lists its active relations: `parents` (this record is a DLC, port,\nremake... of them), `children` (theirs to this one), `members_of` (the series and collections it is in) and\n`members` (when this record is a series or collection). Each list is ordered by type, then id, and holds\nat most 200 items; `counts` has the full sizes. `editions` (when known) names the record's editions.\n\nThe `ETag` is `\"<id>-<version>\"`. With a matching `If-None-Match` (weak comparison, `*` too) the answer is `304`\nwith no body (CONTRACT-C15 §10.1). The version moves with every change of this record's own data (fields,\ncustom values, artwork, achievements, its relations); a title change of a *related* record moves that record's\nversion, not this one, so a client showing related titles refreshes them from those records.\n\nC14 (additive): `scope {ceiling, widest, counts}` for callers with scope detail only; for anyone else the key\nis absent. A record this caller may not see is the same 404 as an unknown one.",
+        "operationId": "get_game_api_v2_records__cid__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "An ETag from an earlier answer: `304 Not Modified` (no body) while the record is unchanged.",
+            "in": "header",
+            "name": "if-none-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2000,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An ETag from an earlier answer: `304 Not Modified` (no body) while the record is unchanged.",
+              "title": "If-None-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "304": {
+            "description": "`If-None-Match` matched the current ETag: no body."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One record (alias of GET /games/{cid})",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/records/{cid}/achievements": {
+      "get": {
+        "description": "Hidden achievements come back redacted. `reveal=all` or `reveal=<id or key>,...` unlocks their real text, but\nonly for a signed-in user's own token or a curator/admin token; any other caller still gets the redacted rows.\nA response that reveals anything is `Cache-Control: private, no-store` (C12 §12.1.8).\n\nEach entry carries a stable `key` (`ak1:…`, the smallest of `keys`, the stored keys of the rows merged into it)\nand `key_identity` (null while redacted). `id` stays for older clients and is deprecated as an identity.\n\nC12 (additive): `sets` lists the record's achievement sets (base game, DLC, editions, platforms) and every\nentry names its `set`, `status`, `rarity` (percent, source, as_of, stale, band) and `lang`. `set`, `platform`,\n`lang`, `order` and `include_retired` (curators only) select and arrange; `sets_elsewhere` names DLC sets\nlisted on another record that point at this one.\n\nLarge catalogues can be read in pages: pass `limit` (at most 200) and `offset`, and follow `next_offset` until it\nis null. The order is stable, so pages never overlap or skip. Without `limit` the whole list is returned.\n\nC15 §2.7 (additive): `applicable` is false when achievements do not apply to the record's media type (the type's\n`achievements` flag); the lists are then empty. Stored rows are kept and come back if the type changes.",
+        "operationId": "get_achievements_api_v2_records__cid__achievements_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reveal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2000,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reveal"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Only this set (`<source>/<key>` or `<key>`).",
+            "in": "query",
+            "name": "set",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this set (`<source>/<key>` or `<key>`).",
+              "title": "Set"
+            }
+          },
+          {
+            "description": "Only sets that apply to this platform.",
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 50,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only sets that apply to this platform.",
+              "title": "Platform"
+            }
+          },
+          {
+            "description": "Prefer artwork (or text) in this language tag.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 35,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Prefer artwork (or text) in this language tag.",
+              "title": "Lang"
+            }
+          },
+          {
+            "description": "`rarity` (default), `source` (the provider's list order) or `name`.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 10,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`rarity` (default), `source` (the provider's list order) or `name`.",
+              "title": "Order"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_retired",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Retired",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAchievements"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Achievements (alias of /games/{cid}/achievements)",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/records/{cid}/artwork": {
+      "get": {
+        "description": "Every image of a record. By default `results` keeps its pre-C12 order (community choice, trust, priority,\nage) and `primary` is the first of each kind in it, as before. `best` is always the C12 §12.5.7 pick of each\nkind (curator, community choice, role fit, class, trust, region and language match, priority, measured size);\n`order=quality` sorts `results` (and so `primary`) by that ranking too. `region` and `lang` only steer the\nC12 ranking. Exact duplicates are left out unless `include_duplicates=1`. Curator tokens also see\n`near_duplicate_of` (a perceptual match, reported and never hidden).\n\n`primary_by_role` (CONTRACT-C15 §10.1) names one artwork id per display role, from the C12 ranking whatever\n`order` says: `cover` (`key_art` then `poster` for games, `poster` first for every other type, so a book's\ncover), `background` (`hero`, `banner`, `screenshot`), `icon` and `logo`; null when the record has none.",
+        "operationId": "get_artwork_api_v2_records__cid__artwork_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Prefer artwork of this region (`ww`, `eu`, `na`, `asia`, `oce`, `latam` or ISO 3166-1 alpha-2).",
+            "in": "query",
+            "name": "region",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Prefer artwork of this region (`ww`, `eu`, `na`, `asia`, `oce`, `latam` or ISO 3166-1 alpha-2).",
+              "title": "Region"
+            }
+          },
+          {
+            "description": "Prefer artwork (or text) in this language tag.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 35,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Prefer artwork (or text) in this language tag.",
+              "title": "Lang"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_duplicates",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Duplicates",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "`legacy` (default): the order this list has always had, so a client that takes the first image keeps getting the same one. `quality`: the C12 §12.5.7 ranking (curator, community choice, role fit, class, trust, region and language, priority, measured size); `results` and `primary` both follow it.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "legacy",
+              "description": "`legacy` (default): the order this list has always had, so a client that takes the first image keeps getting the same one. `quality`: the C12 §12.5.7 ranking (curator, community choice, role fit, class, trust, region and language, priority, measured size); `results` and `primary` both follow it.",
+              "enum": [
+                "legacy",
+                "quality"
+              ],
+              "title": "Order",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientArtworkList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Artwork (alias of /games/{cid}/artwork)",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/records/{cid}/relations": {
+      "get": {
+        "description": "The relation graph around a record (C6.3), breadth first up to `depth` hops and `limit` records, for\nnavigation between a game, its DLC, ports, remakes, series and collections. `truncated` says that more\nexists. Deterministic order.",
+        "operationId": "get_relations_api_v2_records__cid__relations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Hops to follow in both directions.",
+            "in": "query",
+            "name": "depth",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "description": "Hops to follow in both directions.",
+              "maximum": 4,
+              "minimum": 1,
+              "title": "Depth",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Most records returned.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "Most records returned.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientRelationGraph"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Relation graph (alias of /games/{cid}/relations)",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/resolve": {
+      "post": {
+        "description": "Read-only. Identity evidence wins over titles; conflicting identity evidence returns `canonical_id: null`\nwith `reason: conflict` (a behaviour change, H2: older Atlas returned the item's own id with `crosswalk`).\nAn anonymous (`public_read`) caller sends at most `client_api.limits.anonymous_items` items (413 beyond).",
+        "operationId": "resolve_api_v2_resolve_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolveResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve client ids and titles to canonical Atlas ids (C4)",
+        "tags": [
+          "read",
+          "client"
+        ]
+      }
+    },
+    "/api/v2/site": {
+      "get": {
+        "description": "Public, non-sensitive description of this node: what a client or mirror needs to present it.\n\n`client_api` (CONTRACT-C15 §9.1): the client API version (`1.0`), the oldest one still answered, the node's\nclient capabilities (`books`, `pairing`, `etag`, `batch`, `public_read`) and announced deprecations. A client\nrefuses a node whose major version differs from its own. `contract` is the general `/api/v2` marker and changes\nindependently.",
+        "operationId": "site_api_v2_site_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientSite"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Site",
+        "tags": [
+          "ops",
+          "client"
+        ]
+      }
+    }
+  },
+  "x-client-api": {
+    "min_supported": "1.0",
+    "version": "1.0"
+  }
+}

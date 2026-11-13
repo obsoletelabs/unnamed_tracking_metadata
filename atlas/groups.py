@@ -40,10 +40,8 @@ from .models import (
     UserSession,
 )
 from .settings import Settings
-from .signing import ENC_PREFIX, NodeIdentity, canonical_json, key_id_for
+from .signing import ENC_PREFIX, ID_PATTERN, NodeIdentity, canonical_json, id_matches
 
-GROUP_PROTOCOL = "1.0"
-MIN_GROUP_PROTOCOL = "1.0"
 SCOPES = ("profile.sync", "group.relay", "identity.assert", "group.enrol", "grant.issue")
 DEFAULT_SCOPES = ("profile.sync", "group.relay", "identity.assert")  # H16
 DELEGATE_SCOPES = ("group.enrol", "grant.issue")
@@ -68,9 +66,9 @@ DEFAULT_POLICY = {"max_members": 32, "max_chain_depth": 2, "cert_max_days": 365,
                   "grant_max_days": 90, "succession_delay_hours": 24}
 CERT_DAYS, DELEGATE_DAYS = 365, 30
 SKEW = timedelta(seconds=gc.SKEW)
-ROOT_SERIAL = re.compile(r"^root/([1-9][0-9]{0,17})-([0-9a-f]{16})\Z")
-NODE_SERIAL = re.compile(r"^([0-9a-f]{16})/([1-9][0-9]{0,17})\Z")
-NODE_ID = re.compile(r"^[0-9a-f]{16}\Z")
+ROOT_SERIAL = re.compile(r"^root/([1-9][0-9]{0,17})-(" + ID_PATTERN + r")\Z")
+NODE_SERIAL = re.compile(r"^(" + ID_PATTERN + r")/([1-9][0-9]{0,17})\Z")
+NODE_ID = re.compile(r"^" + ID_PATTERN + r"\Z")
 RECOVERY_PENDING = "group_recovery_pending"  # NodeState key: enc:v1 recovery file awaiting download + confirm
 RECOVERY_VERIFIED = "group_recovery_verified"  # NodeState key: when a recovery file holding G was verified
 SUCCESSION_ROOT = "group_succession_root"  # NodeState key: {index, key_id, sealed} of a G' this node created
@@ -147,7 +145,7 @@ def _recovery_ok(recovery: Any) -> bool:
         if threshold * 2 <= len(keys) or threshold > len(keys):  # t > n/2 (§1.1)
             return False
         ids = [k["key_id"] for k in keys]
-        return len(set(ids)) == len(ids) and all(gc.key_id_of(k["public_key"]) == k["key_id"] for k in keys)
+        return len(set(ids)) == len(ids) and all(gc.key_id_matches(k["public_key"], k["key_id"]) for k in keys)
     except (KeyError, TypeError, gc.GroupCryptoError):
         return False
 
@@ -168,7 +166,7 @@ def verify_genesis(genesis: Any, group_id: str | None = None) -> bool:
         if not gc.well_formed(genesis, group_id) or genesis["t"] != "group.genesis" or genesis["id"] != "genesis":
             return False
         gid, body, signer = genesis["group_id"], genesis["body"], genesis["signer"]
-        if signer != {"kind": "root", "id": gid, "key_id": gid} or gc.key_id_of(body["root_public_key"]) != gid:
+        if signer != {"kind": "root", "id": gid, "key_id": gid} or not gc.key_id_matches(body["root_public_key"], gid):
             return False
         if not isinstance(body.get("name"), str) or not 1 <= len(body["name"]) <= 80:
             return False
@@ -212,7 +210,7 @@ def verify_succession(obj: Any, group: OwnerGroup, index: int, previous_root_key
             return False
         if body["previous_root_key_id"] != previous_root_key_id:
             return False
-        if gc.key_id_of(body["new_root_public_key"]) != body["new_root_key_id"]:
+        if not gc.key_id_matches(body["new_root_public_key"], body["new_root_key_id"]):
             return False
         if not _recovery_ok(body["recovery"]):
             return False
@@ -305,8 +303,8 @@ def _member_ok(member: Any) -> bool:
     try:
         if set(member) - {"url_verified"} != set(gc.MEMBER_FIELDS):
             return False
-        if not NODE_ID.match(member["node_id"]) or key_id_for(gc.unb64(member["root_public_key"], 32)) != \
-                member["node_id"]:
+        if not NODE_ID.match(member["node_id"]) or not id_matches(member["node_id"],
+                                                                 gc.unb64(member["root_public_key"], 32)):
             return False
         gc.unb64(member["box_public_key"], 32)
         if type(member["rev"]) is not int or member["rev"] < 1:
@@ -941,7 +939,7 @@ def _journal(session: Session, group: OwnerGroup, kind: str, obj: dict, **extra:
 def notify_admins(session: Session, key: str, title: str) -> None:
     """The existing Notification row for every local administrator (§2.6, §1.8)."""
     for admin in session.scalars(select(User).where(User.role == "admin", User.deleted_at.is_(None))):
-        session.add(Notification(user_id=admin.id, kind="group", key=key[:80], title=title[:200], url="/admin/group"))
+        session.add(Notification(user_id=admin.id, kind="group", key=key[:160], title=title[:200], url="/admin/group"))
 
 
 # ---- storing objects (§1.6, §1.8, §3.8 order) --------------------------------------------------------------------
@@ -2237,7 +2235,7 @@ def confirm_recovery(session: Session, settings: Settings, group: OwnerGroup, pa
     if keys.group_id != group.group_id:
         raise GroupError("that recovery file belongs to another group")
     session.delete(session.get(NodeState, RECOVERY_PENDING))
-    holds = keys.root is not None and gc.key_id_of(gc.ed_public_b64(keys.root)) == group.root_key_id
+    holds = keys.root is not None and gc.key_id_matches(gc.ed_public_b64(keys.root), group.root_key_id)
     if keys.root_wrapped is not None and group.root_sealed:
         # v2: the file carries the very wrap sealed on this node (one wrap, two copies), so it holds the current G
         # under the current root passphrase without asking for that passphrase here
@@ -2256,7 +2254,7 @@ def verify_recovery_root(keys: gc.RecoveryKeys, group: OwnerGroup, root_passphra
         root = gc.recovery_root(keys, root_passphrase)
     except gc.WrongPassphrase:
         raise GroupError("wrong root passphrase for the root key in this recovery file", "forbidden") from None
-    return gc.key_id_of(gc.ed_public_b64(root)) == group.root_key_id
+    return gc.key_id_matches(gc.ed_public_b64(root), group.root_key_id)
 
 
 def skip_resync(session: Session, group: OwnerGroup, actor: str | None = None, cli: bool = False) -> None:
@@ -2308,7 +2306,7 @@ def unlock_root(session: Session, settings: Settings, group: OwnerGroup, passphr
         root = gc.unwrap_root(wrapped, passphrase, group.group_id)
     except gc.WrongPassphrase:
         raise GroupError("wrong root passphrase", "forbidden") from None
-    if gc.key_id_of(gc.ed_public_b64(root)) != group.root_key_id:
+    if not gc.key_id_matches(gc.ed_public_b64(root), group.root_key_id):
         raise GroupError("the sealed root key is not the group's current root key", "forbidden")
     return root
 
@@ -2898,7 +2896,7 @@ def import_root(session: Session, settings: Settings, group: OwnerGroup, identit
     reexport_needed = keys.root_wrapped is not None and new_passphrase != root_passphrase
     if reexport_needed and not reexport_passphrase:
         raise GroupError("a new root passphrase needs a re-exported recovery file: give its passphrase", "conflict")
-    if gc.key_id_of(gc.ed_public_b64(root_key)) != group.root_key_id:
+    if not gc.key_id_matches(gc.ed_public_b64(root_key), group.root_key_id):
         raise GroupError("this file holds an older root key: a root succession replaced it", "conflict")
     if group.status != "active":
         raise GroupError(f"the group is {group.status} here; the root cannot be imported now", "conflict")
@@ -2952,7 +2950,7 @@ def _quorum_keys(group: OwnerGroup, files: list[gc.RecoveryKeys]) -> list[Ed2551
             raise GroupError("a recovery file belongs to another group")
         if f.recovery is None:
             raise GroupError("a file holds no recovery key (an export-recovery file holds the root key only)")
-        kid = gc.key_id_of(gc.ed_public_b64(f.recovery))
+        kid = gc.key_id_of(gc.ed_public_b64(f.recovery), group.group_id)
         if kid not in pinned:
             raise GroupError("a recovery file is not in the group's current recovery set (an older file?)", "conflict")
         keys.setdefault(kid, f.recovery)
@@ -2963,10 +2961,10 @@ def _quorum_keys(group: OwnerGroup, files: list[gc.RecoveryKeys]) -> list[Ed2551
 
 def _signed_by_quorum(group: OwnerGroup, t_: str, oid: str, body: dict, keys: list[Ed25519PrivateKey]) -> dict:
     first = keys[0]
-    obj = gc.make_object(t_, group.group_id, oid, body,
-                         {"kind": "recovery", "id": group.group_id, "key_id": gc.key_id_of(gc.ed_public_b64(first))},
-                         first)
-    obj["cosigs"] = [{"key_id": gc.key_id_of(gc.ed_public_b64(k)), "sig": gc.co_sign(obj, k)} for k in keys[1:]]
+    gid = group.group_id
+    obj = gc.make_object(t_, gid, oid, body,
+                         {"kind": "recovery", "id": gid, "key_id": gc.key_id_of(gc.ed_public_b64(first), gid)}, first)
+    obj["cosigs"] = [{"key_id": gc.key_id_of(gc.ed_public_b64(k), gid), "sig": gc.co_sign(obj, k)} for k in keys[1:]]
     return obj
 
 
@@ -3068,7 +3066,7 @@ def issue_succession(session: Session, settings: Settings, group: OwnerGroup, id
     new_public = gc.ed_public_b64(new_root)
     index = len(group.succession or []) + 1
     body = {"index": index, "previous_root_key_id": group.root_key_id, "new_root_public_key": new_public,
-            "new_root_key_id": gc.key_id_of(new_public), "reason": reason, "issued_at": gc.stamp(now),
+            "new_root_key_id": gc.key_id_of(new_public, group.group_id), "reason": reason, "issued_at": gc.stamp(now),
             "carry": carry, "old_root_last_serial_n": next_root_n(session, group.group_id) - 1,
             "old_root_last_crl": {"crl_seq": last.crl_seq, "body_hash": last.body_hash} if last
             else {"crl_seq": 0, "body_hash": "none"},

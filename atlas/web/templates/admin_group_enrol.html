@@ -43,8 +43,8 @@
 {% elif step == 'join' %}
 <section class="card" aria-labelledby="e-join" data-enrol-step="join"><h2 id="e-join">Join a node group</h2>
   <form method="post" action="/admin/group/join">{{ csrf(p.csrf) }}
-    <label for="j-url">Address of the inviting node <span class="hint">or paste the whole invite (scanned QR text)</span></label><input id="j-url" name="url" type="text" inputmode="url" required maxlength="600" placeholder="https://home.example.net" autocomplete="off" spellcheck="false">
-    <label for="j-code">Invite code</label><input id="j-code" name="code" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="AG1-…">
+    <label for="j-url">Address of the inviting node <span class="hint">or paste the whole invite (scanned QR text)</span></label><input id="j-url" name="url" type="text" inputmode="url" required maxlength="800" placeholder="https://home.example.net" autocomplete="off" spellcheck="false">
+    <label for="j-code">Invite code</label><input id="j-code" name="code" type="text" maxlength="256" autocomplete="off" spellcheck="false" placeholder="AG1-…">
     <label for="j-name">Name of this node in the group (optional)</label><input id="j-name" name="name" type="text" maxlength="80" value="{{ (form or {}).get('name', '') }}">
     {{ preset_choice(preset_diffs, (form or {}).get('preset') or 'same_owner', (form or {}).get('with_admin')) }}
     <p><button type="submit">Continue</button></p>

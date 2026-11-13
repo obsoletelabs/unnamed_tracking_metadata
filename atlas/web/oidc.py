@@ -415,7 +415,7 @@ def issuer_add(p: Annotated[Ctx, Depends(admin_form)], iid: Annotated[str, Form(
     base = clean_url(issuer_url)
     try:
         enc = secrets_box.encrypt(p.st.ctx.settings, client_secret)
-        ok = oidc.key_id_for(base64.b64decode(public_key)) == node_id
+        ok = oidc.id_matches(node_id, base64.b64decode(public_key))
     except (secrets_box.SecretsError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
     if not ok or not (authorization_endpoint.startswith(base + "/") and token_endpoint.startswith(base + "/")):

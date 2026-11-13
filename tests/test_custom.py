@@ -73,7 +73,7 @@ def test_type_rules(session, ctx):
 def test_builtin_media_baselines_are_seeded_and_stable(session, ctx):
     custom.seed(session)
     assert {row.key for row in session.scalars(select(MediaType))} == {"game", "anime", "movie", "tv_show", "series",
-                                                                       "collection"}
+                                                                       "collection", "book"}
     assert session.get(MediaType, "movie").labels["developer"] == "Director"
     assert session.get(MediaType, "tv_show").labels["publisher"] == "Network"
     expected = {
@@ -435,8 +435,8 @@ def test_schema_changes_are_published_only_by_authorities(session, ctx):
     custom.seed(session)
     custom.save_type(session, ctx, "movie", "Movie")
     session.commit()
-    assert [e.kind for e in feed.read(session, 0, 10)] == ["schema"]
+    assert [e.kind for e in feed.read(session, 0, 10)] == ["wire_start", "schema"]
     local = Ctx(build_settings(role="local"), load_identity(session))
     custom.save_type(session, local, "anime", "Anime")
     session.commit()
-    assert feed.head_seq(session) == 1
+    assert feed.head_seq(session) == 2

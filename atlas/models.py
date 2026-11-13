@@ -133,6 +133,9 @@ class Relation(Base):
     origin_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
     origin_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     feed_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # CONTRACT-C15 §2.4 (A21, migration 0061): a member's place in its series ("1", "2.5", "0"). Only a
+    # `series_member` relation carries one; a change of position ends the row and adds a new one (no new op).
+    position: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     __table_args__ = (
         CheckConstraint("from_id <> to_id", name="ck_relation_not_self"),
@@ -223,6 +226,20 @@ class Observation(Base):
         Index("ix_obs_key", "source", "source_scope", "external_id", "is_current"),
         UniqueConstraint("origin_node", "origin_seq", name="uq_obs_origin"),
     )
+
+
+class BookCreator(Base):
+    """CONTRACT-C15 §5 (A21, migration 0061): a book's ordered creators, derived from `view["authors"]` on every
+    rebuild (like `release_start`), so `?author=` can prefix-match `norm_name` (casefold, no diacritics). At most 30
+    rows per record; only records of the `book` type have rows."""
+
+    __tablename__ = "book_creator"
+
+    canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    norm_name: Mapped[str] = mapped_column(String(200), index=True)
+    role: Mapped[str] = mapped_column(String(16), default="author")
 
 
 class Crosswalk(Base):
@@ -550,7 +567,7 @@ class NodeState(Base):
 
     __tablename__ = "node_state"
 
-    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    key: Mapped[str] = mapped_column(String(160), primary_key=True)  # C16 D5: some keys embed a 64-hex node id
     value: Mapped[str] = mapped_column(Text)
 
 
@@ -779,8 +796,8 @@ class UserSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     mfa_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # A12 (CONTRACT-C10 §5.4, §9.3): set only on a session opened by a group sign-in assertion.
-    via_group: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    origin_node: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    via_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    origin_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
     assertion_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
     amr: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
@@ -921,6 +938,10 @@ class MediaType(Base):
     position: Mapped[int] = mapped_column(Integer, default=100)
     labels: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)  # core field -> label, e.g. developer: Director
     origin: Mapped[str] = mapped_column(String(8), default="local")  # local | upstream
+    # CONTRACT-C15 §2.7 (A20, migration 0060): whether achievements apply to records of this type. True for every
+    # existing type; an administrator may turn it off. False: the curator API, imports and followers refuse
+    # achievements for such records, and existing rows are kept but hidden (`applicable: false`).
+    achievements: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
 
 
 class FieldDef(Base):
@@ -992,7 +1013,7 @@ class Notification(Base):
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
     kind: Mapped[str] = mapped_column(String(24))
-    key: Mapped[str] = mapped_column(String(80), default="")  # collapses repeats about the same thing
+    key: Mapped[str] = mapped_column(String(160), default="")  # collapses repeats about the same thing (C16 D5: 64-hex ids)
     title: Mapped[str] = mapped_column(String(200))
     url: Mapped[str] = mapped_column(String(300), default="")
     count: Mapped[int] = mapped_column(Integer, default=1)
@@ -1048,19 +1069,71 @@ class Peer(Base):
     # is the relay that answered when it was chosen). NULL: a peer added before A19, whose mode is still inferred.
     follow: Mapped[str | None] = mapped_column(String(8), nullable=True)
     via_node_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # C16 Z1 (migration 0063): what a wire peer advertised, `{min, max, use, high}` (`high`: the highest `max` ever
+    # seen from it, the sticky floor of design §4.10). Never holds an `M.m` v0 value (design §2.3).
+    remote_wire: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
 class FollowerSeen(Base):
-    """Which federation protocol each follower credential last spoke (its `Atlas-Protocol` header).
-
-    Lets an authority see who still needs an upgrade before raising its emit protocol. Holds the
-    token id only: no address, user agent or other personal data."""
+    """Which v0 protocol a v0 follower credential last sent (its `Atlas-Protocol` header), kept for the Admin list
+    of refused v0 followers. Wire followers are in `FollowerWire`. Holds the token id only: no address, user agent
+    or other personal data."""
 
     __tablename__ = "follower_seen"
 
     token_id: Mapped[str] = mapped_column(String(26), primary_key=True)
     protocol: Mapped[str] = mapped_column(String(16))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class FollowerWire(Base):
+    """Per follower token (C16 Z1, design §4.6): the wire range it sent, the negotiated `use`, what was omitted for
+    it (rendition `omitted` lists, unioned) and why it was refused, if it was. Token id only."""
+
+    __tablename__ = "follower_wire"
+
+    token_id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    wire_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    wire_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    use: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    omitted: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    omitted_since: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    refused: Mapped[str | None] = mapped_column(String(24), nullable=True)  # a `wire_unsupported` reason
+    legacy_protocol: Mapped[str | None] = mapped_column(String(16), nullable=True)  # what a refused v0 caller sent
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class FeedRendition(Base):
+    """Cache of signed renditions (C16 §22.2, design §4.3), origin and mirror. Keyed with the canonical body hash and
+    the signer key so a resumed or forked canonical, or a rotated key, never serves a stale rendition. Empty in
+    wire 1: nothing renders yet."""
+
+    __tablename__ = "feed_rendition"
+
+    origin_node: Mapped[str] = mapped_column(String(64), primary_key=True)
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    body_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    rendition_version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    signer_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    signer_key_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    adapter_version: Mapped[int] = mapped_column(Integer)
+    object: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class RenditionReceived(Base):
+    """A rendition this follower applied for an upstream entry it could not read (design §4.3); the canonical row
+    stays in `replicated_change` and is applied by replay after an upgrade."""
+
+    __tablename__ = "rendition_received"
+
+    node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    rendition_version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    signer_kind: Mapped[str] = mapped_column(String(8))
+    signer_id: Mapped[str] = mapped_column(String(64))
+    object: Mapped[dict[str, Any]] = mapped_column(JSON)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class OidcClient(Base):
@@ -1158,15 +1231,15 @@ class OwnerGroup(Base):
 
     __tablename__ = "owner_group"
 
-    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(80))
     genesis: Mapped[dict[str, Any]] = mapped_column(JSON)
     succession: Mapped[list[Any]] = mapped_column(JSON)  # active successions, in order
-    root_key_id: Mapped[str] = mapped_column(String(16))
+    root_key_id: Mapped[str] = mapped_column(String(64))
     recovery: Mapped[dict[str, Any]] = mapped_column(JSON)  # the currently pinned {threshold, keys}
     root_sealed: Mapped[str | None] = mapped_column(Text, nullable=True)  # enc:v1:<fernet(passphrase-wrapped G)>
     box_sealed: Mapped[str] = mapped_column(Text)  # enc:v1: X25519 private key of this node for this group
-    self_serial: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    self_serial: Mapped[str | None] = mapped_column(String(96), nullable=True)
     root_state: Mapped[str] = mapped_column(String(10), default="none", server_default="none")  # holder|moved|none
     succession_pending: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(16))  # active|resyncing|left|revoked|halted
@@ -1188,13 +1261,13 @@ class GroupCert(Base):
     __tablename__ = "group_cert"
 
     group_id: Mapped[str] = mapped_column(ForeignKey("owner_group.group_id", ondelete="CASCADE"), primary_key=True)
-    serial: Mapped[str] = mapped_column(String(40), primary_key=True)
-    issuer: Mapped[str] = mapped_column(String(16))
+    serial: Mapped[str] = mapped_column(String(96), primary_key=True)
+    issuer: Mapped[str] = mapped_column(String(64))
     serial_n: Mapped[int] = mapped_column(BigInteger)
-    serial_r: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    parent_serial: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    serial_r: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parent_serial: Mapped[str | None] = mapped_column(String(96), nullable=True)
     authorized_by_grant: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    node_id: Mapped[str] = mapped_column(String(16))
+    node_id: Mapped[str] = mapped_column(String(64))
     member_rev: Mapped[int] = mapped_column(Integer)
     body: Mapped[dict[str, Any]] = mapped_column(JSON)
     body_hash: Mapped[str] = mapped_column(String(64))
@@ -1211,10 +1284,10 @@ class GroupGrant(Base):
     __tablename__ = "group_grant"
 
     group_id: Mapped[str] = mapped_column(ForeignKey("owner_group.group_id", ondelete="CASCADE"), primary_key=True)
-    serial: Mapped[str] = mapped_column(String(40), primary_key=True)
-    issuer: Mapped[str] = mapped_column(String(16))
+    serial: Mapped[str] = mapped_column(String(96), primary_key=True)
+    issuer: Mapped[str] = mapped_column(String(64))
     serial_n: Mapped[int] = mapped_column(BigInteger)
-    parent_serial: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    parent_serial: Mapped[str | None] = mapped_column(String(96), nullable=True)
     authorized_by_grant: Mapped[str | None] = mapped_column(String(40), nullable=True)
     account_uid: Mapped[str] = mapped_column(String(26))
     role: Mapped[str] = mapped_column(String(16))
@@ -1234,12 +1307,12 @@ class GroupBannedNode(Base):
 
     __tablename__ = "group_banned_node"
 
-    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
-    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     root_public_key: Mapped[str] = mapped_column(String(100))
     reason: Mapped[str] = mapped_column(String(24))
     revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    crl_serial: Mapped[str] = mapped_column(String(40))
+    crl_serial: Mapped[str] = mapped_column(String(96))
 
 
 class GroupView(Base):
@@ -1247,8 +1320,8 @@ class GroupView(Base):
 
     __tablename__ = "group_view"
 
-    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
-    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     body: Mapped[dict[str, Any]] = mapped_column(JSON)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -1260,12 +1333,12 @@ class GroupMember(Base):
     __tablename__ = "group_member"
 
     group_id: Mapped[str] = mapped_column(ForeignKey("owner_group.group_id", ondelete="CASCADE"), primary_key=True)
-    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     root_public_key: Mapped[str] = mapped_column(String(100))
     box_public_key: Mapped[str] = mapped_column(String(100))
     url: Mapped[str] = mapped_column(String(300))
     name: Mapped[str] = mapped_column(String(80))
-    serial: Mapped[str] = mapped_column(String(40))
+    serial: Mapped[str] = mapped_column(String(96))
     scopes: Mapped[list[str]] = mapped_column(JSON)
     delegate: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     not_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -1282,7 +1355,7 @@ class GroupCrl(Base):
     __tablename__ = "group_crl"
 
     group_id: Mapped[str] = mapped_column(ForeignKey("owner_group.group_id", ondelete="CASCADE"), primary_key=True)
-    issuer: Mapped[str] = mapped_column(String(16), primary_key=True)
+    issuer: Mapped[str] = mapped_column(String(64), primary_key=True)
     crl_seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     body: Mapped[dict[str, Any]] = mapped_column(JSON)
     body_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -1294,11 +1367,11 @@ class GroupRevoked(Base):
 
     __tablename__ = "group_revoked"
 
-    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
-    serial: Mapped[str] = mapped_column(String(40), primary_key=True)
-    issuer: Mapped[str] = mapped_column(String(16))
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    serial: Mapped[str] = mapped_column(String(96), primary_key=True)
+    issuer: Mapped[str] = mapped_column(String(64))
     reason: Mapped[str] = mapped_column(String(24))
-    node_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    node_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     root_public_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
     revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     suspect_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1312,11 +1385,11 @@ class GroupEnrolment(Base):
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True)  # enrolment_id (ULID)
     side: Mapped[str] = mapped_column(String(8))  # inviter|joiner
-    group_id: Mapped[str] = mapped_column(String(16))
+    group_id: Mapped[str] = mapped_column(String(64))
     invite_hash: Mapped[str] = mapped_column(String(64), unique=True)  # sha256(invite_id)
     secret_enc: Mapped[str] = mapped_column(Text)  # enc:v1: k (joiner: k and its new box key)
     peer_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
-    peer_node_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    peer_node_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     scopes: Mapped[list[str]] = mapped_column(JSON)
     delegate: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     transcript: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
@@ -1328,7 +1401,7 @@ class GroupEnrolment(Base):
     # open|hello|revealed|confirmed|issued|activating|active|burned|expired|aborted
     failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    cert_serial: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    cert_serial: Mapped[str | None] = mapped_column(String(96), nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -1344,7 +1417,7 @@ class GroupNonce(Base):
 
     __tablename__ = "group_nonce"
 
-    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     nonce: Mapped[str] = mapped_column(String(32), primary_key=True)
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -1358,8 +1431,8 @@ class GroupStream(Base):
 
     __tablename__ = "group_stream"
 
-    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
-    origin: Mapped[str] = mapped_column(String(16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    origin: Mapped[str] = mapped_column(String(64), primary_key=True)
     epoch: Mapped[str] = mapped_column(String(8), primary_key=True)
     scope: Mapped[str] = mapped_column(String(26), primary_key=True)
     hwm: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
@@ -1380,8 +1453,8 @@ class GroupChange(Base):
 
     __tablename__ = "group_change"
 
-    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
-    origin: Mapped[str] = mapped_column(String(16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    origin: Mapped[str] = mapped_column(String(64), primary_key=True)
     epoch: Mapped[str] = mapped_column(String(8), primary_key=True)
     scope: Mapped[str] = mapped_column(String(26), primary_key=True)
     seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -1391,9 +1464,9 @@ class GroupChange(Base):
     body_hash: Mapped[str] = mapped_column(String(64))
     key_id: Mapped[str] = mapped_column(String(64))
     sig: Mapped[str] = mapped_column(String(128))
-    hlc: Mapped[str | None] = mapped_column(String(48), nullable=True)  # kept when the body is stripped (§4.4)
+    hlc: Mapped[str | None] = mapped_column(String(96), nullable=True)  # kept when the body is stripped (§4.4)
     issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    received_from: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    received_from: Mapped[str | None] = mapped_column(String(64), nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     disposition: Mapped[str] = mapped_column(String(12))  # applied|noop|parked|held|elided|rejected
     reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -1406,7 +1479,7 @@ class GroupAccountLink(Base):
 
     __tablename__ = "group_account_link"
 
-    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     account_uid: Mapped[str] = mapped_column(String(26), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"))
     minted_here: Mapped[bool] = mapped_column(Boolean)
@@ -1420,9 +1493,9 @@ class GroupAccountNode(Base):
 
     __tablename__ = "group_account_node"
 
-    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     account_uid: Mapped[str] = mapped_column(String(26), primary_key=True)
-    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     status: Mapped[str] = mapped_column(String(10))  # linked|unlinked|suspect
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     entry_ref: Mapped[str] = mapped_column(String(120))
@@ -1437,8 +1510,8 @@ class ProfileField(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
     field: Mapped[str] = mapped_column(String(48), primary_key=True)
     value: Mapped[Any] = mapped_column(JSON, nullable=True)
-    hlc: Mapped[str] = mapped_column(String(48))
-    origin_node: Mapped[str] = mapped_column(String(16))
+    hlc: Mapped[str] = mapped_column(String(96))
+    origin_node: Mapped[str] = mapped_column(String(64))
     cause: Mapped[str] = mapped_column(String(12))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -1450,12 +1523,12 @@ class ProfileVersion(Base):
 
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
     field: Mapped[str] = mapped_column(String(48), primary_key=True)
-    hlc: Mapped[str] = mapped_column(String(48), primary_key=True)
+    hlc: Mapped[str] = mapped_column(String(96), primary_key=True)
     value: Mapped[Any] = mapped_column(JSON, nullable=True)
     cleared: Mapped[bool] = mapped_column(Boolean)
     base: Mapped[list[str]] = mapped_column(JSON)
     cause: Mapped[str] = mapped_column(String(12))
-    origin_node: Mapped[str] = mapped_column(String(16))
+    origin_node: Mapped[str] = mapped_column(String(64))
     entry_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)  # group_change PK; NULL = local only
     is_head: Mapped[bool] = mapped_column(Boolean)
     held_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1467,7 +1540,7 @@ class ProfileSuperseded(Base):
 
     user_id: Mapped[str] = mapped_column(String(26), primary_key=True)
     field: Mapped[str] = mapped_column(String(48), primary_key=True)
-    hlc: Mapped[str] = mapped_column(String(48), primary_key=True)
+    hlc: Mapped[str] = mapped_column(String(96), primary_key=True)
     pruned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -1480,8 +1553,8 @@ class ProfileConflict(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"))
     field: Mapped[str] = mapped_column(String(48))
     kind: Mapped[str] = mapped_column(String(16))
-    winner_hlc: Mapped[str | None] = mapped_column(String(48), nullable=True)
-    loser_hlc: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    winner_hlc: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    loser_hlc: Mapped[str | None] = mapped_column(String(96), nullable=True)
     detail: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(10))  # open|resolved|merged|dismissed
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -1496,7 +1569,7 @@ class ProfileSyncConsent(Base):
     __tablename__ = "profile_sync_consent"
 
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
-    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     fields: Mapped[list[str]] = mapped_column(JSON)
     signout_propagation: Mapped[bool] = mapped_column(Boolean)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -1508,8 +1581,8 @@ class GroupSigninState(Base):
     __tablename__ = "group_signin_state"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256(state) = the assertion's state_hash
-    group_id: Mapped[str] = mapped_column(String(16))
-    idp_node: Mapped[str] = mapped_column(String(16))
+    group_id: Mapped[str] = mapped_column(String(64))
+    idp_node: Mapped[str] = mapped_column(String(64))
     purpose: Mapped[str] = mapped_column(String(8))
     nonce: Mapped[str] = mapped_column(String(64))
     binding: Mapped[str] = mapped_column(String(64))  # sha256(atlas_grp_bind)
@@ -1532,9 +1605,9 @@ class GroupWebHandle(Base):
 class GroupAssertionSeen(Base):
     __tablename__ = "group_assertion_seen"
 
-    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     jti: Mapped[str] = mapped_column(String(26), primary_key=True)
-    iss_node: Mapped[str] = mapped_column(String(16))
+    iss_node: Mapped[str] = mapped_column(String(64))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
@@ -1544,8 +1617,8 @@ class GroupIdpConsent(Base):
     __tablename__ = "group_idp_consent"
 
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
-    group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
-    rp_node: Mapped[str] = mapped_column(String(16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    rp_node: Mapped[str] = mapped_column(String(64), primary_key=True)
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -1715,9 +1788,9 @@ class NodeLink(Base):
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
     user_id: Mapped[str] = mapped_column(ForeignKey("app_user.id"), index=True)
-    node_id: Mapped[str] = mapped_column(String(16), index=True)
+    node_id: Mapped[str] = mapped_column(String(64), index=True)
     root_public_key: Mapped[str] = mapped_column(String(64))
-    current_key_id: Mapped[str] = mapped_column(String(16))
+    current_key_id: Mapped[str] = mapped_column(String(64))
     current_jkt: Mapped[str] = mapped_column(String(64))
     key_epoch: Mapped[int] = mapped_column(Integer, default=1)
     rotations: Mapped[list[Any]] = mapped_column(JSON, default=list)
@@ -1807,7 +1880,7 @@ class LinkBannedKey(Base):
 
     __tablename__ = "link_banned_key"
 
-    node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     reason: Mapped[str] = mapped_column(String(32), default="")
     banned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     by: Mapped[str | None] = mapped_column(String(26), nullable=True)
@@ -1839,7 +1912,7 @@ class UpstreamLink(Base):
 
     __tablename__ = "upstream_link"
 
-    main_node_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    main_node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     issuer_url: Mapped[str] = mapped_column(String(300))
     main_root_public_key: Mapped[str] = mapped_column(String(64))
     main_name: Mapped[str] = mapped_column(String(80), default="")
@@ -1876,7 +1949,7 @@ class UpstreamContribution(Base):
     __tablename__ = "upstream_contribution"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
-    main_node_id: Mapped[str] = mapped_column(String(16), index=True)
+    main_node_id: Mapped[str] = mapped_column(String(64), index=True)
     seq: Mapped[int] = mapped_column(BigInteger)
     kind: Mapped[str] = mapped_column(String(16))
     local_cid: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)

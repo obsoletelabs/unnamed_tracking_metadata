@@ -1,0 +1,21 @@
+{
+ "docs": [
+  {
+   "author_key": [
+    "OL9900000003A"
+   ],
+   "author_name": [
+    "Oswin Fell"
+   ],
+   "edition_count": 0,
+   "key": "/works/OL9900000003W",
+   "title": "An Undated Ledger"
+  }
+ ],
+ "numFound": 1,
+ "numFoundExact": true,
+ "num_found": 1,
+ "offset": null,
+ "q": "key:\"/works/OL9900000003W\"",
+ "start": 0
+}

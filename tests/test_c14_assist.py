@@ -1,6 +1,6 @@
 """CONTRACT-C14 Part A (C14-2): asking the owner group for records and images a member lacks.
 
-Real nodes on SQLite files: an authority U (C13's legacy emission, so a provider-only record S gets sidecars but
+Real nodes on SQLite files: an authority U (a v0 release, `v0_authority`, so a provider-only record S gets sidecars but
 no `record`), and the owner's group {N1, N2} wired through the in-process dispatcher. N1 follows U and waits for S;
 N2 holds S. Every key, secret and URL is a synthetic runtime value."""
 
@@ -36,6 +36,7 @@ from .group_harness import Dispatcher, fast_kdf, make_node
 from .test_c13_follower import curate_art, provider_only
 from .test_sync_compat import Node as FeedNode
 from .test_sync_compat import pull as feed_pull
+from .v0_authority import upgrade, v0, v0_authorities  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -74,14 +75,14 @@ def world(tmp_path):
     """U (authority, legacy emission) with S + two artwork sidecars; N1 and N2 in one group; both follow U.
     N1 pulled while S was not introduced (its sidecars wait); then U introduced S and N2 pulled it all."""
     net = Dispatcher()
-    u = FeedNode(tmp_path, "authority", "authority")
+    u = v0(FeedNode(tmp_path, "authority", "authority"))  # a v0 authority (C16 Z1: no legacy emission any more)
     n1, n2 = make_node(tmp_path, net, "n1"), make_node(tmp_path, net, "n2")
     group_of(n1, n2)
     cid = provider_only(u)
     curate_art(u, cid)
     feed_pull(n1, u)
     assert waiting(n1, u.node_id) == [(1, "artwork", cid)]
-    configure(u, emit_protocol="1.5")
+    upgrade(u)  # the in-place upgrade to wire 1
     with u.st.maker() as s:
         assert feed.introduce_batch(s, u.st.ctx, "missing")["introduced"] == 1
         s.commit()
@@ -110,7 +111,7 @@ def test_wait_row_enqueues_one_assist_job_per_record(world, tmp_path):
 def test_no_jobs_outside_a_group_or_with_ask_off(tmp_path):
     """T-A1 (second half)."""
     net = Dispatcher()
-    u = FeedNode(tmp_path, "authority", "authority")
+    u = v0(FeedNode(tmp_path, "authority", "authority"))  # a v0 authority (C16 Z1: no legacy emission any more)
     lone = make_node(tmp_path, net, "lone")
     cid = provider_only(u)
     curate_art(u, cid)
@@ -426,7 +427,7 @@ def test_media_order_group_before_origin_only_with_preset(world, monkeypatch):
     _u, n1, n2, cid = world
     order = []
 
-    def origin(client, url, settings):
+    def origin(client, url, settings, **_kw):
         order.append("origin")
         raise media.MediaError("unreachable")
 
@@ -454,7 +455,7 @@ def test_group_reported_digest_is_a_hint(world, monkeypatch):
     """T-A11: origin bytes that differ from a group-reported digest replace it."""
     _u, n1, _n2, cid = world
     origin_bytes = _png((200, 0, 0))
-    monkeypatch.setattr(media, "_request", lambda client, url, settings: origin_bytes)
+    monkeypatch.setattr(media, "_request", lambda client, url, settings, **_kw: origin_bytes)
     with n1.session() as s:
         art = Artwork(canonical_id=cid, source="curator", kind="banner", url="https://img.example.org/b.png",
                       licence="cc0", redistributable=False, fetched_from="group:" + "a" * 16,

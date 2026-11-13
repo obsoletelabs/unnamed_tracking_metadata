@@ -6,6 +6,7 @@ Content-Type pre-check, frame caps, per-host limits, error codes). Every image i
 from __future__ import annotations
 
 import io
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -198,6 +199,30 @@ def test_near_duplicates_are_reported_and_never_hidden(session, ctx):
     by_url = {a.url: a.id for a in rows}
     assert near == {by_url["https://img.test/s1.png"]: by_url["https://img.test/s0.png"]}
     assert len(facets.merged_artwork(session, ctx, cid, include_duplicates=False)) == 3
+
+
+def test_the_legacy_order_of_one_batch_does_not_depend_on_the_clock(session, ctx, monkeypatch):
+    """The images one `set_artwork` call adds share one age, so the legacy order inside the batch is url order on a
+    fine clock (Linux: every read differs) as on a coarse one (Windows: equal reads); the client fixtures broke on
+    exactly that (A24)."""
+    import atlas.models as models
+
+    ticks = iter(range(1, 10_000))
+
+    class FineClock(models.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return models.datetime(2026, 1, 1, tzinfo=tz) + timedelta(microseconds=next(ticks))
+
+    monkeypatch.setattr(models, "datetime", FineClock)
+    cid = seed(session, ctx)
+    kinds = ("key_art", "hero", "icon", "logo")  # insertion order differs from url order
+    facets.set_artwork(session, ctx, cid, "curator", [{"kind": k, "url": f"https://img.test/g-{k}.png"} for k in kinds])
+    session.commit()
+    session.expire_all()
+    rows = facets.merged_artwork(session, ctx, cid, order="legacy")
+    assert [a.kind for a in rows] == sorted(kinds)
+    assert len({a.created_at for a in rows}) == 1
 
 
 # ---- ranking: role fit, region and language (§12.5.6, §12.5.7) ---------------------------------------------
@@ -529,12 +554,11 @@ def test_failures_record_their_code_and_the_api_reports_the_state(session, ctx, 
 
 @pytest.mark.parametrize("release", ["this", "1.1"])
 def test_followers_park_an_artwork_v2_body(tmp_path, monkeypatch, release):
-    from atlas import feed_schema
 
     from .test_prices import play
     from .test_sync_compat import Node, pull
 
-    authority = Node(tmp_path, "authority", "authority", emit_protocol=feed_schema.PROTOCOL)
+    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
     mirror = Node(tmp_path, "mirror", "mirror")
     gid = authority.publish("Park Art")
     seq = authority.emit("artwork", {"_v": 2, "canonical_id": gid, "source": "curator", "_requires": ["art-v2"],

@@ -11,6 +11,7 @@ class Rawg:
     redistributable = False
     media_types = ("game",)
     requests_per_minute = 60
+    media_types = ("game",)
 
     def __init__(self, api_key: str) -> None:
         self.key = api_key

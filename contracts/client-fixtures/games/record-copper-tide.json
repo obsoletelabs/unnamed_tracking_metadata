@@ -1,0 +1,48 @@
+{
+  "custom": {},
+  "developer": "Brassfin Games",
+  "first_release": {
+    "date": "2021-11",
+    "precision": "month"
+  },
+  "genres": [
+    "Strategy"
+  ],
+  "id": "atlas:01kdvdna68000000000000000m",
+  "media_type": "game",
+  "provider_ids": {
+    "fixturegames": "CT-2002"
+  },
+  "redirected_from": null,
+  "relations": {
+    "children": [],
+    "counts": {
+      "children": 0,
+      "members": 0,
+      "members_of": 0,
+      "parents": 0
+    },
+    "members": [],
+    "members_of": [],
+    "parents": [],
+    "truncated": false
+  },
+  "release_year": 2021,
+  "scope": {
+    "ceiling": null,
+    "counts": {
+      "group": 0,
+      "local": 1,
+      "private": 0,
+      "public": 0
+    },
+    "widest": "local"
+  },
+  "sources": [
+    "fixturegames"
+  ],
+  "title": "Copper Tide",
+  "unmerged": [],
+  "updated_at": "2026-01-01T00:00:00+00:00",
+  "version": 2
+}

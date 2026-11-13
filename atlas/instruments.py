@@ -94,6 +94,10 @@ federation_verification = REGISTRY.counter(
 enrichment = REGISTRY.counter(
     "atlas_enrichment_operations_total", "Catalogue enrichment runs by operation and outcome",
     {"operation": ("provider_import",), "outcome": ("created", "matched", "review", "not_found", "failed")})
+#: CONTRACT-C15 §2.5: an edition ISBN dropped because its check digit (or its length) is wrong. It is never guessed.
+book_isbn_rejected = REGISTRY.counter(
+    "atlas_book_isbn_rejected_total", "Book edition ISBNs dropped as invalid (bad check digit or length), by field",
+    {"field": ("isbn_13", "isbn_10")})
 
 # ---- media (#73) --------------------------------------------------------------------------------------------
 MEDIA_KINDS = ("artwork", "achievement_icon")
@@ -225,6 +229,12 @@ authorization = REGISTRY.counter(
     "API token checks by required scope: allowed, or denied with reason missing_token, insufficient_scope or "
     "rate_limited", {"scope": SCOPES, "decision": ("allowed", "denied"),
                      "reason": ("ok", "missing_token", "insufficient_scope", "rate_limited")})
+# ---- client API (CONTRACT-C15 §10.2, A24) -------------------------------------------------------------------
+client_requests = REGISTRY.counter(
+    "atlas_client_requests_total",
+    "Requests to the client API subset, by the connector named in User-Agent atlas-connector-<host>/<version> "
+    "(playnite, jellyfin, emby, plex; anything else other)",
+    {"client": ("playnite", "jellyfin", "emby", "plex", "other")})
 RATE_LIMIT_OPERATIONS = ("api", "login", "register", "password_reset", "email_verification", "mfa", "oidc_token",
                          "oidc_callback", "group", "import", "account")
 auth_rate_limit = REGISTRY.counter(

@@ -497,55 +497,21 @@ def test_api_locks_partial_and_releases_signed_with_the_token(api):
         assert unlock.body["_requires"] == ["dates-v1"]
 
 
-def test_a_gated_authority_refuses_partial_locks_and_keeps_observations_local(tmp_path):
-    authority = Node(tmp_path, "gated", "authority", emit_protocol="1.2")
-    admin = {"Authorization": f"Bearer {_admin(authority)}"}
-    r = authority.client.post("/api/v2/observations", headers=admin, json={
-        "connection": {"source_kind": "manual", "source": "manual", "source_scope": "g"},
-        "observations": [{"external_id": "a", "title": "Gated", "release_date": "2011-04-19",
-                          "ext": release("2011-04-19", [entry("2011-04-19", "pc", "jp")])}]})
-    assert r.status_code == 200, r.text
-    cid = r.json()["results"][0]["atlas"]["canonical_id"]
-    before = authority.head()
-    refused = authority.client.put(f"/api/v2/games/{cid}/locks/release_date", headers=admin, json={"value": "2011"})
-    assert refused.status_code == 409 and refused.json()["error"]["code"] == "emit_protocol"
-    assert "needs federation protocol 1.3; this node emits 1.2" in refused.json()["error"]["message"]
-    refused = authority.client.put(f"/api/v2/games/{cid}/locks/releases", headers=admin,
-                                   json={"value": [entry("2011", "pc")]})
-    assert refused.status_code == 409
-    ok = authority.client.put(f"/api/v2/games/{cid}/locks/release_date", headers=admin, json={"value": "2011-04-20"})
-    assert ok.status_code == 200  # a day lock is what a 1.2 follower already understands
-    with authority.st.maker() as s:
-        assert s.get(Lock, (cid, "releases")) is None and s.get(Lock, (cid, "release_date")).value == "2011-04-20"
-        [obs_entry] = [c for c in s.scalars(select(ChangeLog).where(ChangeLog.kind == "obs"))]
-        signed = obs_entry.body["observation"]["payload"]
-        assert "ext" not in signed and "_requires" not in obs_entry.body  # the signed copy omits ext.release
-        stored = s.scalars(select(Observation).where(Observation.canonical_id == cid)).one()
-        assert stored.payload["ext"]["release"]["entries"][0]["region"] == "jp"  # the local copy is complete
-        lock_entry = s.scalars(select(ChangeLog).where(ChangeLog.kind == "lock")).one()
-        assert "_requires" not in lock_entry.body
-    assert authority.head() == before + 1  # only the day lock was signed
-    assert authority.client.get(f"/api/v2/games/{cid}", headers=admin).json()["releases"][0]["region"] == "jp"
-
-
 def test_check_emit_for_dates():
+    """C16 Z1: `ext.release` is a critical member, always signed with `dates-v1` (no emit protocol strips it)."""
     obs_body = observation("X", release_date="2011-04-19", ext=release("2011-04-19", [entry("2011-04-19", "pc")]))
-    low = feed_schema.check_emit("obs", obs_body, "1.2")
-    assert "ext" not in low["observation"]["payload"] and "ext" in obs_body["observation"]["payload"]
-    assert "_requires" not in low
-    high = feed_schema.check_emit("obs", obs_body, "1.3")
-    assert high["_requires"] == ["dates-v1"] and high["observation"]["payload"]["ext"]
-    again = feed_schema.check_emit("obs", high, "1.3")
+    signed = feed_schema.check_emit("obs", obs_body)
+    assert signed["_requires"] == ["dates-v1"] and signed["observation"]["payload"]["ext"]
+    assert "_requires" not in obs_body
+    again = feed_schema.check_emit("obs", signed)
     assert again["_requires"] == ["dates-v1"]  # never twice
     for body in ({"canonical_id": "atlas:x", "field": "releases", "value": []},
                  {"canonical_id": "atlas:x", "field": "release_date", "value": "2011"},
                  {"canonical_id": "atlas:x", "field": "releases"}):
         kind = "unlock" if "value" not in body else "lock"
-        with pytest.raises(feed_schema.EmitGateError, match="Raise federation emit protocol to 1.3 first"):
-            feed_schema.check_emit(kind, body, "1.2")
-        assert feed_schema.check_emit(kind, body, "1.3")["_requires"] == ["dates-v1"]
+        assert feed_schema.check_emit(kind, body)["_requires"] == ["dates-v1"]
     day = {"canonical_id": "atlas:x", "field": "release_date", "value": "2011-04-19"}
-    assert feed_schema.check_emit("lock", day, "1.0") is day
+    assert feed_schema.check_emit("lock", day) == {**day, "_wire": 1}
 
 
 # ---- federation (C5.6): 1.3 applies, 1.1 and 1.2 park, upgrade converges ----------------------------------
@@ -630,8 +596,6 @@ def play_release(monkeypatch, protocol):
     monkeypatch.setattr(feed_schema, "vocabularies", lambda: old)
     monkeypatch.setattr(feed_schema, "CAPABILITIES", ("ext-v1",))
     monkeypatch.setattr(feed_schema, "EXT_APPLY", frozenset())
-    monkeypatch.setattr(feed_schema, "PROTOCOL", protocol)
-    monkeypatch.setattr(sync, "PROTOCOL", protocol)
 
 
 @pytest.mark.parametrize("protocol", ["1.2", "1.1"])
@@ -696,7 +660,7 @@ def test_an_older_follower_parks_a_partial_lock_and_a_releases_lock(dates_net, m
         assert s.get(Lock, (cid, "releases")).value == [entry("2011", "pc")]
 
 
-def test_an_unknown_region_or_release_member_parks_on_this_release(dates_net):
+def test_an_unknown_region_parks_and_an_unknown_release_member_is_ignored(dates_net):
     authority, mirror, _, _ = dates_net
     body = observation("Future", ext=release("2011", [entry("2011", "pc", "ww")]))
     body["_requires"] = ["dates-v1"]
@@ -710,9 +674,10 @@ def test_an_unknown_region_or_release_member_parks_on_this_release(dates_net):
     with mirror.st.maker() as s:
         assert s.get(SyncFailure, (authority.node_id, seq)).detail["unknown"] == [
             "observation.payload.ext.release.entries[0].region=mena"]
-    outcome = feed_schema.classify("obs", body2)
-    assert (outcome.action, outcome.reason) == ("parked", "unsupported_field")
-    assert outcome.detail["unknown"] == ["observation.payload.ext.release.label"]
+    outcome = feed_schema.classify("obs", body2)  # C16 Z1 W-2: an unknown member is ignored, not parked
+    assert (outcome.action, outcome.reason) == ("apply", feed_schema.IGNORED_MEMBER)
+    assert outcome.detail["ignored"] == ["observation.payload.ext.release.label"]
+    assert "label" not in outcome.body["observation"]["payload"]["ext"]["release"]
 
 
 # ---- providers --------------------------------------------------------------------------------------------
@@ -934,15 +899,6 @@ def test_editor_reports_invalid_rows_and_keeps_the_input(local_site, rows, relea
     with site.st.maker() as s:
         assert s.scalars(select(Proposal)).first() is None
         assert s.get(Canonical, site.gid).view["release_date"] == "2011-04-19"
-
-
-def test_editor_on_a_gated_authority_says_dates_stay_local(gated_site):
-    site = gated_site
-    signup(site, "alice")
-    page = site.get(f"/game/{site.gid}/edit").text
-    # SPEC-UI-POLISH-PASS §3.6 (D5): the gate is unchanged; the copy names the release, not a protocol number
-    assert "does not publish them to its followers until every follower runs this Atlas release" in page
-    assert "dates saved before then are not published later" in page
 
 
 def test_lock_form_accepts_release_lines(local_site):

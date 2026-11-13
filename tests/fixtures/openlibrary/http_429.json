@@ -1,0 +1,4 @@
+{
+ "error": "Too Many Requests",
+ "note": "synthetic 429 answer; the route sends Retry-After"
+}

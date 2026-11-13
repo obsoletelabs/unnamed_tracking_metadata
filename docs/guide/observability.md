@@ -149,6 +149,7 @@ authority has nothing newer.
 | `atlas_catalog_achievement_definitions` | gauge | `state` = `active unobtainable unknown retired` | Catalogue achievement definitions (never unlocks or progress) |
 | `atlas_catalog_review_pending` | gauge | `queue` = `match_review proposal field_conflict` | Open match reviews, pending proposals and fields with conflicting sources |
 | `atlas_enrichment_operations_total` | counter | `operation` = `provider_import`, `outcome` = `created matched review not_found failed` | Imports of a provider record into the catalogue |
+| `atlas_book_isbn_rejected_total` | counter | `field` = `isbn_13 isbn_10` | Book edition ISBNs dropped as invalid (bad check digit or length); never guessed |
 
 Admin-defined media types are one `custom` group; their names are never label values. A description field is not
 measured: this release has no structured description to count. No player identity or personal progress is exported.
@@ -219,6 +220,7 @@ rehearsal does. Metric tests never send mail or restore into a live database.
 | `atlas_oidc_consent_decisions_total` | counter | `decision` = `allowed denied invalid_request` | Atlas as OpenID provider: the consent screen. `invalid_request`: refused before consent (unknown client, redirect, PKCE or scope) |
 | `atlas_oidc_stage_duration_seconds` | histogram (s) | `stage` = `authorize token userinfo callback`, `outcome` = `ok error` | Stage latency |
 | `atlas_token_operations_total` | counter | `token` = `authorization_code access_token`, `operation` = `issue exchange validate revoke`, `outcome` = `ok invalid expired reused redirect_mismatch pkce_failed account_unavailable client_disabled client_auth_failed unsupported_grant` | OpenID provider token lifecycle |
+| `atlas_client_requests_total` | counter | `client` = `playnite jellyfin emby plex other` | Requests to the client API subset (CONTRACT-C15 §10.2), by the connector named in `User-Agent: atlas-connector-<host>/<version>`; any other agent counts as `other` |
 | `atlas_authorization_decisions_total` | counter | `scope` = `read contribute curate sync metrics admin`, `decision` = `allowed denied`, `reason` = `ok missing_token insufficient_scope rate_limited` | API token checks, by the scope the endpoint requires |
 | `atlas_auth_rate_limit_decisions_total` | counter | `operation` = `api login register password_reset email_verification mfa oidc_token oidc_callback group import account`, `decision` = `allowed limited` | Every rate-limiter decision, by the operation class its key belongs to (the key, which holds addresses and ids, is never exported) |
 

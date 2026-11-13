@@ -56,7 +56,7 @@ def test_populated_upgrade_preserves_fields_values_proposals_and_signed_history(
                                       for row in session.execute(select(old_fields)).mappings()]}
         feed.append(session, identity, "schema", original_schema)
         session.commit()
-        signed = session.scalars(select(ChangeLog)).one()
+        signed = session.scalars(select(ChangeLog).where(ChangeLog.kind == "schema")).one()
         original_signature, original_hash = signed.signature, signed.body_hash
         proposal_id = proposal.id
     db.upgrade(url)
@@ -71,8 +71,9 @@ def test_populated_upgrade_preserves_fields_values_proposals_and_signed_history(
         proposal = session.get(Proposal, proposal_id)
         assert proposal.payload["custom"] == {"custom_genres_2": ["New"]}
         assert proposal.previous["custom"] == {"custom_genres_2": ["Old"]}
-        signed = session.scalars(select(ChangeLog)).one()
-        assert (signed.body, signed.signature, signed.body_hash) == (original_schema, original_signature, original_hash)
+        signed = session.scalars(select(ChangeLog).where(ChangeLog.kind == "schema")).one()
+        assert (signed.body, signed.signature, signed.body_hash) == ({**original_schema, "_wire": 1}, original_signature,
+                                                                     original_hash)
         assert verify(identity.public_b64, identity.node_id, signed.seq, signed.kind,
                       signed.body, signed.body_hash, signed.signature)
         assert custom.clean_values(session, "game", {"genres": ["Compatible"]}, editable_only=True) == {
@@ -111,14 +112,14 @@ def test_historical_schema_and_values_replay_without_mutating_signed_body(sessio
 
 def test_custom_renames_are_scoped_to_media_type(session):
     custom.seed(session)
-    session.add(MediaType(key="book", label="Book"))
+    session.add(MediaType(key="zine", label="Zine"))  # not `book`: A21 seeds that one
     session.flush()
     schema = {"fields": [{"media_type": kind, "key": "genres", "kind": "text", "label": "Old"}
-                         for kind in ("game", "book")]}
+                         for kind in ("game", "zine")]}
     # Local types are retained when the snapshot has no upstream types.
     custom.apply_snapshot(session, schema)
     assert {(r["media_type"], r["new"]) for r in custom_compat.renames(session)} == {
-        ("game", "custom_genres"), ("book", "custom_genres")}
+        ("game", "custom_genres"), ("zine", "custom_genres")}
     # Malformed fields retain the existing per-field rejection behaviour.
     custom.apply_snapshot(session, {"fields": [{"key": []}, None]})
 

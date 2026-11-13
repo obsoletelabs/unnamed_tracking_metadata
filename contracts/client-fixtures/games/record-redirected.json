@@ -1,0 +1,58 @@
+{
+  "custom": {},
+  "description": "A short synthetic puzzle game for the Atlas client fixtures.",
+  "developer": "Glowmoth Studio",
+  "features": [
+    "Single-player"
+  ],
+  "first_release": {
+    "date": "2019-03-14",
+    "precision": "day"
+  },
+  "genres": [
+    "Puzzle",
+    "Adventure"
+  ],
+  "id": "atlas:01kdvdna5a000000000000000h",
+  "languages": [
+    "English"
+  ],
+  "media_type": "game",
+  "provider_ids": {
+    "fixturegames": "LF-1001-DUP"
+  },
+  "publisher": "Harbour Lights Interactive",
+  "redirected_from": "atlas:01kdvdna84000000000000000t",
+  "relations": {
+    "children": [],
+    "counts": {
+      "children": 0,
+      "members": 0,
+      "members_of": 0,
+      "parents": 0
+    },
+    "members": [],
+    "members_of": [],
+    "parents": [],
+    "truncated": false
+  },
+  "release_date": "2019-03-14",
+  "release_year": 2019,
+  "scope": {
+    "ceiling": null,
+    "counts": {
+      "group": 0,
+      "local": 8,
+      "private": 0,
+      "public": 0
+    },
+    "widest": "local"
+  },
+  "sources": [
+    "fixturegames"
+  ],
+  "title": "Lanternfall (duplicate entry)",
+  "unmerged": [],
+  "updated_at": "2026-01-01T00:00:00+00:00",
+  "version": 5
+}

@@ -1,0 +1,57 @@
+{
+ "entries": [
+  {
+   "key": "/books/OL9900000041M",
+   "languages": [
+    {
+     "key": "/languages/eng"
+    }
+   ],
+   "latest_revision": 2,
+   "physical_format": "Paperback",
+   "publish_date": "Spring 1999",
+   "publishers": [
+    "Lowland Books"
+   ],
+   "revision": 2,
+   "title": "Weather of Small Towns",
+   "type": {
+    "key": "/type/edition"
+   },
+   "works": [
+    {
+     "key": "/works/OL9900000004W"
+    }
+   ]
+  },
+  {
+   "key": "/books/OL9900000042M",
+   "languages": [
+    {
+     "key": "/languages/eng"
+    }
+   ],
+   "latest_revision": 2,
+   "physical_format": "Large print",
+   "publish_date": "1/2/1999",
+   "publishers": [
+    "Lowland Books"
+   ],
+   "revision": 2,
+   "title": "Weather of Small Towns",
+   "type": {
+    "key": "/type/edition"
+   },
+   "works": [
+    {
+     "key": "/works/OL9900000004W"
+    }
+   ]
+  }
+ ],
+ "links": {
+  "self": "/works/OL9900000004W/editions.json",
+  "work": "/works/OL9900000004W"
+ },
+ "size": 2
+}

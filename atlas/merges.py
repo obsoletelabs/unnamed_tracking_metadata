@@ -53,9 +53,8 @@ CAUSES = ("curator", "review", "bridge", "sync", "proposal")
 UNMERGED_DAYS = 90
 #: Items that are always recorded, even when a `sync` merge is over MERGE_MAX_ITEMS (`truncated`).
 IDENTITY_KINDS = ("chain", "xwalk", "alias", "rejection_ended")
-UNMERGE_PROTOCOL = feed_schema.KIND_SINCE["unmerge"]
-#: False while `unmerge` is a reserved feed kind (this release cannot sign one, whatever its emit protocol).
-UNMERGE_PROTOCOL_EMITTABLE = "unmerge" not in feed_schema.RESERVED_KINDS
+#: False while `unmerge` is a reserved feed kind (this release cannot sign one).
+UNMERGE_EMITTABLE = "unmerge" not in feed_schema.RESERVED_KINDS
 
 
 class MergeError(Exception):
@@ -343,14 +342,12 @@ def check(session: Session, ctx: Any, rec: MergeRecord, *, if_match: str | None 
     if if_match is not None and if_match.strip() not in (f'"{dst.id}-{dst.version}"', f"{dst.id}-{dst.version}"):
         raise MergeError("the surviving record changed since you looked at it", "stale_version",
                          version=dst.version)
-    if rec.feed_seq is not None and (UNMERGE_PROTOCOL_EMITTABLE is False or feed_schema.parse_protocol(
-            feed_schema.emit_protocol(ctx.settings)) < feed_schema.parse_protocol(UNMERGE_PROTOCOL)):
+    if rec.feed_seq is not None and not UNMERGE_EMITTABLE:
         # The merge is in this node's signed feed: undoing it locally would leave every mirror merged. This holds
         # whatever role the node has now (a node that published merges and was reconfigured keeps its mirrors).
-        # `unmerge` is a reserved kind in this release, so no emit protocol allows undoing a published merge yet.
-        raise MergeError(str(feed_schema.EmitGateError("undoing a published merge (feed kind 'unmerge')",
-                                                       UNMERGE_PROTOCOL, feed_schema.emit_protocol(ctx.settings))),
-                         "emit_protocol")
+        # `unmerge` is a reserved kind in this release, so a published merge cannot be undone yet.
+        raise MergeError(str(feed_schema.ReservedConstructError("undoing a published merge (feed kind 'unmerge')")),
+                         "reserved_feature")
 
 
 def legacy_check(session: Session, cid: str) -> None:

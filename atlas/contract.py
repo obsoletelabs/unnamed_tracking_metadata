@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import dates
+from . import dates, normalize, vocab
 
 CONTRACT_VERSION: Literal[1] = 1
 
@@ -146,12 +146,176 @@ class ReleaseInfoV1(BaseModel):
         return out
 
 
+# ---- ext.book (CONTRACT-C15 §2.3, wire 1) ------------------------------------------------------------------
+
+MAX_AUTHORS, MAX_BOOK_EDITIONS, MAX_PAGES = 30, 50, 100_000
+#: The whole `ext.book` member, JSON-encoded, is at most this large (C15 §2.3).
+MAX_BOOK_BYTES = 64 * 1024
+#: Namespaces an author id or an edition id never uses (C13 §3.2): an Atlas id or a curated namespace there could
+#: claim someone else's record.
+RESERVED_ID_NAMESPACES = frozenset({"atlas", "atlas-record", "curator", "manual", "community"})
+_LANGUAGE = r"^[a-z]{2,3}(-[A-Za-z0-9]{1,8})?$"
+
+
+def _one_line(value: str | None) -> str | None:
+    """Printable text on one line (the `ReleaseEntryV1.one_line` rule); blank is refused."""
+    if value is None:
+        return None
+    cleaned = " ".join("".join(c if c.isprintable() or c == " " else " " for c in value).split())
+    if not cleaned:
+        raise ValueError("Use printable text")
+    return cleaned
+
+
+def _no_reserved(value: dict[str, str] | None) -> dict[str, str] | None:
+    if value is None:
+        return None
+    reserved = sorted(set(value) & RESERVED_ID_NAMESPACES)
+    if reserved:
+        raise ValueError(f"reserved namespace in ids: {', '.join(reserved)}")
+    return value
+
+
+def _isbn_rejected(field: str) -> None:
+    """Count an ISBN that failed its check (`atlas_book_isbn_rejected_total`). Imported lazily: the contract module is
+    imported by the metrics registry's own dependencies."""
+    from . import instruments
+
+    instruments.book_isbn_rejected.inc(field=field)
+
+
+def _digits(value: str) -> int:
+    return sum(1 for c in value if c.isalnum())
+
+
+class BookAuthorV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    role: Literal[vocab.BOOK_CREATOR_ROLES] = "author"  # type: ignore[valid-type]
+    ids: dict[ProviderKey, ProviderIdentity] | None = Field(default=None, max_length=8)
+
+    @field_validator("name", mode="after")
+    @classmethod
+    def printable(cls, value: str) -> str | None:
+        return _one_line(value)
+
+    @field_validator("ids", mode="after")
+    @classmethod
+    def not_reserved(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        return _no_reserved(value)
+
+
+class BookSeriesV1(BaseModel):
+    """A series hint: C15 §2.4 turns it into a `series_member` relation once a curator confirms the series record."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    position: str | None = Field(default=None, min_length=1, max_length=16)
+
+    @field_validator("name", "position", mode="after")
+    @classmethod
+    def printable(cls, value: str | None) -> str | None:
+        return _one_line(value)
+
+
+class BookEditionV1(BaseModel):
+    """One edition (C15 §2.3): never a record (H11), only an entry of the work's `editions[]` view."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str | None = Field(default=None, min_length=1, max_length=64)
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    isbn_13: str | None = Field(default=None, max_length=32)
+    isbn_10: str | None = Field(default=None, max_length=32)
+    format: Literal[vocab.BOOK_FORMATS] | None = None  # type: ignore[valid-type]
+    publisher: str | None = Field(default=None, min_length=1, max_length=200)
+    published: ReleaseDateV1 | None = None
+    pages: int | None = Field(default=None, ge=1, le=MAX_PAGES)
+    language: str | None = Field(default=None, max_length=12, pattern=_LANGUAGE)
+    provider_ids: dict[ProviderKey, ProviderIdentity] | None = Field(default=None, max_length=8)
+
+    @field_validator("key", "name", "publisher", mode="after")
+    @classmethod
+    def printable(cls, value: str | None) -> str | None:
+        return _one_line(value)
+
+    @field_validator("provider_ids", mode="after")
+    @classmethod
+    def not_reserved(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        return _no_reserved(value)
+
+    @model_validator(mode="after")
+    def isbns(self) -> BookEditionV1:
+        """Normalise and check both ISBNs (C15 §2.5). An invalid one is dropped and counted, never guessed and never
+        a reason to refuse the observation. A missing ISBN-13 is derived from a valid ISBN-10; an ISBN-10 that names
+        another book than the ISBN-13 is dropped (the ISBN-13 wins); a `979` ISBN has no ISBN-10."""
+        thirteen = None
+        if self.isbn_13 is not None:
+            thirteen = normalize.isbn13(self.isbn_13) if _digits(self.isbn_13) == 13 else None
+            if thirteen is None:
+                _isbn_rejected("isbn_13")
+        ten = None
+        if self.isbn_10 is not None:
+            ten = normalize.isbn10(self.isbn_10) if _digits(self.isbn_10) == 10 else None
+            if ten is None:
+                _isbn_rejected("isbn_10")
+        if ten is not None:
+            from_ten = normalize.isbn13(ten)
+            if thirteen is None:
+                thirteen = from_ten
+            elif from_ten != thirteen:
+                _isbn_rejected("isbn_10")
+                ten = None
+        if thirteen is not None and ten is None:
+            ten = normalize.isbn10(thirteen)
+        self.isbn_13, self.isbn_10 = thirteen, ten
+        return self
+
+
+class BookInfoV1(BaseModel):
+    """`ext.book`: what a book observation adds (C15 §2.3). Subjects travel as `facts.features` and the first
+    publication as `ext.release.first`: one path each, never a second copy here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    authors: list[BookAuthorV1] | None = Field(default=None, max_length=MAX_AUTHORS)
+    subtitle: str | None = Field(default=None, min_length=1, max_length=300)
+    original_language: str | None = Field(default=None, max_length=12, pattern=_LANGUAGE)
+    page_count: int | None = Field(default=None, ge=1, le=MAX_PAGES)
+    series: BookSeriesV1 | None = None
+    editions: list[BookEditionV1] | None = Field(default=None, max_length=MAX_BOOK_EDITIONS)
+
+    @field_validator("subtitle", mode="after")
+    @classmethod
+    def printable(cls, value: str | None) -> str | None:
+        return _one_line(value)
+
+    @model_validator(mode="after")
+    def bounded(self) -> BookInfoV1:
+        import json
+
+        if len(json.dumps(self.reported(), separators=(",", ":"), ensure_ascii=False).encode()) > MAX_BOOK_BYTES:
+            raise ValueError(f"ext.book is larger than {MAX_BOOK_BYTES // 1024} KiB")
+        return self
+
+    def reported(self) -> dict[str, Any]:
+        out = self.model_dump(mode="json", exclude_none=True)
+        for key in ("authors", "editions"):
+            if not out.get(key):
+                out.pop(key, None)
+        return out
+
+
 class ObservationExtV1(BaseModel):
-    """Optional observation extensions (C1.4 `ext`). Each member ships with a protocol minor."""
+    """Optional observation extensions (C1.4 `ext`). `release` shipped with protocol 1.3; `book` (C15 §2.3) is
+    shipped in wire 1 and always signed with `_requires: book-v1` (a critical member)."""
 
     model_config = ConfigDict(extra="forbid")
 
     release: ReleaseInfoV1 | None = None
+    book: BookInfoV1 | None = None
 
 
 class SourceObservationV1(BaseModel):
@@ -237,8 +401,14 @@ class SourceObservationV1(BaseModel):
             out["source_updated_at"] = self.source_updated_at
         if self.available is not None:
             out["available"] = self.available
-        if self.ext is not None and self.ext.release is not None:
-            out["ext"] = {"release": self.ext.release.reported()}
+        if self.ext is not None:
+            ext: dict[str, Any] = {}
+            if self.ext.release is not None:
+                ext["release"] = self.ext.release.reported()
+            if self.ext.book is not None and (book := self.ext.book.reported()):
+                ext["book"] = book
+            if ext:
+                out["ext"] = ext
         return out
 
 

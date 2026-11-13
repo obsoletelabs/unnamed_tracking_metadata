@@ -32,7 +32,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import accounts, dpop, key_rotation, ratelimit, secrets_box
+from . import accounts, dpop, key_rotation, ratelimit, secrets_box, wire
 from . import link_crypto as lc
 from .models import (
     Canonical,
@@ -51,7 +51,7 @@ from .models import (
     now,
 )
 from .service import AtlasError, Ctx, write_lock
-from .signing import canonical_json, load_identity
+from .signing import ID_PATTERN, canonical_json, load_identity
 
 log = logging.getLogger("atlas.link")
 
@@ -85,7 +85,7 @@ RETRYABLE = ("daily_limit", "rate_limited", "too_many_pending")
 FINAL = ("invalid", "unknown_game", "kind_not_allowed", "bad_signature", "email_unverified", "suspended",
          "link_mismatch", "seq_backwards")
 KINDS = ("edit", "new_game", "link_ids", "artwork", "artwork_default", "achievements")
-_HEX16 = re.compile(r"^[0-9a-f]{16}\Z")
+_HEX16 = re.compile(r"^" + ID_PATTERN + r"\Z")
 _HEX64 = re.compile(r"^[0-9a-f]{64}\Z")
 _ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}\Z")
 _CID = re.compile(r"^atlas:[0-9a-z]{26}\Z")
@@ -209,7 +209,9 @@ def discovery_members(ctx: Ctx) -> dict[str, Any]:
             "atlas_link_challenge_endpoint": f"{base}/oidc/device/challenge",
             "revocation_endpoint": f"{base}/oidc/revoke",
             "dpop_signing_alg_values_supported": ["EdDSA"],
-            "atlas_link": {"v": 1, "endpoint": f"{base}/api/v2/link", "contributions": True,
+            # C16 §22.10: `wire` is the range this build speaks; `v` stays for v0 link clients (never changes).
+            "atlas_link": {"v": 1, "wire": wire.DEFAULT.advertised(), "endpoint": f"{base}/api/v2/link",
+                           "contributions": True,
                            "name": str(ctx.settings.app_name)[:80]}}
 
 
@@ -273,7 +275,7 @@ def parse_node(raw: str) -> dict[str, Any]:
 
 def _history_keys(node: dict[str, Any]) -> dict[str, str]:
     """Validate the posted link key history from its root to `key_id`; returns {key_id: public}."""
-    if lc.key_id(node["root_public_key"]) != node["node_id"]:
+    if not lc.key_id_matches(node["root_public_key"], node["node_id"]):
         raise LinkError("invalid_request", description="node_id is not the root key's id")
     try:
         _, keys = key_rotation.validate_history(node["node_id"], node["root_public_key"], node["rotations"],

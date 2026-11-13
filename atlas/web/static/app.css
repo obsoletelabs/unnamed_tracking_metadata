@@ -320,6 +320,7 @@ table.releases { margin: 0 0 1em; }
 .relations h3 { margin-bottom: .25rem; }
 .rel-list { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .rel-table td, .rel-table th { vertical-align: top; }
+.rel-position { max-width: 9rem; display: inline-block; }
 .relation-search select { max-width: 100%; }
 @media (max-width: 640px) {
   .relation-search .row { flex-wrap: wrap; }
@@ -416,6 +417,7 @@ table.peers .peer-actions form { margin: 0; }
   table.peers td[data-label]::before, table.data-cards td[data-label]::before { content: attr(data-label); display: block;
     color: var(--muted); font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
   table.peers .peer-actions { justify-content: flex-start; }
+  table.data-cards td.empty { display: none; } /* a card shows no label for a value it does not have */
 }
 
 /* Game page: breadcrumb, in-page navigation, relations and editions */
@@ -602,3 +604,22 @@ details.ach-others > summary { cursor: pointer; margin-top: 1.6em; }
   border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface-2); }
 .group-bar a:last-child { margin-left: auto; }
 .sync-state { margin: 0 0 var(--gap); }
+/* C15 §5 (A23): books */
+.book-subtitle { margin: -.25em 0 var(--space-2); font-size: 1.1rem; color: var(--muted); }
+.book-byline { margin: 0 0 var(--space-2); }
+.book-series { margin: 0 0 var(--space-2); }
+.book-curate { margin-top: var(--space-2); }
+table.editions td[data-label="ISBN-13"] { white-space: nowrap; }
+table.editions code.isbn { white-space: nowrap; }
+.authors-table input.author-order { width: 5.5em; }
+.import-forms form + form { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.series-results { list-style: none; padding: 0; margin: var(--space-2) 0 0; }
+.series-results li + li { margin-top: var(--space-2); }
+.series-results form { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.series-results input.rel-position { width: 7em; margin: 0; }
+/* client pairing (/pair, CONTRACT-C15 §10.1, A24) */
+.pair-warning { border: 1px solid var(--warn); border-left-width: 4px; border-radius: 8px; padding: 10px 12px; background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.pair-facts { margin: 12px 0; }
+.pair-form { display: grid; gap: 8px; max-width: 320px; }
+.pair-form input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 1.25rem; letter-spacing: .12em; text-transform: uppercase; }
+.pair-actions { display: flex; flex-wrap: wrap; gap: 8px; }

@@ -1,0 +1,293 @@
+{
+  "client_api": "1.0",
+  "files": [
+    {
+      "auth": "none",
+      "file": "games/site.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/site",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/search-lanternfall.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games?q=lanternfall",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/record-lanternfall.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna5a000000000000000h",
+      "response_headers": {
+        "ETag": "\"atlas:01kdvdna5a000000000000000h-5\""
+      },
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/record-copper-tide.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna68000000000000000m",
+      "response_headers": {
+        "ETag": "\"atlas:01kdvdna68000000000000000m-2\""
+      },
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/record-quiet-orbit.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna76000000000000000q",
+      "response_headers": {
+        "ETag": "\"atlas:01kdvdna76000000000000000q-2\""
+      },
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/record-lanternfall.json",
+      "method": "GET",
+      "not_modified": true,
+      "note": "304 Not Modified, no body: the client keeps the copy in `file`",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna5a000000000000000h",
+      "request_headers": {
+        "If-None-Match": "\"atlas:01kdvdna5a000000000000000h-5\""
+      },
+      "response_headers": {
+        "ETag": "\"atlas:01kdvdna5a000000000000000h-5\""
+      },
+      "status": 304
+    },
+    {
+      "auth": "read",
+      "file": "games/record-redirected.json",
+      "method": "GET",
+      "note": "the merged duplicate: answers the surviving record with `redirected_from`",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna84000000000000000t",
+      "response_headers": {
+        "ETag": "\"atlas:01kdvdna5a000000000000000h-5\""
+      },
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/record-unknown-type.json",
+      "method": "GET",
+      "note": "media type `comic`, which no connector knows: map it to other (client-api guarantee 2)",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdnad4000000000000001a",
+      "response_headers": {
+        "ETag": "\"atlas:01kdvdnad4000000000000001a-2\""
+      },
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/records-alias-lanternfall.json",
+      "method": "GET",
+      "note": "the /records alias answers exactly like /games",
+      "origin": "recorded",
+      "path": "/api/v2/records/atlas:01kdvdna5a000000000000000h",
+      "response_headers": {
+        "ETag": "\"atlas:01kdvdna5a000000000000000h-5\""
+      },
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/batch-mixed.json",
+      "method": "POST",
+      "origin": "recorded",
+      "path": "/api/v2/games/batch",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/resolve-by-ids.json",
+      "method": "POST",
+      "origin": "recorded",
+      "path": "/api/v2/resolve",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/artwork-lanternfall.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna5a000000000000000h/artwork",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/achievements-lanternfall.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna5a000000000000000h/achievements",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/relations-lanternfall.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna5a000000000000000h/relations",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "games/changes-local.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/changes?feed=local&limit=50",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "books/search-isbn.json",
+      "method": "GET",
+      "note": "a valid ISBN-10/13 as q answers the work that edition belongs to",
+      "origin": "recorded",
+      "path": "/api/v2/games?q=9780000000101",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "books/search-author.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games?type=book&author=quillfeather",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "books/record-the-lamp-keeper.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna9c000000000000000y",
+      "response_headers": {
+        "ETag": "\"atlas:01kdvdna9c000000000000000y-4\""
+      },
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "books/record-salt-and-signal.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdnaaa0000000000000011",
+      "response_headers": {
+        "ETag": "\"atlas:01kdvdnaaa0000000000000011-2\""
+      },
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "books/record-the-far-light.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdnab80000000000000014",
+      "response_headers": {
+        "ETag": "\"atlas:01kdvdnab80000000000000014-3\""
+      },
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "books/record-series-lamp-cycle.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdnac60000000000000017",
+      "response_headers": {
+        "ETag": "\"atlas:01kdvdnac60000000000000017-4\""
+      },
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "books/relations-the-lamp-keeper.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna9c000000000000000y/relations",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "books/artwork-the-lamp-keeper.json",
+      "method": "GET",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna9c000000000000000y/artwork",
+      "status": 200
+    },
+    {
+      "auth": "read",
+      "file": "books/achievements-the-lamp-keeper.json",
+      "method": "GET",
+      "note": "achievements do not apply to books: applicable false",
+      "origin": "recorded",
+      "path": "/api/v2/games/atlas:01kdvdna9c000000000000000y/achievements",
+      "status": 200
+    },
+    {
+      "auth": "none",
+      "file": "pairing/pair-started.json",
+      "method": "POST",
+      "note": "code, poll_token and qr_svg replaced by placeholders",
+      "origin": "recorded",
+      "path": "/api/v2/client/pair",
+      "status": 200
+    },
+    {
+      "auth": "none",
+      "file": "pairing/poll-pending.json",
+      "method": "POST",
+      "origin": "recorded",
+      "path": "/api/v2/client/pair/poll",
+      "status": 200
+    },
+    {
+      "file": "forward-compat/record-unknown-members.json",
+      "from": "books/record-the-lamp-keeper.json",
+      "note": "unknown member x_future_member, unknown edition format and creator role: a client ignores the member and maps the values to other (client-api guarantees 1 and 2)",
+      "origin": "derived"
+    },
+    {
+      "file": "resolve/resolve-contract-v1.json",
+      "from": "tests/fixtures/resolve-contract-v1.json",
+      "origin": "copied"
+    },
+    {
+      "file": "resolve/resolve-contract-v1.json.sha256",
+      "from": "tests/fixtures/resolve-contract-v1.json.sha256",
+      "origin": "copied"
+    }
+  ],
+  "generated_by": "tools/export_client_fixtures.py",
+  "normalised": {
+    "epoch": "fedcba9876543210",
+    "ids": "deterministic counter (atlas.ids patched during the export)",
+    "node_id": "0123456789abcdef",
+    "timestamps": "2026-01-01T00:00:00+00:00"
+  },
+  "public_url": "https://atlas.example.org",
+  "seed": "connectors-v1",
+  "seed_ids": {
+    "copper-tide": "atlas:01kdvdna68000000000000000m",
+    "lanternfall": "atlas:01kdvdna5a000000000000000h",
+    "lanternfall-duplicate": "atlas:01kdvdna84000000000000000t",
+    "quiet-orbit": "atlas:01kdvdna76000000000000000q",
+    "salt-and-signal": "atlas:01kdvdnaaa0000000000000011",
+    "series-lamp-cycle": "atlas:01kdvdnac60000000000000017",
+    "the-far-light": "atlas:01kdvdnab80000000000000014",
+    "the-lamp-keeper": "atlas:01kdvdna9c000000000000000y",
+    "unknown-type": "atlas:01kdvdnad4000000000000001a"
+  }
+}

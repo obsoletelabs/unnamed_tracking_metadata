@@ -66,7 +66,7 @@ def test_two_authorities_relay_to_an_offline_capable_downstream(tmp_path):
         assert session.get(Canonical, bid).view["title"] == "Authority Beta"
         assert len(list(session.scalars(select(SyncCursor)))) == 2
     # Relay entries preserve the authority's exact signed body, not a new mirror signature.
-    headers = {"Authorization": f"Bearer {mirror[3]}"}
+    headers = {"Authorization": f"Bearer {mirror[3]}", "Atlas-Wire": "min=1, max=1"}
     entries = mirror[1].get("/api/v2/sync/changes", params={"node_id": a[2].ctx.identity.node_id}, headers=headers).json()
     for row in entries["entries"]:
         assert verify(a[2].ctx.identity.public_b64, row["node_id"], row["seq"], row["kind"], row["body"],

@@ -429,14 +429,14 @@ def split_payload(url: str, code: str) -> tuple[str, str]:
             url, code = str(data.get("url") or ""), str(data.get("code") or "")
             if not url or not code:
                 raise groups.GroupError("the pasted invite has no address or no code")
-            if len(url) > 300 or len(code) > 120:
+            if len(url) > 300 or len(code) > 256:  # a v2 code (64-hex ids, D5) is 185 characters
                 raise groups.GroupError("the pasted invite's address or code is too long")
     return url.strip(), code
 
 
 @router.post("/admin/group/join", response_class=HTMLResponse)
-def join(p: Annotated[Page, Depends(local_admin_form)], url: Annotated[str, Form(max_length=600)],
-         code: Annotated[str, Form(max_length=120)] = "", name: Annotated[str, Form(max_length=80)] = "",
+def join(p: Annotated[Page, Depends(local_admin_form)], url: Annotated[str, Form(max_length=800)],
+         code: Annotated[str, Form(max_length=256)] = "", name: Annotated[str, Form(max_length=80)] = "",
          preset: PRESET = group_presets.CUSTOM, with_admin: Annotated[str, Form(max_length=4)] = "",
          confirm_admin: Annotated[str, Form(max_length=40)] = ""):
     settings, identity = _ctx(p)
@@ -635,7 +635,7 @@ def revoke(node_id: str, p: Annotated[Page, Depends(local_admin_form)], reason: 
 
 @router.post("/admin/group/renew", response_class=HTMLResponse)
 def renew(p: Annotated[Page, Depends(local_admin_form)], root_passphrase: PW,
-          node_id: Annotated[str, Form(max_length=16)] = "", password: PW = ""):
+          node_id: Annotated[str, Form(max_length=64)] = "", password: PW = ""):
     settings, identity = _ctx(p)
     if (why := _root_gate(p, password, uses_root=True)):
         return _page(p, why, 400)
@@ -715,7 +715,7 @@ def address_apply(node_id: str, p: Annotated[Page, Depends(local_admin_form)], r
         return _page(p, "This node is not in an active group.", 409)
     if (why := _root_gate(p, password, uses_root=True)):
         return _page(p, why, 400)
-    row = p.session.get(groups.NodeState, groups.MEMBER_UPDATE_PREFIX + node_id[:16])
+    row = p.session.get(groups.NodeState, groups.MEMBER_UPDATE_PREFIX + node_id[:64])
     if row is None:
         return _page(p, "No update from that node is waiting.", 404)
     try:
@@ -731,7 +731,7 @@ def address_apply(node_id: str, p: Annotated[Page, Depends(local_admin_form)], r
 
 @router.post("/admin/group/address/{node_id}/dismiss")
 def address_dismiss(node_id: str, p: Annotated[Page, Depends(local_admin_form)]):
-    groups.drop_member_update(p.session, node_id[:16], p.me.id)
+    groups.drop_member_update(p.session, node_id[:64], p.me.id)
     return go("/admin/group", "saved")
 
 

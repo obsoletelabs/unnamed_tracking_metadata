@@ -232,7 +232,8 @@ def secret_check(settings: Settings, path: Path) -> dict[str, Any]:
         except (secrets_box.SecretsError, ValueError) as exc:
             raise BackupError(f"the signing key in this backup cannot be decrypted: {exc}") from None
         public = identity.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        result["signing_key_id"] = signing.key_id_for(public)
+        node_id = next((r["value"] for r in _rows(path, "node_state") if r.get("key") == "node_id"), None)
+        result["signing_key_id"] = signing.key_id_like(public, node_id)
     tokens = [(table, row.get(column)) for table, column in _SECRET_COLUMNS.items() for row in _rows(path, table)]
     keys = {integrations.PREFIX + field for field in integrations.SECRET_FIELDS}
     tokens += [("setting", row.get("value")) for row in _rows(path, "setting") if row.get("key") in keys]
@@ -282,7 +283,8 @@ def _has_rows(conn) -> list[str]:
     for t in _tables():
         query = select(func.count()).select_from(t)
         if t.name == "node_state":
-            query = query.where(t.c.key.not_in((client_changes.EPOCH, "scope_projection_pending")))
+            # bookkeeping a fresh node writes at startup (C16: the wire high-water mark) is not data
+            query = query.where(t.c.key.not_in((client_changes.EPOCH, "scope_projection_pending", "wire_high_water")))
         if conn.execute(query).scalar():
             occupied.append(t.name)
     return occupied

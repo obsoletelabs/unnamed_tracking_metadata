@@ -43,8 +43,46 @@ def body_hash(body: Any) -> str:
     return hashlib.sha256(canonical_json(body)).hexdigest()
 
 
-def key_id_for(public_raw: bytes) -> str:
-    return hashlib.sha256(public_raw).hexdigest()[:16]
+#: D5 (CONTRACT-C16 owner decision, design §7.1): identifiers are the full SHA-256 of a public key, 64 hex digits,
+#: from wire 1 on. Identities minted before wire 1 keep their 16-digit (64-bit) form: their signed history, every
+#: follower pin and every group certificate name it, and it cannot be re-signed. The two forms are told apart by
+#: their length, never by guessing, and the legacy one is the first 16 digits of the wide one (`id_matches`).
+WIDE_ID_LEN, LEGACY_ID_LEN = 64, 16
+ID_RE = re.compile(r"(?:[0-9a-f]{16}|[0-9a-f]{64})\Z")
+#: A regular-expression fragment for either id form (for the patterns that embed an id: serials, HLCs).
+ID_PATTERN = r"(?:[0-9a-f]{64}|[0-9a-f]{16})"
+
+
+def key_id_for(public_raw: bytes, *, legacy: bool = False) -> str:
+    """The id of a public key: 64 hex digits (wire 1), or the 16-digit v0 form with `legacy=True`."""
+    digest = hashlib.sha256(public_raw).hexdigest()
+    return digest[:LEGACY_ID_LEN] if legacy else digest
+
+
+def id_form(value: Any) -> str | None:
+    """"w1" (64 hex digits), "v0" (16) or None for anything else."""
+    if not isinstance(value, str) or not ID_RE.match(value):
+        return None
+    return "w1" if len(value) == WIDE_ID_LEN else "v0"
+
+
+def id_matches(value: Any, public_raw: bytes) -> bool:
+    """Whether `value` is the id of `public_raw`, in either form (the explicit D5 legacy mapping)."""
+    form = id_form(value)
+    if form is None:
+        return False
+    return value == key_id_for(public_raw, legacy=form == "v0")
+
+
+def key_id_like(public_raw: bytes, like: str | None) -> str:
+    """The id of a key in the same form as `like` (an identity's node id): a v0 identity keeps naming its keys in
+    the v0 form, so its followers' rotation histories and its feed entries agree; anything else is wide."""
+    return key_id_for(public_raw, legacy=id_form(like) == "v0")
+
+
+def short_id(value: str) -> str:
+    """The display form shown to people (fingerprints compare on the full value)."""
+    return value[:LEGACY_ID_LEN]
 
 
 def _message(node_id: str, seq: int, kind: str, digest: str, domain: bytes = DOMAIN) -> bytes:
@@ -59,7 +97,13 @@ class NodeIdentity:
 
     @property
     def key_id(self) -> str:
-        return key_id_for(base64.b64decode(self.public_b64))
+        """The current signing key's id, in this identity's form (a v0 identity keeps the v0 form, D5)."""
+        return key_id_like(base64.b64decode(self.public_b64), self.node_id)
+
+    @property
+    def wide_id(self) -> str:
+        """The 256-bit form of this node's id (equal to `node_id` for an identity minted by wire 1)."""
+        return key_id_for(base64.b64decode(self.trust_public_b64))
 
     @property
     def trust_public_b64(self) -> str:
@@ -151,19 +195,22 @@ def load_identity(session: Session, settings: Settings | None = None) -> NodeIde
     if root is None:
         root = NodeState(key="root_public_key", value=base64.b64encode(pub).decode())
         session.add(root)
-    root_id = key_id_for(base64.b64decode(root.value, validate=True))
+    root_raw = base64.b64decode(root.value, validate=True)
     if saved_id is None:
+        root_id = key_id_for(root_raw)  # D5: a new identity is minted in the 256-bit form
         session.add(NodeState(key="node_id", value=root_id))
-    elif saved_id.value != root_id:
+    elif id_matches(saved_id.value, root_raw):
+        root_id = saved_id.value  # an identity minted before wire 1 keeps its stored (v0) form
+    else:
         raise ValueError("stored node identity does not match its trust anchor")
     if session.get(NodeState, "feed_seq") is None:
         session.add(NodeState(key="feed_seq", value="0"))
     if can_encrypt and at_rest(row.value) == "plaintext":
         row.value = seal(settings, key)  # same key: only its stored form changes
         session.add(AuditEntry(actor_id=None, action="signing_key_encrypted", target=root_id,
-                               detail={"key_id": key_id_for(pub), "format": "enc:v1"}))
+                               detail={"key_id": key_id_like(pub, root_id), "format": "enc:v1"}))
         log.info("signing_key_encrypted: the node signing key (key id %s) is now encrypted with ATLAS_SECRET_KEY",
-                 key_id_for(pub))
+                 key_id_like(pub, root_id))
     session.flush()
     return NodeIdentity(node_id=root_id, private=key, root_public_b64=root.value)
 

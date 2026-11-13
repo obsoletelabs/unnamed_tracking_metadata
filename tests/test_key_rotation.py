@@ -134,7 +134,7 @@ def test_same_transaction_uses_successor_immediately(tmp_path):
         successor = key_rotation.rotate(session, old.key_id)
         feed.append(session, old, "schema", {"types": [], "fields": []})
         session.commit()
-        rows = list(session.scalars(select(ChangeLog).order_by(ChangeLog.seq)))
+        rows = list(session.scalars(select(ChangeLog).where(ChangeLog.kind != "wire_start").order_by(ChangeLog.seq)))
         assert [row.key_id for row in rows] == [old.key_id, old.key_id, successor.key_id]
 
 

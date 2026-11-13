@@ -53,8 +53,11 @@ def test_stale_page_replayed_by_the_upstream_is_rejected(lab):
     """An upstream (or a cache in between) answers with a page older than the cursor."""
     official, local = lab.nodes["official"], lab.nodes["local"]
     _seed(lab)
-    stale = official.client.get("/api/v2/sync/changes", params={"since": 0, "limit": 2},
-                                headers=official.headers(official.follower)).json()
+    from atlas import wire
+
+    stale = official.client.get("/api/v2/sync/changes", params={"since": 0, "limit": 2},  # a wire-1 peer call
+                                headers={**official.headers(official.follower),
+                                         wire.HEADER: wire.request_header()}).json()
     settled = local.digest()
 
     with pytest.raises(SyncError, match="gap or rewind"):

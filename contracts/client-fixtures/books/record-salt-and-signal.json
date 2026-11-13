@@ -1,0 +1,80 @@
+{
+  "authors": [
+    {
+      "name": "Ines Morrow",
+      "role": "author"
+    },
+    {
+      "name": "Pell Arden",
+      "role": "narrator"
+    }
+  ],
+  "custom": {},
+  "developer": "Ines Morrow",
+  "editions": [
+    {
+      "format": "ebook",
+      "isbn_10": "0000000205",
+      "isbn_13": "9780000000200",
+      "language": "en",
+      "name": "Ebook, Lowtide 2009",
+      "provider_ids": {
+        "fixturebooks_edition": "SS-0002-EB"
+      },
+      "published": {
+        "date": "2009-05-02",
+        "precision": "day"
+      },
+      "publisher": "Lowtide Books",
+      "sources": [
+        "fixturebooks"
+      ]
+    }
+  ],
+  "features": [
+    "Radio",
+    "Essays"
+  ],
+  "first_release": {
+    "date": "2008",
+    "precision": "year"
+  },
+  "id": "atlas:01kdvdnaaa0000000000000011",
+  "media_type": "book",
+  "original_language": "en",
+  "provider_ids": {
+    "fixturebooks": "SS-0002"
+  },
+  "redirected_from": null,
+  "relations": {
+    "children": [],
+    "counts": {
+      "children": 0,
+      "members": 0,
+      "members_of": 0,
+      "parents": 0
+    },
+    "members": [],
+    "members_of": [],
+    "parents": [],
+    "truncated": false
+  },
+  "release_year": 2008,
+  "scope": {
+    "ceiling": null,
+    "counts": {
+      "group": 0,
+      "local": 1,
+      "private": 0,
+      "public": 0
+    },
+    "widest": "local"
+  },
+  "sources": [
+    "fixturebooks"
+  ],
+  "title": "Salt and Signal",
+  "unmerged": [],
+  "updated_at": "2026-01-01T00:00:00+00:00",
+  "version": 2
+}

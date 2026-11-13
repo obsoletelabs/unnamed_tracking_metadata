@@ -21,7 +21,7 @@ from atlas.signing import load_identity
 from .conftest import build_settings
 from .test_postgres import pg_url  # noqa: F401  (module-scoped PostgreSQL fixture)
 
-HEAD = "0041"  # C14-4 (super group) is the head now
+HEAD = "0063"  # Z1 (C16 single version: wire 1, D5 widened ids) is the head now
 STAMP = "2026-11-02 10:00:00"
 NEW_TABLES = {"achievement_set", "achievement_text", "achievement_stat"}
 KEPT_TABLES = {f"{t}_0035_kept" for t in NEW_TABLES}

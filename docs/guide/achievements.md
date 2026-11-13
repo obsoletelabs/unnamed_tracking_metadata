@@ -23,14 +23,9 @@ Atlas keeps the **list** of achievements for a game: what exists, how rare it is
 game may have more than one (some games give one per campaign), so Atlas does not refuse a second one;
 the editor shows a warning on the second platinum row instead.
 
-Platinum needs federation protocol **1.2**: followers of older releases cannot read it. On an
-**authority** whose emit protocol is still below 1.2, every way of writing a list that includes
-platinum is refused before anything is stored: the curator API (`PUT /games/{id}/achievements`,
-HTTP 409 with `"code": "emit_protocol"` and "Raise federation emit protocol to 1.2 first"), the
-editor (the option is shown disabled, and a submitted platinum row is reported on the row), proposals
-and the bulk import (HTTP 409). Lists that are not signed into the feed, for example a provider's own
-non-redistributable list, keep platinum regardless. Mirrors and local nodes accept platinum
-without any setting. See [Federation: emitting newer features](federation.md#emitting-newer-features).
+Platinum is part of wire 1: every node of this release accepts it, and an authority signs a list that includes it
+with the `_requires` token `tier-platinum`, so a follower that cannot read it parks the list instead of dropping it.
+See [Federation: compatibility and upgrades](federation.md#compatibility-and-upgrades).
 
 The value list is shared with the Tracking App and the metadata-atlas plugin through
 `contracts/vocab-v1.json`; see [Shared vocabularies](tracking-app.md#shared-vocabularies).
@@ -129,6 +124,11 @@ id, so it is the same on every node. A DLC record that was merged is followed to
 node does not know comes back as `null`. `sets_elsewhere` names DLC sets on *other* records that point at this one,
 so a client looking at a DLC finds the achievements its base game lists. Filters: `?set=<id or key>` and
 `?platform=<slug>` (sets without platforms always match).
+
+**Types without achievements.** Every response carries `applicable`. It is `false` when the record's media type has
+achievements switched off (Admin → Fields → the type, see [Administering](administering.md#media-types-and-custom-fields));
+`results`, `sets` and `sets_elsewhere` are then empty and a `PUT` is refused (400). The stored rows are kept and listed
+again when the type's switch is turned back on.
 
 **Same name, different achievement.** Inside one source an achievement is identified by its external id *and* name,
 so two entries called "Collector" with different external ids stay two entries (and two keys). An exact repeat in one

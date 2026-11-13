@@ -30,13 +30,14 @@ from typing import Any
 import httpx
 from sqlalchemy import select
 
-from atlas import feed, secrets_box, sync
+from atlas import feed, secrets_box, sync, wire
 from atlas.ids import canonical_id, ulid
 from atlas.models import (
     AuditEntry,
     Canonical,
     ChangeLog,
     Crosswalk,
+    FeedIntroduced,
     NodeState,
     Observation,
     Peer,
@@ -157,14 +158,19 @@ class LabNode(Node):
         assert response.status_code == 200, f"publish on {self.name}: {response.status_code} {response.text[:200]}"
         return response.json()["results"][0]["atlas"]["canonical_id"]
 
-    def emit(self, kind: str, body: dict[str, Any]) -> int:
+    def emit(self, kind: str, body: dict[str, Any], *, v0: bool = False) -> int:
         """Append an entry to this authority's feed, signed with its current key.
 
         This is how the lab plays "a newer release": it can sign feed entries of a kind or shape the
         code under test does not know. The node keeps running; it is a legitimate signed entry as far
-        as every follower can tell."""
+        as every follower can tell. `v0=True` plays a v0 authority (C16 Z1): the records the entry names
+        are marked `legacy_unintroduced`, as a v0 release did, so `atlas feed introduce --missing` finds them."""
         with self.state.maker() as session:
             seq = feed.append_unchecked(session, load_identity(session), kind, body)
+            if v0:
+                for cid in feed.named(kind, body):
+                    if session.get(FeedIntroduced, cid) is None and session.get(Canonical, cid) is not None:
+                        feed.mark(session, cid, None, feed.VIA_LEGACY)
             session.commit()
         return seq
 
@@ -237,7 +243,11 @@ class LabNode(Node):
         real = httpx.Client(trust_env=False, timeout=30)
 
         def handler(request: httpx.Request) -> httpx.Response:
-            answer = real.get(str(request.url), headers={"Authorization": request.headers.get("authorization", "")})
+            # the follower's `Atlas-Wire` goes along (C16 Z1): a wire-1 upstream refuses a peer call without it
+            forwarded = {"Authorization": request.headers.get("authorization", "")}
+            if request.headers.get(wire.HEADER):
+                forwarded[wire.HEADER] = request.headers[wire.HEADER]
+            answer = real.get(str(request.url), headers=forwarded)
             if tamper is None or answer.status_code != 200:
                 return httpx.Response(answer.status_code, content=answer.content)
             return httpx.Response(200, json=tamper(request.url.path, answer.json()))

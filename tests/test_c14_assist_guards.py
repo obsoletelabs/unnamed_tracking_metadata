@@ -16,6 +16,7 @@ from atlas.models import Artwork, Canonical, GroupCert, Observation, RateCounter
 
 from . import test_c14_assist as base
 from .test_c14_assist import run, waiting
+from .v0_authority import v0_authorities  # noqa: F401
 
 world = base.world  # the shared fixture
 _fast = base._fast  # autouse

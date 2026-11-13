@@ -47,7 +47,8 @@ def test_golden_vectors():
         assert sign_message(key, domain, vector["parts"]) == vector["signature"], vector["name"]
         assert verify_message(VECTORS["public_key"], domain, vector["parts"], vector["signature"])
     feed = VECTORS["feed"]  # the feed message and signature are byte-identical to before
-    identity = NodeIdentity(node_id=key_id_for(base64.b64decode(VECTORS["public_key"])), private=key)
+    identity = NodeIdentity(node_id=key_id_for(base64.b64decode(VECTORS["public_key"]), legacy=True),  # v0 vector
+                            private=key)
     assert identity.node_id == feed["node_id"]
     assert identity.sign(feed["seq"], feed["kind"], feed["digest"]) == feed["signature"]
 

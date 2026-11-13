@@ -24,13 +24,14 @@ from sqlalchemy.orm import Session
 
 from . import group_crypto as gc
 from .models import GroupContribState, now
+from .signing import ID_PATTERN
 
 STATES = ("queued", "sent", "pending", "approved", "rejected", "reverted", "withdrawn", "failed", "link_revoked",
           "unsent", "forgotten")
 KINDS = ("edit", "record", "artwork", "relation", "merge", "other")
 PAGE = 200
 ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,40}\Z")
-NODE_RE = re.compile(r"^[0-9a-f]{16}\Z")
+NODE_RE = re.compile(r"^" + ID_PATTERN + r"\Z")
 CID_RE = re.compile(r"^atlas:[0-9a-z]{26}\Z")
 FIELD_RE = re.compile(r"^[a-z][a-z0-9_.]{0,63}\Z")
 

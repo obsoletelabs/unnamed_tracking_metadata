@@ -11,12 +11,12 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
-from .. import __version__, accounts, auth, feed, feed_schema, key_rotation, peer_probe, runtime, secrets_box, service, sync
-from ..models import FollowerSeen, NodeState, Peer, ReplicatedFeed, Setting, SyncCursor, SyncFailure, Token, User
+from .. import __version__, accounts, auth, feed, feed_schema, key_rotation, peer_probe, secrets_box, service, sync
+from ..models import FollowerWire, NodeState, Peer, ReplicatedFeed, SyncCursor, SyncFailure, Token, User
 from ..service import AtlasError
-from ..signing import key_id_for, load_identity, signing_key_at_rest
+from ..signing import id_matches, load_identity, signing_key_at_rest
 from .deps import LOCAL_ADMIN_ONLY, admin_form, admin_page, go, local_admin_form, throttle
 from .deps import Page as Ctx
 from .routes import render
@@ -75,21 +75,21 @@ FAILURES_SHOWN = 50
 
 
 def _protocol(p: Ctx) -> dict:
-    """This node's federation protocol and the protocols its followers were last seen speaking (C1.6)."""
-    s = p.st.ctx.settings
-    emit = feed_schema.emit_protocol(s)
+    """This node's wire range and, per follower token, the wire it was served at, what was omitted for it and why it
+    was refused (design §4.6: "Follower {name} on wire {use}: features {Y, Z} not available to it (since seq N)")."""
+    from .. import wire
+    from ..models import FollowerWire
+
     names = {t.id: t.name for t in p.session.scalars(select(Token))}
     followers = []
-    for row in p.session.scalars(select(FollowerSeen).order_by(FollowerSeen.last_seen_at.desc()).limit(100)):
-        try:
-            behind = feed_schema.parse_protocol(row.protocol) < feed_schema.parse_protocol(emit)
-        except ValueError:
-            behind = True
-        followers.append({"name": names.get(row.token_id, "(deleted token)"), "protocol": row.protocol,
-                          "seen": row.last_seen_at, "behind": behind})
-    return {"own": feed_schema.PROTOCOL, "min": s.min_follower_protocol, "emit": emit, "followers": followers,
-            "choices": feed_schema.protocol_choices(s.min_follower_protocol, feed_schema.PROTOCOL),
-            "has_password": p.me.password_hash != "!"}
+    for row in p.session.scalars(select(FollowerWire).order_by(FollowerWire.last_seen_at.desc()).limit(100)):
+        followers.append({"name": names.get(row.token_id, "(deleted token)"), "use": row.use,
+                          "range": f"{row.wire_min}-{row.wire_max}" if row.wire_min is not None else None,
+                          "omitted": row.omitted or [], "omitted_since": row.omitted_since, "refused": row.refused,
+                          "legacy": row.legacy_protocol, "seen": row.last_seen_at,
+                          "behind": bool(row.refused or row.omitted)})
+    prof = wire.profile(p.st)
+    return {"wire": prof.advertised(), "followers": followers}
 
 
 STATUS_LABELS = sync.PEER_STATUS_LABELS
@@ -98,6 +98,9 @@ CAUSES = {("parked", None): ("needs_upgrade", "Needs a newer Atlas", "Upgrade At
           ("quarantined", "invalid"): ("malformed", "Sent something Atlas can't accept",
                                        "Nothing to retry: the signed entry stays retained (atlas sync skip)"),
           ("quarantined", "skipped"): ("skipped", "Skipped by an administrator", "Undo with atlas sync replay"),
+          ("quarantined", "media_type_not_adopted"): ("media_type_not_adopted",
+                                                      "Uses a media type this node does not adopt",
+                                                      "Create the type locally, or dismiss"),
           ("quarantined", None): ("apply_failed", "Couldn't be applied (likely a bug)", "Retry now")}
 
 
@@ -171,8 +174,7 @@ def _records(p: Ctx) -> dict | None:
     out = feed.records_summary(p.session)
     out.update(missing=feed.unintroduced_count(p.session, "missing"), mode=feed.introduction_mode(p.st.ctx.settings),
                pending=p.session.get(NodeState, feed.INTRODUCE_PENDING) is not None,
-               introduced_through=feed.introduced_through(p.session),
-               bridge=bool(p.st.ctx.settings.federation_bridge_record_obs))
+               introduced_through=feed.introduced_through(p.session))
     return out
 
 
@@ -280,48 +282,10 @@ def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, sta
                   next_retry=sync.next_retry_at, own=p.st.ctx.identity, fp=fingerprint(p.st.ctx.identity.node_id),
                   can_store=secrets_box.available(s), env_upstream=s.upstream_url, probe=probe, error=error,
                   flash_tone=tone or _flash_tone(error, status), release=__version__,
-                  standalone=not rows and not p.session.scalar(select(func.count()).select_from(FollowerSeen))
+                  wire_alerts=sync.wire_alerts(p.session),
+                  standalone=not rows and not p.session.scalar(select(func.count()).select_from(FollowerWire))
                   and not probe and not s.upstream_url,
                   inherit=s.inherit_schema, protocol=_protocol(p))
-
-
-@router.post("/admin/peers/protocol", response_class=HTMLResponse)
-def set_emit_protocol(p: Annotated[Ctx, Depends(admin_form)], emit_protocol: Annotated[str, Form(max_length=16)],
-                      password: Annotated[str, Form(max_length=256)] = "",
-                      followers_upgraded: Annotated[str, Form()] = ""):
-    """Change the protocol this node's own feed may use. Raising it lets newer constructs reach followers,
-    so it asks for the same confirmation as a key rotation (re-authentication + followers upgraded)."""
-    throttle(p, f"emit-protocol:{p.me.id}", 5, 3600)
-    s = p.st.ctx.settings
-    current = feed_schema.emit_protocol(s)
-    choices = feed_schema.protocol_choices(s.min_follower_protocol, feed_schema.PROTOCOL)
-    if emit_protocol not in choices:
-        return _peers_page(p, error=f"Choose one of {', '.join(choices)}.", status=400)
-    if emit_protocol == current:
-        return _peers_page(p, error=f"This node already emits protocol {current}.")
-    raising = feed_schema.parse_protocol(emit_protocol) > feed_schema.parse_protocol(current)
-    if raising and followers_upgraded != "on":
-        return _peers_page(p, error="Could not raise the emit protocol: upgrade every follower first and confirm it.",
-                           status=400)
-    if not accounts.reauthenticated(p.me, password, p.login):
-        return _peers_page(p, error="Could not change the emit protocol: confirm your current password or sign in "
-                           "again with your linked provider.", status=400)
-    row = p.session.get(Setting, "emit_protocol")
-    if row is None:
-        p.session.add(Setting(key="emit_protocol", value=emit_protocol, updated_by=p.me.id))
-    else:
-        row.value, row.updated_by = emit_protocol, p.me.id
-    behind = [f["name"] for f in _protocol(p)["followers"]
-              if feed_schema.parse_protocol(f["protocol"]) < feed_schema.parse_protocol(emit_protocol)]
-    accounts.audit(p.session, p.me.id, "emit_protocol", "", {"from": current, "to": emit_protocol,
-                                                              "followers_behind": behind[:20]})
-    p.session.flush()
-    p.st.ctx.settings = runtime.effective(p.st.base or s, runtime.load(p.session))
-    record = feed_schema.parse_protocol(feed_schema.RECORD_PROTOCOL)
-    if raising and feed_schema.parse_protocol(current) < record <= feed_schema.parse_protocol(emit_protocol) \
-            and p.st.ctx.settings.role == "authority" and feed.unintroduced_count(p.session, "missing"):
-        feed.schedule_introduce(p.session, "missing")  # C13 §4.2: the sync worker publishes them in batches
-    return go("/admin/peers", "saved")
 
 
 PROBE_DOMAIN = "atlas-peer-probe-v1\n"
@@ -412,7 +376,7 @@ def add_peer(p: Annotated[Ctx, Depends(admin_form)], url: Annotated[str, Form(ma
         raise HTTPException(400, "That choice does not match what the node offered, or the lookup expired. "
                                  "Look the node up again.")
     try:
-        ok = key_id_for(base64.b64decode(public_key)) == node_id
+        ok = id_matches(node_id, base64.b64decode(public_key))
     except ValueError:
         ok = False
     if not ok:  # unreachable through a valid token (the probe verified it); kept as a second check
@@ -491,6 +455,20 @@ def toggle_peer(pid: str, p: Annotated[Ctx, Depends(admin_form)]):
     return go("/admin/peers", "saved")
 
 
+@router.post("/admin/peers/{pid}/accept-downgrade")
+def accept_downgrade(pid: str, p: Annotated[Ctx, Depends(admin_form)]):
+    """Design §4.10 rule 3: a peer once seen speaking wire that now answers as v0 is refused (`peer_downgraded`)
+    until an administrator accepts it here (a deliberate rollback). Audited; cleared when it speaks wire again."""
+    row = p.session.get(Peer, pid)
+    if row is None:
+        raise HTTPException(404, "No such peer.")
+    if not sync.accept_downgrade(p.session, row.url):
+        raise HTTPException(400, "This peer was never seen speaking wire: there is no downgrade to accept.")
+    p.session.execute(delete(NodeState).where(NodeState.key == "sync_refused:" + row.node_id))
+    accounts.audit(p.session, p.me.id, "peer_accept_downgrade", row.node_id, {"url": row.url})
+    return go("/admin/peers", "saved")
+
+
 @router.post("/admin/peers/{pid}/delete")
 def delete_peer(pid: str, p: Annotated[Ctx, Depends(admin_form)]):
     row = p.session.get(Peer, pid)
@@ -541,6 +519,39 @@ def sync_now(pid: str, p: Annotated[Ctx, Depends(admin_form)]):
         row.last_error = f"{type(exc).__name__}: {exc}"[:300]
         p.session.commit()
         return peers(p, error=f"Sync failed: {row.last_error}", tone="error")  # type: ignore[arg-type]
+
+
+@router.post("/admin/peers/failures/create-type", response_class=HTMLResponse)
+def create_type_for_failure(p: Annotated[Ctx, Depends(admin_form)], key: Annotated[str, Form(max_length=40)]):
+    """C15 §2.2 "Create type locally": an upstream's entries name a media type this node does not adopt. Create it
+    here (an ordinary local type, which an administrator can rename or delete later), then retry: they apply."""
+    from .. import custom
+    from ..models import MediaType
+
+    key = key.strip().lower()
+    if p.session.get(MediaType, key) is None:
+        try:
+            custom.save_type(p.session, p.st.ctx, key, key.replace("_", " ").capitalize())
+        except AtlasError as exc:
+            p.session.rollback()
+            return peers(p, error=f"Could not create the media type: {exc}", tone="error")  # type: ignore[arg-type]
+        accounts.audit(p.session, p.me.id, "schema_type_save", key[:64], {"via": "media_type_not_adopted"})
+    result = sync.retry_failures(p.session, p.st.ctx, limit=100, due_only=False)
+    accounts.audit(p.session, p.me.id, "sync_failures_retry", "", result)
+    p.session.flush()
+    return peers(p, error=f"Created the media type {key}; retried {result['retried']} entr"  # type: ignore[arg-type]
+                 f"{'y' if result['retried'] == 1 else 'ies'}: {result['resolved']} applied.", tone="ok")
+
+
+@router.post("/admin/peers/failures/dismiss", response_class=HTMLResponse)
+def dismiss_failure(p: Annotated[Ctx, Depends(admin_form)], node_id: Annotated[str, Form(max_length=64)],
+                    seq: Annotated[int, Form(ge=1)]):
+    """C15 §2.2 "Dismiss": stop reporting an entry whose media type this node does not adopt (audited)."""
+    try:
+        sync.dismiss_not_adopted(p.session, node_id, seq, actor_id=p.me.id)
+    except ValueError as exc:
+        return peers(p, error=f"Could not dismiss: {exc}", tone="error")  # type: ignore[arg-type]
+    return go("/admin/peers", "saved")
 
 
 @router.post("/admin/peers/failures/retry", response_class=HTMLResponse)

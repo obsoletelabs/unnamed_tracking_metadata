@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Connect a device · {{ app_name }}{% endblock %}
+{% block body_class %}consent-page{% endblock %}
+{% block content %}
+<div class="consent-layout"><div class="narrow card consent-card pair-card">
+{% if step == "done" %}
+  {% if approved %}
+  <h1>Device approved</h1>
+  <p><strong>{{ client.label }}</strong> can now read {{ app_name }} as <strong>{{ p.user.username }}</strong>. It picks up its token by itself within a few seconds.</p>
+  <p class="small muted">It received a read-only token. You can revoke it at any time under <a href="/me#tokens">Profile → API tokens</a>.</p>
+  {% else %}
+  <h1>Request denied</h1>
+  <p><strong>{{ client.label }}</strong> was not connected. Nothing was shared with it.</p>
+  {% endif %}
+{% elif step == "confirm" %}
+  <h1>Connect {{ client.label }}?</h1>
+  <p class="pair-warning" role="note"><strong>Only approve a code shown on your own device.</strong> If someone sent you this code or asked you to enter it, choose Deny.</p>
+  <dl class="facts pair-facts">
+    <dt>Device name</dt><dd>{{ client.label }}</dd>
+    <dt>Software</dt><dd><code>{{ client.user_agent }}</code></dd>
+    <dt>Asked from address</dt><dd><code>{{ client.ip }}</code></dd>
+    <dt>Code</dt><dd><code>{{ code }}</code> (expires in {{ client.minutes_left }} min)</dd>
+  </dl>
+  <p class="small muted">Approving gives it a read-only token for your account (<strong>{{ p.user.username }}</strong>). It cannot change anything here, and you can revoke it under Profile → API tokens.</p>
+  <form method="post" action="/pair/decide" class="pair-actions">{{ csrf(p.csrf) }}
+    <input type="hidden" name="code" value="{{ code }}">
+    <button name="decision" value="approve" type="submit">Approve</button>
+    <button class="secondary" name="decision" value="deny" type="submit">Deny</button>
+  </form>
+{% else %}
+  <h1>Connect a device</h1>
+  <p>Enter the code your device shows, for example the Atlas plugin in Jellyfin or Playnite.</p>
+  <p class="small muted">Only approve a code shown on your own device: never one someone sent you.</p>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="/pair" class="pair-form">{{ csrf(p.csrf) }}
+    <label for="pair-code">Code</label>
+    <input id="pair-code" type="text" name="code" value="{{ code }}" required maxlength="32" autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="text" placeholder="XXXX-XXXX">
+    <button type="submit">Continue</button>
+  </form>
+{% endif %}
+</div></div>
+{% endblock %}

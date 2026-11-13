@@ -2,29 +2,44 @@
 {% from "macros.html" import csrf %}
 {% block title %}Import · {{ app_name }}{% endblock %}
 {% block content %}
+{% set is_book = provider in books %}
 {% if in_admin %}<h1>Administration</h1>
 {% include "_adminnav.html" %}
 <h2 class="flush-top">Import from a provider</h2>{% else %}<h1>Import from a provider</h1>{% endif %}
-<p class="muted">Search a metadata provider and pull a game in with its facts, artwork and achievements. Provider data stays on this node's records as a source observation; nothing personal is sent.</p>
+<p class="muted">Search a metadata provider and pull a {{ 'book' if is_book else 'game' }} in with its facts, {{ 'editions and cover' if is_book else 'artwork and achievements' }}. Provider data stays on this node's records as a source observation; nothing personal is sent.</p>
 {% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
-{% if done %}<div class="flash" role="status">Imported <a href="/game/{{ done.row.id }}"><strong>{{ done.row.title }}</strong></a>
-  ({{ done.method }}{% if done.review %}, needs review{% endif %}): {{ done.artwork }} artwork, {{ done.achievements }} achievements.</div>{% endif %}
-{% if not names %}<div class="card">No providers are configured on this node. Set an API key such as <code>ATLAS_RAWG_API_KEY</code> or enable Steam in the settings, then restart.</div>
+{% if done %}<div class="flash" role="status">Imported <a href="/game/{{ done.row.id }}"><strong>{{ done.row.view.get('title') if done.row.view else done.row.id }}</strong></a>
+  ({{ done.method }}{% if done.review %}, needs review{% endif %}){% if done.row.media_type == 'book' %}: {{ 'a cover' if done.artwork else 'no cover' }}.{% else %}: {{ done.artwork }} artwork, {{ done.achievements }} achievements.{% endif %}</div>{% endif %}
+{% if not names %}<div class="card">No providers are configured on this node. Set an API key such as <code>ATLAS_RAWG_API_KEY</code> or enable Steam or Open Library in the settings, then restart.</div>
 {% else %}
-<form class="card" method="get" action="{{ base }}">
+{% if books and not is_book %}<p class="small">Importing a book? <a href="{{ base }}?provider={{ books|first }}">Import from {{ 'Open Library' if (books|first) == 'openlibrary' else books|first }}</a>, by title, author or ISBN.</p>{% endif %}
+<div class="card import-forms" data-import-forms>
+<form method="get" action="{{ base }}" role="search">
   <div class="row">
     <div><label for="provider">Provider</label><select id="provider" name="provider">{% for n in names %}<option value="{{ n }}" {{ 'selected' if n == provider }}>{{ n }}</option>{% endfor %}</select></div>
-    <div class="grow"><label for="q">Game title</label><input id="q" type="search" name="q" value="{{ q }}" maxlength="200" required></div>
+    <div class="grow"><label for="import-q">{{ 'Title, author or ISBN' if is_book else 'Game title' }}</label><input id="import-q" type="search" name="q" value="{{ q }}" maxlength="200" required></div>
     <div class="align-end"><button type="submit">Search</button></div>
   </div>
 </form>
+{% if is_book %}
+<form method="post" action="{{ base }}/isbn" data-isbn-import>{{ csrf(p.csrf) }}<input type="hidden" name="provider" value="{{ provider }}">
+  <div class="row">
+    <div class="grow"><label for="isbn">ISBN <span class="hint">10 or 13 digits, hyphens allowed: imports the book straight away</span></label><input id="isbn" type="text" name="isbn" value="{{ isbn }}" maxlength="40" inputmode="numeric" autocomplete="off" spellcheck="false" required></div>
+    <div class="align-end"><button type="submit">Import this ISBN</button></div>
+  </div>
+</form>
+{% endif %}
+</div>
 {% if results is not none %}
 <h2>Results</h2>
 {% if results %}
-<table><thead><tr><th>Title</th><th>Platform</th><th>Released</th><th>ID</th><th></th></tr></thead><tbody>
-{% for r in results %}<tr><td>{{ r.title }}</td><td>{{ r.platform or '' }}</td><td>{{ day(r.release_date) }}</td><td><code>{{ r.external_id }}</code></td>
+<div class="table-scroll"><table class="data-cards"><thead><tr><th>Title</th>{% if is_book %}<th>Author</th><th>First published</th>{% else %}<th>Platform</th><th>Released</th>{% endif %}<th>ID</th><th></th></tr></thead><tbody>
+{% for r in results %}{% set first = ((r.get('ext') or {}).get('release') or {}).get('first') %}<tr><td data-label="Title">{{ r.title }}</td>
+{% if is_book %}<td data-label="Author">{{ (r.get('facts') or {}).get('developer') or '' }}</td><td data-label="First published">{% if first %}<time datetime="{{ first.date }}" data-precision="{{ first.precision }}">{{ release_text(first.date, first.precision, prefs) }}</time>{% else %}{{ day(r.release_date) }}{% endif %}</td>
+{% else %}<td data-label="Platform">{{ r.platform or '' }}</td><td data-label="Released">{{ day(r.release_date) }}</td>{% endif %}
+<td data-label="ID"><code>{{ r.external_id }}</code></td>
 <td><form method="post" action="{{ base }}">{{ csrf(p.csrf) }}<input type="hidden" name="provider" value="{{ provider }}"><input type="hidden" name="external_id" value="{{ r.external_id }}"><input type="hidden" name="q" value="{{ q }}"><button class="small" type="submit">Import</button></form></td></tr>{% endfor %}
-</tbody></table>
+</tbody></table></div>
 {% else %}<p class="muted">No matches.</p>{% endif %}
 {% endif %}
 {% endif %}

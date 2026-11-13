@@ -248,7 +248,7 @@ def _main_page(p: Ctx, *, error: str | None = None, probe: dict | None = None, s
 
 
 def _upstream_row(p: Ctx, main: str) -> UpstreamLink:
-    row = p.session.get(UpstreamLink, main[:16])
+    row = p.session.get(UpstreamLink, main[:64])
     if row is None:
         raise HTTPException(404)
     return row
@@ -274,7 +274,7 @@ def main_probe(p: Annotated[Ctx, Depends(local_admin_form)], url: Annotated[str,
 
 @router.post("/admin/main/start", response_class=HTMLResponse)
 def main_start(p: Annotated[Ctx, Depends(local_admin_form)], url: Annotated[str, Form(max_length=300)],
-               node_id: Annotated[str, Form(max_length=16)] = "", relink: Annotated[str, Form()] = ""):
+               node_id: Annotated[str, Form(max_length=64)] = "", relink: Annotated[str, Form()] = ""):
     """Step two: open the device flow. `node_id` is the main fingerprint the admin saw at the probe; a main that
     answers with another root key is refused (the pin)."""
     if (why := link_client.refusal(p.st.ctx.settings)) is not None:

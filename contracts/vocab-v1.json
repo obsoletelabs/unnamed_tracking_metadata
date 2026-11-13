@@ -43,6 +43,21 @@
     "port",
     "demo"
   ],
+  "book_format": [
+    "paperback",
+    "hardcover",
+    "ebook",
+    "audiobook",
+    "other"
+  ],
+  "book_creator_role": [
+    "author",
+    "editor",
+    "translator",
+    "illustrator",
+    "narrator",
+    "contributor"
+  ],
   "feed_kinds": [
     "obs",
     "artwork",
@@ -55,6 +70,7 @@
     "unlock",
     "key_rotation",
     "relation",
-    "record"
+    "record",
+    "wire_start"
   ]
 }

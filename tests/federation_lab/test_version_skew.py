@@ -50,7 +50,8 @@ def test_unknown_entry_kind_is_not_silently_dropped(lab):
         assert status["verified_head"] == official.head() and not status["in_sync"]
 
 
-def test_unknown_observation_field_is_not_silently_dropped(lab):
+def test_unknown_observation_field_is_ignored_not_dropped(lab):
+    """C16 Z1 (W-2, tolerant readers): an unknown member of a known body is ignored and the entry applies."""
     official, local = lab.nodes["official"], lab.nodes["local"]
     entry = observation_entry("Game With A Newer Field", extra_payload={"release_date_precision": "month"})
     observation_id = entry["observation"]["id"]
@@ -59,10 +60,10 @@ def test_unknown_observation_field_is_not_silently_dropped(lab):
     lab.sync("mirror", "official")
     lab.sync("local", "official")
 
-    assert disposition(local, official, seq, observation_id) != "dropped", (
-        f"observation {observation_id} with an unknown payload field vanished: local's cursor is "
+    assert disposition(local, official, seq, observation_id) == "applied", (
+        f"observation {observation_id} with an unknown payload field did not apply: local's cursor is "
         f"{local.cursor(official)}, open sync failures {local.open_failures()}")
-    assert local.sync_status(official)["parked"]["first_reason"] == "unsupported_field"
+    assert local.sync_status(official)["parked"] is None
 
 
 def test_mirror_relays_newer_entries_verbatim(lab):
@@ -120,7 +121,8 @@ ART = [{"kind": "key_art", "url": "https://img.example.org/skew-key.png"}]
 
 
 def _orphan(official) -> tuple[str, int]:
-    """An authority in legacy emission with a provider-only record and curated artwork on it (the live shape)."""
+    """A v0 authority's live shape: a provider-only record and curated artwork on it, signed without introducing the
+    record. A wire-1 authority signs a `record` first (C16 Z1), so the lab signs the v0 entry directly."""
     from atlas import service
     from atlas.contract import ObservationBatchV1
 
@@ -131,18 +133,15 @@ def _orphan(official) -> tuple[str, int]:
         [result] = service.ingest(session, official.state.ctx, body, system=True)
         session.commit()
     cid = result.canonical_id
-    response = official.client.put(f"/api/v2/games/{cid}/artwork", headers=official.headers(official.admin_token),
-                                   json={"items": ART})
-    assert response.status_code == 200, response.text
-    return cid, official.head()
+    return cid, official.emit("artwork", {"canonical_id": cid, "source": "curator", "items": ART}, v0=True)
 
 
 def _as_1_0(path, body):
-    """What a 1.0 upstream's `/sync/info` says: no record counts, no introduction mark, protocol 1.0."""
+    """What an upstream that does not report its records says in `/sync/info`: no record counts, no introduction
+    mark (a v0 upstream; the wire range stays, so the lab's wire-1 server still answers this follower)."""
     if path.endswith("/sync/info"):
         for key in ("records", "introduced_through", "media_withheld"):
             body.pop(key, None)
-        body["protocol"] = "1.0"
     return body
 
 
@@ -174,7 +173,6 @@ def test_v3_an_upgrade_from_1_0_rescans_and_recovers_the_dropped_sidecar_when_th
     from sqlalchemy import delete, select
 
     from atlas.models import Artwork, SyncFailure
-    from tools.multinode_drill import csrf
     from tools.skew_drill import _current_cli
 
     official, mirror = lab.nodes["official"], lab.nodes["mirror"]
@@ -191,9 +189,6 @@ def test_v3_an_upgrade_from_1_0_rescans_and_recovers_the_dropped_sidecar_when_th
         row = session.get(SyncFailure, (official.node_id, art_seq))
         assert (row.disposition, row.reason, row.waiting_for) == ("wait", "dropped_by_previous_release", cid)
 
-    form = {"csrf": csrf(official.admin, "/admin/peers"), "emit_protocol": "1.5", "password": lab.password,
-            "followers_upgraded": "on"}
-    assert official.admin.post("/admin/peers/protocol", data=form).status_code == 303
     done = _current_cli(official, "feed", "introduce", "--missing")
     assert done.returncode == 0, (done.stdout, done.stderr)
     assert lab.sync("mirror", "official") is None

@@ -1,0 +1,33 @@
+name: Live Open Library
+# CONTRACT-C15 §3.4: a manual smoke check of the Open Library adapter against openlibrary.org. Manual dispatch only
+# (never on a schedule, a push or a pull request): about six requests, one a second, with the identifying
+# User-Agent. It prints counts and ids only; no Open Library data is stored or uploaded (D15.2).
+on:
+  workflow_dispatch:
+    inputs:
+      contact:
+        description: "provider_contact sent in the User-Agent (an e-mail address or https:// URL; optional)"
+        required: false
+        default: ""
+permissions: { contents: read }
+concurrency:
+  group: live-openlibrary
+  cancel-in-progress: false
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+      - run: uv sync --frozen --extra dev
+      - name: Open Library smoke (python -m tools.openlibrary_live_smoke)
+        env:
+          CONTACT: ${{ inputs.contact }}
+        run: |
+          if [ -n "$CONTACT" ]; then
+            uv run python -m tools.openlibrary_live_smoke --contact "$CONTACT"
+          else
+            uv run python -m tools.openlibrary_live_smoke
+          fi

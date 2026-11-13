@@ -92,6 +92,10 @@ REGISTRY: tuple[Spec, ...] = (
     S("session_ttl_days", "Sign-in lifetime (days)", "Security", "int", lo=1, hi=90),
     S("require_mfa_for_privileged", "Require two-factor sign-in for reviewers and administrators", "Security", "bool",
       "Includes reputation-based reviewers. Existing sessions must enrol or complete a second factor before continuing."),
+    S("public_read", "Let anyone read the client API without a token", "Security", "bool",
+      "For public catalogues: tools such as the Jellyfin and Playnite connectors may then search and read records "
+      "without a token (the client API subset only, 60 requests a minute per address). Off: every client needs a "
+      "token or pairing."),
     S("rate_limit_per_minute", "API requests per minute per token", "Security", "int", lo=1, hi=100_000),
     S("max_batch", "Largest observation batch", "Security", "int", lo=1, hi=5000),
     S("max_resolve", "Largest resolve batch", "Security", "int", lo=1, hi=5000),
@@ -203,7 +207,7 @@ REGISTRY: tuple[Spec, ...] = (
     S("mail_from", "From address", "Email", "str", max_len=200),
 )
 BY_KEY = {s.key: s for s in REGISTRY}
-EXTRA = {"logo_hash", "emit_protocol"}  # stored like settings but edited by dedicated controls, not the form
+EXTRA = {"logo_hash"}  # stored like settings but edited by dedicated controls, not the form
 PERCENT = {"auto_match_threshold", "review_threshold"}  # stored as 50..100, used as 0.5..1.0
 
 

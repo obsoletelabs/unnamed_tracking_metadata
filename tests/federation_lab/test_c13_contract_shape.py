@@ -1,18 +1,20 @@
-"""CONTRACT-C13 §10.2 on real servers: the contract's own shape of the live failure, and its bridge variants.
+"""CONTRACT-C13 §10.2 on real servers: the contract's own shape of the live failure, on a wire-1 upstream (C16).
 
 `test_c13_live_regression` runs the failure on the wired five-node network (mirror and relays). This file runs the
 steps §10.2 spells out, on a fresh network with no peers pinned:
 
-* an upstream U (the lab's `official`) in legacy emission with five curated records, a provider-only record S with
+* an upstream U (the lab's `official`) with five curated records, a provider-only record S with
   four curated sidecars (seq 6-10: the schema entry #78 adds is seq 8), a silent provider-only record Q, and a
   retained relayed feed F that is empty;
-* a follower N (`local`) that looks U up (the API probe and the admin form), follows U's own feed, waits for S,
-  and recovers in one pull after U raises its emit protocol and runs `atlas feed introduce --all`;
-* variants 7a and 7a': U with the bridge on, and U at emit 1.5 while it still serves 1.1 followers.
+* a follower N (`local`) that looks U up (the API probe and the admin form), follows U's own feed and converges in
+  one pull, because U signs S's `record` before its sidecars; `atlas feed introduce --all` then publishes Q.
+
+The bridge variants 7a and 7a' are gone with the bridge (C16 Z1). Waiting for a record still happens on a v0
+upstream's feed: `test_c13_live_regression.py` signs that shape directly.
 
 Not here: variant 3a (an upstream that strips `/sync/info.records`) needs a stub between the nodes, so it is the
 in-process `tests/test_c13_peers.py::test_the_caught_up_line_reads_the_records_the_upstream_reports`; variant 7b
-("Look it up") is not built; a real 1.1 follower is `python -m tools.skew_drill --scenario records`.
+("Look it up") is not built.
 """
 
 from __future__ import annotations
@@ -111,9 +113,11 @@ def _woken(node, upstream, trigger: str) -> int:
     return int(found.group(1)) if found else 0
 
 
-def test_contract_shape_waits_then_recovers_with_introduce_all(network):
+def test_contract_shape_introduces_before_sidecars_and_introduce_all_publishes_the_silent_record(network):
+    """C16 Z1: the §10.2 shape on a wire-1 upstream. U signs S's `record` before its sidecars (no emit protocol, no
+    bridge), so N converges in one pull with nothing waiting; the silent Q is published by `introduce --all`."""
     official, indie, local = network.nodes["official"], network.nodes["indie"], network.nodes["local"]
-    # Step 1: U in legacy emission, seeded to the live shape.
+    # Step 1: U seeded to the live shape.
     curated = [official.post(f"Lab Curated {n}") for n in range(5)]
     s = _provider_only(official, "Subnautica 2", "1962700")
     _sidecars(official, s)
@@ -121,11 +125,9 @@ def test_contract_shape_waits_then_recovers_with_introduce_all(network):
     with official.state.maker() as session:  # F: U retains indie's feed, which holds nothing
         session.add(ReplicatedFeed(node_id=indie.node_id, public_key=indie.root_key))
         session.commit()
-    assert _kinds(official) == [(n, "obs") for n in range(1, 6)] + list(enumerate(SIDECAR_KINDS, start=6))
-    waiting = [(6, "artwork"), (7, "achievements"), (9, "custom"), (10, "achievements")]  # 8 is the schema
+    assert [kind for _, kind in _kinds(official)] == ["wire_start"] + ["obs"] * 5 + ["record", *SIDECAR_KINDS]
     info = official.client.get("/api/v2/sync/info", headers=official.headers()).json()
-    assert info["records"] == {"live": 7, "introduced": 5, "not_federated": 2}
-    assert info["introduced_through"] is None
+    assert info["records"] == {"live": 7, "introduced": 6, "not_federated": 1}
 
     # Step 2: N looks U up. The API probe and the form agree: U's own feed first and recommended; F empty and smaller.
     probe = local.client.get("/api/v2/admin/peers/probe", params={"url": official.url},
@@ -133,9 +135,9 @@ def test_contract_shape_waits_then_recovers_with_introduce_all(network):
     assert probe.status_code == 200, probe.text
     feeds = probe.json()["feeds"]
     assert [(f["origin"], f["node_id"], f["head"], f["recommended"]) for f in feeds] == [
-        ("own", official.node_id, 10, True), ("relayed", indie.node_id, 0, False)]
+        ("own", official.node_id, official.head(), True), ("relayed", indie.node_id, 0, False)]
     assert feeds[1]["warnings"] == ["empty_feed", "smaller_than_own"]
-    assert probe.json()["records"] == {"live": 7, "introduced": 5, "not_federated": 2}
+    assert probe.json()["records"] == {"live": 7, "introduced": 6, "not_federated": 1}
     page = local.admin.post("/admin/peers/probe", data={"csrf": csrf(local.admin, "/admin/peers"),
                                                         "url": official.url, "token": official.follower}).text
     block = re.search(r'<form[^>]*data-feed-option="relayed".*?</form>', page, re.S).group(0)
@@ -143,97 +145,32 @@ def test_contract_shape_waits_then_recovers_with_introduce_all(network):
     assert local.admin.post("/admin/peers", data={**relayed, "ack_relayed_fingerprint": "on"}).status_code == 400
     peer_id, _ = _follow_own(local, official)
 
-    # Step 3: adding the peer pulled the first page. Caught up, four changes waiting for their game.
-    assert _open(local) == [(seq, kind, "wait", s) for seq, kind in waiting]  # the schema entry applied at once
+    # Step 3: adding the peer pulled the feed. Nothing waits: S arrived before its sidecars.
+    assert local.sync(peer_id) is None
+    assert _open(local) == []
     status = local.sync_status(official)
-    assert status["state"] == "waiting" and status["applied_head"] == 10
-    peers_page = local.admin.get("/admin/peers").text
-    assert "Caught up · 4 changes waiting for their game" in peers_page
-    assert re.search(r"Atlas Central has 2 records it does not publish", peers_page)
-    assert "waiting for its game" in peers_page.lower()
-    for wrong in ("degraded", "apply error", "unknown or merged canonical"):
-        assert wrong not in peers_page.lower(), wrong
-    group = re.search(rf'<div class="card waiting-group" data-waiting-for="{s}"[^>]*>.*?</div>', peers_page, re.S)
-    assert group is not None and 'data-waiting-subreason="upstream_unpublished"' in group.group(0)
-    assert "achievements ×2, artwork, custom · entries 6–10" in group.group(0)
-    assert "data-waiting-title=\"none\"><strong>A game Atlas Central hasn't published yet" in group.group(0)
-    api = local.client.get("/api/v2/sync/status", headers=local.headers(local.admin_token)).json()
-    [summary] = api["peers"]
-    assert summary["status"]["code"] == "caught_up_waiting"
-    assert [(g["canonical_id"], g["subreason"], g["kinds"], g["seqs"]) for g in summary["waiting"]] == [
-        (s, "upstream_unpublished", {"achievements": 2, "artwork": 1, "custom": 1}, [6, 10])]
-
-    # Step 4: 25 more pulls change nothing.
-    for _ in range(25):
-        assert local.sync(peer_id) is None
+    assert status["state"] == "in_sync" and status["applied_head"] == official.head()
     with local.state.maker() as session:
-        rows = session.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))).all()
-        assert sorted((r.seq, r.disposition, r.attempts) for r in rows) == [(n, "wait", 1) for n, _ in waiting]
+        assert session.get(Canonical, s).view["title"] == "Subnautica 2"
+        assert session.get(Canonical, q) is None
+        assert all(session.get(Canonical, c) is not None for c in curated)
 
-    # Step 5: U raises its emit protocol and runs `atlas feed introduce --all`: a record for S and Q, nothing else.
-    form = {"csrf": csrf(official.admin, "/admin/peers"), "emit_protocol": "1.5", "password": network.password,
-            "followers_upgraded": "on"}
-    assert official.admin.post("/admin/peers/protocol", data=form).status_code == 303
+    # Step 4: `atlas feed introduce --all` publishes the silent Q: one record, nothing else.
+    head = official.head()
     done = _current_cli(official, "feed", "introduce", "--all")
     assert done.returncode == 0, (done.stdout, done.stderr)
     assert json.loads(done.stdout)["finished"] is True
-    assert [kind for _, kind in _kinds(official, after=10)] == ["record", "record"]
+    assert [kind for _, kind in _kinds(official, after=head)] == ["record"]
     with official.state.maker() as session:
-        bodies = {r.body["canonical_id"] for r in session.scalars(select(ChangeLog).where(ChangeLog.seq > 10))}
-        assert bodies == {s, q}
-        assert feed.introduced_through(session) == official.head() == 12
+        bodies = {r.body["canonical_id"] for r in session.scalars(select(ChangeLog).where(ChangeLog.seq > head))}
+        assert bodies == {q}
+        assert feed.introduced_through(session) == official.head()
 
-    # Step 6: one pull on N applies both records and the four waiting entries, in feed order, with no manual retry.
+    # Step 5: one pull on N applies it.
     assert local.sync(peer_id) is None
     assert _open(local) == []
     with local.state.maker() as session:
-        assert session.get(Canonical, s).view["title"] == "Subnautica 2"
         assert session.get(Canonical, q).view["title"] == "Quiet Game"
-        assert all(session.get(Canonical, c) is not None for c in curated)
-    status = local.sync_status(official)
-    assert status["state"] == "in_sync" and status["applied_head"] == 12
+    assert local.sync_status(official)["state"] == "in_sync"
     peers_page = local.admin.get("/admin/peers").text
     assert 'data-peer-status="caught_up"' in peers_page and "7 of 7 records published" in peers_page
-    assert _woken(local, official, "record") == 1
-
-
-@pytest.mark.parametrize("network", [{"ATLAS_FEDERATION_BRIDGE_RECORD_OBS": "true",
-                                      "ATLAS_MIN_FOLLOWER_PROTOCOL": "1.1"}], indirect=True)
-def test_bridge_variants_introduce_with_observations_older_followers_apply(network):
-    """§10.2 variants 7a and 7a': with the bridge on, U introduces S and Q with 1.0 observations (emit stays legacy);
-    after U raises its emit protocol to 1.5 while it still serves 1.1 followers, a new record is introduced with the
-    bridge too, never with `record`, so a 1.1 follower would not park anything. N converges with nothing open."""
-    official, local = network.nodes["official"], network.nodes["local"]
-    official.post("Lab Curated")
-    s = _provider_only(official, "Subnautica 2", "1962700")
-    _sidecars(official, s)
-    q = _provider_only(official, "Quiet Game", "1962701")
-    assert [kind for _, kind in _kinds(official, after=1)] == list(SIDECAR_KINDS)
-    peer_id, _ = _follow_own(local, official)
-    assert [row[1] for row in _open(local)] == ["artwork", "achievements", "custom", "achievements"]
-
-    # 7a: the bridge, emit unchanged
-    done = _current_cli(official, "feed", "introduce", "--all")
-    assert done.returncode == 0, (done.stdout, done.stderr)
-    assert [kind for _, kind in _kinds(official, after=1 + len(SIDECAR_KINDS))] == ["obs", "obs"]
-    assert local.sync(peer_id) is None
-    assert _open(local) == []
-    with local.state.maker() as session:
-        assert session.get(Canonical, s) is not None and session.get(Canonical, q) is not None
-    assert _woken(local, official, "bridge") == 1
-
-    # 7a': emit 1.5 while min_follower_protocol is 1.1: still the bridge
-    form = {"csrf": csrf(official.admin, "/admin/peers"), "emit_protocol": "1.5", "password": network.password,
-            "followers_upgraded": "on"}
-    assert official.admin.post("/admin/peers/protocol", data=form).status_code == 303
-    head = official.head()
-    r = _provider_only(official, "Raft 2", "1962702")
-    response = official.client.put(f"/api/v2/games/{r}/artwork", headers=official.headers(official.admin_token),
-                                   json={"items": [{"kind": "key_art", "url": "https://img.example.org/r.png"}]})
-    assert response.status_code == 200, response.text
-    assert [kind for _, kind in _kinds(official, after=head)] == ["obs", "artwork"]
-    with official.state.maker() as session:
-        assert session.scalars(select(ChangeLog).where(ChangeLog.kind == "record")).first() is None
-    assert local.sync(peer_id) is None
-    assert _open(local) == []
-    assert local.sync_status(official)["state"] == "in_sync"

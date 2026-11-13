@@ -6,11 +6,11 @@ import sys
 
 import httpx
 
-from . import auth, sync
+from . import accounts, auth, sync
 from .db import make_engine, make_sessionmaker, upgrade
 from .service import Ctx
 from .settings import get_settings
-from .signing import key_id_for, load_identity
+from .signing import id_matches, load_identity
 
 
 def _maker():
@@ -31,6 +31,34 @@ def cmd_migrate(args) -> int:
     upgrade(settings.database_url, args.revision, settings=settings)
     print("database is up to date" if args.revision == "head" else f"database is at revision {args.revision}")
     return 0
+
+
+def cmd_export_verify(args) -> int:
+    """C16 R2: before upgrading a v0 node, `export` row counts and content hashes of every table (offline, read-only);
+    after the upgrade, `verify` that no row was lost or changed. Exit 0 when verified, 1 when anything is missing."""
+    from . import export_verify
+
+    engine = make_engine(get_settings().database_url)
+    try:
+        if args.action == "export":
+            manifest = export_verify.export(engine)
+            export_verify.write(args.manifest, manifest)
+            rows = sum(t["rows"] for t in manifest["tables"].values())
+            print(f"exported {len(manifest['tables'])} tables, {rows} rows at revision {manifest['revision']} to "
+                  f"{args.manifest}")
+            return 0
+        report = export_verify.verify(engine, export_verify.read(args.manifest))
+    finally:
+        engine.dispose()
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        for line in report["problems"]:
+            print("LOST: " + line)
+        print(f"{'verified' if report['ok'] else 'NOT verified'}: {len(report['tables'])} tables from revision "
+              f"{report['revision_before']} to {report['revision_after']}; added tables: "
+              f"{', '.join(report['added_tables']) or 'none'}")
+    return 0 if report["ok"] else 1
 
 
 def cmd_backup(args) -> int:
@@ -118,7 +146,7 @@ def cmd_node(_) -> int:
     print(f"public_key: {pub}")
     print(f"signing_key_id: {ident.key_id}")
     print(f"mirrors trust this node with:\n  ATLAS_TRUSTED_KEYS='{json.dumps({ident.node_id: pub})}'")
-    assert key_id_for(__import__("base64").b64decode(pub)) == ident.node_id
+    assert id_matches(ident.node_id, __import__("base64").b64decode(pub))
     return 0
 
 
@@ -173,7 +201,11 @@ def _exit_for(upstreams: dict) -> int:
 
 
 def _describe(node: str, u: dict) -> str:
-    lines = [f"{node}: {u['state']}  (this node speaks {u['own_protocol']}, upstream {u['upstream_protocol'] or 'unknown'})",
+    own = u.get("own_wire") or {}
+    theirs = u.get("upstream_wire")
+    upstream = (f"wire {theirs.get('use') or theirs.get('max')}" if isinstance(theirs, dict)
+                else f"v0 {u['upstream_protocol']}" if u.get("upstream_protocol") else "unknown")
+    lines = [f"{node}: {u['state']}  (this node speaks wire {own.get('min')}-{own.get('max')}, upstream {upstream})",
              f"  heads: observed {u['observed_head']}  downloaded {u['downloaded_head']}  verified {u['verified_head']}"
              f"  applied {u['applied_head']}"]
     if u.get("parked"):
@@ -219,6 +251,14 @@ def cmd_sync(args) -> int:
         else:
             print("\n".join(_describe(n, u) for n, u in upstreams.items()) or "no upstream feeds")
         return _exit_for(upstreams)
+    if action == "accept-downgrade":
+        with maker() as session:
+            if not sync.accept_downgrade(session, args.url):
+                print(f"{args.url} was never seen speaking wire: nothing to accept", file=sys.stderr)
+                return 2
+            session.commit()
+        print(f"accepted: {args.url} is read as v0 until it speaks wire again")
+        return 0
     if action == "replay":
         with maker() as session:
             if args.rescan:
@@ -518,6 +558,63 @@ def cmd_feed(args) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    """`atlas doctor media-types [--retype NODE_ID]` (C15 §2.2): list records an older release filed as games
+    although their upstream named another media type this node now knows, grouped by peer feed; `--retype` gives the
+    records of one feed their named type (local only, audited). Exit 3 when misfiled records remain."""
+    from . import doctor
+
+    settings, maker = _maker()
+    if args.retype:
+        ctx = _ctx(settings, maker)
+        with maker() as session:
+            n = doctor.retype(session, ctx, args.retype)
+            session.commit()
+        print(json.dumps({"retyped": n, "node_id": args.retype}))
+    with maker() as session:
+        found = doctor.report(session)
+    if args.json:
+        print(json.dumps(found, indent=2))
+    elif not found["count"]:
+        print("no misfiled records")
+    else:
+        for group in found["peers"]:
+            types = ", ".join(f"{k} ×{n}" for k, n in sorted(group["types"].items()))
+            print(f"{group['peer'] or group['node_id'][:16]}: {group['count']} record(s) filed as game ({types}); "
+                  f"retype with `atlas doctor media-types --retype {group['node_id']}`")
+            for item in group["records"][:20]:
+                print(f"  {item['canonical_id']}  seq {item['seq']}  {item['named']}  {item['title'] or ''}")
+    return 3 if found["count"] and not args.retype else 0
+
+
+def cmd_seed(args) -> int:
+    """`atlas seed --fixture connectors-v1 [--token]` (CONTRACT-C15 §12): seed the synthetic client catalogue
+    (idempotent) and print `{fixture, created, ids}` as JSON; `--token` also mints a `read` token for it."""
+    from . import client_seed
+
+    settings, maker = _maker()
+    ctx = _ctx(settings, maker)
+    with maker() as session:
+        if not args.force and (refusal := client_seed.refusal(session, ctx.settings)):
+            print(f"{refusal}; this seeds invented records into the change log (and an authority's signed feed). "
+                  "Use a throwaway database, or pass --force.", file=sys.stderr)
+            return 2
+        try:
+            ids, created = client_seed.seed(session, ctx, args.fixture)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        out = {"fixture": args.fixture, "created": created, "ids": ids}
+        if args.token:
+            row, secret = auth.create_token(session, f"{args.fixture}-read", ["read"])
+            accounts.audit(session, None, "token_create", row.id,
+                           {"scopes": row.scopes, "via": "cli_seed", "fixture": args.fixture})
+            out.update(token=secret, token_id=row.id)
+        session.commit()
+    print(json.dumps(out, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="atlas")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -529,6 +626,11 @@ def main(argv: list[str] | None = None) -> int:
     mg = sub.add_parser("migrate")
     mg.add_argument("--revision", default="head", help="migrate to this revision instead of the latest (used before a restore)")  # noqa: E501
     mg.set_defaults(fn=cmd_migrate)
+    ev = sub.add_parser("export-verify", help="pre-upgrade export of row counts and content hashes; verify after")
+    ev.add_argument("action", choices=["export", "verify"])
+    ev.add_argument("manifest", help="manifest path (.json, or .json.gz to compress)")
+    ev.add_argument("--json", action="store_true", help="verify: print the full report as JSON")
+    ev.set_defaults(fn=cmd_export_verify)
     b = sub.add_parser("backup", help="create, verify, drill (isolated restore) or restore a full backup archive")
     b.add_argument("action", choices=["create", "verify", "drill", "restore"])
     b.add_argument("file", nargs="?", help="archive path (create defaults to atlas-<timestamp>.tar.gz here)")
@@ -574,6 +676,9 @@ def main(argv: list[str] | None = None) -> int:
     sk.add_argument("--node", required=True)
     sk.add_argument("--seq", type=int, required=True)
     sk.add_argument("--reason", required=True, help="written to the audit log")
+    ad = sya.add_parser("accept-downgrade", help="read an upstream once seen speaking wire as v0 again (a deliberate "
+                                                 "rollback; design §4.10 rule 3)")
+    ad.add_argument("url", help="the upstream URL, as configured (ATLAS_UPSTREAM_URL or the peer's URL)")
     rc = sya.add_parser("reconcile", help="compare this node's view with the upstream's /sync/digest")
     rc.add_argument("--node", required=True)
     rc.add_argument("--dry-run", action="store_true", help="compare only (the only mode in this release)")
@@ -624,6 +729,18 @@ def main(argv: list[str] | None = None) -> int:
     intro.add_argument("--batch", type=int, default=500, help="records per transaction (default 500)")
     intro.add_argument("--limit", type=int, help="stop after about this many records (the next run continues)")
     intro.set_defaults(fn=cmd_feed)
+    dr = sub.add_parser("doctor", help="read-only diagnostics, with explicit repairs")
+    dra = dr.add_subparsers(dest="action", required=True)
+    dmt = dra.add_parser("media-types", help="records an older release filed as games by mistake (C15 §2.2)")
+    dmt.add_argument("--retype", metavar="NODE_ID", help="give one peer feed's misfiled records their named type")
+    dmt.add_argument("--json", action="store_true", help="machine-readable output")
+    dmt.set_defaults(fn=cmd_doctor)
+    sd = sub.add_parser("seed", help="seed a synthetic test catalogue (CONTRACT-C15 §12: connectors-v1)")
+    sd.add_argument("--fixture", required=True, help="the catalogue to seed: connectors-v1")
+    sd.add_argument("--token", action="store_true", help="also mint a read token and print it")
+    sd.add_argument("--force", action="store_true",
+                    help="seed even an authority node or a database that already holds records")
+    sd.set_defaults(fn=cmd_seed)
     i = sub.add_parser("import-legacy")
     i.add_argument("path", help="path to the demo-1 SQLite database")
     i.set_defaults(fn=cmd_import_legacy)

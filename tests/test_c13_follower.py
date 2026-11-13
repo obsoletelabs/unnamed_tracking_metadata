@@ -13,6 +13,7 @@ from atlas.models import Artwork, Canonical, Observation, ReplicatedChange, Sync
 
 from .conftest import batch
 from .test_sync_compat import Node, pull
+from .v0_authority import upgrade, v0, v0_authorities  # noqa: F401
 
 ART = [{"kind": "key_art", "url": "https://img.example.org/key.png"}]
 ART_ROWS = [("key_art", "https://img.example.org/key.png")]
@@ -59,7 +60,7 @@ def test_the_live_failure_waits_and_recovers_once_the_authority_introduces_the_r
     follower records the entry as waiting (not quarantined, not counted as attempts), moves its cursor on, and
     reports `waiting`. Once the authority emits 1.5 and runs `introduce --missing`, the next pull applies the
     `record` and, in the same transaction, the waiting artwork."""
-    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    authority, mirror = v0(Node(tmp_path, "authority", "authority")), Node(tmp_path, "mirror", "mirror")
     cid = provider_only(authority)
     curate_art(authority, cid)
     pull(mirror, authority)
@@ -78,7 +79,7 @@ def test_the_live_failure_waits_and_recovers_once_the_authority_introduces_the_r
     assert {k: listed["failures"][0][k] for k in ("disposition", "waiting_for", "next_try_at")} == {
         "disposition": "wait", "waiting_for": cid, "next_try_at": None}
 
-    configure(authority, emit_protocol="1.5")
+    upgrade(authority)
     with authority.st.maker() as s:
         assert feed.introduce_batch(s, authority.st.ctx, "missing")["introduced"] == 1
         s.commit()
@@ -90,7 +91,7 @@ def test_the_live_failure_waits_and_recovers_once_the_authority_introduces_the_r
         assert record.view.get("title") == "Subnautica 2"
         obs = s.get(Observation, feed.record_obs_id(authority.node_id, cid))
         assert (obs.source, obs.source_scope, obs.origin_node, obs.origin_seq) == (
-            "atlas-record", authority.node_id, authority.node_id, 2)
+            "atlas-record", authority.node_id, authority.node_id, 3)  # 2 is the upgrade's wire_start
         failure = s.get(SyncFailure, (authority.node_id, 1))
         assert failure.resolved_at is not None
     with authority.st.maker() as s:
@@ -98,24 +99,10 @@ def test_the_live_failure_waits_and_recovers_once_the_authority_introduces_the_r
     assert mirror.heads(authority)["state"] == "in_sync"
 
 
-def test_the_bridge_lets_an_old_follower_apply_at_once(tmp_path):
-    """T-F2: with the bridge on, the authority introduces the record with an `atlas-record` observation before the
-    artwork, so the artwork applies on the first pull and nothing waits."""
-    authority = Node(tmp_path, "authority", "authority", federation_bridge_record_obs=True)
-    mirror = Node(tmp_path, "mirror", "mirror")
-    cid = provider_only(authority)
-    curate_art(authority, cid)
-    pull(mirror, authority)
-    assert waiting(mirror, authority) == []
-    assert art(mirror, cid) == [("key_art", "https://img.example.org/key.png")]
-    with mirror.st.maker() as s:
-        assert s.get(Observation, feed.record_obs_id(authority.node_id, cid)).source == "atlas-record"
-
-
 def test_a_record_folds_in_the_followers_own_copy_of_the_same_game(tmp_path):
     """T-F6 (first half): the follower fetched the same Steam game itself. The record's store id folds its purely
     local record into the authority's, so the sidecars land on one record and the follower's provider data is kept."""
-    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
+    authority = Node(tmp_path, "authority", "authority")
     mirror = Node(tmp_path, "mirror", "mirror")
     local = provider_only(mirror, "Subnautica 2 (local fetch)")
     cid = provider_only(authority)
@@ -132,7 +119,7 @@ def test_a_record_folds_in_the_followers_own_copy_of_the_same_game(tmp_path):
 def test_a_detach_of_an_unfederated_observation_is_a_noop_and_its_record_follows(tmp_path):
     """T-A8 (follower side): the follower never had the moved observation; the detach changes nothing, and the
     `record` right after it creates the new record."""
-    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
+    authority = Node(tmp_path, "authority", "authority")
     mirror = Node(tmp_path, "mirror", "mirror")
     cid = provider_only(authority, "Pair", "10")
     with authority.st.maker() as s:
@@ -146,13 +133,13 @@ def test_a_detach_of_an_unfederated_observation_is_a_noop_and_its_record_follows
     with mirror.st.maker() as s:
         assert s.get(Canonical, cid) is not None and s.get(Canonical, new) is not None
         kinds = [r.kind for r in s.scalars(select(ReplicatedChange).order_by(ReplicatedChange.seq))]
-    assert kinds == ["record", "detach", "record"]
+    assert [k for k in kinds if k != "wire_start"] == ["record", "detach", "record"]
 
 
 def test_wake_is_batched_and_the_retry_pass_applies_the_rest(tmp_path):
     """T-F14: more waiting entries than `sync_wake_batch`: the wake applies them batch by batch in the same pull,
     in feed order, so the last list is the one left."""
-    authority = Node(tmp_path, "authority", "authority")
+    authority = v0(Node(tmp_path, "authority", "authority"))
     mirror = Node(tmp_path, "mirror", "mirror", sync_wake_batch=2)
     cid = provider_only(authority)
     for n in range(5):
@@ -160,7 +147,7 @@ def test_wake_is_batched_and_the_retry_pass_applies_the_rest(tmp_path):
                                     for m in range(n + 1)])
     pull(mirror, authority)
     assert len(waiting(mirror, authority)) == 5
-    configure(authority, emit_protocol="1.5")
+    upgrade(authority)
     with authority.st.maker() as s:
         feed.introduce_batch(s, authority.st.ctx, "missing")
         s.commit()
@@ -172,7 +159,7 @@ def test_wake_is_batched_and_the_retry_pass_applies_the_rest(tmp_path):
 def test_open_failures_are_bounded(tmp_path):
     """T-F13: at `sync_max_open_failures` open entries the follower stops applying (`backlog_full`) and keeps its
     cursor; nothing is lost: the entries stay retained."""
-    authority = Node(tmp_path, "authority", "authority")
+    authority = v0(Node(tmp_path, "authority", "authority"))
     mirror = Node(tmp_path, "mirror", "mirror", sync_max_open_failures=2)
     for n in range(4):
         curate_art(authority, provider_only(authority, f"Game {n}", str(100 + n)))
@@ -185,7 +172,7 @@ def test_open_failures_are_bounded(tmp_path):
 
 def test_rescan_turns_an_old_unknown_record_quarantine_into_waiting(tmp_path):
     """T-F8: a row a previous release quarantined as "unknown canonical" waits for its record after a rescan."""
-    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    authority, mirror = v0(Node(tmp_path, "authority", "authority")), Node(tmp_path, "mirror", "mirror")
     cid = provider_only(authority)
     curate_art(authority, cid)
     pull(mirror, authority)
@@ -212,7 +199,7 @@ def as_a_1_0_release_left_it(node: Node, origin: Node, cid: str) -> None:
 def test_rescan_finds_sidecars_a_1_0_release_dropped_before_their_record(tmp_path):
     """T-F9 (C13 §5.6): a 1.0 release recorded nothing for artwork whose record had not arrived. After the upgrade
     the rescan makes it wait while the record is still unknown, and the record's arrival applies it."""
-    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    authority, mirror = v0(Node(tmp_path, "authority", "authority")), Node(tmp_path, "mirror", "mirror")
     cid = provider_only(authority)
     curate_art(authority, cid)
     pull(mirror, authority)
@@ -225,7 +212,7 @@ def test_rescan_finds_sidecars_a_1_0_release_dropped_before_their_record(tmp_pat
     assert mirror.heads(authority)["state"] == "waiting"
     with mirror.st.maker() as s:
         assert "found by rescan" in s.get(SyncFailure, (authority.node_id, 1)).error
-    configure(authority, emit_protocol="1.5")
+    upgrade(authority)
     with authority.st.maker() as s:
         feed.introduce_batch(s, authority.st.ctx, "missing")
         s.commit()
@@ -233,18 +220,18 @@ def test_rescan_finds_sidecars_a_1_0_release_dropped_before_their_record(tmp_pat
     assert waiting(mirror, authority) == []
     assert art(mirror, cid) == ART_ROWS
     with mirror.st.maker() as s:
-        assert sync.rescan(s, authority.node_id) == {"scanned": 2, "parked": 0, "quarantined": 0}
+        assert sync.rescan(s, authority.node_id) == {"scanned": 3, "parked": 0, "quarantined": 0}  # + wire_start
 
 
 def test_rescan_parks_sidecars_a_1_0_release_dropped_when_their_record_came_later(tmp_path):
     """T-F10 (C13 §5.6): the 1.0 release already received the record (the bridge observation, signed after the
     artwork) before the upgrade. The rescan parks the artwork as dropped_by_previous_release; `replay --historical`
     applies it in feed order; a second rescan records nothing."""
-    authority = Node(tmp_path, "authority", "authority")
+    authority = v0(Node(tmp_path, "authority", "authority"))
     mirror = Node(tmp_path, "mirror", "mirror")
     cid = provider_only(authority)
     curate_art(authority, cid)
-    configure(authority, federation_bridge_record_obs=True)
+    upgrade(authority)  # the record arrives after the artwork (a `record`, after the upgrade's `wire_start`)
     with authority.st.maker() as s:
         assert feed.introduce_batch(s, authority.st.ctx, "missing")["introduced"] == 1
         s.commit()
@@ -254,7 +241,7 @@ def test_rescan_parks_sidecars_a_1_0_release_dropped_when_their_record_came_late
     with mirror.st.maker() as s:
         counts = sync.rescan(s, authority.node_id)
         s.commit()
-    assert counts == {"scanned": 2, "parked": 1, "quarantined": 0}
+    assert counts == {"scanned": 3, "parked": 1, "quarantined": 0}
     with mirror.st.maker() as s:
         row = s.get(SyncFailure, (authority.node_id, 1))
         assert (row.disposition, row.reason) == ("parked", "dropped_by_previous_release")
@@ -262,7 +249,7 @@ def test_rescan_parks_sidecars_a_1_0_release_dropped_when_their_record_came_late
         s.commit()
     assert art(mirror, cid) == ART_ROWS
     with mirror.st.maker() as s:
-        assert sync.rescan(s, authority.node_id) == {"scanned": 2, "parked": 0, "quarantined": 0}
+        assert sync.rescan(s, authority.node_id) == {"scanned": 3, "parked": 0, "quarantined": 0}  # + wire_start
         assert s.get(SyncFailure, (authority.node_id, 1)).resolved_at is not None
 
 
@@ -271,7 +258,7 @@ def test_one_feed_cannot_supersede_another_feeds_observation(tmp_path):
     not retire the first; each feed still supersedes its own."""
     from atlas.ids import canonical_id, ulid
 
-    a, b = Node(tmp_path, "a", "authority"), Node(tmp_path, "b", "authority")
+    a, b = v0(Node(tmp_path, "a", "authority")), v0(Node(tmp_path, "b", "authority"))
     mirror = Node(tmp_path, "mirror", "mirror")
 
     def obs(title):
@@ -300,13 +287,13 @@ def test_one_feed_cannot_supersede_another_feeds_observation(tmp_path):
 
 def test_sync_info_reports_what_the_feed_introduced(tmp_path):
     """C13 §3.4: the additive `/sync/info` fields an operator and a prober read."""
-    authority = Node(tmp_path, "authority", "authority")
+    authority = v0(Node(tmp_path, "authority", "authority"))
     cid = provider_only(authority)
     curate_art(authority, cid)
     info = authority.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {authority.token}"}).json()
     assert info["own_head"] == 1 and info["introduced_through"] is None
     assert info["records"] == {"live": 1, "introduced": 0, "not_federated": 1}
-    assert info["media_withheld"] == 0 and info["protocol"] == "1.5" and "record" in info["kinds"]
+    assert info["media_withheld"] == 0 and info["wire"]["max"] == 1 and "record" in info["kinds"]
     mirror = Node(tmp_path, "mirror", "mirror")
     pull(mirror, authority)
     relayed = mirror.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {mirror.token}"}).json()
@@ -318,14 +305,14 @@ def test_wake_batches_large_groups_in_order(tmp_path):
     """T-F14: more waiting entries than `sync_wake_batch`, and a newer entry for the same record in the same page.
     Every waiting entry applies (in batches) before the next entry of the feed, so the newest list wins, as on the
     authority, and nothing is left open."""
-    authority = Node(tmp_path, "authority", "authority")
+    authority = v0(Node(tmp_path, "authority", "authority"))
     mirror = Node(tmp_path, "mirror", "mirror", sync_wake_batch=2)
     cid = provider_only(authority)
     for n in range(5):
         curate_art(authority, cid, [{"kind": "screenshot", "url": f"https://img.example.org/s{n}.png"}])
     pull(mirror, authority)
     assert len(waiting(mirror, authority)) == 5
-    configure(authority, emit_protocol="1.5")
+    upgrade(authority)
     with authority.st.maker() as s:
         feed.introduce_batch(s, authority.st.ctx, "missing")
         s.commit()
@@ -341,8 +328,8 @@ def test_wake_batches_large_groups_in_order(tmp_path):
 def test_wake_is_scoped_to_introducing_feed(tmp_path):
     """T-F12: feed B signs artwork for a record only feed A introduces. When A introduces it, B's entry keeps
     waiting: not on A's pull, not on B's retry pass, not on the startup wake. B cannot stage changes for A's record."""
-    a = Node(tmp_path, "a", "authority", emit_protocol="1.5")
-    b = Node(tmp_path, "b", "authority")
+    a = Node(tmp_path, "a", "authority")
+    b = v0(Node(tmp_path, "b", "authority"))
     mirror = Node(tmp_path, "mirror", "mirror")
     cid = provider_only(a)
     b.emit("artwork", {"canonical_id": cid, "source": "curator",
@@ -365,7 +352,7 @@ def test_wake_is_scoped_to_introducing_feed(tmp_path):
 def test_sidecar_for_locally_merged_record_applies_to_survivor(tmp_path):
     """T-F4: the follower's operator merged two records here. A later artwork entry for the merged-away record
     applies to the survivor (C13 §5.2 redirects) instead of failing for ever."""
-    authority = Node(tmp_path, "authority", "authority")
+    authority = v0(Node(tmp_path, "authority", "authority"))
     mirror = Node(tmp_path, "mirror", "mirror")
     x, y = authority.publish("Hades"), authority.publish("Hades (duplicate)")
     pull(mirror, authority)
@@ -386,8 +373,8 @@ def test_record_apply_cross_origin_opens_review(tmp_path):
     store id as evidence. Applying the record again opens nothing new."""
     from atlas.models import ReviewItem
 
-    a = Node(tmp_path, "a", "authority", emit_protocol="1.5")
-    b = Node(tmp_path, "b", "authority", emit_protocol="1.5")
+    a = Node(tmp_path, "a", "authority")
+    b = Node(tmp_path, "b", "authority")
     mirror = Node(tmp_path, "mirror", "mirror")
     first, second = provider_only(a, "Subnautica 2", "1962700"), provider_only(b, "Subnautica 2", "1962700")
     curate_art(a, first)
@@ -411,7 +398,7 @@ def test_upstream_defect_needs_introduced_through(tmp_path):
     defect. The copy-a-note text names the record and the fix."""
     from atlas.models import NodeState
 
-    authority = Node(tmp_path, "authority", "authority")
+    authority = v0(Node(tmp_path, "authority", "authority"))
     mirror = Node(tmp_path, "mirror", "mirror")
     cid = provider_only(authority)
     curate_art(authority, cid)
@@ -433,7 +420,7 @@ def test_upstream_defect_needs_introduced_through(tmp_path):
 
 def test_waiting_has_no_attempt_cap(tmp_path):
     """T-F3: thirty pulls later the entry still waits, with its single attempt, and nothing says retries stopped."""
-    authority = Node(tmp_path, "authority", "authority")
+    authority = v0(Node(tmp_path, "authority", "authority"))
     mirror = Node(tmp_path, "mirror", "mirror")
     cid = provider_only(authority)
     curate_art(authority, cid)
@@ -447,7 +434,7 @@ def test_waiting_has_no_attempt_cap(tmp_path):
 def test_removing_a_peer_abandons_its_waiting_entries(tmp_path):
     """C13 §5.2: removing a peer resolves its open waits as `abandoned` (they stop counting toward the bound); a
     rescan after following the feed again re-flags them."""
-    authority = Node(tmp_path, "authority", "authority")
+    authority = v0(Node(tmp_path, "authority", "authority"))
     mirror = Node(tmp_path, "mirror", "mirror")
     cid = provider_only(authority)
     curate_art(authority, cid)
@@ -471,12 +458,12 @@ def test_upstream_defect_subreason_on_1_5_feed(tmp_path):
     waiting, but names it as the upstream's defect, not as "will arrive"."""
     from atlas.models import Peer
 
-    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
+    authority = Node(tmp_path, "authority", "authority")
     mirror = Node(tmp_path, "mirror", "mirror")
     authority.publish("Hades")
     with authority.st.maker() as s:
         assert feed.introduce_batch(s, authority.st.ctx, "missing")["finished"] is True
-        assert feed.introduced_through(s) == 1
+        assert feed.introduced_through(s) == 2  # wire_start, Hades
         s.commit()
     cid = provider_only(authority)
     seq = authority.emit("artwork", {"canonical_id": cid, "source": "curator", "items": ART})
@@ -499,7 +486,7 @@ def test_unlock_waits_behind_waiting_lock(tmp_path):
     unlock: the field ends up unlocked, as on the authority."""
     from atlas.models import Lock
 
-    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    authority, mirror = v0(Node(tmp_path, "authority", "authority")), Node(tmp_path, "mirror", "mirror")
     cid = provider_only(authority)
     with authority.st.maker() as s:
         service.set_lock(s, authority.st.ctx, cid, "title", "Subnautica 2 (Curated)", actor="curator")
@@ -507,7 +494,7 @@ def test_unlock_waits_behind_waiting_lock(tmp_path):
         s.commit()
     pull(mirror, authority)
     assert [(r[1], r[2], r[4]) for r in waiting(mirror, authority)] == [("lock", "wait", cid), ("unlock", "wait", cid)]
-    configure(authority, emit_protocol="1.5")
+    upgrade(authority)
     with authority.st.maker() as s:
         feed.introduce_batch(s, authority.st.ctx, "missing")
         s.commit()
@@ -524,7 +511,7 @@ def test_merge_rewaits_for_second_canonical(tmp_path):
     """T-F16: a merge names two records the follower does not hold. It waits for the first; when that arrives and
     the second is still missing, the same row waits again, for the second (no attempt counted); the second's
     arrival applies the merge. Each arrival that applied something counts once in `atlas_sync_woken_total`."""
-    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
+    authority = Node(tmp_path, "authority", "authority")
     mirror = Node(tmp_path, "mirror", "mirror")
     a, b = provider_only(authority, "Alpha", "201"), provider_only(authority, "Beta", "202")
     seq = authority.emit("merge", {"src": a, "dst": b})  # as a release before C13 signed it: nothing introduced
@@ -551,7 +538,7 @@ def test_merge_does_not_follow_redirect(tmp_path):
     """T-F16: the follower merged X into Y here. The authority later merges X into Z. A sidecar would follow X to Y,
     but a merge never does: re-targeting it would join Y and Z, which nobody decided. It is recorded for the
     operator, and Y stays a record of its own."""
-    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    authority, mirror = v0(Node(tmp_path, "authority", "authority")), Node(tmp_path, "mirror", "mirror")
     x, y, z = authority.publish("Doom"), authority.publish("Doom (1993)"), authority.publish("Doom Classic")
     pull(mirror, authority)
     with mirror.st.maker() as s:
@@ -573,7 +560,7 @@ def test_a_legacy_merge_of_a_record_never_published_applies_after_introduce(tmp_
     provider-only record B. Followers never heard of either: the artwork and the merge wait for A. `introduce
     --missing` publishes A as well, although it is merged now (signed entries name it), so the follower creates A,
     applies the artwork, merges A into B and ends with what the authority holds."""
-    authority, mirror = Node(tmp_path, "authority", "authority"), Node(tmp_path, "mirror", "mirror")
+    authority, mirror = v0(Node(tmp_path, "authority", "authority")), Node(tmp_path, "mirror", "mirror")
     a, b = provider_only(authority, "Alpha", "301"), provider_only(authority, "Beta", "302")
     curate_art(authority, a)
     with authority.st.maker() as s:
@@ -581,7 +568,7 @@ def test_a_legacy_merge_of_a_record_never_published_applies_after_introduce(tmp_
         s.commit()
     pull(mirror, authority)
     assert [(r[1], r[4]) for r in waiting(mirror, authority)] == [("artwork", a), ("merge", a)]
-    configure(authority, emit_protocol="1.5")
+    upgrade(authority)
     with authority.st.maker() as s:
         assert feed.unintroduced_count(s, "missing") == 2
         assert feed.introduce_batch(s, authority.st.ctx, "missing")["introduced"] == 2
@@ -600,8 +587,8 @@ def test_waiting_groups_carry_a_title_when_one_is_known(tmp_path):
     (`observation`). Otherwise the title is None and the page says "A game ... hasn't published yet"."""
     from atlas.ids import ulid
 
-    a = Node(tmp_path, "a", "authority", emit_protocol="1.5")
-    b = Node(tmp_path, "b", "authority")
+    a = Node(tmp_path, "a", "authority")
+    b = v0(Node(tmp_path, "b", "authority"))
     mirror = Node(tmp_path, "mirror", "mirror")
     cid = provider_only(a)
     b.emit("artwork", {"canonical_id": cid, "source": "curator", "items": ART})

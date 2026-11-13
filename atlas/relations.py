@@ -23,7 +23,7 @@ Rules enforced on every add (local or replicated):
 
 Replicated and local rows (C6.3, CONTRACT-AMENDMENTS A15.4): a row is *replicated* when every node of the feed
 holds it: this authority published it (`feed_seq`) or it was applied from an upstream feed (`origin_node`). Every
-other row is *local*: an authority's relation kept while gated below emit 1.4, or a mirror's overlay. Decisions
+other row is *local*: an authority's relation a v0 release kept while gated below emit 1.4, or a mirror's overlay. Decisions
 that every node must make alike (applying a replicated `add`, collapsing a merge) look only at replicated rows;
 a local row that then breaks a rule is ended (`superseded`). Local state can therefore never change, or block,
 what a follower does with its authority's entries.
@@ -33,9 +33,9 @@ relation, a duplicate, a second parent or a cycle is ended instead (`end_reason`
 never names a merged record. Replicated rows are decided first and only against replicated rows, so every node
 reaches the same replicated rows from the same `merge` entry and no `end` entries are signed for it.
 
-Federation (C1.6, C6.3, protocol 1.4): an authority signs each change as a `relation` entry
-(`{op: add|end, from, to, type, source}`) once its `emit_protocol` is 1.4 or higher. Below that, relations are
-stored locally and nothing is appended (H13). On other roles relations are local overlays and never signed.
+Federation (C6.3, wire 1): an authority signs each change as a `relation` entry (`{op: add|end, from, to, type,
+source}`). A relation a v0 release stored while it was gated is signed when it is put again (`publish_pending`). On
+other roles relations are local overlays and never signed.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from typing import Any
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from . import feed, feed_schema, vocab
+from . import feed, vocab
 from .models import Canonical, ChangeLog, NodeState, Relation, ReplicatedChange, now
 from .resolve import follow
 from .service import AtlasError, Ctx, bump_version, write_lock
@@ -69,7 +69,6 @@ LIST_LIMIT = 200
 #: `GET /games/{id}/relations?depth=N`: the largest N and the largest graph returned.
 MAX_EXPAND_DEPTH, MAX_EXPAND_NODES = 4, 200
 #: The protocol that ships the `relation` feed kind.
-RELATION_PROTOCOL = feed_schema.FEED_KINDS["relation"].since
 END_REASONS = ("removed", "replaced", "merge_self", "merge_duplicate", "merge_conflict", "feed", "superseded")
 _ORDER = {t: i for i, t in enumerate(TYPES)}
 _CHUNK = 500
@@ -106,18 +105,6 @@ def group(kind: str) -> tuple[str, ...]:
 
 def type_order(kind: str) -> int:
     return _ORDER.get(kind, len(_ORDER))
-
-
-def gated(ctx: Ctx) -> bool:
-    """True while this authority may not sign a relation: its `emit_protocol` is below 1.4 (C1.6, H13)."""
-    if ctx.settings.role != "authority":
-        return False
-    return feed_schema.parse_protocol(feed_schema.emit_protocol(ctx.settings)) < \
-        feed_schema.parse_protocol(RELATION_PROTOCOL)
-
-
-def gate_message(ctx: Ctx, feature: str = "publishing relations") -> str:
-    return str(feed_schema.EmitGateError(feature, RELATION_PROTOCOL, feed_schema.emit_protocol(ctx.settings)))
 
 
 # ---- reads ----------------------------------------------------------------------------------------------
@@ -338,44 +325,92 @@ def _signed(ctx: Ctx, log: bool, local_only: bool) -> bool:
     return log and not local_only and ctx.settings.role == "authority"
 
 
+#: C15 §2.4: the only relation type that carries a `position`, and its bounds.
+POSITION_TYPES = frozenset({"series_member"})
+MAX_POSITION = 16
+
+
+def clean_position(kind: str, position: Any) -> str | None:
+    """A series position ("1", "2.5", "0"): printable, one line, at most 16 characters, only on `series_member`.
+    None means no position. Raises AtlasError (a follower quarantines the entry as `invalid`)."""
+    if position is None:
+        return None
+    if kind not in POSITION_TYPES:
+        raise AtlasError(f"only a series_member relation has a position, not {kind}")
+    if not isinstance(position, str):
+        raise AtlasError("position must be text, such as \"1\" or \"2.5\"")
+    cleaned = " ".join("".join(c if c.isprintable() or c == " " else " " for c in position).split())
+    if not 0 < len(cleaned) <= MAX_POSITION:
+        raise AtlasError(f"position must be 1-{MAX_POSITION} printable characters")
+    return cleaned
+
+
+def _body(op: str, src: str, dst: str, kind: str, source: str | None = None,
+          position: str | None = None) -> dict[str, Any]:
+    """A `relation` feed body. `position` is a member only when there is one, so every other body is signed
+    exactly as before (C15 §2.4)."""
+    body: dict[str, Any] = {"op": op, "from": src, "to": dst, "type": kind}
+    if source is not None:
+        body["source"] = source
+    if position is not None:
+        body["position"] = position
+    return body
+
+
 def add(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, source: str = "curator",
         actor: str = "", local_only: bool = False, log: bool = True,
-        origin: tuple[str, int] | None = None) -> tuple[Relation, bool]:
+        origin: tuple[str, int] | None = None, position: str | None = None,
+        keep_position: bool = False) -> tuple[Relation, bool]:
     """Add a relation. Returns (row, created): an identical active relation is returned unchanged (idempotent).
 
     `log=False` is a feed apply (`origin` = upstream node and seq): it is stored as redistributable and never
-    re-signed. On an authority a curator relation is signed when `emit_protocol` ≥ 1.4 and kept local below
-    (C1.6). `local_only` keeps it off the feed on any role."""
+    re-signed. On an authority a curator relation is signed. `local_only` keeps it off the feed on any role.
+
+    `position` (C15 §2.4, `series_member` only): an active relation of the same pair with another position is
+    ended (`repositioned`) and a new row added in the same transaction; an authority signs that as `end` + `add`
+    (no new op), so a follower's history shows both. `keep_position=True` (the web form, whose position field may
+    be left blank) makes a missing position mean "keep the active relation's position" instead of "clear it"."""
     write_lock(session)
     if kind not in TYPES:
         raise AtlasError(f"unknown relation type {kind!r}; use one of {', '.join(TYPES)}")
     if not isinstance(source, str) or not 0 < len(source) <= 128:
         raise AtlasError("source must be 1-128 characters")
+    position = clean_position(kind, position)
     src, dst = _live(session, from_id, "from"), _live(session, to_id, "to")
     existing = active_between(session, src.id, dst.id, kind)
+    if keep_position and position is None and existing is not None:
+        position = existing.position
+    if existing is not None and existing.position != position and origin is None:
+        end(session, ctx, src.id, dst.id, kind, actor=actor, log=log, reason="repositioned")
+        existing = active_between(session, src.id, dst.id, kind)
+    elif existing is not None and existing.position != position and is_replicated(existing):
+        existing.position = position  # an upstream that re-adds the pair without an `end` moves the position
+        session.flush()
+        bump_version(session, src.id, "feed")
+        bump_version(session, dst.id, "feed")
     if existing is not None and origin is not None and not is_replicated(existing):
         # an identical local row: the upstream's entry takes it over, so its `end` and a rescan find it
         existing.redistributable, existing.origin_node, existing.origin_seq = True, origin[0], origin[1]
-        existing.source = source
+        existing.source, existing.position = source, position
         session.flush()
         bump_version(session, src.id, "feed")
         bump_version(session, dst.id, "feed")
         return existing, True
     if existing is not None:
-        if _pending_publication(existing) and _signed(ctx, log, local_only) and not gated(ctx):
+        if _pending_publication(existing) and _signed(ctx, log, local_only):
             publish_pending(session, ctx, existing)
         return existing, False
     check(session, src, dst, kind, replicated_only=origin is not None)
     signed = _signed(ctx, log, local_only)
     row = Relation(from_id=src.id, to_id=dst.id, type=kind, source=source, created_by=actor[:128],
-                   redistributable=signed or origin is not None,
+                   redistributable=signed or origin is not None, position=position,
                    origin_node=origin[0] if origin else None, origin_seq=origin[1] if origin else None)
     session.add(row)
     session.flush()
     touched = _supersede_local_or_leave(session, row) if origin is not None else set()
-    if signed and not gated(ctx):
-        row.feed_seq = feed.emit_or_local(session, ctx, "relation", {"op": "add", "from": src.id, "to": dst.id,
-                                                            "type": kind, "source": source})
+    if signed:
+        row.feed_seq = feed.emit_or_local(session, ctx, "relation", _body("add", src.id, dst.id, kind, source,
+                                                                           position))
     cause = "feed" if row.feed_seq or origin is not None else "local"
     for cid in sorted(touched | {src.id, dst.id}):
         bump_version(session, cid, cause)
@@ -383,25 +418,25 @@ def add(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, sour
 
 
 def _pending_publication(row: Relation) -> bool:
-    """A curator relation an authority stored while it was gated (emit below 1.4): meant for the feed
+    """A curator relation an authority stored while a v0 release gated it (emit below 1.4): meant for the feed
     (`redistributable`), never signed (no `feed_seq`), not from an upstream."""
     return row.redistributable and row.feed_seq is None and row.origin_node is None and row.ended_at is None
 
 
 def publish_pending(session: Session, ctx: Ctx, row: Relation) -> None:
-    """Sign a relation stored while this authority was gated, now that it may (Phase 4 note O1: re-PUTting it used
+    """Sign a relation a v0 release stored while this authority was gated (Phase 4 note O1: re-PUTting it used
     to answer `published: true` and sign nothing). It is judged against the published rows first, as every
     follower will judge the signed entry; a conflict raises (409) and nothing is signed."""
     src, dst = _live(session, row.from_id, "from"), _live(session, row.to_id, "to")
     check(session, src, dst, row.type, replicated_only=True)
-    row.feed_seq = feed.emit_or_local(session, ctx, "relation", {"op": "add", "from": src.id, "to": dst.id, "type": row.type,
-                                                        "source": row.source})
+    row.feed_seq = feed.emit_or_local(session, ctx, "relation", _body("add", src.id, dst.id, row.type, row.source,
+                                                             row.position))
     bump_version(session, src.id, "feed")
     bump_version(session, dst.id, "feed")
 
 
 def pending_count(session: Session, cid: str) -> int:
-    """This record's own outgoing relations stored but not signed (an authority below emit 1.4)."""
+    """This record's own outgoing relations stored but not signed (by a v0 release below emit 1.4)."""
     return session.scalar(select(func.count()).select_from(Relation).where(
         Relation.from_id == cid, _active(), Relation.redistributable.is_(True), Relation.feed_seq.is_(None),
         Relation.origin_node.is_(None))) or 0
@@ -411,9 +446,7 @@ def end(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, acto
         reason: str = "removed", managed_ok: bool = False) -> Relation | None:
     """End the active relation `from -> to` of `kind`. Returns it, or None when there is none (a no-op).
 
-    A relation that came from the upstream feed can only be ended by the feed (`log=False`) unless `managed_ok`.
-    On an authority below emit 1.4, a relation that was already published is not ended locally (its followers
-    would keep it): the curator raises the protocol first (409 `emit_protocol`)."""
+    A relation that came from the upstream feed can only be ended by the feed (`log=False`) unless `managed_ok`."""
     write_lock(session)
     if kind not in TYPES:
         raise AtlasError(f"unknown relation type {kind!r}")
@@ -427,13 +460,11 @@ def end(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, acto
         raise AtlasError("this relation is managed by the upstream authority", "conflict")
     # only a relation the feed holds is ended in it: one stored while gated and never signed ends here only
     signed = log and ctx.settings.role == "authority" and row.feed_seq is not None and row.origin_node is None
-    if signed and gated(ctx):
-        raise AtlasError(gate_message(ctx, "removing a published relation"), "emit_protocol")
     row.ended_at, row.end_reason = now(), (reason if log else "feed")
     session.flush()
     cause = "local"
-    if signed and not gated(ctx):
-        feed.emit_or_local(session, ctx, "relation", {"op": "end", "from": src, "to": dst, "type": kind})
+    if signed:
+        feed.emit_or_local(session, ctx, "relation", _body("end", src, dst, kind))
         cause = "feed"
     bump_version(session, src, cause)
     bump_version(session, dst, cause)
@@ -446,13 +477,14 @@ def set_outgoing(session: Session, ctx: Ctx, cid: str, items: list[dict[str, Any
 
     Relations that came from the upstream feed are left alone (and stay in the record). Ends run before adds, so
     replacing a parent with another of the same family works in one call. All or nothing: a refused add raises
-    and the caller's transaction rolls back. On an authority that may sign, a listed relation stored while it was
+    and the caller's transaction rolls back. On an authority, a listed relation a v0 release stored while it was
     gated is signed now (`published` counts them)."""
     write_lock(session)
     src = _live(session, cid, "id")
     if len(items) > MAX_OUTGOING:
         raise AtlasError(f"at most {MAX_OUTGOING} relations per record")
     wanted: list[tuple[str, str]] = []
+    positions: dict[tuple[str, str], str | None] = {}
     for item in items:
         target = _live(session, item.get("to"), "to").id
         kind = item.get("type")
@@ -460,6 +492,7 @@ def set_outgoing(session: Session, ctx: Ctx, cid: str, items: list[dict[str, Any
             raise AtlasError(f"unknown relation type {kind!r}; use one of {', '.join(TYPES)}")
         if (target, kind) not in wanted:
             wanted.append((target, kind))
+            positions[(target, kind)] = clean_position(kind, item.get("position"))
     current = session.scalars(select(Relation).where(Relation.from_id == src.id, _active(),
                                                      Relation.origin_node.is_(None))
                               .order_by(Relation.created_at, Relation.id)).all()
@@ -471,7 +504,8 @@ def set_outgoing(session: Session, ctx: Ctx, cid: str, items: list[dict[str, Any
     for target, kind in wanted:
         before = active_between(session, src.id, target, kind)
         was_pending = before is not None and _pending_publication(before)
-        row, created = add(session, ctx, src.id, target, kind, source=source, actor=actor, local_only=local_only)
+        row, created = add(session, ctx, src.id, target, kind, source=source, actor=actor, local_only=local_only,
+                           position=positions[(target, kind)])
         added += int(created)
         published += int(was_pending and row.feed_seq is not None)
     return {"added": added, "ended": ended, "published": published}
@@ -621,13 +655,15 @@ def apply_feed(session: Session, ctx: Ctx, node_id: str, seq: int, body: dict[st
             return "noop"  # this very entry was applied before (a historical replay re-runs the range)
         try:
             _row, created = add(session, ctx, body["from"], body["to"], kind, source=source, actor=node_id[:128],
-                                log=False, origin=(node_id, seq))
+                                log=False, origin=(node_id, seq), position=body.get("position"))
         except AtlasError as exc:
             if exc.code in ("invalid", "conflict"):
                 raise ValueError(str(exc)) from exc
             raise  # not_found: quarantined and retried (the record may arrive later)
         return None if created else "noop"
     if op == "end":
+        if "position" in body:
+            raise ValueError("an end entry has no position")
         return None if end(session, ctx, body["from"], body["to"], kind, log=False) is not None else "noop"
     raise ValueError(f"unknown relation op {op!r}")
 
@@ -665,12 +701,12 @@ def _sorted_rows(session: Session, where: Any, kinds: tuple[str, ...], other: An
     extra = () if shown is None else (shown,)
     total = session.scalar(select(func.count()).select_from(Relation).where(where, Relation.type.in_(kinds),
                                                                              _active(), *extra)) or 0
-    rows: list[tuple[str, str]] = []
+    rows: list[tuple[str, str, str | None]] = []
     for kind in kinds:  # type order first (the vocabulary order), then the other record's id: deterministic
         if len(rows) >= limit:
             break
-        rows += list(session.execute(select(other, Relation.type).where(where, Relation.type == kind, _active(),
-                                                                        *extra)
+        rows += list(session.execute(select(other, Relation.type, Relation.position)
+                                     .where(where, Relation.type == kind, _active(), *extra)
                                      .order_by(other).limit(limit - len(rows))))
     return rows, total
 
@@ -690,13 +726,14 @@ def of(session: Session, cid: str, *, limit: int = LIST_LIMIT, viewer: Any = Non
              "children": (Relation.to_id == cid, HIERARCHICAL, Relation.from_id),
              "members_of": (Relation.from_id == cid, MEMBERSHIP, Relation.to_id),
              "members": (Relation.to_id == cid, MEMBERSHIP, Relation.from_id)}
-    found: dict[str, list[tuple[str, str]]] = {}
+    found: dict[str, list[tuple[str, str, str | None]]] = {}
     counts: dict[str, int] = {}
     for name, (where, kinds, other) in lists.items():
         found[name], counts[name] = _sorted_rows(session, where, kinds, other, limit, shown)
-    brief = _brief(session, (rid for rows in found.values() for rid, _ in rows), viewer)
-    out: dict[str, Any] = {name: [{"id": rid, "type": kind, **brief.get(rid, {"title": None, "media_type": None})}
-                                  for rid, kind in rows] for name, rows in found.items()}
+    brief = _brief(session, (rid for rows in found.values() for rid, _, _ in rows), viewer)
+    out: dict[str, Any] = {name: [{"id": rid, "type": kind, **({"position": pos} if pos is not None else {}),
+                                   **brief.get(rid, {"title": None, "media_type": None})}
+                                  for rid, kind, pos in rows] for name, rows in found.items()}
     out["counts"] = counts
     out["truncated"] = any(counts[name] > len(found[name]) for name in found)
     return out
@@ -770,13 +807,13 @@ def expand(session: Session, cid: str, depth: int = 1, *, max_nodes: int = MAX_E
     edges = []
     ids = sorted(seen)
     for part in _chunks(ids):
-        edges += session.execute(select(Relation.from_id, Relation.to_id, Relation.type).where(
+        edges += session.execute(select(Relation.from_id, Relation.to_id, Relation.type, Relation.position).where(
             _active(), *extra, Relation.from_id.in_(part), Relation.to_id.in_(ids))).all()
     brief = _brief(session, order, viewer)
     return {"id": cid, "depth": depth, "reached_depth": reached, "truncated": truncated,
             "nodes": [{"id": n, **brief.get(n, {"title": None, "media_type": None})} for n in order],
-            "edges": [{"from": a, "to": b, "type": k}
-                      for a, b, k in sorted(edges, key=lambda e: (type_order(e[2]), e[0], e[1]))]}
+            "edges": [{"from": a, "to": b, "type": k, **({"position": pos} if pos is not None else {})}
+                      for a, b, k, pos in sorted(edges, key=lambda e: (type_order(e[2]), e[0], e[1]))]}
 
 
 def history(session: Session, cid: str, limit: int = 20) -> list[Relation]:

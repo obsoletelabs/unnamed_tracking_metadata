@@ -1,0 +1,88 @@
+{
+  "applicable": true,
+  "hidden_count": 1,
+  "id": "atlas:01kdvdna5a000000000000000h",
+  "lang": null,
+  "next_offset": null,
+  "redirected_from": null,
+  "results": [
+    {
+      "description": "Light the first lantern.",
+      "external_ids": {
+        "curator": "LF-ACH-1"
+      },
+      "global_percent": null,
+      "hidden": false,
+      "icon_attribution": null,
+      "icon_licence": null,
+      "icon_url": null,
+      "id": "01KDVDNAFM000000000000001J",
+      "key": "ak1:bogz3na44e7py4hvawziojhquk",
+      "key_identity": "curator:LF-ACH-1",
+      "keys": [
+        "ak1:bogz3na44e7py4hvawziojhquk"
+      ],
+      "kind": null,
+      "lang": null,
+      "locked_icon_url": null,
+      "name": "First Light",
+      "platforms": [],
+      "points": null,
+      "position": null,
+      "rarity": null,
+      "revealed": false,
+      "set": "curator/base",
+      "sources": [
+        "curator"
+      ],
+      "status": null,
+      "tier": null
+    },
+    {
+      "description": "",
+      "external_ids": {},
+      "global_percent": null,
+      "hidden": true,
+      "icon_attribution": null,
+      "icon_licence": null,
+      "icon_url": null,
+      "id": "01KDVDNAFY000000000000001K",
+      "key": "ak1:roaljqiyisylguwvkgfsowl52y",
+      "key_identity": null,
+      "keys": [
+        "ak1:roaljqiyisylguwvkgfsowl52y"
+      ],
+      "kind": null,
+      "lang": null,
+      "locked_icon_url": null,
+      "name": "Hidden achievement",
+      "platforms": [],
+      "points": null,
+      "position": null,
+      "rarity": null,
+      "revealed": false,
+      "set": "curator/base",
+      "sources": [],
+      "status": null,
+      "tier": null
+    }
+  ],
+  "sets": [
+    {
+      "count": 2,
+      "dlc": null,
+      "edition": null,
+      "hidden_count": 1,
+      "id": "curator/base",
+      "key": "base",
+      "kind": "base",
+      "name": "Lanternfall (duplicate entry)",
+      "platforms": [],
+      "sources": [
+        "curator"
+      ]
+    }
+  ],
+  "sets_elsewhere": [],
+  "total": 2
+}

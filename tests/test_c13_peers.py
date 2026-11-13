@@ -212,7 +212,7 @@ def test_an_older_upstream_that_relays_another_feed_is_followed_for_its_own_cata
         assert "recommended" in re.search(r'<form[^>]*data-feed-option="own".*?</h3>', html, re.S).group(0)
         assert "recommended" not in re.search(r'<form[^>]*data-feed-option="relayed".*?</h3>', html, re.S).group(0)
         assert "head_unknown" not in own_tag and "empty_feed" not in own_tag and "smaller_than_own" not in relayed_tag
-        assert "1 signed entry" in html and "2 signed entries" in html
+        assert "2 signed entries" in html and "3 signed entries" in html  # each feed starts with `wire_start`
 
 
 
@@ -328,7 +328,7 @@ def test_api_probe_lists_the_feeds_as_json(world):
     assert body["token"] == {"read": True, "sync": True}
     assert body["records"] is None  # a mirror signs no records of its own
     assert [(f["origin"], f["node_id"], f["head"], f["recommended"]) for f in body["feeds"]] == [
-        ("own", mirror.node_id, 0, False), ("relayed", authority.node_id, 1, True)]
+        ("own", mirror.node_id, 0, False), ("relayed", authority.node_id, 2, True)]  # wire_start + 1
     assert body["feeds"][0]["warnings"] == ["empty_feed", "own_feed_empty_but_relayed_has_data"]
     assert body["default_feed"] == authority.node_id and "probe_token" not in body["feeds"][0]
     assert peers(user) == []

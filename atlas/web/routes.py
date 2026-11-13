@@ -14,6 +14,7 @@ from sqlalchemy import case, func, select
 from .. import (
     accounts,
     auth,
+    books,
     custom,
     dates,
     facets,
@@ -338,8 +339,15 @@ def home(p: Annotated[Page, Depends(page)]):
         "artwork": s.scalar(select(func.count()).select_from(Artwork).where(
             Artwork.blob_hash.is_not(None), *(() if art_clause is None else (art_clause,)))) or 0,
         "contributors": s.scalar(select(func.count()).select_from(User)) or 0}
+    # C15 §5 rule 3: a local node with an empty catalogue offers a first book by ISBN next to a first game; Open
+    # Library is keyless and on by default, so this works with no upstream and no keys.
+    first_run = None
+    if p.st.ctx.settings.role == "local" and totals["records"] == 0:
+        from .importing import book_providers
+
+        first_run = {"isbn": "openlibrary" in book_providers(p), "types": {item.key for item in media_types}}
     return render(p, "home.html", recent=recent, art=primary_art(p, [g.id for g in recent]), totals=totals,
-                  media_types=media_types, type_counts=type_counts,
+                  media_types=media_types, type_counts=type_counts, first_run=first_run,
                   type_labels={item.key: item.label for item in media_types})
 
 
@@ -351,10 +359,13 @@ def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length
            released_to: Annotated[str, Query(max_length=40)] = "",
            sort: Annotated[str, Query(max_length=16)] = "",
            scope_filter: Annotated[str, Query(alias="scope", max_length=8)] = "",
-           has: Annotated[str, Query(max_length=8)] = ""):
+           has: Annotated[str, Query(max_length=8)] = "",
+           author: Annotated[str, Query(max_length=200)] = ""):
     """Browse and search. `released_from`/`released_to` take a year, a month or a day (C5.2); `sort=release`
     orders by first release with year-only dates at the start of their year. `scope` and `has` (C14 §5.5) filter
-    by scope for viewers with scope.detail only; for anyone else they are ignored and not echoed."""
+    by scope for viewers with scope.detail only; for anyone else they are ignored and not echoed. C15 §5: an ISBN
+    in `q` finds its book; `author` (books only) prefix-matches the words of an author's name."""
+    author = author.strip()
     released_from, released_to = released_from.strip(), released_to.strip()
     error, read_as = None, []
     prefs = profile.values(p.session, p.st.ctx.settings, p.user) if p.user else anonymous_prefs(p.request)
@@ -371,14 +382,16 @@ def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length
     try:
         rows = service.search(p.session, q, PER_PAGE + 1, (page_no - 1) * PER_PAGE, media_type=type or None,
                               released_from=released_from, released_to=released_to, sort=sort or "relevance",
-                              viewer=p.viewer, has=has or None, scope_filter=scope_filter or None)
+                              viewer=p.viewer, has=has or None, scope_filter=scope_filter or None,
+                              author=author or None)
     except AtlasError as exc:
         rows, error = [], str(exc)
     more = len(rows) > PER_PAGE
     rows = rows[:PER_PAGE]
     mtypes = custom.types(p.session, enabled_only=True)
     type_label = next((item.label for item in mtypes if item.key == type), None)
-    filters = {k: v for k, v in (("released_from", released_from), ("released_to", released_to), ("sort", sort)) if v}
+    filters = {k: v for k, v in (("released_from", released_from), ("released_to", released_to), ("sort", sort),
+                                 ("author", author)) if v}
     if p.viewer.detail:  # never echoed to other viewers (C14 §5.7)
         filters.update({k: v for k, v in (("scope", scope_filter), ("has", has))
                         if v in ("public", "group", "local", "private")})
@@ -472,17 +485,24 @@ def game(cid: str, p: Annotated[Page, Depends(page)], ach: Annotated[str, Query(
                                                 .order_by(UserList.created_at)))
         social_ctx["in_lists"] = {i.list_id for i in s.scalars(select(ListItem).where(ListItem.canonical_id == g.id))}
         social_ctx["can_comment"] = mail.is_verified(ctx.settings, p.user)
+    rel = relations.of(s, g.id, limit=RELATION_PREVIEW, viewer=viewer, settings=ctx.settings)
+    book = None
+    if g.media_type == books.BOOK:  # C15 §5: the book branch of the record page
+        book = {"byline": books.byline(g.view.get("authors")), "series": books.series_of(rel),
+                "language": books.language_name(g.view.get("original_language")),
+                "attribution": books.attribution(g.view)}
     return render(p, "game.html", g=g, v=g.view, explain=_shown_explain(g.explain), key_art=key_art, gallery=gallery,
-                  **social_ctx,
+                  book=book, **social_ctx,
                   lbl=labels_for(p, g.media_type), details=details,
                   mtype_label=(s.get(MediaType, g.media_type).label if s.get(MediaType, g.media_type) else g.media_type),
                   pending_art=pending, caching=ctx.settings.media_cache_enabled, stores=integrations.STORES,
                   art_total=len(art), art_cached=len(cached),
                   art_kinds=facets.KINDS, activity=activity,
                   achievements=ach_filter(listing["results"], listing["sets"], ach),
-                  ach_all=listing["results"], ach_sets=listing["sets"], ach=ach if ach in ACH_FILTERS or
+                  ach_all=listing["results"], ach_sets=listing["sets"],
+                  ach_applicable=listing.get("applicable", True), ach=ach if ach in ACH_FILTERS or
                   ach.startswith("set:") else "all",
-                  rel=relations.of(s, g.id, limit=RELATION_PREVIEW, viewer=viewer, settings=ctx.settings),
+                  rel=rel,
                   rel_labels=relations.LABELS,
                   scope_info=scope.record_summary(s, ctx.settings, scope.unwrap(g)) if viewer.detail else None,
                   keep_offered=_keep_offered(s, g.id), scope_message=SCOPE_MESSAGES.get(
@@ -784,7 +804,7 @@ def _edit_ctx(p: Page, mtype: str, **extra: Any) -> dict[str, Any]:
     extra.setdefault("rel_rows", _release_rows(None))
     return {"lbl": labels_for(p, mtype), "mtype": mtype,
             "mtype_label": media_type.label if media_type else mtype.replace("_", " ").title(),
-            "auto": proposals.can_auto_apply(p.st.ctx, p.me), "dates_gated": service.dates_gated(p.st.ctx),
+            "auto": proposals.can_auto_apply(p.st.ctx, p.me),
             "upstream": _upstream(p), **extra}
 
 
@@ -1170,7 +1190,7 @@ def propose_achievements(cid: str, p: Annotated[Page, Depends(user_form)],
         pr = proposals.create(p.session, p.st.ctx, p.me, "achievements", g.id,
                               {"items": items}, note)
     except AtlasError as exc:
-        raise HTTPException(409 if exc.code == "emit_protocol" else 400, str(exc)) from exc
+        raise HTTPException(409 if exc.code == "reserved_feature" else 400, str(exc)) from exc
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
@@ -1379,7 +1399,7 @@ def review_decide(pid: str, p: Annotated[Page, Depends(review_form)], decision: 
                          checked=checked == "on")
     except AtlasError as exc:
         raise HTTPException({"not_found": 404, "forbidden": 403}.get(
-            exc.code, 409 if exc.code in ("conflict", "emit_protocol") else 400), str(exc)) from exc
+            exc.code, 409 if exc.code in ("conflict", "reserved_feature") else 400), str(exc)) from exc
     return go("/review", "approved" if decision == "approve" else "rejected")
 
 
@@ -1388,7 +1408,7 @@ def review_revert(pid: str, p: Annotated[Page, Depends(review_form)], note: Anno
     try:
         pr = proposals.revert(p.session, p.st.ctx, p.me, pid, note)
     except AtlasError as exc:
-        raise HTTPException(409 if exc.code in ("conflict", "emit_protocol") else 404 if exc.code == "not_found" else 400,
+        raise HTTPException(409 if exc.code in ("conflict", "reserved_feature") else 404 if exc.code == "not_found" else 400,
                             str(exc)) from exc
     return go(f"/game/{pr.canonical_id}" if pr.canonical_id else "/review", "reverted")
 
@@ -1488,7 +1508,7 @@ def game_unlock(cid: str, p: Annotated[Page, Depends(review_form)], field: Annot
     try:
         service.clear_lock(p.session, p.st.ctx, cid, field)
     except AtlasError as exc:
-        raise HTTPException(409 if exc.code == "emit_protocol" else 404, str(exc)) from exc
+        raise HTTPException(409 if exc.code == "reserved_feature" else 404, str(exc)) from exc
     return go(f"/game/{cid}", "unlocked")
 
 
@@ -1541,7 +1561,6 @@ def _relations_page(p: Page, g: Canonical, *, q: str = "", kind: str = "", error
                   member_target=relations.MEMBER_TARGET, q=q, kind=kind if kind in relations.TYPES else "",
                   results=results, error=error, history=history,
                   history_titles={c: titles.get(c, "(new record)") for r in history for c in (r.from_id, r.to_id)},
-                  gated=relations.gated(p.st.ctx), gate_message=relations.gate_message(p.st.ctx),
                   local=p.st.ctx.settings.role != "authority")
 
 
@@ -1575,10 +1594,14 @@ def _relation_change(p: Page, cid: str, change, kind: str = "") -> Any:
 
 @router.post("/game/{cid}/relations/add")
 def relations_add(cid: str, p: Annotated[Page, Depends(review_form)], to: Annotated[str, Form(max_length=40)],
-                  type: Annotated[str, Form(max_length=32)], q: Annotated[str, Form(max_length=200)] = ""):
+                  type: Annotated[str, Form(max_length=32)], q: Annotated[str, Form(max_length=200)] = "",
+                  position: Annotated[str, Form(max_length=64)] = ""):
     local = p.st.ctx.settings.role != "authority"
+    # C15 §2.4: a blank position keeps the one an existing series_member already has (never clears it)
+    pos = position.strip() or None
     failed = _relation_change(p, cid, lambda g: relations.add(p.session, p.st.ctx, g.id, to.strip(), type,
-                                                              actor=p.me.username, local_only=local), type)
+                                                              actor=p.me.username, local_only=local,
+                                                              position=pos, keep_position=True), type)
     if failed is not None:
         return failed
     return go(f"/game/{cid}/relations" + (f"?{urlencode({'q': q, 'type': type})}" if q else ""), "relation-added")

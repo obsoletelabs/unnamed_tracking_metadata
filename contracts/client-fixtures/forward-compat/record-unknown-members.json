@@ -1,0 +1,116 @@
+{
+  "authors": [
+    {
+      "name": "Ada Quillfeather",
+      "role": "x_future_role"
+    },
+    {
+      "name": "Tomas Vell",
+      "role": "translator"
+    }
+  ],
+  "custom": {},
+  "description": "A synthetic novel about a lighthouse, for the Atlas client fixtures.",
+  "developer": "Ada Quillfeather",
+  "editions": [
+    {
+      "format": "x_future_format",
+      "isbn_10": "0000000116",
+      "isbn_13": "9780000000118",
+      "language": "en",
+      "name": "Hardcover, Harbour Press 2005",
+      "pages": 412,
+      "provider_ids": {
+        "fixturebooks_edition": "LK-0001-HC"
+      },
+      "published": {
+        "date": "2005",
+        "precision": "year"
+      },
+      "publisher": "Harbour Press",
+      "sources": [
+        "fixturebooks"
+      ]
+    },
+    {
+      "format": "paperback",
+      "isbn_10": "0000000108",
+      "isbn_13": "9780000000101",
+      "language": "en",
+      "name": "Paperback, Harbour Press 2006",
+      "pages": 428,
+      "provider_ids": {
+        "fixturebooks_edition": "LK-0001-PB"
+      },
+      "published": {
+        "date": "2006-02",
+        "precision": "month"
+      },
+      "publisher": "Harbour Press",
+      "sources": [
+        "fixturebooks"
+      ]
+    }
+  ],
+  "features": [
+    "Lighthouses",
+    "Fiction"
+  ],
+  "first_release": {
+    "date": "2005-08-14",
+    "precision": "day"
+  },
+  "id": "atlas:01kdvdna9c000000000000000y",
+  "media_type": "book",
+  "original_language": "en",
+  "page_count": 412,
+  "provider_ids": {
+    "fixturebooks": "LK-0001"
+  },
+  "redirected_from": null,
+  "relations": {
+    "children": [],
+    "counts": {
+      "children": 0,
+      "members": 0,
+      "members_of": 1,
+      "parents": 0
+    },
+    "members": [],
+    "members_of": [
+      {
+        "id": "atlas:01kdvdnac60000000000000017",
+        "media_type": "series",
+        "position": "1",
+        "title": "The Lamp Cycle",
+        "type": "series_member"
+      }
+    ],
+    "parents": [],
+    "truncated": false
+  },
+  "release_date": "2005-08-14",
+  "release_year": 2005,
+  "scope": {
+    "ceiling": null,
+    "counts": {
+      "group": 0,
+      "local": 2,
+      "private": 0,
+      "public": 0
+    },
+    "widest": "local"
+  },
+  "sources": [
+    "fixturebooks"
+  ],
+  "subtitle": "A Novel of Small Lights",
+  "title": "The Lamp Keeper",
+  "unmerged": [],
+  "updated_at": "2026-01-01T00:00:00+00:00",
+  "version": 4,
+  "x_future_member": {
+    "added_in": "a later client-api 1.x",
+    "ignore": true
+  }
+}

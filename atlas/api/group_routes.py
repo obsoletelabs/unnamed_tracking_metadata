@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 from starlette.concurrency import run_in_threadpool
 
-from .. import assist, group_channel, group_enrol, groups, key_rotation, ratelimit
+from .. import assist, group_channel, group_enrol, group_schema, groups, key_rotation, ratelimit, wire
 from .. import group_crypto as gc
 from ..models import GroupNonce, OwnerGroup
 from ..signing import NodeIdentity, canonical_json
@@ -235,8 +235,8 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
             except IntegrityError:
                 session.rollback()
                 error = "replay"
-        if error is None and inner["proto"].split(".")[0] != groups.GROUP_PROTOCOL.split(".")[0]:
-            error = "protocol"
+        if error is None and group_schema.proto_use(inner["proto"]) is None:
+            error = "wire_unsupported"  # design §5.2: a v0 member ("1.0") or a wire this build does not speak
         if error is None and (inner["op"] not in CALL_OPS or (left and inner["op"] not in LEFT_OPS)):
             error = "not_found"
         if error is None and throttled:
@@ -251,6 +251,9 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
                 result = exc.result
         server_time = gc.stamp(nowdt)
         outcome = {"result": result, "error": error, "server_time": server_time}
+        spoken = group_schema.proto_use(inner["proto"])
+        if spoken is not None:
+            outcome["wire"] = spoken  # §4.10 rule 4 / T-W27: the signed outcome echoes the wire it was served at
         parts = gc.response_parts(group.group_id, identity.node_id, identity.key_id, inner["n"], inner["r"],
                                   inner["op"], inner["params"], outcome)
         rs = {"key_id": identity.key_id, "sig": gc.sign_message(identity.private, gc.DOMAINS["response"], parts)}
@@ -267,8 +270,7 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
 def _op(session, st: AppState, group: OwnerGroup, identity: NodeIdentity, inner: dict, cert: dict) -> Any:
     op, params = inner["op"], inner["params"]
     if op == "hello":
-        return {**group_channel.hello_result(identity), "group_protocol": groups.GROUP_PROTOCOL,
-                "min_group_protocol": groups.MIN_GROUP_PROTOCOL, "ops": list(CALL_OPS), "node_id": identity.node_id}
+        return {**group_channel.hello_result(identity), "ops": list(CALL_OPS), "node_id": identity.node_id}
     if op == "state":
         groups.refresh(session, group, identity.node_id, settings=st.ctx.settings)
         state = groups.export_state(session, group, identity)
@@ -418,10 +420,16 @@ def call(session, settings, identity: NodeIdentity, group: OwnerGroup, member: d
          http: Any, now: float | None = None, nonce: bytes | None = None) -> Any:
     """One sealed, signed request to a member (its in-force certificate's `member`), verifying the signed answer.
     `nonce` (16 bytes) lets a caller bind what the answer signs to the request (an `assist.fetch` bundle names it)."""
+    from .. import group_channel
+
     nonce = nonce if nonce is not None and len(nonce) == 16 else secrets.token_bytes(16)
+    # Design §5.2: speak the wire negotiated from the member's cached `hello` (its highest common wire with this
+    # build); before any hello, this build's highest.
+    cached = group_channel._HELLO.get(member["node_id"])
+    use = (group_schema.negotiate(cached[1]) if cached else None) or wire.WIRE_MAX
     inner = {"v": 1, "g": group.group_id, "n": identity.node_id, "aud": member["node_id"], "k": identity.key_id,
-             "t": int(now if now is not None else time.time()), "r": gc.b64(nonce), "proto": groups.GROUP_PROTOCOL,
-             "op": op, "params": params}
+             "t": int(now if now is not None else time.time()), "r": gc.b64(nonce),
+             "proto": group_schema.proto_of(use), "op": op, "params": params}
     sealed = gc.seal_request(member["box_public_key"], group.group_id, member["node_id"],
                              gc.sign_request(identity.private, inner))
     try:
@@ -441,6 +449,8 @@ def call(session, settings, identity: NodeIdentity, group: OwnerGroup, member: d
     tr = groups.trust(session, group, own_node=identity.node_id)
     key = tr.current_key(member["node_id"])
     outcome = {"result": plain.get("result"), "error": plain.get("error"), "server_time": plain.get("server_time")}
+    if "wire" in plain:
+        outcome["wire"] = plain["wire"]
     rs = plain.get("rs") if isinstance(plain.get("rs"), dict) else {}
     if key is not None and isinstance(rs.get("key_id"), str) and rs["key_id"] != key[0]:
         key = _learn_rotation(session, settings, identity, group, member, op, params, plain, http) or key
@@ -449,8 +459,12 @@ def call(session, settings, identity: NodeIdentity, group: OwnerGroup, member: d
                                                               identity.node_id, inner["r"], op, params, outcome),
             rs.get("sig", "")):
         raise CallError("the answer is not signed by that member's current key")
+    if plain.get("error") == "wire_unsupported":
+        group_channel._HELLO.pop(member["node_id"], None)  # §4.10 rule 4: ask its hello again next round
     if plain.get("error"):
         raise CallError(plain["error"], plain.get("result"))
+    if "wire" in plain and plain["wire"] != use:
+        raise CallError(f"the member answered at wire {plain['wire']} where wire {use} was asked")
     return plain.get("result")
 
 

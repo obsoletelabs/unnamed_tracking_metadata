@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -34,6 +35,7 @@ from . import (
     ratelimit,
     relations,
     sync,
+    wire,
 )
 from . import (
     metrics as telemetry,
@@ -55,6 +57,7 @@ from .web.account import router as account_router
 from .web.achievements import router as achievements_router
 from .web.admin import router as admin_router
 from .web.backups import router as backups_router
+from .web.book_pages import router as book_router
 from .web.deps import LoginRequired, MfaRequired
 from .web.federation import router as federation_router
 from .web.group import router as group_web_router
@@ -63,6 +66,7 @@ from .web.importing import router as import_router
 from .web.mfa import router as mfa_router
 from .web.node_links import router as node_links_router
 from .web.oidc import router as oidc_router
+from .web.pairing import router as pair_router
 from .web.profile_pages import router as profile_router
 from .web.routes import router as web_router
 from .web.routes import web_headers
@@ -71,7 +75,7 @@ from .web.social import router as social_router
 
 log = logging.getLogger("atlas")
 _STATUS = {"invalid": 400, "forbidden": 403, "not_found": 404, "conflict": 409,
-           "emit_protocol": 409,  # a valid request this node cannot publish yet (C1.6)
+           "reserved_feature": 409,  # a valid request for a construct reserved for a later release
            "scope_ceiling": 409,  # C14 §5.4: a mixed entry (ceiling'd + public record) is never signed
            # C11 §11.9-11.12: merge / unmerge / lock refusals
            "distinct": 409, "merge_too_large": 409, "already_reverted": 409, "unmerge_blocked": 409,
@@ -257,6 +261,19 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st
         sync.startup_replay(maker, ctx)
     except Exception as exc:
         log.warning("startup replay failed: %s", exc)
+    from . import doctor
+
+    def media_type_scan() -> None:
+        # C15 §2.2: count records an older release filed as games by mistake (`atlas doctor media-types`), at
+        # startup and whenever the set of known media types changed since the last scan (a seeded or new type)
+        try:
+            with maker() as session:
+                doctor.startup_scan(session)
+                session.commit()
+        except Exception as exc:
+            log.warning("media type scan failed: %s", exc)
+
+    media_type_scan()
     with httpx.Client() as client:
         while not stop.is_set():
             wait = delay
@@ -273,6 +290,7 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st
             except Exception as exc:  # keep serving local data through any upstream failure
                 log.warning("sync failed: %s", exc)
                 wait = min(delay * 4, 900)
+            media_type_scan()  # a schema this round may have brought a type that makes old misfiles reportable
             if st is not None and enrich.enabled(ctx.settings):  # C13 §5.1 step 4, H56: off by default
                 try:
                     enrich.run(maker, st)
@@ -409,6 +427,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if (rebuilt := dates_rebuild.finish_pending(maker, settings)) is not None and not rebuilt.get("busy"):
         log.info("re-derived %d record(s) after a downgrade and re-upgrade (%d changed)", rebuilt["rebuilt"],
                  rebuilt["changed"])
+    with maker() as s:  # C16 §4.7: a build below the database's wire high-water mark refuses to start
+        wire.check_high_water(s, restoring=bool(getattr(settings, "restoring", False)))
+        wire.log_ignored(s, dict(os.environ), log)
+        s.commit()
     with maker() as s:
         identity = load_identity(s, settings)
         _warn_key_at_rest(settings, signing_key_at_rest(s))
@@ -486,6 +508,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(social_router)
     app.include_router(federation_router)
     app.include_router(import_router)
+    app.include_router(book_router)
+    app.include_router(pair_router)
     app.include_router(backups_router)
     app.include_router(oidc_router)
     app.include_router(group_router)
@@ -500,7 +524,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def _security_headers(request: Request, call_next):
         response = await call_next(request)
         web_headers(response, request.url.path)
+        if request.url.path.startswith("/api/") and wire.HEADER not in response.headers:
+            _read_api_wire(request, response)
         return response
+
+    def _read_api_wire(request: Request, response) -> None:
+        """CR-11/T-W26: every read-API answer names the wire it was served at (`WIRE_MAX` unless the caller sent
+        a range) and varies on the request header, so a cache never hands one caller's answer to another. Peer
+        channels set their own header after negotiating; a malformed header here is simply not echoed."""
+        prof = wire.profile(app.state.atlas)
+        try:
+            use = wire.negotiate_request(request.headers.get(wire.HEADER), prof=prof, peer_channel=False)
+        except (wire.InvalidWire, wire.WireUnsupported):
+            return
+        response.headers[wire.HEADER] = wire.response_header(use, prof)
+        vary = response.headers.get("Vary")
+        if not vary or wire.HEADER.lower() not in vary.lower():
+            response.headers["Vary"] = f"{vary}, {wire.HEADER}" if vary else wire.HEADER
 
     @app.exception_handler(LoginRequired)
     async def _login_required(request: Request, _: LoginRequired):
@@ -522,6 +562,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "nav_pages": [], "p": _AnonPage()}, status_code=exc.status_code, headers=exc.headers)
         resp.headers["Cache-Control"] = "no-store"
         return resp
+
+    @app.exception_handler(wire.WireUnsupported)
+    async def _wire_unsupported(_: Request, exc: wire.WireUnsupported):
+        # design §6: 409, never 426; the contract is `code` + `reason`. The body names both ranges.
+        prof = wire.profile(app.state.atlas)
+        return JSONResponse({"error": exc.body()}, status_code=409,
+                            headers={wire.HEADER: f"min={prof.min_peer}, max={prof.max}", "Cache-Control": "no-store"})
+
+    @app.exception_handler(wire.InvalidWire)
+    async def _invalid_wire(_: Request, exc: wire.InvalidWire):
+        return JSONResponse({"error": {"code": "invalid_wire", "message": str(exc)}}, status_code=400,
+                            headers={"Cache-Control": "no-store"})
 
     @app.exception_handler(AtlasError)
     @app.exception_handler(merges.MergeError)

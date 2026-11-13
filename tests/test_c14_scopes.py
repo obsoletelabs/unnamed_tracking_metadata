@@ -72,7 +72,7 @@ def test_group_ceiling_blocks_feed_emission_fail_closed(session, local_ctx):
                                                       "value": "X"}) is None
     with pytest.raises(scope.ScopeCeiling) as exc:
         feed.scope_gate(session, "lock", {"canonical_id": r.canonical_id}, [r.canonical_id])
-    assert exc.value.local_ok and isinstance(exc.value, feed_schema.EmitGateError)
+    assert exc.value.local_ok and isinstance(exc.value, feed_schema.FeedPolicyError)
     assert session.scalar(select(func.count()).select_from(ChangeLog)) == before
     assert r.canonical_id not in {c.id for c in feed.candidates(session, "all")}
     scope.publish(session, ctx, r.canonical_id)
@@ -476,11 +476,7 @@ def test_mixed_merge_is_a_409_with_the_publish_message(node):
     assert r.status_code == 409 and "Publish it" in r.text
 
 
-MODES = {
-    "legacy": {},
-    "bridge": {"federation_bridge_record_obs": True},
-    "record": {"emit_protocol": "1.5"},
-}
+MODES = {"record": {}}  # C16 Z1: the v0 `legacy` and `bridge` introduction modes are gone
 
 
 @pytest.mark.parametrize("mode", sorted(MODES))

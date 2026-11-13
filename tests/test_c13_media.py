@@ -32,7 +32,7 @@ def png(colour=(200, 30, 30)) -> bytes:
 
 @pytest.fixture
 def pair(tmp_path):
-    authority = Node(tmp_path, "authority", "authority", federation_bridge_record_obs=True)
+    authority = Node(tmp_path, "authority", "authority")
     mirror = Node(tmp_path, "mirror", "mirror", secret_key="k" * 32)
     cid = provider_only(authority)
     data = png()

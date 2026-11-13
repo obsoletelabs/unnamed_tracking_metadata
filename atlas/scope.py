@@ -130,7 +130,7 @@ def clean_categories(raw: Any) -> str:
 
 # ---- the feed gate (§5.4) -----------------------------------------------------------------------------------------
 
-class ScopeCeiling(feed_schema.EmitGateError):
+class ScopeCeiling(feed_schema.FeedPolicyError):
     """An entry names a record whose ceiling keeps it out of this node's public feed (CONTRACT-C14 §5.4).
 
     Its own class on purpose (Review #1, cross-ref C16-6): no rename of the feed-gate base may merge it with another
@@ -139,10 +139,9 @@ class ScopeCeiling(feed_schema.EmitGateError):
 
     def __init__(self, cid: str, ceiling: str, *, local_ok: bool):
         self.canonical_id, self.ceiling, self.local_ok = cid, ceiling, local_ok
-        self.feature, self.needed, self.current = "scope ceiling", "publish", ceiling
         where = "shared with your nodes only" if ceiling == "group" else (
             "kept for one account" if ceiling == "private" else "kept on this node only")
-        ValueError.__init__(self, f"This game is {where}. Publish it to sign it into your feed ({cid}).")
+        super().__init__("scope ceiling", f"This game is {where}. Publish it to sign it into your feed ({cid}).")
 
 
 def ceiling_of(session: Session, cid: str) -> str | None:

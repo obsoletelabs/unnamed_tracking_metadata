@@ -1,0 +1,23 @@
+{# A book's record page parts (CONTRACT-C15 §5, A23). Imported by game.html `with context`, so `g`, `v`, `lbl`, `book`
+   and `prefs` come from the page. Dates never format here: the first publication is the page's own release line
+   (`release_text`), and edition dates are in _book_editions.html. #}
+{% macro names(list) %}{% for n in list %}{% if not loop.first %}{{ ' and ' if loop.last else ', ' }}{% endif %}<span class="book-person">{{ n }}</span>{% endfor %}{% endmacro %}
+
+{% macro head() %}
+{% if v.get('subtitle') %}<p class="book-subtitle" data-book-subtitle>{{ v.subtitle }}</p>{% endif %}
+{% if book.byline %}<p class="book-byline" data-book-authors>{% for grp in book.byline %}{% if not loop.first %}; {% endif %}{{ grp.phrase }} {{ names(grp.names) }}{% endfor %}</p>{% endif %}
+{% if book.series %}<p class="book-series" data-book-series>{% for s in book.series %}{% if not loop.first %} · {% endif %}{% if s.position %}<span class="badge" data-series-position>#{{ s.position }}</span> in {% else %}Part of {% endif %}<a href="/game/{{ s.id }}">{{ s.title or s.id }}</a>{% endfor %}</p>{% endif %}
+{% endmacro %}
+
+{% macro facts() %}
+{% if v.get('page_count') %}<dt>Pages</dt><dd data-book-pages>{{ v.page_count }}</dd>{% endif %}
+{% if v.get('original_language') %}<dt>Original language</dt><dd data-book-language><span title="{{ v.original_language }}">{{ book.language }}</span></dd>{% endif %}
+{% endmacro %}
+
+{% macro curate() %}
+{% if p.can_review %}<p class="small book-curate" data-book-curate><a href="/game/{{ g.id }}/authors">Edit authors</a> · <a href="/game/{{ g.id }}/series">Set the series</a></p>{% endif %}
+{% endmacro %}
+
+{% macro credit() %}
+{% for a in book.attribution %}<p class="small muted book-attribution" data-attribution="{{ a.source }}">Book data from {% if a.url %}<a href="{{ a.url }}" rel="noopener noreferrer nofollow">{{ a.label }}</a>{% else %}{{ a.label }}{% endif %}.</p>{% endfor %}
+{% endmacro %}

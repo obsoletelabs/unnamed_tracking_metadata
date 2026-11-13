@@ -13,6 +13,9 @@
   <div class="cols"><div><label for="label">Name</label><input id="label" type="text" name="label" value="{{ t.label }}" required maxlength="60"></div>
   <div><label for="position">Order</label><input id="position" type="text" inputmode="numeric" name="position" value="{{ t.position }}"></div></div>
   <label><input type="checkbox" name="enabled" {{ 'checked' if t.enabled }} {{ 'disabled' if t.key == 'game' }}> Enabled</label>
+  <input type="hidden" name="achievements_shown" value="1">
+  <label><input type="checkbox" name="achievements" aria-describedby="achievements-help" {{ 'checked' if t.achievements is not false }}> Achievements apply to this type</label>
+  <p id="achievements-help" class="small muted">Off: records of this type show no achievements, nobody can add any, and achievements from an upstream for them are refused. Achievements already stored are kept and come back if you turn this on again.</p>
   <h3>Rename built-in fields for this type</h3>
   <p class="small muted">For example a movie's “Developer” can read “Director”. Leave empty to keep the default.</p>
   <div class="cols">{% for c in core %}<div><label for="label_{{ c }}">{{ c|replace('_', ' ')|capitalize }}</label><input id="label_{{ c }}" type="text" name="label_{{ c }}" value="{{ (t.labels or {}).get(c, '') }}" maxlength="40"></div>{% endfor %}</div>

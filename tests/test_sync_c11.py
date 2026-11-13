@@ -20,56 +20,39 @@ C11_KINDS = ("unmerge", "distinct")
 
 @pytest.fixture
 def fed(tmp_path):
-    authority = Node(tmp_path, "authority", "authority", emit_protocol=feed_schema.PROTOCOL)
+    authority = Node(tmp_path, "authority", "authority", emit_protocol="1.5")
     with authority.st.maker() as s:
         _, authority.curate = auth.create_token(s, "curator", ["read", "curate"])
         s.commit()
     return authority, Node(tmp_path, "mirror", "mirror")
 
 
-def test_registry_reserves_the_c11_constructs_and_keeps_the_since_maps():
-    assert feed_schema.PROTOCOL == "1.5"  # C13's record; the C11 constructs moved up one (H52)
+def test_registry_reserves_the_c11_constructs():
     for kind in C11_KINDS:
-        assert feed_schema.RESERVED_KINDS[kind] == "1.7" == feed_schema.KIND_SINCE[kind]
-        assert kind not in feed_schema.FEED_KINDS
-    for token, since in {"field-clear-v1": "1.7", "merge-guard-v1": "1.7", "ach-v2": "1.8", "art-v2": "1.9"}.items():
-        assert feed_schema.RESERVED_TOKENS[token] == since == feed_schema.TOKEN_SINCE[token]
-        assert token not in feed_schema.known_tokens()
-    assert feed_schema.BODY_SINCE[("lock", 2)] == "1.7" and feed_schema.BODY_SINCE[("artwork", 2)] == "1.9"
+        assert kind in feed_schema.RESERVED_KINDS and kind not in feed_schema.FEED_KINDS
+    for token in ("field-clear-v1", "merge-guard-v1", "ach-v2", "art-v2"):
+        assert token in feed_schema.RESERVED_TOKENS and token not in feed_schema.known_tokens()
+    assert {("lock", 2), ("artwork", 2)} <= feed_schema.RESERVED_BODIES
     table = feed_schema.markdown_table()
     for kind in C11_KINDS:
-        assert f"| `{kind}` | 1.7 (reserved) | not in this release | parked by this release |" in table
+        assert f"| `{kind}` | reserved | not in this release | parked by this release |" in table
 
 
-@pytest.mark.parametrize("protocol", feed_schema.protocol_choices())
-def test_check_emit_refuses_every_c11_construct_at_every_protocol(protocol):
+def test_check_emit_refuses_every_c11_construct():
     for kind, body in (("unmerge", {"merge_id": "m", "src": "atlas:a", "dst": "atlas:b"}),
                        ("distinct", {"a": "atlas:a", "b": "atlas:b"})):
-        with pytest.raises(feed_schema.EmitGateError) as err:
-            feed_schema.check_emit(kind, body, protocol)
-        assert err.value.needed == "1.7"
-    with pytest.raises(feed_schema.EmitGateError) as err:  # an explicit clear is a lock body version 2
+        with pytest.raises(feed_schema.ReservedConstructError):
+            feed_schema.check_emit(kind, body)
+    with pytest.raises(feed_schema.ReservedConstructError):  # an explicit clear is a lock body version 2
         feed_schema.check_emit("lock", {"_v": 2, "canonical_id": "atlas:a", "field": "title", "clear": True,
-                                        "_requires": ["field-clear-v1"]}, protocol)
-    assert err.value.needed == "1.7"
-    with pytest.raises(feed_schema.EmitGateError):  # the merge guard is never a version 1 lock
-        feed_schema.check_emit("lock", {"canonical_id": "atlas:a", "field": "_no_merge", "value": "x"}, protocol)
-    with pytest.raises(feed_schema.EmitGateError) as err:
-        feed_schema.check_emit("artwork", {"_v": 2, "canonical_id": "atlas:a", "source": "s", "items": []}, protocol)
-    assert err.value.needed == "1.9"
-    with pytest.raises(feed_schema.EmitGateError) as err:
+                                        "_requires": ["field-clear-v1"]})
+    with pytest.raises(feed_schema.ReservedConstructError):  # the merge guard is never a version 1 lock
+        feed_schema.check_emit("lock", {"canonical_id": "atlas:a", "field": "_no_merge", "value": "x"})
+    with pytest.raises(feed_schema.ReservedConstructError):
+        feed_schema.check_emit("artwork", {"_v": 2, "canonical_id": "atlas:a", "source": "s", "items": []})
+    with pytest.raises(feed_schema.ReservedConstructError):
         feed_schema.check_emit("artwork", {"canonical_id": "atlas:a", "source": "s", "items": [],
-                                           "_requires": ["art-v2"]}, protocol)
-
-
-def test_check_emit_since_maps_hold_for_every_registered_kind():
-    """KIND_SINCE is permanent: every kind it names is refused below its protocol, whatever release ships it."""
-    for kind, since in feed_schema.KIND_SINCE.items():
-        for protocol in feed_schema.protocol_choices():
-            if feed_schema.parse_protocol(protocol) >= feed_schema.parse_protocol(since):
-                continue
-            with pytest.raises(feed_schema.EmitGateError):
-                feed_schema.check_emit(kind, {"canonical_id": "atlas:x"}, protocol)
+                                           "_requires": ["art-v2"]})
 
 
 def test_local_only_constructs_are_not_federation_kinds():

@@ -288,6 +288,6 @@ def activity(session: Session, user: User, days: int = 90) -> list[dict]:
         d = r.detail or {}
         node = d.get("idp_node") or d.get("aud_node") or d.get("origin_node")
         out.append({"when": r.created_at, "action": r.action, "node": node,
-                    "node_name": names.get(node or "", ""), "fp": groups.gc_fp(node) if node and len(node) == 16
+                    "node_name": names.get(node or "", ""), "fp": groups.gc_fp(node) if node and len(node) in (16, 64)
                     else "", "purpose": d.get("purpose"), "reason": d.get("reason")})
     return out

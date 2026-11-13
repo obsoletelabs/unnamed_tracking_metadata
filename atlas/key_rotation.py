@@ -13,7 +13,7 @@ from . import feed
 from .models import ChangeLog, NodeState, ReplicatedChange
 from .service import AtlasError, write_lock
 from .settings import Settings
-from .signing import SIGNING_KEY, NodeIdentity, key_id_for, load_identity, seal, verify
+from .signing import SIGNING_KEY, NodeIdentity, id_matches, load_identity, seal, verify
 
 MAX_ROTATIONS = 128
 PROOF_FIELDS = ("seq", "kind", "body", "body_hash", "signature", "key_id", "node_id")
@@ -44,7 +44,7 @@ def validate_history(root_id: str, root_public: str, certificates, advertised_ke
         raise RotationError("invalid or oversized signing-key history")
     try:
         raw_root = base64.b64decode(root_public, validate=True)
-        if len(raw_root) != 32 or key_id_for(raw_root) != root_id:
+        if len(raw_root) != 32 or not id_matches(root_id, raw_root):
             raise RotationError("invalid pinned trust anchor")
     except (TypeError, ValueError) as exc:
         raise RotationError("invalid pinned trust anchor") from exc
@@ -56,12 +56,13 @@ def validate_history(root_id: str, root_public: str, certificates, advertised_ke
             seq, body = item["seq"], item["body"]
             if (type(seq) is not int or not previous_seq < seq < 2**63 or item["node_id"] != root_id
                     or item["key_id"] != current or item["kind"] != "key_rotation"
-                    or not isinstance(body, dict) or set(body) != {"key_id", "public_key"}):
+                    or not isinstance(body, dict) or set(body) - {"_wire"} != {"key_id", "public_key"}
+                    or ("_wire" in body and (type(body["_wire"]) is not int or body["_wire"] < 1))):  # C16 envelope
                 raise RotationError("invalid signing-key transition")
             if not verify(keys[current], root_id, seq, "key_rotation", body, item["body_hash"], item["signature"]):
                 raise RotationError("signing-key transition has an invalid signature")
             public = base64.b64decode(body["public_key"], validate=True)
-            if len(public) != 32 or key_id_for(public) != body["key_id"] or body["key_id"] in keys:
+            if len(public) != 32 or not id_matches(body["key_id"], public) or body["key_id"] in keys:
                 raise RotationError("invalid or repeated successor key")
             current = body["key_id"]
             keys[current] = body["public_key"]

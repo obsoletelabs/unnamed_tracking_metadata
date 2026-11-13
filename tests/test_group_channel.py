@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import timedelta
 
 import pytest
@@ -133,7 +134,7 @@ def test_public_outputs_carry_no_group_data(pair):
         _, secret = auth.create_token(s, "reader", ["read", "sync"])
         s.commit()
     client = a.net.clients["a.test"]
-    headers = {"Authorization": f"Bearer {secret}"}
+    headers = {"Authorization": f"Bearer {secret}", "Atlas-Wire": "min=1, max=1"}
     bodies = []
     for path, params in (("/api/v2/sync/info", {}), ("/api/v2/sync/changes", {"since": 0}),
                          ("/api/v2/changes", {"since": 0}), ("/api/v2/changes", {"feed": "local", "since": 0})):
@@ -291,12 +292,13 @@ def test_response_for_other_request_refused(pair, monkeypatch):
 # ---- c: negotiation, park and held ----------------------------------------------------------------------------
 
 def test_negotiation_n_minus_one_and_refusal():
-    assert group_schema.negotiate({"group_protocol": "1.1", "min_group_protocol": "1.0"}) == "1.0"
-    assert group_schema.negotiate({"group_protocol": "1.0", "min_group_protocol": "1.0"}) == "1.0"
-    assert group_schema.negotiate({"group_protocol": "2.0", "min_group_protocol": "2.0"}) is None
-    assert group_schema.negotiate({"group_protocol": "0.9", "min_group_protocol": "0.9"}) is None
-    assert group_schema.negotiate({"group_protocol": "x"}) is None
-    assert group_schema.acceptable("1.0") and not group_schema.acceptable("2.0")
+    assert group_schema.negotiate({"wire": {"min": 1, "max": 3}}) == 1  # the highest common wire
+    assert group_schema.negotiate({"wire": {"min": 1, "max": 1}}) == 1
+    assert group_schema.negotiate({"wire": {"min": 2, "max": 2}}) is None  # no overlap
+    assert group_schema.negotiate({"group_protocol": "1.0", "min_group_protocol": "1.0"}) is None  # a v0 member
+    assert group_schema.negotiate({"wire": {"min": 0, "max": 1}}) is None  # malformed: fail closed
+    assert group_schema.proto_of(1) == "w1" and group_schema.proto_use("w1") == 1
+    assert group_schema.proto_use("1.0") is None and group_schema.proto_use("w2") is None
 
 
 def test_hello_advertises_kinds_fields_and_capabilities(pair):
@@ -311,6 +313,33 @@ def test_hello_advertises_kinds_fields_and_capabilities(pair):
     assert hello["kinds"]["profile.field.set"] == {"emit": 1, "apply": 1}
     assert "display_name" in hello["profile_fields"] and "password_hash" not in hello["profile_fields"]
     assert "store-forward-v1" in hello["capabilities"]
+
+
+def test_the_call_speaks_the_negotiated_wire_the_outcome_echoes_it_and_a_refusal_evicts_the_hello(pair, monkeypatch):
+    """Design §4.10 rule 4 / T-W27 (review of C16 Z1): the caller sends the wire negotiated from the member's cached
+    hello, the signed outcome echoes it, and a `wire_unsupported` answer drops the cached hello so the next round
+    asks again (the member may have been upgraded or rolled back)."""
+    from atlas.api import group_routes
+
+    a, b, *_ = pair
+    with b.session() as s:
+        group = groups.load(s)
+        member = groups.trust(s, group, own_node=b.node_id).in_force(a.node_id)["body"]["member"]
+        sent: list[str] = []
+        real_sign = group_routes.gc.sign_request
+
+        def spy(private, inner):
+            sent.append(inner["proto"])
+            return real_sign(private, inner)
+
+        monkeypatch.setattr(group_routes.gc, "sign_request", spy)
+        group_channel._HELLO[a.node_id] = (time.monotonic(), {"wire": {"min": 1, "max": 1}})
+        group_routes.call(s, b.settings, b.identity, group, member, "hello", {}, b.net)
+        assert sent[-1] == "w1"
+        monkeypatch.setattr(group_schema, "proto_use", lambda proto, prof=None: None)  # a member that refuses it
+        with pytest.raises(group_routes.CallError, match="wire_unsupported"):
+            group_routes.call(s, b.settings, b.identity, group, member, "hello", {}, b.net)
+    assert a.node_id not in group_channel._HELLO
 
 
 def test_unknown_kind_parks_only_its_stream_and_unknown_field_is_held(pair):

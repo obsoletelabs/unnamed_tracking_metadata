@@ -4,7 +4,8 @@ so they are opt-in: set ATLAS_LIVE_PROVIDERS=1. A plain `pytest` run collects th
 Each keyed provider also needs its credentials in the environment (the same variables a node reads:
 ATLAS_RAWG_API_KEY, ATLAS_IGDB_CLIENT_ID + ATLAS_IGDB_CLIENT_SECRET, ATLAS_TGDB_API_KEY, optional
 ATLAS_STEAM_API_KEY); without them that provider's checks skip and name the missing variable. Keyless providers
-(Steam storefront, Open Library, Wikidata) run whenever the switch is on.
+(Steam storefront, Wikidata) run whenever the switch is on. Open Library also needs ATLAS_LIVE_OPENLIBRARY=1: it is
+checked on manual dispatch only (CONTRACT-C15 §3.4, the `Live Open Library` workflow).
 
 ATLAS_LIVE_REPORT names a JSON file that receives, per provider, which fields each answer filled (never the
 values). Comparing two reports shows response-shape drift (the genre/theme/language/score/alias fields of #26).

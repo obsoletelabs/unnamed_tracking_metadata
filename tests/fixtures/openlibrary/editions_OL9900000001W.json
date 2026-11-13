@@ -1,0 +1,152 @@
+{
+ "entries": [
+  {
+   "covers": [
+    9900001
+   ],
+   "isbn_10": [
+    "123456789X"
+   ],
+   "isbn_13": [
+    "9780009900112"
+   ],
+   "key": "/books/OL9900000011M",
+   "languages": [
+    {
+     "key": "/languages/eng"
+    }
+   ],
+   "latest_revision": 2,
+   "number_of_pages": 412,
+   "physical_format": "Mass Market Paperback",
+   "publish_date": "Aug 01, 2005",
+   "publishers": [
+    "Gullwing Press"
+   ],
+   "revision": 2,
+   "title": "The Salt Cartographer",
+   "type": {
+    "key": "/type/edition"
+   },
+   "works": [
+    {
+     "key": "/works/OL9900000001W"
+    }
+   ]
+  },
+  {
+   "edition_name": "First edition",
+   "isbn_10": [
+    "0099001209"
+   ],
+   "key": "/books/OL9900000012M",
+   "languages": [
+    {
+     "key": "/languages/eng"
+    }
+   ],
+   "latest_revision": 2,
+   "number_of_pages": 398,
+   "physical_format": "Hardcover",
+   "publish_date": "1987",
+   "publishers": [
+    "Harrow & Vane"
+   ],
+   "revision": 2,
+   "title": "The Salt Cartographer",
+   "type": {
+    "key": "/type/edition"
+   },
+   "works": [
+    {
+     "key": "/works/OL9900000001W"
+    }
+   ]
+  },
+  {
+   "isbn_13": [
+    "9780009900113"
+   ],
+   "key": "/books/OL9900000013M",
+   "languages": [
+    {
+     "key": "/languages/eng"
+    }
+   ],
+   "latest_revision": 2,
+   "physical_format": "Audio CD",
+   "publish_date": "2019-05",
+   "publishers": [
+    "Gullwing Audio"
+   ],
+   "revision": 2,
+   "title": "The Salt Cartographer",
+   "type": {
+    "key": "/type/edition"
+   },
+   "works": [
+    {
+     "key": "/works/OL9900000001W"
+    }
+   ]
+  },
+  {
+   "key": "/books/OL9900000014M",
+   "languages": [
+    {
+     "key": "/languages/fre"
+    }
+   ],
+   "latest_revision": 2,
+   "number_of_pages": 0,
+   "physical_format": "E-book",
+   "publish_date": "c2011",
+   "publishers": [
+    "Éditions du Phare"
+   ],
+   "revision": 2,
+   "title": "La Cartographe du sel",
+   "type": {
+    "key": "/type/edition"
+   },
+   "works": [
+    {
+     "key": "/works/OL9900000001W"
+    }
+   ]
+  },
+  {
+   "isbn_13": [
+    "9780009900150"
+   ],
+   "key": "/books/OL9900000015M",
+   "languages": [
+    {
+     "key": "/languages/eng"
+    }
+   ],
+   "latest_revision": 2,
+   "number_of_pages": 380,
+   "physical_format": "paperback",
+   "publish_date": "1948",
+   "publishers": [
+    "Gullwing Press"
+   ],
+   "revision": 2,
+   "title": "The Salt Cartographer",
+   "type": {
+    "key": "/type/edition"
+   },
+   "works": [
+    {
+     "key": "/works/OL9900000001W"
+    }
+   ]
+  }
+ ],
+ "links": {
+  "self": "/works/OL9900000001W/editions.json",
+  "work": "/works/OL9900000001W"
+ },
+ "size": 5
+}

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Authors: {{ v.get('title') }} · {{ app_name }}{% endblock %}
+{% block content %}
+<nav class="crumbs" aria-label="Breadcrumb"><ol>
+  <li><a href="/search?type=book">Books</a></li>
+  <li><a href="/game/{{ g.id }}">{{ v.get('title') }}</a></li>
+  <li><span aria-current="page">Authors</span></li>
+</ol></nav>
+<h1>Authors of {{ v.get('title') }}</h1>
+<p class="muted">The people credited for this book, in the order they are credited. Saving makes this list the curators' own: it is used instead of what providers say. Pin it to stop providers changing it at all.</p>
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+<form class="card book-authors" method="post" action="/game/{{ g.id }}/authors" data-authors-editor>{{ csrf(p.csrf) }}
+<div class="table-scroll"><table class="data-cards authors-table"><thead><tr><th>Order</th><th>Name</th><th>Role</th></tr></thead><tbody>
+{% for r in rows %}<tr data-author-row>
+<td data-label="Order"><label class="visually-hidden" for="order-{{ loop.index0 }}">Order of row {{ loop.index }}</label><input id="order-{{ loop.index0 }}" class="author-order" type="number" name="order.{{ loop.index0 }}" value="{{ r.order if r.order is defined and r.order else loop.index }}" min="1" max="99" step="any" inputmode="decimal"></td>
+<td data-label="Name"><label class="visually-hidden" for="name-{{ loop.index0 }}">Name in row {{ loop.index }}</label><input id="name-{{ loop.index0 }}" type="text" name="name.{{ loop.index0 }}" value="{{ r.name }}" maxlength="200" autocomplete="off">{% if r.olid %}<input type="hidden" name="olid.{{ loop.index0 }}" value="{{ r.olid }}"><span class="hint">Open Library {{ r.olid }}</span>{% endif %}</td>
+<td data-label="Role"><label class="visually-hidden" for="role-{{ loop.index0 }}">Role in row {{ loop.index }}</label><select id="role-{{ loop.index0 }}" name="role.{{ loop.index0 }}">{% for role in roles %}<option value="{{ role }}" {{ 'selected' if role == r.role }}>{{ role|capitalize }}</option>{% endfor %}</select></td>
+</tr>{% endfor %}
+</tbody></table></div>
+<p class="small muted">To reorder, change the numbers in Order (1 is credited first). Leave a name empty to remove that person. At most {{ max }} people.</p>
+<label class="check"><input type="checkbox" name="pin" value="1" {{ 'checked' if pinned }}> Pin this list{% if locked %} <span class="badge" data-authors-pinned>pinned now</span>{% endif %}</label>
+<p class="small muted">A pinned list wins over every source, including later imports. Untick to unpin it; the list you save stays as the curators' list.</p>
+<p><button type="submit">Save authors</button> <a class="btn ghost" href="/game/{{ g.id }}">Cancel</a></p>
+</form>
+{% endblock %}

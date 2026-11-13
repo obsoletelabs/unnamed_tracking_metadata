@@ -248,7 +248,8 @@ def test_approved_community_edits_federate_but_pending_ones_do_not(session, ctx,
     proposals.review(session, ctx, admin, p.id, approve=True)
     session.commit()
     entries = feed.read(session, 0, 10)
-    assert [e.kind for e in entries] == ["obs"] and entries[0].body["observation"]["source"] == "community"
+    assert [e.kind for e in entries] == ["wire_start", "obs"]  # C16 Z1: the first signed entry starts the wire
+    assert entries[1].body["observation"]["source"] == "community"
 
 
 def test_store_id_link_proposal_applies_on_approval_conflicts_are_refused_and_revert_undoes_it(session, ctx, game):

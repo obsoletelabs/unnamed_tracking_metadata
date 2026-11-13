@@ -158,7 +158,7 @@ def test_hostile_schema_snapshots_are_filtered_not_applied(session, ctx):
                    {"media_type": "movie", "key": "ok_field", "label": "OK\x00 field", "kind": "text"}, 5]})
     session.commit()
     types = {t.key: t for t in session.scalars(select(MediaType))}
-    assert set(types) == {"game", "legacy", "anime", "movie", "tv_show", "series", "collection"}
+    assert set(types) == {"game", "legacy", "anime", "movie", "tv_show", "series", "collection", "book"}
     assert types["movie"].labels == {"developer": "Director", "publisher": "Studio", "series": "Series"}
     fields = {f.key: f for f in session.scalars(select(FieldDef))}
     assert fields["ok_field"].label == "OK field"
@@ -190,7 +190,9 @@ def test_malformed_feed_entries_are_skipped_without_stalling(session, ctx):
         sync.apply_entry(session, ctx, "node", 1, kind, body)  # none of these may raise
     session.commit()
     assert session.scalars(select(Canonical.id)).all() == ["atlas:g1"]
-    sync.apply_entry(session, ctx, "node", 2, "obs", {"canonical_id": "atlas:g1", "observation": good_obs})
+    # C16 Z1 W-2: the `surprise` payload member was ignored and that observation applied, so the good one is new
+    sync.apply_entry(session, ctx, "node", 2, "obs", {"canonical_id": "atlas:g1",
+                                                     "observation": {**good_obs, "id": "B" * 26}})
     session.commit()
     assert session.get(Canonical, "atlas:g1").view["title"] == "Fine"  # a good entry after bad ones still applies
 

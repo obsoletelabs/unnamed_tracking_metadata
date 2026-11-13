@@ -23,7 +23,7 @@ from typing import Any
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from .signing import body_hash, canonical_json, key_id_for, sign_message, verify_message
+from .signing import body_hash, canonical_json, id_matches, key_id_like, sign_message, verify_message
 
 LINK_TYPES = ("atlas.link", "atlas.contribution")
 LINK_DOMAINS: dict[str, bytes] = {
@@ -51,8 +51,13 @@ def public_b64(private: Ed25519PrivateKey) -> str:
     return base64.b64encode(raw).decode()
 
 
-def key_id(public: str) -> str:
-    return key_id_for(base64.b64decode(public, validate=True))
+def key_id(public: str, like: str | None = None) -> str:
+    """A link key's id: 256-bit (D5), or in the form of `like` (the link's root id) for an existing link."""
+    return key_id_like(base64.b64decode(public, validate=True), like)
+
+
+def key_id_matches(public: str, kid: object) -> bool:
+    return id_matches(kid, base64.b64decode(public, validate=True))
 
 
 def parts(obj: dict) -> list[str]:
@@ -94,7 +99,7 @@ def verify(obj: Any, public_b64: str, *, t: str | None = None) -> bool:
     if not well_formed(obj) or (t is not None and obj["t"] != t):
         return False
     try:
-        if key_id(public_b64) != obj["signer"]["key_id"] or body_hash(obj["body"]) != obj["body_hash"]:
+        if not key_id_matches(public_b64, obj["signer"]["key_id"]) or body_hash(obj["body"]) != obj["body_hash"]:
             return False
         return verify_message(public_b64, LINK_DOMAINS[obj["t"]], parts(obj), obj["sig"])
     except (ValueError, TypeError, KeyError):
@@ -131,8 +136,8 @@ def rotation_certificate(previous: Ed25519PrivateKey, root_id: str, seq: int, su
     chain of them. A link key never signs a feed, so the layout cannot be mistaken for a feed entry of any node."""
     from .signing import _message
 
-    body = {"key_id": key_id(successor_public), "public_key": successor_public}
+    body = {"key_id": key_id(successor_public, root_id), "public_key": successor_public}
     digest = body_hash(body)
     signature = base64.b64encode(previous.sign(_message(root_id, seq, "key_rotation", digest))).decode()
     return {"seq": seq, "kind": "key_rotation", "body": body, "body_hash": digest, "signature": signature,
-            "key_id": key_id(public_b64(previous)), "node_id": root_id}
+            "key_id": key_id(public_b64(previous), root_id), "node_id": root_id}

@@ -27,7 +27,16 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from .signing import DOMAIN as FEED_DOMAIN
-from .signing import PRICE_DOMAIN, body_hash, canonical_json, key_id_for, message_parts_ok, sign_message, verify_message
+from .signing import (
+    PRICE_DOMAIN,
+    body_hash,
+    canonical_json,
+    id_matches,
+    key_id_like,
+    message_parts_ok,
+    sign_message,
+    verify_message,
+)
 
 # ---- domains (§1.3) ---------------------------------------------------------------------------------------
 
@@ -141,8 +150,15 @@ def ed_from_raw(raw: bytes) -> Ed25519PrivateKey:
     return Ed25519PrivateKey.from_private_bytes(raw)
 
 
-def key_id_of(public_b64: str) -> str:
-    return key_id_for(unb64(public_b64, 32))
+def key_id_of(public_b64: str, like: str | None = None) -> str:
+    """A key's id: 256-bit (D5) for a new group, or in the form of `like` (the group id) for a key of an existing
+    group, so a group minted before wire 1 keeps naming its keys the way its signed genesis does."""
+    return key_id_like(unb64(public_b64, 32), like)
+
+
+def key_id_matches(public_b64: str, kid: Any) -> bool:
+    """Whether `kid` names this key, in either id form (the explicit D5 legacy mapping)."""
+    return id_matches(kid, unb64(public_b64, 32))
 
 
 def x_public_b64(private: X25519PrivateKey) -> str:
@@ -412,7 +428,7 @@ def make_recovery_file(genesis: dict, succession: list[dict], recovery: Ed25519P
         root_wrapped = wrap_root(root, root_passphrase, group_id)
     if recovery is None and root_wrapped is None:
         raise GroupCryptoError("a recovery file holds a recovery key, the root key, or both")
-    rid = key_id_of(ed_public_b64(recovery)) if recovery is not None else "root"
+    rid = key_id_of(ed_public_b64(recovery), group_id) if recovery is not None else "root"
     plain = canonical_json({"recovery_private": b64(ed_private_raw(recovery)) if recovery is not None else None,
                             "root_wrapped": root_wrapped})
     contains = (["recovery_key"] if recovery is not None else []) + (["root_key_wrapped"] if root_wrapped else [])
@@ -473,7 +489,7 @@ def open_recovery_file(data: dict, passphrase: str) -> RecoveryKeys:
         raise GroupCryptoError("malformed recovery file") from exc
     if recovery is None and ((root is None and root_wrapped is None) or rid != "root"):
         raise GroupCryptoError("malformed recovery file")
-    if recovery is not None and key_id_of(ed_public_b64(recovery)) != rid:
+    if recovery is not None and not key_id_matches(ed_public_b64(recovery), rid):
         raise GroupCryptoError("the recovery file's key does not match its key id")
     return RecoveryKeys(group_id, recovery, root, data["genesis"], list(data.get("succession") or []),
                         root_wrapped=root_wrapped, version=version)
@@ -518,8 +534,13 @@ class Invite:
 
 
 def encode_code(invite: Invite) -> str:
-    payload = (b"\x01" + bytes.fromhex(invite.group_id) + bytes.fromhex(invite.inviter)
-               + bytes.fromhex(invite.invite_id) + invite.k)
+    """Version 1 (byte 0x01) for 64-bit ids, as before; version 2 (0x02, each id length-prefixed) once any id is a
+    256-bit D5 id (C16 Z1). A reader of this release decodes both."""
+    ids = (invite.group_id, invite.inviter, invite.invite_id)
+    if all(len(i) == 16 for i in ids):
+        payload = b"" + b"".join(bytes.fromhex(i) for i in ids) + invite.k
+    else:
+        payload = b"" + b"".join(len(raw).to_bytes(1, "big") + raw for raw in map(bytes.fromhex, ids)) + invite.k
     raw = payload + hashlib.sha256(payload).digest()[:2]
     text = _b32(raw)
     return CODE_PREFIX + "-".join(text[i:i + 5] for i in range(0, len(text), 5))
@@ -531,11 +552,27 @@ def decode_code(code: str) -> Invite:
     if not text.startswith(CODE_PREFIX):
         raise GroupCryptoError("an invite code starts with AG1-")
     body = re.sub(r"[\s-]", "", text[len(CODE_PREFIX):]).replace("O", "0").replace("I", "1").replace("L", "1")
-    raw = _unb32(body, CODE_BYTES)
+    nbytes = CODE_BYTES if len(body) == -(-CODE_BYTES * 8 // 5) else len(body) * 5 // 8
+    if nbytes > 160:
+        raise GroupCryptoError("the code has the wrong length")
+    raw = _unb32(body, nbytes)
     payload, check = raw[:-2], raw[-2:]
-    if not hmac.compare_digest(hashlib.sha256(payload).digest()[:2], check) or payload[0] != 1:
+    if not hmac.compare_digest(hashlib.sha256(payload).digest()[:2], check) or payload[0] not in (1, 2):
         raise GroupCryptoError("the code is mistyped (checksum mismatch)")
-    return Invite(payload[1:9].hex(), payload[9:17].hex(), payload[17:25].hex(), payload[25:41])
+    if payload[0] == 1:
+        if nbytes != CODE_BYTES:
+            raise GroupCryptoError("the code has the wrong length")
+        return Invite(payload[1:9].hex(), payload[9:17].hex(), payload[17:25].hex(), payload[25:41])
+    ids, at = [], 1
+    for _ in range(3):
+        size = payload[at] if at < len(payload) else 0
+        if size not in (8, 32) or at + 1 + size > len(payload):
+            raise GroupCryptoError("the code has the wrong length")
+        ids.append(payload[at + 1:at + 1 + size].hex())
+        at += 1 + size
+    if len(payload) - at != 16:
+        raise GroupCryptoError("the code has the wrong length")
+    return Invite(ids[0], ids[1], ids[2], payload[at:])
 
 
 def qr_payload(url: str, code: str) -> dict:
