@@ -148,7 +148,12 @@ def H(t):
     return {"Authorization": f"Bearer {t}"}
 
 
-def test_forged_forwarded_for_does_not_evade_the_limit(app_factory):
+def test_forged_forwarded_for_does_not_evade_the_limit(app_factory, monkeypatch):
+    # The limiter counts in a fixed 60-second wall-clock window. On a slow runner the 70 requests can straddle a minute
+    # boundary and never put 61 into one window (a flake, not a defect). Freeze the clock the limiter reads; the
+    # assertion is unchanged.
+    real_hit = ratelimit.hit
+    monkeypatch.setattr(ratelimit, "hit", lambda *a, **kw: real_hit(*a, clock=lambda: 1_700_000_010.0, **kw))
     with TestClient(app_factory(bootstrap_admin_token=ADMIN)) as c:
         codes = [c.get("/api/v2/games?q=x", headers={"X-Forwarded-For": f"10.0.0.{i}"}).status_code
                  for i in range(70)]
