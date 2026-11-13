@@ -1861,6 +1861,7 @@ def _note_follower_since(session: Session, who: auth.Principal, since: int) -> N
     token = who.token_id
     if not token or since <= 0:
         return
+    since = min(since, 2**40)  # one poll with a huge value must not poison the evidence
     key = f"follower_since:{token}"
     try:
         with session.begin_nested():

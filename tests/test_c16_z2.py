@@ -424,3 +424,36 @@ def test_admin_status_shows_the_journal_and_the_freeze(pair):
     body = restored.client.get("/api/v2/status", headers={"Authorization": f"Bearer {admin}"}).json()
     assert body["feed_frozen"]["head_seq"] > 0 and body["checks"]["feed"] == "frozen"
     assert "upgrade" in body and body["checks"]["readiness"] == "degraded"
+
+
+def test_a_follower_exactly_one_entry_ahead_blocks_confirm(pair):
+    """Review finding: a follower recorded at since=S holds S or S+1, so S == head may already be ahead."""
+    _, _, restored = pair
+    head = frozen(restored)["head_seq"]
+    with restored.st.maker() as session:
+        session.add(NodeState(key="follower_since:ONE", value=str(head)))
+        session.commit()
+    with restored.st.maker() as session, pytest.raises(feed_resume.ResumeError, match="ONE"):
+        feed_resume.confirm_no_follower_ahead(session)
+    with restored.st.maker() as session:
+        session.get(NodeState, "follower_since:ONE").value = str(head - 1)  # holds the head at most: not ahead
+        session.commit()
+    with restored.st.maker() as session:
+        feed_resume.confirm_no_follower_ahead(session)
+        session.commit()
+    assert frozen(restored) is None
+
+
+def test_resume_survives_hostile_tail_members(pair):
+    authority, follower, restored = pair
+
+    def hostile(body):
+        for e in body["entries"]:
+            e["signature"], e["body_hash"] = 7, ["x"]
+        return body
+
+    http = httpx.Client(transport=httpx.MockTransport(Wire(follower, changes=hostile)))
+    with pytest.raises(feed_resume.ResumeError, match="no source retains"):  # no traceback, no unfreeze on nothing
+        feed_resume.resume_from_nodes(restored.st.maker, restored.st.ctx,
+                                      [feed_resume.Source("bad", "http://upstream", follower.token)], http)
+    assert frozen(restored) is not None and restored.own_feed() != authority.own_feed()

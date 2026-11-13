@@ -2379,7 +2379,7 @@ def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, ups
     entries: list[dict[str, Any]] = []
     advertised_head = None
     if room > 0:
-        params: dict[str, Any] = {"since": since, "limit": min(ctx.settings.sync_batch_size, room) + overlap}
+        params: dict[str, Any] = {"since": since, "limit": min(min(ctx.settings.sync_batch_size, room) + overlap, 5000)}
         if relay:
             params["node_id"] = node_id
         fetch_started = time.monotonic()
@@ -2432,7 +2432,7 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
             service.write_lock(session)  # SQLite: BEGIN IMMEDIATE (atlas.db); PostgreSQL: advisory lock
             started = datetime.now(UTC)
             verify_started = time.monotonic()
-            tally: Counter[str] = Counter({"received": len(entries)})
+            tally: Counter[str] = Counter({"received": len(entries) - (1 if since > 0 and entries else 0)})
             expected = since
             try:
                 key_rotation.remember(session, node_id, history)
@@ -2454,7 +2454,9 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
                 if e.get("renditions"):
                     _receive_renditions(session, node_id, e, upstream, history, signing_keys, mirror)
                 retained_entry = session.get(ReplicatedChange, (node_id, e["seq"]))
-                tally["retained" if retained_entry is None else "duplicate"] += 1
+                overlap_entry = retained_entry is not None and since > 0 and e["seq"] == since + 1
+                if not overlap_entry:  # the re-checked last verified entry (C16 rule 4) is not a received entry
+                    tally["retained" if retained_entry is None else "duplicate"] += 1
                 if retained_entry is None:
                     session.add(ReplicatedChange(node_id=node_id, seq=e["seq"], kind=e["kind"], body=e["body"],
                                                  body_hash=e["body_hash"], signature=e["signature"], key_id=e["key_id"],

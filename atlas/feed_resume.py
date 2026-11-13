@@ -80,7 +80,8 @@ def confirm_no_follower_ahead(session: Session, *, revoke: list[str] | None = No
         raise ResumeError("the feed is not frozen")
     head = _head(session)
     revoke = revoke or []
-    ahead = {t: n for t, n in follower_positions(session).items() if n > head}
+    # a follower recorded at `since = S` holds S or S + 1 (it asks for `verified - 1`), so S >= head may be ahead
+    ahead = {t: n for t, n in follower_positions(session).items() if n >= head}
     blocking = {t: n for t, n in ahead.items() if t not in revoke}
     if blocking:
         token, since = sorted(blocking.items())[0]
@@ -164,13 +165,18 @@ def _verified(session: Session, identity: Any, head: int, entries: list[dict[str
                 or not isinstance(e.get("kind"), str) or e.get("node_id") != identity.node_id
                 or e.get("key_id") not in keys):
             break
-        if not signing.verify(keys[e["key_id"]], identity.node_id, e["seq"], e["kind"], e.get("body"),
-                              e.get("body_hash", ""), e.get("signature", "")):
+        try:
+            ok = signing.verify(keys[e["key_id"]], identity.node_id, e["seq"], e["kind"], e.get("body"),
+                                e.get("body_hash", ""), e.get("signature", ""))
+        except Exception:  # noqa: BLE001 - a hostile source ends the verified prefix, it does not crash the resume
+            ok = False
+        if not ok:
             break
-        if e["kind"] == "key_rotation" and isinstance(e.get("body"), dict):
-            body = e["body"]
-            if isinstance(body.get("key_id"), str) and isinstance(body.get("public_key"), str):
-                keys[body["key_id"]] = body["public_key"]
+        if e["kind"] == "key_rotation":
+            body = e["body"] if isinstance(e.get("body"), dict) else {}
+            if not (isinstance(body.get("key_id"), str) and isinstance(body.get("public_key"), str)):
+                break
+            keys[body["key_id"]] = body["public_key"]
         good.append(e)
         expected += 1
     return good
@@ -193,7 +199,7 @@ def resume_from_nodes(maker: sessionmaker[Session], ctx: Any, srcs: list[Source]
     for source in srcs:
         try:
             raw = _fetch_tail(own, source, identity.node_id, head)
-        except (httpx.HTTPError, ValueError, KeyError) as exc:
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
             errors[source.label] = f"{type(exc).__name__}: {exc}"[:200]
             continue
         with maker() as session:
@@ -202,6 +208,9 @@ def resume_from_nodes(maker: sessionmaker[Session], ctx: Any, srcs: list[Source]
         raise ResumeError("no source answered: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
     best_label = max(tails, key=lambda k: len(tails[k]))
     tail = tails[best_label]
+    if not tail:  # a source that withholds looks exactly like a feed with nothing above the head
+        raise ResumeError("no source retains any signed entry above the restored head. If no follower ever pulled "
+                          "past it, say so with `--confirm-no-follower-ahead`; otherwise try more nodes (--from-node)")
     for label, other in tails.items():  # two sources holding different bytes for one seq: a fork, never resolved here
         for a, b in zip(tail, other, strict=False):
             if (a["body_hash"], a["signature"]) != (b["body_hash"], b["signature"]):
@@ -214,7 +223,7 @@ def resume_from_nodes(maker: sessionmaker[Session], ctx: Any, srcs: list[Source]
         if feed.frozen(session) is None or _head(session) != head:
             raise ResumeError("the feed changed while resuming; run the command again")
         # positions recorded before the restore or during the freeze: the tail must reach the highest known one
-        behind = {t: n for t, n in follower_positions(session).items() if n > (tail[-1]["seq"] if tail else head)}
+        behind = {t: n for t, n in follower_positions(session).items() if n >= (tail[-1]["seq"] if tail else head)}
         if behind:
             token, since = sorted(behind.items())[0]
             raise ResumeError(f"the longest retained tail ends at seq {tail[-1]['seq'] if tail else head}, but token "
