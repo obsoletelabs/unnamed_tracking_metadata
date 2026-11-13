@@ -7,6 +7,9 @@
 {% if renamed_fields %}<section class="card" aria-labelledby="renamed-title"><h2 id="renamed-title">Custom fields preserved after upgrade</h2>
 <p>These custom names became built-in fields. Their keys were renamed; labels, values and source attribution were preserved. No custom values were converted into built-in metadata. Update clients to use the new keys.</p>
 <ul>{% for field in renamed_fields %}<li><strong>{{ field.media_type }}</strong>: <code>{{ field.old }}</code> → <code>{{ field.new }}</code></li>{% endfor %}</ul></section>{% endif %}
+{% if adopted %}<section class="card" aria-labelledby="adopted-title" data-adopted-types><h2 id="adopted-title">Media types that became built-in</h2>
+<p>This node already had these media types when this release made them built-in. Their names, labels and custom fields were kept; achievements were turned off for them, because achievements do not apply to that kind of record.</p>
+<ul>{% for a in adopted %}<li><strong>{{ a.label }}</strong> <code>{{ a.key }}</code>{% if a.origin == 'upstream' %} (from upstream){% endif %}: {{ a.fields }} custom field{{ '' if a.fields == 1 else 's' }} kept{% if a.shadowed %}. Shown under their own labels next to the built-in book fields: {% for k in a.shadowed %}<code>{{ k }}</code>{{ ', ' if not loop.last }}{% endfor %}{% endif %}.</li>{% endfor %}</ul></section>{% endif %}
 <p class="muted">Media types say what kind of thing a record is. Each type can have its own extra fields, which appear on pages, in contributor forms and in the API, and go through the same review as built-in fields.</p>
 {% for r in rows %}
 <article class="card">

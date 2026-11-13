@@ -58,7 +58,17 @@ BUILTIN_MEDIA_TYPES = {
     # C6.2: the targets of `series_member` and `collection_member` relations (a bundle is a collection).
     "series": ("Series", 4, {"developer": "Owner", "series": "Franchise"}, ()),
     "collection": ("Collection", 5, {"series": "Franchise"}, ()),
+    # CONTRACT-C15 §2.2 (A21): a work; its editions are the `editions[]` view, its authors `ext.book.authors`. No
+    # custom fields: page count and original language are `ext.book` view fields, one source of truth each.
+    "book": ("Book", 6, {"developer": "Author", "publisher": "Publisher", "series": "Series",
+                         "release_date": "First published", "platforms": "Formats", "features": "Subjects"}, ()),
 }
+#: Built-in types seeded with the per-type achievements flag off (C15 §2.7): achievements do not apply to books.
+#: Driven by data, not by a type name in the code: an administrator may change the flag afterwards.
+BUILTIN_WITHOUT_ACHIEVEMENTS = frozenset({"book"})
+#: Setting written by migration 0061 when a node already had a media type a release makes built-in (C15 §2.2): a list
+#: of `{key, label, origin, fields, shadowed}`, shown on Admin -> Media types.
+ADOPTED_NOTICE = "notice.media_types_adopted"
 RESERVED = {"title", "description", "id", "sources", "provider_ids", "media_type", "custom", "version", "artwork",
             "achievements", "updated_at", "redirected_from", *CORE_LABELS}
 
@@ -68,7 +78,8 @@ def seed(session: Session) -> None:
     for key, (label, position, labels, _fields) in BUILTIN_MEDIA_TYPES.items():
         if session.get(MediaType, key) is not None:
             continue
-        session.add(MediaType(key=key, label=label, position=position, labels=labels, origin="local"))
+        session.add(MediaType(key=key, label=label, position=position, labels=labels, origin="local",
+                              achievements=key not in BUILTIN_WITHOUT_ACHIEVEMENTS))
         created.append(key)
     session.flush()
     for media_type in created:

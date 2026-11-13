@@ -94,6 +94,10 @@ federation_verification = REGISTRY.counter(
 enrichment = REGISTRY.counter(
     "atlas_enrichment_operations_total", "Catalogue enrichment runs by operation and outcome",
     {"operation": ("provider_import",), "outcome": ("created", "matched", "review", "not_found", "failed")})
+#: CONTRACT-C15 §2.5: an edition ISBN dropped because its check digit (or its length) is wrong. It is never guessed.
+book_isbn_rejected = REGISTRY.counter(
+    "atlas_book_isbn_rejected_total", "Book edition ISBNs dropped as invalid (bad check digit or length), by field",
+    {"field": ("isbn_13", "isbn_10")})
 
 # ---- media (#73) --------------------------------------------------------------------------------------------
 MEDIA_KINDS = ("artwork", "achievement_icon")

@@ -63,6 +63,7 @@ nav:
       - Tracking App: tracking-app.md
       - Achievements: achievements.md
       - Relationships and editions: relations.md
+      - Books: books.md
       - Metadata providers: providers.md
       - Prices: prices.md
       - Extending: extending.md

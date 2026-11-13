@@ -79,7 +79,7 @@ def emitting(session):
 def test_relation_kind_is_registered_with_closed_vocabularies():
     spec = feed_schema.FEED_KINDS["relation"]
     assert (spec.since, spec.emit, spec.apply) == ("1.4", 1, 1)
-    assert spec.fields == {"op", "from", "to", "type", "source"}
+    assert spec.fields == {"op", "from", "to", "type", "source", "position"}  # position: A21, series_member only
     assert feed_schema.PROTOCOL == "1.5" and feed_schema.RESERVED_KINDS == RESERVED_C11
     assert feed_schema.vocabularies()["relation_type"] == set(vocab.RELATION_TYPES)
     assert feed_schema.vocabularies()["relation_op"] == {"add", "end"}

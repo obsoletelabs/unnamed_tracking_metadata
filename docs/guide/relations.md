@@ -102,6 +102,14 @@ with the original record, which keeps its id.
 Each change is one signed `relation` entry: `{"op": "add", "from", "to", "type", "source"}` or
 `{"op": "end", "from", "to", "type"}`. Followers apply them in feed order and follow merge redirects.
 
+**Series position (C15 §2.4).** A `series_member` relation may carry `position` (1-16 printable characters, such
+as `"1"`, `"2.5"` or `"0"`): the member's place in its series, shown in `members`/`members_of` and in the graph
+edges. Only `series_member` takes one; an `add` of another type with a position is refused here and quarantined
+`invalid` on a follower, and an `end` never carries one. Changing a position ends the relation and adds it again
+with the new position (no new operation), so the history shows both. A relation without a position is signed
+exactly as before. `position` is registered under the one release version, like the rest of the book model
+([Books](books.md)).
+
 * Below `emit_protocol` **1.4** an authority keeps relations local and signs nothing; once a relation was
   published it cannot be removed until the protocol is 1.4 again (HTTP 409). While gated,
   `PUT /games/{id}/relations` answers `published: false` with `reason: "emit_protocol"` and `pending` (how many

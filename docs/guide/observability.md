@@ -149,6 +149,7 @@ authority has nothing newer.
 | `atlas_catalog_achievement_definitions` | gauge | `state` = `active unobtainable unknown retired` | Catalogue achievement definitions (never unlocks or progress) |
 | `atlas_catalog_review_pending` | gauge | `queue` = `match_review proposal field_conflict` | Open match reviews, pending proposals and fields with conflicting sources |
 | `atlas_enrichment_operations_total` | counter | `operation` = `provider_import`, `outcome` = `created matched review not_found failed` | Imports of a provider record into the catalogue |
+| `atlas_book_isbn_rejected_total` | counter | `field` = `isbn_13 isbn_10` | Book edition ISBNs dropped as invalid (bad check digit or length); never guessed |
 
 Admin-defined media types are one `custom` group; their names are never label values. A description field is not
 measured: this release has no structured description to count. No player identity or personal progress is exported.

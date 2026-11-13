@@ -89,6 +89,9 @@ class Relation(Base):
     origin_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
     origin_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     feed_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # CONTRACT-C15 §2.4 (A21, migration 0061): a member's place in its series ("1", "2.5", "0"). Only a
+    # `series_member` relation carries one; a change of position ends the row and adds a new one (no new op).
+    position: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     __table_args__ = (
         CheckConstraint("from_id <> to_id", name="ck_relation_not_self"),
@@ -176,6 +179,20 @@ class Observation(Base):
         Index("ix_obs_key", "source", "source_scope", "external_id", "is_current"),
         UniqueConstraint("origin_node", "origin_seq", name="uq_obs_origin"),
     )
+
+
+class BookCreator(Base):
+    """CONTRACT-C15 §5 (A21, migration 0061): a book's ordered creators, derived from `view["authors"]` on every
+    rebuild (like `release_start`), so `?author=` can prefix-match `norm_name` (casefold, no diacritics). At most 30
+    rows per record; only records of the `book` type have rows."""
+
+    __tablename__ = "book_creator"
+
+    canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    norm_name: Mapped[str] = mapped_column(String(200), index=True)
+    role: Mapped[str] = mapped_column(String(16), default="author")
 
 
 class Crosswalk(Base):

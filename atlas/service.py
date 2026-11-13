@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import case, select, text, update
 from sqlalchemy.orm import Session
 
-from . import client_changes, dates, feed, feed_schema, matching, provenance
+from . import books, client_changes, dates, feed, feed_schema, matching, provenance
 from .contract import ObservationBatchV1
 from .db import sqlite_write_lock
 from .ids import canonical_id as new_canonical_id
@@ -112,10 +112,11 @@ def rebuild(session: Session, ctx: Ctx, cid: str, *, cause: str = "local", only_
             all(getattr(row, k) == v for k, v in columns.items()):
         return row
     row.view, row.explain = view, explain
-    row.norm_title = norm_title(view.get("title"))
+    row.norm_title = norm_title(view.get("title"), row.media_type)
     for column, value in columns.items():
         setattr(row, column, value)
     provenance.index_conflicts(session, cid, explain)
+    books.rebuild_creators(session, row)
     return bump_version(session, cid, cause)
 
 
@@ -127,7 +128,7 @@ def index_update(session: Session, ctx: Ctx, cid: str) -> None:
         return
     view, _explain = derive(session, ctx, cid)
     row.view = view
-    row.norm_title = norm_title(view.get("title"))
+    row.norm_title = norm_title(view.get("title"), row.media_type)
     for column, value in dates.columns(view.get("first_release")).items():
         setattr(row, column, value)
     session.flush()
@@ -201,6 +202,9 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
     touched: dict[str, str] = {}  # record -> client change cause, rebuilt once at the end
     cause = "provider" if system else None
 
+    if _redistributable(ctx, conn.source, curator) and book_gated(ctx) and any(
+            item.ext is not None and item.ext.book is not None for item in batch.observations):
+        raise AtlasError(book_gate_message(ctx, "book data (ext.book)"), "emit_protocol")
     for item in batch.observations:
         payload = item.reported()
         if payload.get("source_updated_at", 0) > horizon:  # a clock in the far future would freeze the record
@@ -289,6 +293,10 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
             elif follow(session, existing.canonical_id) != cid:
                 conflicts.append((follow(session, existing.canonical_id), 1.0))
         session.flush()
+        if books.book_of(payload).get("editions") or (prior is not None and books.book_of(prior.payload or {})
+                                                       .get("editions")):
+            for rec in dict.fromkeys(r for r in (cid, left) if r):  # C15 §2.5: one isbn row per edition ISBN
+                books.sync_isbn_keys(session, ctx.settings, rec)
         item_cause = cause or ("feed" if obs.redistributable else "local")
         for rec in (cid, left):
             if rec is None:
@@ -526,6 +534,9 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
         for record in (old, cid):  # §12.5.4: a duplicate_of must not point at a row now on the other record
             dedupe(session, ctx.settings, record)
     session.flush()
+    if books.book_of(obs.payload or {}).get("editions"):
+        for record in (old, cid):  # C15 §2.5: the moved observation's edition ISBNs move with it
+            books.sync_isbn_keys(session, ctx.settings, record)
     who = actor or ("sync" if not log else "curator")
     matching.add_rejection(session, "chain", matching.chain_hash(obs.source, obs.source_scope, obs.external_id), old,
                            reason="detach", actor=who)
@@ -551,6 +562,20 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
 DATES_PROTOCOL = feed_schema.RESERVED_TOKENS["dates-v1"]  # "1.3"
 
 
+def book_gated(ctx: Ctx) -> bool:
+    """True while this authority may not sign book data (`ext.book`, the book lock fields): its `emit_protocol` is
+    below the unified release version (CONTRACT-C15 §4.1). Read at call time, so moving `UNIFIED` moves it."""
+    if ctx.settings.role != "authority":
+        return False
+    return feed_schema.parse_protocol(feed_schema.emit_protocol(ctx.settings)) < \
+        feed_schema.parse_protocol(feed_schema.TOKEN_SINCE["book-v1"])
+
+
+def book_gate_message(ctx: Ctx, feature: str) -> str:
+    return str(feed_schema.EmitGateError(feature, feed_schema.TOKEN_SINCE["book-v1"],
+                                         feed_schema.emit_protocol(ctx.settings)))
+
+
 def dates_gated(ctx: Ctx) -> bool:
     """True while this node may not sign a partial or regional release date: it is an authority (its writes
     enter the signed feed) and its `emit_protocol` is below 1.3 (C1.6, H13). Observations are still stored
@@ -574,10 +599,15 @@ def clean_lock(field: str, value: Any, *, replicated: bool = False) -> Any:
     when a `release_date` lock took any text ("TBA"). Such a value is stored as it is, so a follower that
     applies or replays it matches the authority instead of quarantining the entry (the merge shows it in the
     legacy key, as before). Only new local locks are held to the date rules."""
-    from .merge import LOCK_FIELDS, SCALAR_FIELDS, UNION_FIELDS
+    from .merge import BOOK_LOCKS, LOCK_FIELDS, SCALAR_FIELDS, UNION_FIELDS
 
     if field not in LOCK_FIELDS:
         raise AtlasError(f"field {field!r} cannot be locked")
+    if field in BOOK_LOCKS:  # C15 §2.3: held to the ext.book rules, replicated or not
+        try:
+            return books.clean_lock(field, value)
+        except ValueError as exc:
+            raise AtlasError(str(exc)) from exc
     if field in UNION_FIELDS and not (isinstance(value, list) and all(isinstance(v, str) for v in value)):
         raise AtlasError(f"{field} needs a list of strings")
     if field in SCALAR_FIELDS and not isinstance(value, str):
@@ -630,6 +660,8 @@ def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, ac
     if signed and lock_needs_dates_protocol(field, value) and dates_gated(ctx):
         what = "a release-dates lock" if field == "releases" else "a partial release date lock"
         raise AtlasError(dates_gate_message(ctx, what), "emit_protocol")
+    if signed and field in feed_schema.BOOK_LOCK_FIELDS and book_gated(ctx):
+        raise AtlasError(book_gate_message(ctx, f"a {field} lock"), "emit_protocol")
     write_lock(session)
     row = session.get(Canonical, cid)
     if row is None or row.merged_into:
@@ -661,6 +693,8 @@ def clear_lock(session: Session, ctx: Ctx, cid: str, field: str, *, log: bool = 
     signed = log and not local_only and ctx.settings.role == "authority"
     if signed and field == "releases" and dates_gated(ctx):
         raise AtlasError(dates_gate_message(ctx, "removing a release-dates lock"), "emit_protocol")
+    if signed and field in feed_schema.BOOK_LOCK_FIELDS and book_gated(ctx):
+        raise AtlasError(book_gate_message(ctx, f"removing a {field} lock"), "emit_protocol")
     session.delete(lock)
     session.flush()
     row = rebuild(session, ctx, cid, cause="feed" if signed else "local")
@@ -711,7 +745,7 @@ def _search(session: Session, q: str, limit: int = 25, offset: int = 0,
         raise AtlasError(str(exc)) from exc
     if low and high and low.start() > high.end():
         raise AtlasError("released_from is after released_to")
-    norm = norm_title(q)
+    norm = norm_title(q, media_type)
     stmt = (
         select(Canonical)
         .where(Canonical.merged_into.is_(None), Canonical.norm_title != "")

@@ -108,14 +108,14 @@ def test_historical_schema_and_values_replay_without_mutating_signed_body(sessio
 
 def test_custom_renames_are_scoped_to_media_type(session):
     custom.seed(session)
-    session.add(MediaType(key="book", label="Book"))
+    session.add(MediaType(key="zine", label="Zine"))  # not `book`: A21 seeds that one
     session.flush()
     schema = {"fields": [{"media_type": kind, "key": "genres", "kind": "text", "label": "Old"}
-                         for kind in ("game", "book")]}
+                         for kind in ("game", "zine")]}
     # Local types are retained when the snapshot has no upstream types.
     custom.apply_snapshot(session, schema)
     assert {(r["media_type"], r["new"]) for r in custom_compat.renames(session)} == {
-        ("game", "custom_genres"), ("book", "custom_genres")}
+        ("game", "custom_genres"), ("zine", "custom_genres")}
     # Malformed fields retain the existing per-field rejection behaviour.
     custom.apply_snapshot(session, {"fields": [{"key": []}, None]})
 

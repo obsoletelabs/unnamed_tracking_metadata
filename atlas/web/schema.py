@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 
 from .. import accounts, custom
-from ..models import Canonical, MediaType
+from ..models import Canonical, MediaType, Setting
 from ..service import AtlasError
 from .deps import Page as Ctx
 from .deps import admin_form, admin_page, form_dict, go
@@ -30,7 +30,10 @@ def schema_home(p: Annotated[Ctx, Depends(admin_page)]):
                                                                 Canonical.merged_into.is_(None)).count()})
     from ..custom_compat import renames
 
-    return render(p, "admin_schema.html", rows=rows, kinds=custom.KINDS, renamed_fields=renames(p.session))
+    adopted = p.session.get(Setting, custom.ADOPTED_NOTICE)
+    return render(p, "admin_schema.html", rows=rows, kinds=custom.KINDS, renamed_fields=renames(p.session),
+                  adopted=[a for a in (adopted.value if adopted is not None and isinstance(adopted.value, list) else [])
+                           if isinstance(a, dict)])
 
 
 @router.post("/admin/schema/types")

@@ -115,12 +115,17 @@ def test_book_import_needs_a_book_media_type(site):
     st = site.st
     st.providers.client = client
     st.providers.providers["openlibrary"] = OpenLibrary()
+    with st.maker() as s:  # A21 seeds `book` as a built-in; a node that deleted it cannot import books
+        s.delete(s.get(MediaType, "book"))
+        s.commit()
     with st.maker() as s:
         with pytest.raises(service.AtlasError, match="media type 'book'"):
             importer.import_from_provider(st, s, "openlibrary", "OL893414W")
         s.rollback()
     with st.maker() as s:
-        s.add(MediaType(key="book", label="Book", position=9, labels={"developer": "Author"}, origin="local"))
+        from atlas import custom
+
+        custom.seed(s)
         s.commit()
     with st.maker() as s:
         got = importer.import_from_provider(st, s, "openlibrary", "OL893414W")

@@ -44,6 +44,15 @@ a month, or dates per platform and region, sends them in the optional `ext.relea
 - Records expose `first_release`, `release_year` and `releases`; `release_date` is present only when the
   first release is known to the day. Search filters and sorts by the first release.
 
+## Books (`ext.book`, the unified release version)
+
+A book observation (`media_type: "book"`) adds an optional `ext.book` member: an ordered `authors` list
+(`{name, role, ids}`, at most 30), `subtitle`, `original_language`, `page_count`, a `series` hint
+(`{name, position}`) and `editions` (at most 50: `key`, `name`, `isbn_13`, `isbn_10`, `format`, `publisher`,
+`published` as a partial date, `pages`, `language`, `provider_ids`). Subjects travel as `facts.features` and the
+first publication as `ext.release.first`. ISBNs are normalised and check-digit validated; an invalid one is
+dropped, never guessed. The rules, the merge and the ISBN crosswalk are in [Books](../guide/books.md).
+
 ## Atlas extensions (additive, namespaced under `atlas`)
 - Response includes `atlas.canonical_id`, `atlas.confidence` (0-1), `atlas.match` (`crosswalk | exact | fuzzy | ambiguous`), and `atlas.redirected_from` when a canonical was merged.
 - Ambiguous matches return candidates and are never auto-assigned.

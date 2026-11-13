@@ -45,6 +45,11 @@ RELATION_TYPES: tuple[str, ...] = (
     "mod_of", "modpack_of", "total_conversion_of", "series_member", "collection_member")
 #: C6.3 operations of a `relation` feed entry (Atlas-only; not part of the shared file).
 RELATION_OPS: tuple[str, ...] = ("add", "end")
+#: C15 §2.3 (C7 additions inside vocab v1, registered under the unified release version): the role of a book's
+#: creator in `ext.book.authors[].role`, and an edition's format in `ext.book.editions[].format`. `book_format` is
+#: identical to the host app's book formats (#265 §3.1), so the mapping is the identity.
+BOOK_CREATOR_ROLES: tuple[str, ...] = ("author", "editor", "translator", "illustrator", "narrator", "contributor")
+BOOK_FORMATS: tuple[str, ...] = ("paperback", "hardcover", "ebook", "audiobook", "other")
 #: C13 §3.2, why an authority signed a `record` entry (protocol 1.5; Atlas-only, not part of the shared file).
 RECORD_BECAUSE: tuple[str, ...] = ("publish", "sidecar", "merge", "detach", "relation", "backfill")
 #: C5, partial and regional release dates (protocol 1.3; validated in `atlas/dates.py`).
@@ -105,6 +110,8 @@ def export() -> dict[str, Any]:
         "relation_type": list(RELATION_TYPES),
         "date_precision": list(DATE_PRECISIONS),
         "release_category": list(RELEASE_CATEGORIES),
+        "book_format": list(BOOK_FORMATS),
+        "book_creator_role": list(BOOK_CREATOR_ROLES),
         "feed_kinds": list(feed_schema.FEED_KINDS),
     }
 
