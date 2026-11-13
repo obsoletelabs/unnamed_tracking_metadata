@@ -595,3 +595,9 @@ table.editions code.isbn { white-space: nowrap; }
 .series-results li + li { margin-top: var(--space-2); }
 .series-results form { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 .series-results input.rel-position { width: 7em; margin: 0; }
+/* client pairing (/pair, CONTRACT-C15 §10.1, A24) */
+.pair-warning { border: 1px solid var(--warn); border-left-width: 4px; border-radius: 8px; padding: 10px 12px; background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.pair-facts { margin: 12px 0; }
+.pair-form { display: grid; gap: 8px; max-width: 320px; }
+.pair-form input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 1.25rem; letter-spacing: .12em; text-transform: uppercase; }
+.pair-actions { display: flex; flex-wrap: wrap; gap: 8px; }

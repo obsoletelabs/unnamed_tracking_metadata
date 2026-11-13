@@ -1,0 +1,14 @@
+{
+  "request": {
+    "label": "Jellyfin on nas"
+  },
+  "response": {
+    "code": "ABCD-EFGH",
+    "expires_in": 600,
+    "interval": 5,
+    "poll_token": "<poll-token>",
+    "qr_svg": "<svg>…</svg>",
+    "verify_url": "https://atlas.example.org/pair",
+    "verify_url_complete": "https://atlas.example.org/pair?code=ABCD-EFGH"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "request": {
+    "poll_token": "<poll-token>"
+  },
+  "response": {
+    "expires_in": 599,
+    "interval": 5,
+    "status": "pending"
+  }
+}

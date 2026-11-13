@@ -1,0 +1,44 @@
+{
+  "authors": [
+    {
+      "name": "Ada Quillfeather",
+      "role": "author"
+    }
+  ],
+  "custom": {},
+  "developer": "Ada Quillfeather",
+  "id": "atlas:01kdvdnab80000000000000014",
+  "media_type": "book",
+  "provider_ids": {
+    "fixturebooks": "FL-0003"
+  },
+  "redirected_from": null,
+  "relations": {
+    "children": [],
+    "counts": {
+      "children": 0,
+      "members": 0,
+      "members_of": 1,
+      "parents": 0
+    },
+    "members": [],
+    "members_of": [
+      {
+        "id": "atlas:01kdvdnac60000000000000017",
+        "media_type": "series",
+        "position": "2",
+        "title": "The Lamp Cycle",
+        "type": "series_member"
+      }
+    ],
+    "parents": [],
+    "truncated": false
+  },
+  "sources": [
+    "fixturebooks"
+  ],
+  "title": "The Far Light",
+  "unmerged": [],
+  "updated_at": "2026-01-01T00:00:00+00:00",
+  "version": 3
+}

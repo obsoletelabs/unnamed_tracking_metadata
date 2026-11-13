@@ -1,0 +1,67 @@
+{
+  "depth": 1,
+  "edges": [
+    {
+      "from": "atlas:01kdvdna9c000000000000000y",
+      "position": "1",
+      "to": "atlas:01kdvdnac60000000000000017",
+      "type": "series_member"
+    }
+  ],
+  "editions": [
+    {
+      "format": "hardcover",
+      "isbn_10": "0000000116",
+      "isbn_13": "9780000000118",
+      "language": "en",
+      "name": "Hardcover, Harbour Press 2005",
+      "pages": 412,
+      "provider_ids": {
+        "fixturebooks_edition": "LK-0001-HC"
+      },
+      "published": {
+        "date": "2005",
+        "precision": "year"
+      },
+      "publisher": "Harbour Press",
+      "sources": [
+        "fixturebooks"
+      ]
+    },
+    {
+      "format": "paperback",
+      "isbn_10": "0000000108",
+      "isbn_13": "9780000000101",
+      "language": "en",
+      "name": "Paperback, Harbour Press 2006",
+      "pages": 428,
+      "provider_ids": {
+        "fixturebooks_edition": "LK-0001-PB"
+      },
+      "published": {
+        "date": "2006-02",
+        "precision": "month"
+      },
+      "publisher": "Harbour Press",
+      "sources": [
+        "fixturebooks"
+      ]
+    }
+  ],
+  "id": "atlas:01kdvdna9c000000000000000y",
+  "nodes": [
+    {
+      "id": "atlas:01kdvdna9c000000000000000y",
+      "media_type": "book",
+      "title": "The Lamp Keeper"
+    },
+    {
+      "id": "atlas:01kdvdnac60000000000000017",
+      "media_type": "series",
+      "title": "The Lamp Cycle"
+    }
+  ],
+  "reached_depth": 1,
+  "redirected_from": null,
+  "truncated": true
+}

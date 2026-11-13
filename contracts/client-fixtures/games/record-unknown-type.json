@@ -1,0 +1,30 @@
+{
+  "custom": {},
+  "id": "atlas:01kdvdnad4000000000000001a",
+  "media_type": "comic",
+  "provider_ids": {
+    "fixturegames": "TT-0001"
+  },
+  "publisher": "Kelp Street Press",
+  "redirected_from": null,
+  "relations": {
+    "children": [],
+    "counts": {
+      "children": 0,
+      "members": 0,
+      "members_of": 0,
+      "parents": 0
+    },
+    "members": [],
+    "members_of": [],
+    "parents": [],
+    "truncated": false
+  },
+  "sources": [
+    "fixturegames"
+  ],
+  "title": "Tidepool Tales #1",
+  "unmerged": [],
+  "updated_at": "2026-01-01T00:00:00+00:00",
+  "version": 2
+}

@@ -62,7 +62,14 @@ def _client_key(request: Request, principal: auth.Principal | None) -> str:
     return f"ip:{ip}"[:128]
 
 
-def require(scope: str):
+#: Who an anonymous client-API read is (CONTRACT-C15 D15.15 `public_read`): no token id, `read` only.
+ANONYMOUS = auth.Principal("", "anonymous", frozenset({"read"}))
+
+
+def require(scope: str, *, public_read: bool = False):
+    """The token check for a route. `public_read=True` (the client API subset, A24): while the admin setting
+    `public_read` is on, a request with **no** Authorization header reads as `ANONYMOUS`; a header that does not
+    name a live token is still refused."""
     def dep(
         request: Request,
         st: Annotated[AppState, Depends(state)],
@@ -77,6 +84,9 @@ def require(scope: str):
         if not ok:
             decisions.inc(scope=scope, decision="denied", reason="rate_limited")
             raise HTTPException(429, "rate limit exceeded", headers={"Retry-After": str(retry)})
+        if principal is None and public_read and scope == "read" and not authorization and st.ctx.settings.public_read:
+            decisions.inc(scope=scope, decision="allowed", reason="ok")
+            return ANONYMOUS
         if principal is None:
             decisions.inc(scope=scope, decision="denied", reason="missing_token")
             raise HTTPException(401, "missing or invalid token", headers={"WWW-Authenticate": "Bearer"})
@@ -87,4 +97,14 @@ def require(scope: str):
         return principal
 
     dep.required_scope = scope  # type: ignore[attr-defined]  # read by tools/gen_docs.py
+    dep.public_read = public_read  # type: ignore[attr-defined]
     return dep
+
+
+def count_client(request: Request) -> None:
+    """`atlas_client_requests_total{client}` (CONTRACT-C15 §10.2): every request to a client API route, labelled by
+    the connector named in `User-Agent: atlas-connector-<host>/<version>` (closed set; anything else `other`)."""
+    from .. import client_api
+    from ..instruments import client_requests
+
+    client_requests.inc(client=client_api.client_label(request.headers.get("user-agent")))
