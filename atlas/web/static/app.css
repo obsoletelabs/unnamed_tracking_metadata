@@ -416,6 +416,7 @@ table.peers .peer-actions form { margin: 0; }
   table.peers td[data-label]::before, table.data-cards td[data-label]::before { content: attr(data-label); display: block;
     color: var(--muted); font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
   table.peers .peer-actions { justify-content: flex-start; }
+  table.data-cards td.empty { display: none; } /* a card shows no label for a value it does not have */
 }
 
 /* Game page: breadcrumb, in-page navigation, relations and editions */
@@ -580,3 +581,17 @@ details.ach-others > summary { cursor: pointer; margin-top: 1.6em; }
 .ach-detail-rarity { margin: var(--space-3) 0; }
 .ach-detail-rarity .rarity-bar { width: 100%; max-width: 28rem; height: 8px; }
 .ach-nav { display: flex; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-3); }
+
+/* C15 §5 (A23): books */
+.book-subtitle { margin: -.25em 0 var(--space-2); font-size: 1.1rem; color: var(--muted); }
+.book-byline { margin: 0 0 var(--space-2); }
+.book-series { margin: 0 0 var(--space-2); }
+.book-curate { margin-top: var(--space-2); }
+table.editions td[data-label="ISBN-13"] { white-space: nowrap; }
+table.editions code.isbn { white-space: nowrap; }
+.authors-table input.author-order { width: 5.5em; }
+.import-forms form + form { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.series-results { list-style: none; padding: 0; margin: var(--space-2) 0 0; }
+.series-results li + li { margin-top: var(--space-2); }
+.series-results form { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.series-results input.rel-position { width: 7em; margin: 0; }

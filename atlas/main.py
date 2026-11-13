@@ -54,6 +54,7 @@ from .web.account import router as account_router
 from .web.achievements import router as achievements_router
 from .web.admin import router as admin_router
 from .web.backups import router as backups_router
+from .web.book_pages import router as book_router
 from .web.deps import LoginRequired, MfaRequired
 from .web.federation import router as federation_router
 from .web.group import router as group_web_router
@@ -432,6 +433,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(social_router)
     app.include_router(federation_router)
     app.include_router(import_router)
+    app.include_router(book_router)
     app.include_router(backups_router)
     app.include_router(oidc_router)
     app.include_router(group_router)

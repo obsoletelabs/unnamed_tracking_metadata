@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from markupsafe import Markup
 
-from .. import dates, integrations
+from .. import books, dates, integrations
 
 HERE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(HERE / "templates"))
@@ -92,8 +92,9 @@ templates.env.globals.update(when=when, when_text=when_text, day=day, day_text=d
                              date_placeholder=date_placeholder, release_year=release_year,
                              region_name=dates.region_name, category_name=dates.category_name,
                              release_categories=dates.CATEGORIES, region_groups=dates.REGION_GROUPS,
-                             max_releases=dates.MAX_RELEASES)
-templates.env.filters.update(when=when, day=day, when_text=when_text, day_text=day_text)
+                             max_releases=dates.MAX_RELEASES, language_name=books.language_name)
+templates.env.filters.update(when=when, day=day, when_text=when_text, day_text=day_text,
+                             language_name=books.language_name)
 STATIC_DIR = HERE / "static"
 
 CSP = ("default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; "

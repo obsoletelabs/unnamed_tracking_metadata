@@ -14,6 +14,7 @@ from sqlalchemy import case, func, select
 from .. import (
     accounts,
     auth,
+    books,
     custom,
     dates,
     facets,
@@ -310,8 +311,15 @@ def home(p: Annotated[Page, Depends(page)]):
         "records": sum(type_counts.values()),
         "artwork": s.scalar(select(func.count()).select_from(Artwork).where(Artwork.blob_hash.is_not(None))) or 0,
         "contributors": s.scalar(select(func.count()).select_from(User)) or 0}
+    # C15 §5 rule 3: a local node with an empty catalogue offers a first book by ISBN next to a first game; Open
+    # Library is keyless and on by default, so this works with no upstream and no keys.
+    first_run = None
+    if p.st.ctx.settings.role == "local" and totals["records"] == 0:
+        from .importing import book_providers
+
+        first_run = {"isbn": "openlibrary" in book_providers(p), "types": {item.key for item in media_types}}
     return render(p, "home.html", recent=recent, art=primary_art(p, [g.id for g in recent]), totals=totals,
-                  media_types=media_types, type_counts=type_counts,
+                  media_types=media_types, type_counts=type_counts, first_run=first_run,
                   type_labels={item.key: item.label for item in media_types})
 
 
@@ -321,9 +329,12 @@ def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length
            type: Annotated[str, Query(max_length=32)] = "",
            released_from: Annotated[str, Query(max_length=40)] = "",
            released_to: Annotated[str, Query(max_length=40)] = "",
-           sort: Annotated[str, Query(max_length=16)] = ""):
+           sort: Annotated[str, Query(max_length=16)] = "",
+           author: Annotated[str, Query(max_length=200)] = ""):
     """Browse and search. `released_from`/`released_to` take a year, a month or a day (C5.2); `sort=release`
-    orders by first release with year-only dates at the start of their year."""
+    orders by first release with year-only dates at the start of their year. C15 §5: an ISBN in `q` finds its
+    book; `author` (books only) prefix-matches the words of an author's name."""
+    author = author.strip()
     released_from, released_to = released_from.strip(), released_to.strip()
     error, read_as = None, []
     prefs = profile.values(p.session, p.st.ctx.settings, p.user) if p.user else anonymous_prefs(p.request)
@@ -339,14 +350,16 @@ def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length
     released_from, released_to = bounds["released_from"], bounds["released_to"]
     try:
         rows = service.search(p.session, q, PER_PAGE + 1, (page_no - 1) * PER_PAGE, media_type=type or None,
-                              released_from=released_from, released_to=released_to, sort=sort or "relevance")
+                              released_from=released_from, released_to=released_to, sort=sort or "relevance",
+                              author=author or None)
     except AtlasError as exc:
         rows, error = [], str(exc)
     more = len(rows) > PER_PAGE
     rows = rows[:PER_PAGE]
     mtypes = custom.types(p.session, enabled_only=True)
     type_label = next((item.label for item in mtypes if item.key == type), None)
-    filters = {k: v for k, v in (("released_from", released_from), ("released_to", released_to), ("sort", sort)) if v}
+    filters = {k: v for k, v in (("released_from", released_from), ("released_to", released_to), ("sort", sort),
+                                 ("author", author)) if v}
     keep = urlencode({**({"q": q} if q else {}), **({"type": type} if type else {}), **filters})
     return render(p, "search.html", status=400 if error else 200, q=q, results=rows, more=more, page=page_no,
                   art=primary_art(p, [g.id for g in rows]), mtypes=mtypes, mtype=type, mtype_label=type_label,
@@ -435,8 +448,14 @@ def game(cid: str, p: Annotated[Page, Depends(page)], ach: Annotated[str, Query(
                                                 .order_by(UserList.created_at)))
         social_ctx["in_lists"] = {i.list_id for i in s.scalars(select(ListItem).where(ListItem.canonical_id == g.id))}
         social_ctx["can_comment"] = mail.is_verified(ctx.settings, p.user)
+    rel = relations.of(s, g.id, limit=RELATION_PREVIEW)
+    book = None
+    if g.media_type == books.BOOK:  # C15 §5: the book branch of the record page
+        book = {"byline": books.byline(g.view.get("authors")), "series": books.series_of(rel),
+                "language": books.language_name(g.view.get("original_language")),
+                "attribution": books.attribution(g.view)}
     return render(p, "game.html", g=g, v=g.view, explain=_shown_explain(g.explain), key_art=key_art, gallery=gallery,
-                  **social_ctx,
+                  book=book, **social_ctx,
                   lbl=labels_for(p, g.media_type), details=details,
                   mtype_label=(s.get(MediaType, g.media_type).label if s.get(MediaType, g.media_type) else g.media_type),
                   pending_art=pending, caching=ctx.settings.media_cache_enabled, stores=integrations.STORES,
@@ -446,7 +465,7 @@ def game(cid: str, p: Annotated[Page, Depends(page)], ach: Annotated[str, Query(
                   ach_all=listing["results"], ach_sets=listing["sets"],
                   ach_applicable=listing.get("applicable", True), ach=ach if ach in ACH_FILTERS or
                   ach.startswith("set:") else "all",
-                  rel=relations.of(s, g.id, limit=RELATION_PREVIEW), rel_labels=relations.LABELS,
+                  rel=rel, rel_labels=relations.LABELS,
                   redirected_from=p.request.query_params.get("from"), **extra)
 
 

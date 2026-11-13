@@ -154,3 +154,81 @@ def rebuild_creators(session: Session, row: Canonical) -> None:
             continue
         session.add(BookCreator(canonical_id=row.id, position=position, name=author["name"][:200],
                                 norm_name=norm_name(author["name"]), role=str(author.get("role") or "author")[:16]))
+
+
+# ---- the record page (C15 §5, A23) -------------------------------------------------------------------------
+
+#: How the byline names each creator role, in the order the groups are shown ("by A and B; translated by C").
+ROLE_PHRASES = (("author", "by"), ("editor", "edited by"), ("translator", "translated by"),
+                ("illustrator", "illustrated by"), ("narrator", "narrated by"), ("contributor", "with"))
+#: The books' data sources this page credits, with the link to the source's own page for the record.
+DATA_SOURCES = {"openlibrary": ("Open Library", "https://openlibrary.org/works/{id}")}
+#: Display names of the language codes books carry most (ISO 639-1 and the MARC/639-2 codes Open Library uses).
+#: An unlisted code is shown as it is stored.
+LANGUAGE_NAMES = {
+    "ar": "Arabic", "ara": "Arabic", "cs": "Czech", "ces": "Czech", "cze": "Czech", "cy": "Welsh", "cym": "Welsh",
+    "wel": "Welsh", "da": "Danish", "dan": "Danish", "de": "German", "deu": "German", "ger": "German",
+    "el": "Greek", "ell": "Greek", "gre": "Greek", "en": "English", "eng": "English", "es": "Spanish",
+    "spa": "Spanish", "fi": "Finnish", "fin": "Finnish", "fr": "French", "fra": "French", "fre": "French",
+    "ga": "Irish", "gle": "Irish", "he": "Hebrew", "heb": "Hebrew", "hi": "Hindi", "hin": "Hindi",
+    "hu": "Hungarian", "hun": "Hungarian", "is": "Icelandic", "ice": "Icelandic", "isl": "Icelandic",
+    "it": "Italian", "ita": "Italian", "ja": "Japanese", "jpn": "Japanese", "ko": "Korean", "kor": "Korean",
+    "la": "Latin", "lat": "Latin", "nl": "Dutch", "nld": "Dutch", "dut": "Dutch", "no": "Norwegian",
+    "nor": "Norwegian", "nb": "Norwegian Bokmål", "nob": "Norwegian Bokmål", "pl": "Polish", "pol": "Polish",
+    "pt": "Portuguese", "por": "Portuguese", "ru": "Russian", "rus": "Russian", "sv": "Swedish", "swe": "Swedish",
+    "tr": "Turkish", "tur": "Turkish", "uk": "Ukrainian", "ukr": "Ukrainian", "zh": "Chinese", "zho": "Chinese",
+    "chi": "Chinese",
+}
+
+
+def language_name(code: Any) -> str:
+    """A language code as a name ("en", "eng" -> "English"; "pt-BR" -> "Portuguese (BR)"); unknown codes unchanged."""
+    if not isinstance(code, str) or not code:
+        return ""
+    base, _, region = code.partition("-")
+    name = LANGUAGE_NAMES.get(base.casefold())
+    if name is None:
+        return code
+    return f"{name} ({region})" if region else name
+
+
+def byline(authors: Any) -> list[dict[str, Any]]:
+    """The view's ordered creators as byline groups: [{"phrase": "by", "names": [...]}, ...]. Each group keeps the
+    list's order; an unknown role reads as "with"."""
+    groups: dict[str, list[str]] = {}
+    for a in authors if isinstance(authors, list) else []:
+        if isinstance(a, dict) and isinstance(a.get("name"), str) and a["name"].strip():
+            role = a.get("role") if a.get("role") in dict(ROLE_PHRASES) else "contributor"
+            groups.setdefault(role, []).append(a["name"].strip())
+    return [{"phrase": phrase, "role": role, "names": groups[role]} for role, phrase in ROLE_PHRASES if role in groups]
+
+
+def attribution(view: dict[str, Any]) -> list[dict[str, str]]:
+    """C15 §3.2: "Book data from Open Library" with a link to the work, for each book source whose observation the
+    record holds (`view.sources`) and whose id it knows."""
+    out = []
+    ids = view.get("provider_ids") or {}
+    for source, (label, link) in DATA_SOURCES.items():
+        if source in (view.get("sources") or []):
+            ident = ids.get(source) if isinstance(ids, dict) else None
+            out.append({"source": source, "label": label,
+                        "url": link.format(id=ident) if isinstance(ident, str) and ident else ""})
+    return out
+
+
+def series_of(rel: dict[str, Any]) -> list[dict[str, Any]]:
+    """The series a record belongs to (`series_member` relations, C6/C15 §2.4) with its position in each."""
+    return [r for r in rel.get("members_of") or [] if r.get("type") == "series_member"]
+
+
+def series_hint(session: Session, cid: str) -> dict[str, str]:
+    """The `ext.book.series` hint of the record's current observations (§2.4: a hint only, never a relation), the
+    most recent first: {"name", "position"} or {}."""
+    for obs in session.scalars(select(Observation).where(Observation.canonical_id == cid,
+                                                         Observation.is_current.is_(True))
+                               .order_by(Observation.observed_at.desc(), Observation.id.desc()).limit(50)):
+        hint = book_of(obs.payload or {}).get("series")
+        if isinstance(hint, dict) and isinstance(hint.get("name"), str) and hint["name"].strip():
+            pos = hint.get("position")
+            return {"name": hint["name"].strip(), "position": pos if isinstance(pos, str) else ""}
+    return {}

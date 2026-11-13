@@ -4,10 +4,11 @@
 {% block content %}
 <h1>{% if q %}Results for “{{ q }}”{% elif mtype_label %}{{ mtype_label }}{% else %}Browse media{% endif %}</h1>
 {% if mtypes and mtypes|length > 1 %}<ul class="tabs"><li><a href="/search{% if q %}?q={{ q|urlencode }}{% endif %}"{% if not mtype %} aria-current="page"{% endif %}>All</a></li>{% for t in mtypes %}<li><a href="/search?{% if q %}q={{ q|urlencode }}&amp;{% endif %}type={{ t.key }}"{% if mtype == t.key %} aria-current="page"{% endif %}>{{ t.label }}</a></li>{% endfor %}</ul>{% endif %}
-<form class="release-filter" method="get" action="/search" role="search" aria-label="Filter by release date">
+<form class="release-filter" method="get" action="/search" role="search" aria-label="{{ 'Filter by author or release date' if mtype == 'book' else 'Filter by release date' }}">
   {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}{% if mtype %}<input type="hidden" name="type" value="{{ mtype }}">{% endif %}
   <div><label for="released_from">Released from <span class="hint">a year, a month or a day</span></label><input id="released_from" type="text" name="released_from" value="{{ filters.released_from or '' }}" maxlength="40" inputmode="text" placeholder="{{ date_placeholder() }}" data-date-entry></div>
   <div><label for="released_to">to</label><input id="released_to" type="text" name="released_to" value="{{ filters.released_to or '' }}" maxlength="40" inputmode="text" placeholder="{{ date_placeholder() }}" data-date-entry></div>
+  {% if mtype == 'book' %}<div><label for="author">Author <span class="hint">the start of any part of a name</span></label><input id="author" type="search" name="author" value="{{ filters.author or '' }}" maxlength="200" autocomplete="off" data-book-author-filter></div>{% endif %}
   <div><label for="sort">Order</label><select id="sort" name="sort">{% for o in sorts %}<option value="{{ o }}" {{ 'selected' if (filters.sort or 'relevance') == o }}>{{ {'relevance': 'Best match', 'title': 'Title', 'release': 'Oldest release first', '-release': 'Newest release first'}[o] }}</option>{% endfor %}</select></div>
   <button class="secondary" type="submit">Apply</button>
 </form>
@@ -21,7 +22,7 @@
 <p>{% if page > 1 %}<a href="/search?{% if keep %}{{ keep }}&amp;{% endif %}page={{ page - 1 }}">&larr; Previous</a>{% endif %}
 {% if more %} <a href="/search?{% if keep %}{{ keep }}&amp;{% endif %}page={{ page + 1 }}">Next &rarr;</a>{% endif %}</p>
 {% else %}
-<div class="card"><p>{% if q %}Nothing found for “{{ q }}”.{% elif filters %}No records match these release dates.{% elif mtype_label %}No {{ mtype_label|lower }} records yet.{% else %}No media records yet.{% endif %}</p>
+<div class="card"><p>{% if q %}Nothing found for “{{ q }}”.{% elif filters.author %}No books by an author whose name starts with “{{ filters.author }}”.{% elif filters %}No records match these release dates.{% elif mtype_label %}No {{ mtype_label|lower }} records yet.{% else %}No media records yet.{% endif %}</p>
 {% if p.user and q %}<p><a class="btn" href="/new?title={{ q|urlencode }}{% if mtype %}&amp;type={{ mtype }}{% endif %}">Add {% if mtype_label %}{{ mtype_label|lower }}{% else %}a record{% endif %}</a></p>{% elif not p.user and q %}<p><a href="/login">Sign in</a> to add a record.</p>{% endif %}</div>
 {% endif %}
 {% endblock %}

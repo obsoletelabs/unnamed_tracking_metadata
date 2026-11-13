@@ -2,8 +2,8 @@
 
 Atlas knows **books** as a built-in media type (contract C15 §2). A book record is a **work**: "Dune", not "the
 2005 Ace paperback of Dune". Its printings, translations and audiobooks are its **editions**, an entry list on the
-record (`editions` in the API), never records of their own. This page describes the data model and the Open
-Library provider; the book pages and ISBN search come in a later release of the same programme.
+record (`editions` in the API), never records of their own. This page describes the data model, the Open
+Library provider, finding books by ISBN or author, and the book pages curators work with.
 
 | Concept | In Atlas |
 | --- | --- |
@@ -92,6 +92,59 @@ one work, a duplicate ISBN is one edition.
 
 A `record` entry (federation) can carry only one ISBN, the ISBN-13 of the record's first edition; followers get the
 others from their own providers.
+
+## Finding books
+
+* **By ISBN.** Type an ISBN-10 or ISBN-13 into any search box (hyphens and spaces are fine, `x` or `X` as the last
+  digit of an ISBN-10). Atlas looks it up among the ISBNs of every edition it knows and shows that one book. An ISBN
+  with a wrong check digit is not an ISBN, so it is searched as ordinary text. The API does the same:
+  `GET /api/v2/games?q=978-1-234-56789-7`. Other filters still apply to that book (type, author, release dates), and a
+  bad parameter is refused as in any search.
+* **By author.** On the **Book** tab of the catalogue an **Author** box finds books by anyone credited (authors,
+  editors, translators, illustrators, narrators): it matches the start of any part of a name, ignoring case and
+  accents, so `herb` finds "Maren Hérbertsdóttir" and `maren h` finds her too, while `erb` does not. In the API,
+  `GET /api/v2/games?type=book&author=herb`; `author` without `type` means books, and with another type it is refused
+  (400). On the Book tab a plain search also matches authors' names.
+* Author search reads a small table Atlas rebuilds whenever a book changes (at most 30 people per book), so a new
+  author list, a curator's list or a pinned one is searchable at once.
+
+## The book page
+
+A book's page shows the title and subtitle, the people credited in order ("by Maren Hérbertsdóttir and Ilse Varn;
+translated by Teo Varga"), and its series with the book's position, linked to the series' own page. **First
+published**, the editions' dates and every other date go through the same date formatter as the rest of the site, so
+they follow each viewer's choice (31/12/2026 by default, "31 December 2026", 12/31/2026 or ISO; a year alone is
+just the year, a month is "February 2006"). Pages, the original language and the subjects are listed with the other
+facts.
+
+The **Editions** table lists each edition's format, publisher, date, pages, language and ISBN-13, with a **Copy**
+button for the ISBN. Books have no achievements section. When the record holds Open Library data, the page says
+**Book data from Open Library** and links to the work on openlibrary.org.
+
+## Curating books
+
+Curators (and administrators) see two links on a book's page:
+
+* **Edit authors** opens an ordered list of names and roles. Change the numbers in *Order* to reorder, leave a name
+  empty to remove it, and add people in the empty rows. Saving stores the list as the curators' own observation, so
+  it is used instead of a provider's list; ticking **Pin this list** also locks it (the `authors` lock), so later
+  imports cannot change it. Unticking it removes the lock. An Open Library author id stays with its name.
+* **Set the series** links the book to a series record with its position ("1", "2.5", "0" for a prequel). Pick an
+  existing series from the search, or type a name: a series of that name is linked if there is one, otherwise it is
+  created. When a provider says the book is part of a series, its name and number fill the form, but nothing is
+  linked until a curator saves it. To change a position, save the same series with the new number.
+
+On an authority whose emit protocol is still below this release, both are refused with an explanation (HTTP 409),
+because book data and the authors lock cannot be signed for older followers; on local nodes and mirrors they stay on
+the node.
+
+**Importing books.** On **Import** choose Open Library: the search box takes a title, an author or an ISBN, and an
+**ISBN** box imports that book straight away (an ISBN goes straight to Open Library's book lookup, with no search in
+between). An invalid ISBN is refused before anything is sent.
+
+**A new personal node.** While a local node's catalogue is empty, its home page offers **Add a game** and **Add a book
+by ISBN** side by side. Open Library needs no key and is on by default, so a node with no upstream and no provider
+keys can add its first book from an ISBN.
 
 ## Matching books
 

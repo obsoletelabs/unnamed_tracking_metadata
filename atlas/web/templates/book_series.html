@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Series: {{ v.get('title') }} · {{ app_name }}{% endblock %}
+{% block content %}
+<nav class="crumbs" aria-label="Breadcrumb"><ol>
+  <li><a href="/search?type=book">Books</a></li>
+  <li><a href="/game/{{ g.id }}">{{ v.get('title') }}</a></li>
+  <li><span aria-current="page">Series</span></li>
+</ol></nav>
+<h1>Series of {{ v.get('title') }}</h1>
+<p class="muted">Link this book to its series and say where it comes in the series. The series is a record of its own, so every book in it links to the same page.</p>
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+{% if current %}<div class="card" data-series-current><h2 class="flush-top">Now</h2>
+<ul>{% for s in current %}<li>{% if s.position %}<span class="badge">#{{ s.position }}</span> in {% endif %}<a href="/game/{{ s.id }}">{{ s.title or s.id }}</a></li>{% endfor %}</ul>
+<p class="small muted">To change the position, link the same series again with the new number. To remove it, use <a href="/game/{{ g.id }}/relations">Edit relations</a>.</p></div>{% endif %}
+{% if hint %}<p class="small" data-series-hint>A source says this book is {% if hint.position %}number {{ hint.position }} in {% else %}part of {% endif %}<strong>{{ hint.name }}</strong>. That is only a hint until a curator links the series here.</p>{% endif %}
+
+<div class="cols">
+<div class="card">
+<h2 class="flush-top">Pick an existing series</h2>
+<form method="get" action="/game/{{ g.id }}/series" role="search">
+  <div class="row"><div class="grow"><label for="sq">Series name</label><input id="sq" type="search" name="q" value="{{ q }}" maxlength="200" required></div>
+  <div class="align-end"><button class="secondary" type="submit">Find</button></div></div>
+</form>
+{% if results is not none %}
+{% if results %}<ul class="series-results" data-series-results>{% for r in results %}<li>
+<form class="inline-row" method="post" action="/game/{{ g.id }}/series">{{ csrf(p.csrf) }}<input type="hidden" name="series" value="{{ r.id }}">
+<a href="/game/{{ r.id }}">{{ r.view.get('title') }}</a>
+<label class="visually-hidden" for="pos-{{ loop.index }}">Position in {{ r.view.get('title') }}</label><input id="pos-{{ loop.index }}" class="rel-position" type="text" name="position" value="{{ position }}" maxlength="16" placeholder="Position" size="8">
+<button class="small" type="submit">Link</button></form></li>{% endfor %}</ul>
+{% else %}<p class="muted small">No series called “{{ q }}” yet. Create it on the right.</p>{% endif %}
+{% endif %}
+</div>
+<form class="card" method="post" action="/game/{{ g.id }}/series" data-series-create>{{ csrf(p.csrf) }}
+<h2 class="flush-top">Create or link by name</h2>
+<label for="sname">Series name <span class="hint">an existing series of this name is linked, not copied</span></label><input id="sname" type="text" name="name" value="{{ series_name }}" maxlength="500" required>
+<label for="spos">Position in the series <span class="hint">such as 1, 2.5 or 0 (a prequel); leave empty if it has none</span></label><input id="spos" class="rel-position" type="text" name="position" value="{{ position }}" maxlength="16">
+<p><button type="submit">Save series</button> <a class="btn ghost" href="/game/{{ g.id }}">Cancel</a></p>
+</form>
+</div>
+{% endblock %}
