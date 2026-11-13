@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -49,6 +50,36 @@ class UnintroducedCanonical(feed_schema.FeedPolicyError):
         self.canonical_id = cid
         super().__init__("unintroduced canonical", f"unintroduced canonical {cid}: introduce it before signing "
                                                    "entries that name it")
+
+
+#: `NodeState` key written by `atlas backup restore` on an authority (C16 §6.4 rule 2): the restored feed head. While
+#: it exists the node is feed-frozen: it never signs, because a restored copy is behind every follower that pulled
+#: one entry after the backup, and a signature at a seq it already used is an undetectable fork.
+FEED_RESTORED = "feed_restored"
+
+FROZEN_MESSAGE = ("Signing is paused after a restore: resume the feed first (`atlas feed resume`, Admin → Backup). "
+                  "Edits that are never signed are unaffected.")
+
+
+class FeedFrozen(feed_schema.FeedPolicyError):
+    """This authority was restored from a backup and has not resumed its feed (C16 §6.4): 409 `feed_frozen`."""
+
+    code = "feed_frozen"
+
+    def __init__(self) -> None:
+        super().__init__("feed frozen", FROZEN_MESSAGE)
+
+
+def frozen(session: Session) -> dict[str, Any] | None:
+    """The restore record `{head_seq, head_hash, archive_created_at}` while the feed is frozen, else None."""
+    row = session.get(NodeState, FEED_RESTORED)
+    if row is None:
+        return None
+    try:
+        value = json.loads(row.value)
+    except ValueError:
+        value = None
+    return value if isinstance(value, dict) else {"head_seq": None, "head_hash": None, "archive_created_at": None}
 
 
 def emit(session: Session, ctx: Any, kind: str, body: dict[str, Any]) -> int:
@@ -114,6 +145,8 @@ def append(session: Session, identity: NodeIdentity, kind: str, body: dict[str, 
 
     Fails closed: a kind missing from `atlas/feed_schema.py`, or a reserved construct, is never signed. Every entry
     carries `_wire` (`feed_schema.check_emit`); the first one this build signs is preceded by `wire_start`."""
+    if frozen(session) is not None:  # before any side effect: no wire_start, no introduction under a frozen feed
+        raise FeedFrozen()
     body = feed_schema.check_emit(kind, body)
     if kind != "wire_start":
         ensure_wire_start(session, identity)
@@ -159,6 +192,8 @@ def ensure_wire_start(session: Session, identity: NodeIdentity) -> int:
 def append_unchecked(session: Session, identity: NodeIdentity, kind: str, body: dict[str, Any]) -> int:
     """Sign and append without the emission gate. Only for tests and the federation lab, which use it
     to play a newer release that emits entries this release does not know."""
+    if frozen(session) is not None:
+        raise FeedFrozen()
     head = session.execute(
         select(NodeState).where(NodeState.key == "feed_seq").with_for_update().execution_options(populate_existing=True)
     ).scalar_one_or_none()
@@ -429,7 +464,8 @@ def publicly_absent() -> Any:
                                                       ScopeProjection.present.is_(False))
 
 
-def introduce_batch(session: Session, ctx: Any, scope: str, *, limit: int = INTRODUCE_BATCH) -> dict[str, Any]:
+def introduce_batch(session: Session, ctx: Any, scope: str, *, limit: int = INTRODUCE_BATCH,
+                    cursor: str | None = None, clear_pending: bool = True) -> dict[str, Any]:
     """One resumable step of `atlas feed introduce` (C13 §4.2): at most `limit` records, in id order from the
     cursor, in the caller's transaction. When nothing is left, `introduced_through` is set to the feed head: from
     that seq on every record this feed names was introduced at or below it."""
@@ -440,7 +476,7 @@ def introduce_batch(session: Session, ctx: Any, scope: str, *, limit: int = INTR
     from .service import write_lock
 
     write_lock(session)
-    cursor_key = f"{INTRODUCE_CURSOR}:{scope}"
+    cursor_key = f"{INTRODUCE_CURSOR}:{cursor or scope}"  # the upgrade journal keeps a cursor of its own (C16 §6.3)
     state = session.get(NodeState, cursor_key)
     after = state.value if state is not None else ""
     rows = candidates(session, scope, after, limit, ctx.settings)
@@ -457,7 +493,8 @@ def introduce_batch(session: Session, ctx: Any, scope: str, *, limit: int = INTR
     if done:
         session.execute(NodeState.__table__.delete().where(NodeState.key == cursor_key))
         _set(session, INTRODUCED_THROUGH, str(head_seq(session)))
-        session.execute(NodeState.__table__.delete().where(NodeState.key == INTRODUCE_PENDING))
+        if clear_pending:
+            session.execute(NodeState.__table__.delete().where(NodeState.key == INTRODUCE_PENDING))
     elif rows:
         _set(session, cursor_key, after)
     else:  # the cursor passed the end while records were added before it: start over

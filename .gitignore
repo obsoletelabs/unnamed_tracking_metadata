@@ -12,3 +12,7 @@ __pycache__/
 e2e/.run/
 # default group revocation journal directory when running from a checkout (C10 R1-3)
 /group-journal/
+# build output (C16 R1-9, gate G-U1): never tracked
+/build/
+*.egg-info/
+/dist/

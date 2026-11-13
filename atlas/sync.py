@@ -2368,16 +2368,18 @@ def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, ups
     with maker() as session:
         applied, verified = applied_head(session, node_id), verified_head(session, node_id)
         held_back = verified - applied if _blocking(session, node_id, applied) is not None else 0
-        rewound = _state(session, "sync_rewound:" + node_id) is not None
     # Fetch from the verified head: entries after a parked one keep downloading (and relaying) up to the cap.
     # After a detected rewind, re-fetch the last verified entry too: the record clears only once the
     # authority serves that exact signed entry again.
-    since = verified - 1 if rewound and verified > 0 else verified
+    # C16 §6.4 rule 4: every pull re-fetches the last verified entry, not only after a rewind, so an authority that
+    # was restored and signed past it is caught as a fork at the next poll instead of silently. One extra entry.
+    since = verified - 1 if verified > 0 else verified
+    overlap = 1 if verified > 0 else 0
     room = ctx.settings.sync_max_parked_backlog - held_back
     entries: list[dict[str, Any]] = []
     advertised_head = None
     if room > 0:
-        params: dict[str, Any] = {"since": since, "limit": min(ctx.settings.sync_batch_size, room)}
+        params: dict[str, Any] = {"since": since, "limit": min(min(ctx.settings.sync_batch_size, room) + overlap, 5000)}
         if relay:
             params["node_id"] = node_id
         fetch_started = time.monotonic()
@@ -2418,7 +2420,7 @@ def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, ups
     except SyncRewound as exc:
         _record_rewind(maker, node_id, exc)
         raise
-    return len(entries)
+    return sum(1 for e in entries if type(e.get("seq")) is int and e["seq"] > verified)  # not the re-checked one
 
 
 def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: str, history: Any,
@@ -2430,7 +2432,7 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
             service.write_lock(session)  # SQLite: BEGIN IMMEDIATE (atlas.db); PostgreSQL: advisory lock
             started = datetime.now(UTC)
             verify_started = time.monotonic()
-            tally: Counter[str] = Counter({"received": len(entries)})
+            tally: Counter[str] = Counter({"received": len(entries) - (1 if since > 0 and entries else 0)})
             expected = since
             try:
                 key_rotation.remember(session, node_id, history)
@@ -2452,7 +2454,9 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
                 if e.get("renditions"):
                     _receive_renditions(session, node_id, e, upstream, history, signing_keys, mirror)
                 retained_entry = session.get(ReplicatedChange, (node_id, e["seq"]))
-                tally["retained" if retained_entry is None else "duplicate"] += 1
+                overlap_entry = retained_entry is not None and since > 0 and e["seq"] == since + 1
+                if not overlap_entry:  # the re-checked last verified entry (C16 rule 4) is not a received entry
+                    tally["retained" if retained_entry is None else "duplicate"] += 1
                 if retained_entry is None:
                     session.add(ReplicatedChange(node_id=node_id, seq=e["seq"], kind=e["kind"], body=e["body"],
                                                  body_hash=e["body_hash"], signature=e["signature"], key_id=e["key_id"],

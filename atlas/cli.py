@@ -528,6 +528,44 @@ def cmd_scope(args) -> int:
     return 0
 
 
+def cmd_feed_resume(args) -> int:
+    """`atlas feed resume` (C16 §6.4): lift the feed freeze a backup restore puts on an authority. `--from-node`
+    (repeatable; by default every configured peer) re-inserts the signed tail the followers retain, verbatim;
+    `--confirm-no-follower-ahead` is the operator's statement that no follower pulled above the restored head.
+    Exit 2 when it cannot, 0 when resumed or not frozen."""
+    from . import feed, feed_resume
+
+    settings, maker = _maker()
+    ctx = _ctx(settings, maker)
+    with maker() as session:
+        state = feed.frozen(session)
+        if state is None:
+            print(json.dumps({"frozen": False}))
+            return 0
+        if args.status:
+            print(json.dumps({"frozen": True, **state, "followers": feed_resume.follower_positions(session)}))
+            return 0
+    try:
+        if args.confirm_no_follower_ahead:
+            if args.from_node:
+                print("choose --from-node or --confirm-no-follower-ahead, not both", file=sys.stderr)
+                return 2
+            with maker() as session:
+                result = feed_resume.confirm_no_follower_ahead(session, revoke=args.revoke_follower or [])
+                session.commit()
+        else:
+            if args.revoke_follower:
+                print("--revoke-follower goes with --confirm-no-follower-ahead", file=sys.stderr)
+                return 2
+            srcs = feed_resume.sources(maker, settings, args.from_node, args.token)
+            result = feed_resume.resume_from_nodes(maker, ctx, srcs)
+    except feed_resume.ResumeError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result))
+    return 0
+
+
 def cmd_feed(args) -> int:
     """`atlas feed introduce --missing|--all [--dry-run]` (C13 §4.2): publish a `record` (or, below 1.5 with the
     bridge on, a bridge observation) for records this feed names but never introduced (`--missing`), or for every
@@ -729,6 +767,16 @@ def main(argv: list[str] | None = None) -> int:
     intro.add_argument("--batch", type=int, default=500, help="records per transaction (default 500)")
     intro.add_argument("--limit", type=int, help="stop after about this many records (the next run continues)")
     intro.set_defaults(fn=cmd_feed)
+    resume = fda.add_parser("resume", help="lift the signing pause a backup restore puts on an authority (C16 §6.4)")
+    resume.add_argument("--from-node", action="append", metavar="URL_OR_PEER",
+                        help="fetch the signed tail from this node (repeatable; default: every configured peer)")
+    resume.add_argument("--token", help="sync token for a --from-node address that is not a configured peer")
+    resume.add_argument("--confirm-no-follower-ahead", action="store_true",
+                        help="state that no follower ever pulled above the restored head (audited)")
+    resume.add_argument("--revoke-follower", action="append", metavar="TOKEN_ID",
+                        help="with the above: revoke a follower token that is ahead (lost follower)")
+    resume.add_argument("--status", action="store_true", help="show the freeze and the recorded follower positions")
+    resume.set_defaults(fn=cmd_feed_resume)
     dr = sub.add_parser("doctor", help="read-only diagnostics, with explicit repairs")
     dra = dr.add_subparsers(dest="action", required=True)
     dmt = dra.add_parser("media-types", help="records an older release filed as games by mistake (C15 §2.2)")

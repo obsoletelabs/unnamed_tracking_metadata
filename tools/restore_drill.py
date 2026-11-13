@@ -39,13 +39,14 @@ def epoch(engine):
 
 
 def fingerprints(engine):
-    """A hash per table. The client change log epoch is left out: every restore renews it on purpose (C3.2)."""
+    """A hash per table. The client change log epoch is left out: every restore renews it on purpose (C3.2). So is
+    `feed_restored`, which a restored authority writes to pause its signing (C16 section 6.4)."""
     result = {}
     with engine.connect() as connection:
         for table in Base.metadata.sorted_tables:
             rows = [dict(row) for row in connection.execute(select(table).order_by(*table.primary_key.columns)).mappings()]
             if table.name == "node_state":
-                rows = [row for row in rows if row["key"] != client_changes.EPOCH]
+                rows = [row for row in rows if row["key"] not in (client_changes.EPOCH, "feed_restored")]
             encoded = json.dumps(rows, sort_keys=True, separators=(",", ":"), default=normalized).encode()
             result[table.name] = hashlib.sha256(encoded).hexdigest()
     return result
@@ -110,6 +111,10 @@ def run(postgres_admin_url=None):
             assert fingerprints(target_engine) == before
             assert epoch(target_engine) and epoch(target_engine) != epoch(engine)
             checks.append("client change log epoch renewed, so client cursors reset")
+            with target_engine.connect() as connection:
+                frozen = connection.execute(select(NodeState.value).where(NodeState.key == "feed_restored")).scalar()
+            assert frozen and json.loads(frozen)["head_seq"] >= 0
+            checks.append("the restored authority is feed-frozen until `atlas feed resume` (C16 section 6.4)")
             assert (Path(target.media_dir) / digest[:2] / f"{digest}.png").read_bytes() == image.read_bytes()
             checks.append("every table and cached artwork restored without changing data")
             with db.make_sessionmaker(target_engine)() as session:

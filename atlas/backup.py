@@ -349,6 +349,8 @@ def restore(settings: Settings, engine: Engine, path: Path, *, force: bool = Fal
             node_state = tables["node_state"]
             conn.execute(delete(node_state).where(node_state.c.key == client_changes.EPOCH))
             conn.execute(node_state.insert().values(key=client_changes.EPOCH, value=client_changes.new_epoch()))
+        if settings.role == "authority" and "node_state" in tables and "change_log" in tables:
+            _freeze_feed(conn, tables, manifest)
         if "owner_group" in tables:
             # A restored node may have missed revocations and successions: it pulls every member's state
             # before any privileged group action (CONTRACT-C10 §3.6).
@@ -375,6 +377,22 @@ def restore(settings: Settings, engine: Engine, path: Path, *, force: bool = Fal
     if replay_journal:
         _replay_group_journal(settings, engine)
     return loaded
+
+
+def _freeze_feed(conn, tables: dict[str, Table], manifest: dict[str, Any]) -> None:
+    """C16 §6.4 rule 2: an authority restored from ANY archive starts feed-frozen. Every backup is behind the feed as
+    soon as one more entry is signed, so signing on from it could sign a seq a follower already holds with other
+    bytes. `atlas feed resume` lifts it."""
+    from . import feed
+
+    log_table, node_state = tables["change_log"], tables["node_state"]
+    head = conn.execute(select(log_table.c.seq, log_table.c.body_hash).order_by(log_table.c.seq.desc()).limit(1)).first()
+    record = {"head_seq": int(head[0]) if head else 0, "head_hash": head[1] if head else None,
+              "archive_created_at": manifest.get("created_at")}
+    conn.execute(delete(node_state).where(node_state.c.key == feed.FEED_RESTORED))
+    conn.execute(node_state.insert().values(key=feed.FEED_RESTORED, value=json.dumps(record, sort_keys=True)))
+    # evidence recorded by the previous life of this node says nothing about the restored feed
+    conn.execute(delete(node_state).where(node_state.c.key.like("follower_since:%")))
 
 
 def _replay_group_journal(settings: Settings, engine: Engine) -> None:

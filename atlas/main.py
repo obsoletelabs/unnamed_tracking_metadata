@@ -40,6 +40,7 @@ from . import (
 from . import (
     metrics as telemetry,
 )
+from . import upgrade as upgrade_journal
 from .api.deps import AppState, get_session, require
 from .api.group_routes import router as group_router
 from .api.link_routes import router as link_api_router
@@ -76,6 +77,7 @@ from .web.social import router as social_router
 log = logging.getLogger("atlas")
 _STATUS = {"invalid": 400, "forbidden": 403, "not_found": 404, "conflict": 409,
            "reserved_feature": 409,  # a valid request for a construct reserved for a later release
+           "feed_frozen": 409,  # C16 §6.4: a restored authority, signing paused
            "scope_ceiling": 409,  # C14 §5.4: a mixed entry (ceiling'd + public record) is never signed
            # C11 §11.9-11.12: merge / unmerge / lock refusals
            "distinct": 409, "merge_too_large": 409, "already_reverted": 409, "unmerge_blocked": 409,
@@ -277,6 +279,11 @@ def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event, st
     with httpx.Client() as client:
         while not stop.is_set():
             wait = delay
+            try:  # C16 §6.3: the next batch of the upgrade journal, before anything else signs
+                with background.operation("upgrade_step"):
+                    upgrade_journal.step(maker, ctx)
+            except Exception as exc:
+                log.warning("upgrade step failed: %s", exc)
             try:  # C13 §4.2: an `introduce` scheduled when the emit protocol was raised into 1.5
                 with background.operation("scheduled_introduce"):
                     feed.run_pending(maker, ctx)
@@ -448,6 +455,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         group_journal.startup_replay(maker, identity.node_id)
     except Exception as exc:  # noqa: BLE001 - the next group round retries through `pull`
         log.warning("group journal replay at startup failed: %s", exc)
+    try:  # C16 §6.3: the upgrade journal exists before any thread starts and before the first request is served
+        upgrade_journal.open_journal(maker, ctx, engine)
+    except Exception as exc:  # noqa: BLE001 - never block start; the sync loop's `step` reports it as last_error
+        log.error("opening the upgrade journal failed: %s", exc)
     stop = threading.Event()
 
     @asynccontextmanager
@@ -569,6 +580,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         prof = wire.profile(app.state.atlas)
         return JSONResponse({"error": exc.body()}, status_code=409,
                             headers={wire.HEADER: f"min={prof.min_peer}, max={prof.max}", "Cache-Control": "no-store"})
+
+    @app.exception_handler(feed.FeedFrozen)
+    async def _feed_frozen(_: Request, exc: feed.FeedFrozen):
+        return JSONResponse({"error": {"code": exc.code, "message": str(exc)}}, status_code=409,
+                            headers={"Cache-Control": "no-store"})
 
     @app.exception_handler(wire.InvalidWire)
     async def _invalid_wire(_: Request, exc: wire.InvalidWire):

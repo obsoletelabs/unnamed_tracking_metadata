@@ -18,6 +18,8 @@ class Readiness:
     database: bool   # the database answers a trivial query
     schema: str      # "current" | "behind" | "unknown" (db.schema_state); "unknown" when the database is down
     media: bool      # the artwork directory is writable
+    frozen: bool = False      # an authority restored from a backup that has not resumed its feed (C16 §6.4)
+    upgrading: bool = False   # the upgrade journal has unfinished stages (C16 §6.3)
 
     @property
     def status(self) -> str:
@@ -27,7 +29,7 @@ class Readiness:
         rotation on a packaging fault. The metrics expose the unknown state."""
         if not self.database or self.schema == "behind":
             return "not_ready"
-        return "ready" if self.media else "degraded"
+        return "ready" if self.media and not self.frozen and not self.upgrading else "degraded"
 
     @property
     def serving(self) -> bool:
@@ -44,5 +46,15 @@ def check(session: Session, settings: Settings) -> Readiness:
         except Exception:
             pass
         return Readiness(database=False, schema="unknown", media=media.storage_problem(settings) is None)
+    from . import feed, upgrade
+
+    try:
+        frozen, upgrading = feed.frozen(session) is not None, upgrade.unfinished(session)
+    except Exception:  # noqa: BLE001 - a table that cannot be read is a schema problem, reported as such above
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        frozen = upgrading = False
     return Readiness(database=True, schema=db.schema_state(session, settings.database_url),
-                     media=media.storage_problem(settings) is None)
+                     media=media.storage_problem(settings) is None, frozen=frozen, upgrading=upgrading)

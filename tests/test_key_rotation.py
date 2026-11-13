@@ -105,7 +105,7 @@ def test_old_signing_key_is_rejected_after_cutover_and_history_cannot_rewind(tmp
     publish(a[2], "Future", "future_field")
 
     def old_signer(data):
-        entry = data["entries"][0]
+        entry = data["entries"][-1]
         entry["key_id"] = original.key_id
         entry["signature"] = original.sign(entry["seq"], entry["kind"], entry["body_hash"])
 
