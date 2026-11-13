@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from atlas import backup, client_changes, custom, service
+from atlas import backup, client_changes, custom, feed_resume, service
 from atlas.models import (
     Achievement,
     Artwork,
@@ -397,6 +397,9 @@ def test_restoring_an_older_backup_resets_a_cursor_the_new_head_has_overtaken(tm
 
     engine.dispose()
     backup.restore(settings, engine, archive, force=True)
+    with a.st.maker() as session:  # an authority restored from a backup is feed-frozen (C16 section 6.4)
+        feed_resume.confirm_no_follower_ahead(session)
+        session.commit()
     with a.st.maker() as session:
         assert client_changes.head(session) == before["head"] < cursor
     changed = [a.publish(f"After {i}") for i in range(10)]  # the head overtakes the stale cursor
