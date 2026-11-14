@@ -56,6 +56,18 @@ def _epoch(dt: datetime) -> int:
     return int(dt.timestamp())
 
 
+def _publicly_absent(session: Session, cid: str) -> bool:
+    """C14 §5.7: the record does not exist for a visitor (host/plugin library data only, or only group data)."""
+    from sqlalchemy import not_
+
+    from . import scope
+
+    session.flush()  # the projection is rebuilt later in this ingest: ask the observations themselves
+    return session.scalars(select(Observation.id).where(
+        Observation.canonical_id == cid, Observation.is_current.is_(True),
+        not_(scope.hidden_obs_clause())).limit(1)).first() is None
+
+
 def write_lock(session: Session) -> None:
     """Serialise writers for the rest of the transaction. Resolution is read-then-write, so concurrent
     writers could otherwise both create a record for the same identity. PostgreSQL: a transaction-scoped
@@ -108,6 +120,9 @@ def rebuild(session: Session, ctx: Ctx, cid: str, *, cause: str = "local", only_
         raise AtlasError(f"unknown canonical {cid}", "not_found")
     view, explain = derive(session, ctx, cid)
     columns = dates.columns(view.get("first_release"))  # C5.2: year-only dates sort and filter too
+    from . import scope
+
+    scope.reproject(session, ctx, cid)  # C14 §5.7: what viewers without scope.detail see of it
     if only_if_changed and row.view == view and row.explain == explain and \
             all(getattr(row, k) == v for k, v in columns.items()):
         return row
@@ -329,7 +344,7 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
             review_row.decision_id = drow.id
 
         if obs.redistributable:
-            feed.emit(session, ctx, "obs", {
+            feed.emit_or_local(session, ctx, "obs", {
                 "canonical_id": cid, "media_type": session.get(Canonical, cid).media_type,
                 "observation": {
                     "id": obs.id, "source_kind": obs.source_kind, "source": obs.source,
@@ -337,7 +352,8 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
                     "source_updated_at": obs.source_updated_at, "observed_at": obs.observed_at.isoformat(),
                 },
             })
-        elif ctx.settings.role == "authority" and getattr(ctx.settings, "federation_introduce", "") == "all":
+        elif ctx.settings.role == "authority" and getattr(ctx.settings, "federation_introduce", "") == "all" \
+                and not _publicly_absent(session, cid):
             feed.ensure_introduced(session, ctx, cid, "publish")  # C13 §4.3 (H55): publish every record
         method = "forced" if decision.reason == "forced" else \
             ({"exact": "exact", "fuzzy": "fuzzy"}.get(decision.reason, "crosswalk") if decision.assigned else "none")
@@ -431,6 +447,9 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
     s.merged_into = dst
     s.view, s.explain = {}, {}
     session.flush()
+    from . import scope
+
+    scope.reproject(session, ctx, src)  # a merged record keeps no projection row (C14 §5.7)
     matching.reevaluate_reviews(session, {src, dst}, actor=actor)
     # The snapshot is written after the re-evaluation, so it holds every review item this merge closed, superseded
     # or re-pointed, and an unmerge can give each one back.
@@ -444,7 +463,7 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
                            detail={"actor": actor[:128], "src": src, "dst": dst, "cause": cause,
                                    "items": record.item_count}))
     if log and ctx.settings.role == "authority":
-        record.feed_seq = feed.emit(session, ctx, "merge", {"src": src, "dst": dst})
+        record.feed_seq = feed.emit_or_local(session, ctx, "merge", {"src": src, "dst": dst})
     return d
 
 
@@ -498,7 +517,9 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
     cid = new_id or new_canonical_id()
     # The split record is still the same kind of thing: a movie or anime must not turn into a game.
     original = session.get(Canonical, old)
-    session.add(Canonical(id=cid, view={}, explain={}, media_type=original.media_type if original else "game"))
+    session.add(Canonical(id=cid, view={}, explain={}, media_type=original.media_type if original else "game",
+                          scope_ceiling=original.scope_ceiling if original else None,  # C14 §5.3: inherited
+                          scope_ceiling_by=original.scope_ceiling_by if original else None))
     session.flush()
     obs.canonical_id = cid
     for s in siblings:  # superseded history of the same source record travels with it
@@ -536,12 +557,14 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
         rebuild(session, ctx, old, cause="detach")
         new = rebuild(session, ctx, cid, cause="detach")
     if log and ctx.settings.role == "authority":
-        seq = feed.emit(session, ctx, "detach", {
+        seq = feed.emit_or_local(session, ctx, "detach", {
             "observation_id": observation_id, "canonical_id": old, "new_canonical_id": cid,
         })
         # C13 §4.1: a follower creates the new record only when it holds the moved observation (it was signed);
         # otherwise the new record gets its own `record` (or bridge observation) right after the detach.
-        if obs.redistributable:
+        if seq is None:
+            pass  # C14 §5.4: the old record has a ceiling, so did the detach; the new record inherited it
+        elif obs.redistributable:
             feed.mark(session, cid, seq, feed.VIA_DETACH, "detach")
         else:
             feed.ensure_introduced(session, ctx, cid, "detach")
@@ -648,7 +671,7 @@ def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, ac
     session.flush()
     rebuild(session, ctx, cid, cause="feed" if signed else "local")
     if signed:
-        feed.emit(session, ctx, "lock", {"canonical_id": cid, "field": field, "value": value})
+        feed.emit_or_local(session, ctx, "lock", {"canonical_id": cid, "field": field, "value": value})
     return row
 
 
@@ -665,7 +688,7 @@ def clear_lock(session: Session, ctx: Ctx, cid: str, field: str, *, log: bool = 
     session.flush()
     row = rebuild(session, ctx, cid, cause="feed" if signed else "local")
     if signed:
-        feed.emit(session, ctx, "unlock", {"canonical_id": cid, "field": field})
+        feed.emit_or_local(session, ctx, "unlock", {"canonical_id": cid, "field": field})
     return row
 
 
@@ -674,7 +697,8 @@ SORTS = ("relevance", "title", "release", "-release")
 
 def search(session: Session, q: str, limit: int = 25, offset: int = 0,
            media_type: str | None = None, *, released_from: str | None = None, released_to: str | None = None,
-           sort: str = "relevance") -> list[Canonical]:
+           sort: str = "relevance", viewer: Any = None, has: str | None = None,
+           scope_filter: str | None = None) -> list[Canonical]:
     """`_search`, timed by mode (`title`, `filter`, `browse`) and outcome; never labelled by the query (#74)."""
     import time
 
@@ -684,7 +708,7 @@ def search(session: Session, q: str, limit: int = 25, offset: int = 0,
     started, outcome = time.monotonic(), "error"
     try:
         rows = _search(session, q, limit, offset, media_type, released_from=released_from,
-                       released_to=released_to, sort=sort)
+                       released_to=released_to, sort=sort, viewer=viewer, has=has, scope_filter=scope_filter)
         outcome = "ok"
         instruments.search_results.observe(len(rows), mode=mode)
         return rows
@@ -697,7 +721,8 @@ def search(session: Session, q: str, limit: int = 25, offset: int = 0,
 
 def _search(session: Session, q: str, limit: int = 25, offset: int = 0,
             media_type: str | None = None, *, released_from: str | None = None, released_to: str | None = None,
-            sort: str = "relevance") -> list[Canonical]:
+            sort: str = "relevance", viewer: Any = None, has: str | None = None,
+            scope_filter: str | None = None) -> list[Canonical]:
     """Records by title. `released_from`/`released_to` are PartialDates ("2011" = the whole year): a record
     matches when its first release lies entirely inside the range, so a year-only "2011" matches 2011..2011
     but not April 2011 (it might be any month). `sort=release` orders by the start of the first release, then
@@ -712,32 +737,37 @@ def _search(session: Session, q: str, limit: int = 25, offset: int = 0,
     if low and high and low.start() > high.end():
         raise AtlasError("released_from is after released_to")
     norm = norm_title(q)
+    from . import scope
+
+    # C14 §5.7: the visibility rule first, inside the query, so filters, order, pages and counts all see the record
+    # as this viewer does (`viewer=None`: internal callers, the full records).
+    stmt, col = scope.project(select(Canonical), viewer)
     stmt = (
-        select(Canonical)
-        .where(Canonical.merged_into.is_(None), Canonical.norm_title != "")
+        stmt.where(Canonical.merged_into.is_(None), col.norm_title != "")
         .where(Canonical.media_type == media_type if media_type else Canonical.media_type.is_not(None))
+        .where(*scope.has_filter(viewer, Canonical.id, has, scope_filter))
         .limit(min(limit, 100))
         .offset(max(offset, 0))
     )
     if low is not None:
-        stmt = stmt.where(Canonical.release_start >= low.start())
+        stmt = stmt.where(col.release_start >= low.start())
     if high is not None:
-        stmt = stmt.where(Canonical.release_end <= high.end())
+        stmt = stmt.where(col.release_end <= high.end())
     if norm:
         like = "%" + "%".join(norm.split()) + "%"
-        stmt = stmt.where(Canonical.norm_title.like(like))
-    rank = case((Canonical.release_precision == "year", 0), (Canonical.release_precision == "month", 1), else_=2)
-    unknown_last = case((Canonical.release_start.is_(None), 1), else_=0)
+        stmt = stmt.where(col.norm_title.like(like))
+    rank = case((col.release_precision == "year", 0), (col.release_precision == "month", 1), else_=2)
+    unknown_last = case((col.release_start.is_(None), 1), else_=0)
     if sort == "release":
-        stmt = stmt.order_by(unknown_last, Canonical.release_start.asc(), rank.asc(), Canonical.norm_title, Canonical.id)
+        stmt = stmt.order_by(unknown_last, col.release_start.asc(), rank.asc(), col.norm_title, Canonical.id)
     elif sort == "-release":
-        stmt = stmt.order_by(unknown_last, Canonical.release_start.desc(), rank.desc(), Canonical.norm_title,
+        stmt = stmt.order_by(unknown_last, col.release_start.desc(), rank.desc(), col.norm_title,
                              Canonical.id)
     elif sort == "title" or norm:
-        stmt = stmt.order_by(Canonical.norm_title.asc(), Canonical.id)
+        stmt = stmt.order_by(col.norm_title.asc(), Canonical.id)
     else:
         stmt = stmt.order_by(Canonical.updated_at.desc())
-    rows = list(session.scalars(stmt))
+    rows = scope.fetch(session, stmt, viewer)
     if not norm or sort != "relevance":
         return rows
     rows.sort(key=lambda r: (r.norm_title != norm, not r.norm_title.startswith(norm), len(r.norm_title)))

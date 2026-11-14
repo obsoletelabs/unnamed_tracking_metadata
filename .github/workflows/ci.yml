@@ -9,7 +9,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45  # the suite alone took 27-30 min on the base branch; C14-1 adds ~40 tests
     services:
       postgres:
         image: postgres:16

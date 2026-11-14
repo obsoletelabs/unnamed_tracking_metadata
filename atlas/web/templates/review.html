@@ -8,7 +8,7 @@
 <article class="card">
   <p class="small"><a href="/proposal/{{ r.id }}">Discuss</a></p>
   <h3>{{ r.kind|replace('_', ' ')|capitalize }}: {% if r.cid %}<a href="/game/{{ r.cid }}">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}</h3>
-  <p class="small muted">by <strong>{{ r.user }}</strong> (reputation {{ r.rep }}) · {{ when(r.when) }}</p>
+  <p class="small muted">{% if pending_badge %}<span class="badge scope scope-{{ pending_badge.key }}" title="A proposal stays on this node until it is approved." data-proposal-scope>{{ pending_badge.label }}</span> {% endif %}by <strong>{{ r.user }}</strong> (reputation {{ r.rep }}) · {{ when(r.when) }}</p>
   {% if r.rows %}<table class="diff"><thead><tr><th>Field</th><th>Now</th><th>Proposed</th></tr></thead><tbody>
   {% for f, old, new in r.rows %}<tr><td>{{ f }}</td><td>{% if old %}<del>{{ old }}</del>{% else %}<span class="muted">empty</span>{% endif %}</td><td><ins>{{ new }}</ins></td></tr>{% endfor %}
   </tbody></table>{% endif %}

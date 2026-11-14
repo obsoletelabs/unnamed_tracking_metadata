@@ -16,7 +16,7 @@ import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, false, select
 from sqlalchemy.orm import Session
 
 from . import achievement_key, feed, feed_schema, media, vocab
@@ -540,7 +540,7 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
         if withheld:
             log_.info("artwork %s/%s: %d image(s) kept out of the signed feed (licence_withheld)", cid, source,
                       withheld)
-        feed.emit(session, ctx, "artwork", {"canonical_id": cid, "source": source, "items": body})
+        feed.emit_or_local(session, ctx, "artwork", {"canonical_id": cid, "source": source, "items": body})
     return len(items)
 
 
@@ -810,7 +810,7 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
         if any(counts.values()):
             log_.info("achievements %s/%s signed as v1: dropped %d item(s), %d field(s), %d icon(s) "
                       "(ach_downgrade)", cid, source, counts["items"], counts["fields"], counts["icons"])
-        feed.emit(session, ctx, "achievements", {"canonical_id": cid, "source": source, "items": body})
+        feed.emit_or_local(session, ctx, "achievements", {"canonical_id": cid, "source": source, "items": body})
     return len(items)
 
 
@@ -960,12 +960,17 @@ ART_ORDERS = ("legacy", "quality")
 
 
 def merged_artwork(session: Session, ctx: Ctx, cid: str, *, region: str | None = None, lang: str | None = None,
-                   include_duplicates: bool = True, order: str = "quality") -> list[Artwork]:
+                   include_duplicates: bool = True, order: str = "quality", viewer: Any = None) -> list[Artwork]:
     """Every image of a record. `order="quality"` (default here) ranks by §12.5.7; `order="legacy"` keeps the
-    pre-C12 list order that v1 API clients see by default."""
+    pre-C12 list order that v1 API clients see by default. `viewer` (C14 §5.7): only the rows that viewer may see
+    (None: every row, for internal callers)."""
+    from . import scope
+
     if order not in ART_ORDERS:
         raise ValueError(f"unknown artwork order {order!r}")
-    rows = list(session.scalars(select(Artwork).where(Artwork.canonical_id == cid)))
+    clause = scope.artwork_clause(viewer, ctx.settings)
+    rows = list(session.scalars(select(Artwork).where(Artwork.canonical_id == cid,
+                                                      *(() if clause is None else (clause,)))))
     if not include_duplicates:
         rows = [a for a in rows if a.duplicate_of is None]
     if order == "legacy":
@@ -1087,7 +1092,8 @@ def _pick_lang(want: str | None, texts: list[dict[str, dict[str, str]]]) -> tupl
 
 def achievement_listing(session: Session, ctx: Ctx, cid: str, *, reveal: bool | set[str] = False,
                         include_retired: bool = False, lang: str | None = None, order: str | None = None,
-                        set_filter: str | None = None, platform: str | None = None) -> dict[str, Any]:
+                        set_filter: str | None = None, platform: str | None = None,
+                        viewer: Any = None) -> dict[str, Any]:
     """The merged achievements of a record (§12.1, §12.2): `sets`, `results`, `lang`, `revealed_any`.
 
     Entries: rows of different sources are one entry when they are in the same merged set and have the same
@@ -1102,9 +1108,15 @@ def achievement_listing(session: Session, ctx: Ctx, cid: str, *, reveal: bool | 
     if order not in (None, *ORDERS):
         raise AtlasError(f"order must be one of {ORDERS}")
     want = clean_locale(lang, "lang") if lang else None
+    from . import scope
+
     q = select(Achievement).where(Achievement.canonical_id == cid)
     if not include_retired:
         q = q.where(Achievement.retired_at.is_(None))
+    if not scope.achievements_visible(session, viewer, ctx.settings, cid):  # C14 §5.7, D1: withheld by default
+        q = q.where(false())
+    elif (rows_rule := scope.achievement_clause(viewer, ctx.settings)) is not None:
+        q = q.where(rows_rule)
     rows = list(session.scalars(q))
     trust = ctx.settings.trust
     rank = {s: (CLASS_RANK[source_class(s)], trust(s)) for s in {a.source for a in rows}}

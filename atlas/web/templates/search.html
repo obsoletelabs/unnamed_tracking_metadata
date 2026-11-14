@@ -8,6 +8,8 @@
   {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}{% if mtype %}<input type="hidden" name="type" value="{{ mtype }}">{% endif %}
   <div><label for="released_from">Released from <span class="hint">a year, a month or a day</span></label><input id="released_from" type="text" name="released_from" value="{{ filters.released_from or '' }}" maxlength="40" inputmode="text" placeholder="{{ date_placeholder() }}" data-date-entry></div>
   <div><label for="released_to">to</label><input id="released_to" type="text" name="released_to" value="{{ filters.released_to or '' }}" maxlength="40" inputmode="text" placeholder="{{ date_placeholder() }}" data-date-entry></div>
+  {% if scope_filters %}<div><label for="scope">Scope</label><select id="scope" name="scope"><option value="">Any</option>{% for k, label in (('public', 'Public'), ('group', scope_labels.group), ('local', scope_labels.local)) %}<option value="{{ k }}" {{ 'selected' if filters.scope == k }}>{{ label }}</option>{% endfor %}</select></div>
+  <div><label for="has">Has items</label><select id="has" name="has"><option value="">Any</option><option value="group" {{ 'selected' if filters.has == 'group' }}>from {{ scope_labels.group|lower }}</option><option value="local" {{ 'selected' if filters.has == 'local' }}>{{ scope_labels.local|lower }}</option></select></div>{% endif %}
   <div><label for="sort">Order</label><select id="sort" name="sort">{% for o in sorts %}<option value="{{ o }}" {{ 'selected' if (filters.sort or 'relevance') == o }}>{{ {'relevance': 'Best match', 'title': 'Title', 'release': 'Oldest release first', '-release': 'Newest release first'}[o] }}</option>{% endfor %}</select></div>
   <button class="secondary" type="submit">Apply</button>
 </form>

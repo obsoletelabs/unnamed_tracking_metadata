@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
 
-from .. import facets, proposals
+from .. import facets, proposals, scope
 from .. import media as images
 from ..models import Achievement
 from ..service import AtlasError
@@ -43,10 +43,22 @@ def _media_base(p: Page) -> str:
     return p.st.ctx.settings.public_url.rstrip("/") + "/media/"
 
 
+def _rows_seen(p: Page, cid: str, *conds: Any) -> list[Achievement]:
+    """The achievement rows of a record this viewer may see (C14 §5.7): a list received from the group, or rows
+    stored under a group source, are withheld from a viewer without `scope.detail` (no name, badge or count)."""
+    settings = p.st.ctx.settings
+    if not scope.achievements_visible(p.session, p.viewer, settings, cid):
+        return []
+    stmt = select(Achievement).where(Achievement.canonical_id == cid, *conds)
+    if (rule := scope.achievement_clause(p.viewer, settings)) is not None:
+        stmt = stmt.where(rule)
+    return list(p.session.scalars(stmt))
+
+
 def _known_blobs(p: Page, cid: str) -> dict[str, str]:
     """Icon address -> stored copy, for the icons of this game that this server already holds."""
     known: dict[str, str] = {}
-    for a in p.session.scalars(select(Achievement).where(Achievement.canonical_id == cid)):
+    for a in _rows_seen(p, cid):
         if a.icon_url and a.icon_blob_hash:
             known[a.icon_url] = a.icon_blob_hash
         if a.locked_icon_url and a.locked_icon_blob_hash:
@@ -67,8 +79,7 @@ def _blob_for(p: Page, url: str, known: dict[str, str]) -> str | None:
 def _inherited(p: Page, cid: str) -> dict[str, dict[str, Any]]:
     """What other sources already say per achievement name, so empty fields can show where a value would come from."""
     out: dict[str, dict[str, Any]] = {}
-    rows = [a for a in p.session.scalars(select(Achievement).where(
-        Achievement.canonical_id == cid, Achievement.source != SOURCE))]
+    rows = _rows_seen(p, cid, Achievement.source != SOURCE)
     rows.sort(key=lambda a: -p.st.ctx.settings.trust(a.source))
     for a in rows:
         slot = out.setdefault(a.norm_name, {})
@@ -132,9 +143,10 @@ def _decorate(p: Page, cid: str, rows: list[dict[str, Any]]) -> None:
 
 def _others(p: Page, cid: str) -> list[dict[str, Any]]:
     """Entries other sources provide, as the page shows them (hidden ones concealed)."""
-    mine_only = {m["id"] for m in facets.merged_achievements(p.session, p.st.ctx, cid, reveal=True)
+    mine_only = {m["id"] for m in facets.merged_achievements(p.session, p.st.ctx, cid, reveal=True, viewer=p.viewer)
                  if set(m["sources"]) == {SOURCE}}
-    return [m for m in facets.merged_achievements(p.session, p.st.ctx, cid) if m["id"] not in mine_only]
+    return [m for m in facets.merged_achievements(p.session, p.st.ctx, cid, viewer=p.viewer)
+            if m["id"] not in mine_only]
 
 
 # §8.1: longer lists start as one line per row; shorter ones open so a quick fix needs no extra click.
@@ -381,7 +393,7 @@ def reveal(cid: str, aid: str, p: Annotated[Page, Depends(page)], json: int = 0)
             return JSONResponse({"error": "sign in"}, status_code=401, headers={"Cache-Control": "no-store"})
         return go(f"/login?next=/game/{cid}/achievements/{aid}")
     g, _ = live_game(p, cid)
-    listing = facets.achievement_listing(p.session, p.st.ctx, g.id, reveal={aid})
+    listing = facets.achievement_listing(p.session, p.st.ctx, g.id, reveal={aid}, viewer=p.viewer)
     entries = listing["results"]
     index = next((n for n, m in enumerate(entries) if m["id"] == aid or aid in m["keys"]), None)
     if index is None:

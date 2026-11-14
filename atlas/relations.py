@@ -374,7 +374,7 @@ def add(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, sour
     session.flush()
     touched = _supersede_local_or_leave(session, row) if origin is not None else set()
     if signed and not gated(ctx):
-        row.feed_seq = feed.emit(session, ctx, "relation", {"op": "add", "from": src.id, "to": dst.id,
+        row.feed_seq = feed.emit_or_local(session, ctx, "relation", {"op": "add", "from": src.id, "to": dst.id,
                                                             "type": kind, "source": source})
     cause = "feed" if row.feed_seq or origin is not None else "local"
     for cid in sorted(touched | {src.id, dst.id}):
@@ -394,7 +394,7 @@ def publish_pending(session: Session, ctx: Ctx, row: Relation) -> None:
     follower will judge the signed entry; a conflict raises (409) and nothing is signed."""
     src, dst = _live(session, row.from_id, "from"), _live(session, row.to_id, "to")
     check(session, src, dst, row.type, replicated_only=True)
-    row.feed_seq = feed.emit(session, ctx, "relation", {"op": "add", "from": src.id, "to": dst.id, "type": row.type,
+    row.feed_seq = feed.emit_or_local(session, ctx, "relation", {"op": "add", "from": src.id, "to": dst.id, "type": row.type,
                                                         "source": row.source})
     bump_version(session, src.id, "feed")
     bump_version(session, dst.id, "feed")
@@ -433,7 +433,7 @@ def end(session: Session, ctx: Ctx, from_id: str, to_id: str, kind: str, *, acto
     session.flush()
     cause = "local"
     if signed and not gated(ctx):
-        feed.emit(session, ctx, "relation", {"op": "end", "from": src, "to": dst, "type": kind})
+        feed.emit_or_local(session, ctx, "relation", {"op": "end", "from": src, "to": dst, "type": kind})
         cause = "feed"
     bump_version(session, src, cause)
     bump_version(session, dst, cause)
@@ -647,7 +647,11 @@ def applied_from_feed(session: Session, node_id: str, seq: int, body: dict[str, 
 
 # ---- views ----------------------------------------------------------------------------------------------
 
-def _brief(session: Session, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+def _brief(session: Session, ids: Iterable[str], viewer: Any = None) -> dict[str, dict[str, Any]]:
+    if viewer is not None:  # C14 §5.7: titles as that viewer sees them
+        from . import scope
+
+        return scope.titles(session, viewer, list(ids))
     out: dict[str, dict[str, Any]] = {}
     for part in _chunks(sorted(set(ids))):
         for cid, view, media_type in session.execute(select(Canonical.id, Canonical.view, Canonical.media_type)
@@ -656,23 +660,31 @@ def _brief(session: Session, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _sorted_rows(session: Session, where: Any, kinds: tuple[str, ...], other: Any, limit: int) -> tuple[list, int]:
+def _sorted_rows(session: Session, where: Any, kinds: tuple[str, ...], other: Any, limit: int,
+                 shown: Any = None) -> tuple[list, int]:
+    extra = () if shown is None else (shown,)
     total = session.scalar(select(func.count()).select_from(Relation).where(where, Relation.type.in_(kinds),
-                                                                             _active())) or 0
+                                                                             _active(), *extra)) or 0
     rows: list[tuple[str, str]] = []
     for kind in kinds:  # type order first (the vocabulary order), then the other record's id: deterministic
         if len(rows) >= limit:
             break
-        rows += list(session.execute(select(other, Relation.type).where(where, Relation.type == kind, _active())
+        rows += list(session.execute(select(other, Relation.type).where(where, Relation.type == kind, _active(),
+                                                                        *extra)
                                      .order_by(other).limit(limit - len(rows))))
     return rows, total
 
 
-def of(session: Session, cid: str, *, limit: int = LIST_LIMIT) -> dict[str, Any]:
+def of(session: Session, cid: str, *, limit: int = LIST_LIMIT, viewer: Any = None,
+       settings: Any = None) -> dict[str, Any]:
     """The `relations` block of a record (C6.3), each list ordered by type then id and bounded at `limit`:
     `parents` (this -> parent, hierarchical), `children` (child -> this), `members_of` (this -> series or
     collection) and `members` (member -> this series or collection). `counts` has the full sizes and `truncated`
-    says whether any list was cut."""
+    says whether any list was cut. `viewer` (C14 §5.7): only relations whose both records that viewer may see,
+    counted in SQL."""
+    from . import scope
+
+    shown = scope.relation_clause(viewer, settings)
     limit = max(1, min(limit, LIST_LIMIT))
     lists = {"parents": (Relation.from_id == cid, HIERARCHICAL, Relation.to_id),
              "children": (Relation.to_id == cid, HIERARCHICAL, Relation.from_id),
@@ -681,8 +693,8 @@ def of(session: Session, cid: str, *, limit: int = LIST_LIMIT) -> dict[str, Any]
     found: dict[str, list[tuple[str, str]]] = {}
     counts: dict[str, int] = {}
     for name, (where, kinds, other) in lists.items():
-        found[name], counts[name] = _sorted_rows(session, where, kinds, other, limit)
-    brief = _brief(session, (rid for rows in found.values() for rid, _ in rows))
+        found[name], counts[name] = _sorted_rows(session, where, kinds, other, limit, shown)
+    brief = _brief(session, (rid for rows in found.values() for rid, _ in rows), viewer)
     out: dict[str, Any] = {name: [{"id": rid, "type": kind, **brief.get(rid, {"title": None, "media_type": None})}
                                   for rid, kind in rows] for name, rows in found.items()}
     out["counts"] = counts
@@ -695,13 +707,18 @@ def _type_rank() -> Any:
     return case(_ORDER, value=Relation.type, else_=len(_ORDER))
 
 
-def expand(session: Session, cid: str, depth: int = 1, *, max_nodes: int = MAX_EXPAND_NODES) -> dict[str, Any]:
+def expand(session: Session, cid: str, depth: int = 1, *, max_nodes: int = MAX_EXPAND_NODES, viewer: Any = None,
+           settings: Any = None) -> dict[str, Any]:
     """The relation graph around a record, breadth first in both directions up to `depth` hops (at most
     `MAX_EXPAND_DEPTH`) and `max_nodes` records. Deterministic order. Used by the API and edition navigation.
 
     Bounded in the database as well as in the output: rows are read in pages, in the order they are used, and
     reading stops at the first row that would add a record beyond `max_nodes`. `edges` are the active relations
     among the returned records (one query on at most `max_nodes` ids)."""
+    from . import scope
+
+    shown = scope.relation_clause(viewer, settings)  # C14 §5.7: in every query below
+    extra = () if shown is None else (shown,)
     depth = max(1, min(depth, MAX_EXPAND_DEPTH))
     max_nodes = max(1, min(max_nodes, MAX_EXPAND_NODES))
     order = [cid]
@@ -713,7 +730,7 @@ def expand(session: Session, cid: str, depth: int = 1, *, max_nodes: int = MAX_E
         nxt: list[str] = []
         for part in _chunks(sorted(frontier)):
             query = (select(Relation.from_id, Relation.to_id).where(
-                (Relation.from_id.in_(part)) | (Relation.to_id.in_(part)), _active())
+                (Relation.from_id.in_(part)) | (Relation.to_id.in_(part)), _active(), *extra)
                 .order_by(_type_rank(), Relation.from_id, Relation.to_id))
             offset = 0
             while not truncated:
@@ -744,7 +761,8 @@ def expand(session: Session, cid: str, depth: int = 1, *, max_nodes: int = MAX_E
         # records one hop beyond the requested depth: the graph goes on, so say so
         inside = sorted(seen)
         for part in _chunks(sorted(frontier)):
-            probe = select(Relation.id).where(_active(), (Relation.from_id.in_(part) & Relation.to_id.not_in(inside))
+            probe = select(Relation.id).where(_active(), *extra,
+                                              (Relation.from_id.in_(part) & Relation.to_id.not_in(inside))
                                               | (Relation.to_id.in_(part) & Relation.from_id.not_in(inside)))
             if session.scalars(probe.limit(1)).first() is not None:
                 truncated = True
@@ -753,8 +771,8 @@ def expand(session: Session, cid: str, depth: int = 1, *, max_nodes: int = MAX_E
     ids = sorted(seen)
     for part in _chunks(ids):
         edges += session.execute(select(Relation.from_id, Relation.to_id, Relation.type).where(
-            _active(), Relation.from_id.in_(part), Relation.to_id.in_(ids))).all()
-    brief = _brief(session, order)
+            _active(), *extra, Relation.from_id.in_(part), Relation.to_id.in_(ids))).all()
+    brief = _brief(session, order, viewer)
     return {"id": cid, "depth": depth, "reached_depth": reached, "truncated": truncated,
             "nodes": [{"id": n, **brief.get(n, {"title": None, "media_type": None})} for n in order],
             "edges": [{"from": a, "to": b, "type": k}

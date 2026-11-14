@@ -16,6 +16,7 @@
   <li><strong>admin</strong>: also manages this node: settings, peers, tokens, backups and these users.</li>
   <li><strong>suspended</strong>: cannot sign in; open sessions and API tokens end immediately. Their contributions stay.</li>
   <li><strong>external sign-in</strong>: may also sign in through a trusted sign-in provider (Sign-in sharing).</li>
+  <li><strong>sees data from your nodes</strong>: sees what this node received from your other nodes, with where it came from, even while visitors do not (Sharing). Administrators and curators always do, and so does every account while registration is closed; an account that registered itself does not unless you tick this.</li>
 </ul>
 <p class="small muted">The role set here is this node's own and lasts until you change it. {% if group_grants is not none %}Rights given through your node group are listed under "Group grants": they come from signed grants, end when the grant expires or is revoked, and are managed under <a href="/admin/group/grants">Node group → Grants</a>, never here.{% else %}If this node joins a node group, rights given through it are shown here too.{% endif %}</p>
 <p class="small muted">You cannot change your own role or status, so the last administrator can never lock themselves out.</p></details>
@@ -39,6 +40,7 @@
   <label class="small" for="role-{{ u.id }}">Role</label><select id="role-{{ u.id }}" name="role" aria-label="Role of {{ u.username }}">{% for r in roles %}<option {{ 'selected' if r == u.role }}>{{ r }}</option>{% endfor %}</select>
   <label class="small" for="status-{{ u.id }}">Status</label><select id="status-{{ u.id }}" name="status" aria-label="Status of {{ u.username }}">{% for s in statuses %}<option {{ 'selected' if s == u.status }}>{{ s }}</option>{% endfor %}</select>
   <label class="small"><input type="checkbox" name="oidc" aria-label="External sign-in for {{ u.username }}" {{ 'checked' if u.oidc_allowed }}> external sign-in</label>
+  {% if p.is_local_admin %}<input type="hidden" name="has_detail" value="1"><label class="small" title="Sees data received from your nodes, with where it came from"><input type="checkbox" name="detail" aria-label="Sees data from your nodes: {{ u.username }}" {{ 'checked' if u.id in detail_granted }}> sees data from your nodes{% if u.id in detail_by_role %} <span class="muted">(already, by role)</span>{% endif %}</label>{% elif u.id in detail_granted %}<span class="small muted" title="Only a local administrator can change this">sees data from your nodes</span>{% endif %}
   <button class="secondary small" type="submit">Save {{ u.username }}</button></form>
 {% elif u.id == p.user.id %}<span class="small muted">Your own role and status cannot be changed here.</span>{% endif %}</td></tr>{% endfor %}
 </tbody></table></div>

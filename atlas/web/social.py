@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
-from .. import accounts, social
+from .. import accounts, scope, social
 from ..models import Canonical, Comment, Follow, ListItem, Notification, Proposal, Report, User, UserList
 from ..service import AtlasError
 from . import release_year
@@ -42,7 +42,13 @@ def back(default: str, to: str | None = None) -> str:
 
 def game_title(p: Ctx, cid: str) -> str:
     row = p.session.get(Canonical, cid)
+    row = scope.visible(p.session, p.viewer, row) if row is not None else None  # C14 §5.7
     return (row.view.get("title") if row and row.view else None) or cid
+
+
+def _hidden(p: Ctx, cid: str) -> bool:
+    row = p.session.get(Canonical, cid)
+    return row is not None and scope.visible(p.session, p.viewer, row) is None
 
 
 # ---- profiles -----------------------------------------------------------------------------------------
@@ -56,10 +62,15 @@ def profile(username: str, p: Annotated[Ctx, Depends(page)]):
     accepted = []
     for pr in p.session.scalars(select(Proposal).where(Proposal.proposer_id == u.id, Proposal.status == "approved")
                                 .order_by(Proposal.decided_at.desc()).limit(15)):
+        if pr.canonical_id and _hidden(p, pr.canonical_id):
+            continue  # C14 §5.7: a record the visitor may not see is not named, not even by its id
         accepted.append({"kind": pr.kind.replace("_", " "), "cid": pr.canonical_id, "when": pr.decided_at,
                          "title": game_title(p, pr.canonical_id) if pr.canonical_id else "(new game)"})
     lists = list(p.session.scalars(select(UserList).where(UserList.user_id == u.id, UserList.public.is_(True))))
-    counts = {lst.id: len(p.session.scalars(select(ListItem.canonical_id).where(ListItem.list_id == lst.id)).all())
+    hidden = scope.hidden_ids(p.viewer)
+    shown = () if hidden is None else (ListItem.canonical_id.not_in(hidden),)
+    counts = {lst.id: len(p.session.scalars(select(ListItem.canonical_id).where(ListItem.list_id == lst.id,
+                                                                                *shown)).all())
               for lst in lists}
     following = bool(p.user and p.session.get(Follow, (p.user.id, "user", u.id)))
     return render(p, "profile.html", u=u, stats=social.profile_stats(p.session, u), accepted=accepted, lists=lists,
@@ -153,6 +164,10 @@ def view_list(lid: str, p: Annotated[Ctx, Depends(page)]):
         g = p.session.get(Canonical, it.canonical_id)
         if g is not None and g.merged_into:
             g = p.session.get(Canonical, g.merged_into)
+        if g is not None:
+            g = scope.visible(p.session, p.viewer, g)  # C14 §5.7: a record this viewer may not see is left out
+            if g is None:
+                continue
         items.append({"cid": g.id if g else it.canonical_id, "title": (g.view.get("title") if g and g.view else "?"),
                       "year": (release_year(g.view) if g and g.view else ""), "note": it.note})
     return render(p, "list.html", row=row, owner=owner, items=items, mine=bool(p.user and p.user.id == row.user_id))
@@ -189,7 +204,7 @@ def list_delete(lid: str, p: Annotated[Ctx, Depends(user_form)]):
 def list_add(lid: str, p: Annotated[Ctx, Depends(user_form)], game: Annotated[str, Form(max_length=40)],
              note: Annotated[str, Form(max_length=200)] = "", to: Annotated[str, Form()] = ""):
     try:
-        social.add_to_list(p.session, p.st.ctx, p.me, lid, game, note)
+        social.add_to_list(p.session, p.st.ctx, p.me, lid, game, note, viewer=p.viewer)
     except AtlasError as exc:
         raise fail(exc) from exc
     return go(back(f"/list/{lid}", to), "saved")
@@ -210,7 +225,7 @@ def list_remove(lid: str, p: Annotated[Ctx, Depends(user_form)], game: Annotated
 def follow(p: Annotated[Ctx, Depends(user_form)], type: Annotated[str, Form(max_length=8)],
            target: Annotated[str, Form(max_length=40)], to: Annotated[str, Form()] = ""):
     try:
-        social.follow(p.session, p.st.ctx, p.me, type, target)
+        social.follow(p.session, p.st.ctx, p.me, type, target, viewer=p.viewer)
     except AtlasError as exc:
         raise fail(exc) from exc
     return go(back("/me/following", to), "saved")
@@ -268,7 +283,8 @@ def comment_game(cid: str, p: Annotated[Ctx, Depends(user_form)], body: Annotate
                  parent: Annotated[str, Form(max_length=26)] = ""):
     throttle(p, f"comment:{p.me.id}", 6, 60, "You are commenting too quickly")
     try:
-        row = social.add_comment(p.session, p.st.ctx, p.me, body, canonical_id=cid, parent_id=parent or None)
+        row = social.add_comment(p.session, p.st.ctx, p.me, body, canonical_id=cid, parent_id=parent or None,
+                                 viewer=p.viewer)
     except AtlasError as exc:
         p.session.rollback()
         raise fail(exc) from exc

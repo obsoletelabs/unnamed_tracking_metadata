@@ -245,11 +245,12 @@ form.user-edit select { width: auto; }
 @media (max-width: 640px) { .tabs a { padding: 6px 10px; } }
 .table-scroll + form { margin-top: 12px; }
 @media (max-width: 640px) {
-  table.users thead { position: absolute; left: -9999px; }
-  table.users, table.users tbody, table.users tr, table.users th, table.users td { display: block; width: 100%; }
-  table.users tr { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin: 0 0 12px; padding: 4px 0; }
-  table.users th, table.users td { border: 0; padding: 4px 12px; }
-  table.users td[data-label]::before { content: attr(data-label); display: inline-block; min-width: 6.5em; color: var(--muted); font-size: .85rem; }
+  table.users thead, table.sharing-table thead { position: absolute; left: -9999px; }
+  table.users, table.users tbody, table.users tr, table.users th, table.users td,
+  table.sharing-table, table.sharing-table tbody, table.sharing-table tr, table.sharing-table th, table.sharing-table td { display: block; width: 100%; }
+  table.users tr, table.sharing-table tr { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin: 0 0 12px; padding: 4px 0; }
+  table.users th, table.users td, table.sharing-table th, table.sharing-table td { border: 0; padding: 4px 12px; }
+  table.users td[data-label]::before, table.sharing-table td[data-label]::before { content: attr(data-label); display: inline-block; min-width: 6.5em; color: var(--muted); font-size: .85rem; }
 }
 @media (max-width: 640px) { .filter-row > .grow { flex: 1 1 100%; } }
 /* Owner node group (CONTRACT-C10 §8.1): the fingerprint is shown first and larger than the name; the SAS in large digits. */
@@ -579,3 +580,17 @@ details.ach-others > summary { cursor: pointer; margin-top: 1.6em; }
 .ach-detail-rarity { margin: var(--space-3) 0; }
 .ach-detail-rarity .rarity-bar { width: 100%; max-width: 28rem; height: 8px; }
 .ach-nav { display: flex; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-3); }
+
+/* C14 §5.1/§5.5: scope badges. Text labels always present; the colour only repeats what the text says. */
+.badge.scope { font-weight: 600; }
+.badge.scope-official, .badge.scope-community { color: var(--ok); border-color: var(--ok); }
+.badge.scope-mirror { color: var(--muted); }
+.badge.scope-group { color: var(--accent); border-color: var(--accent); }
+.badge.scope-private { color: var(--platinum); border-color: var(--platinum); }
+.badge.scope-local { color: var(--warn); border-color: var(--warn); }
+.scope-line { margin: var(--space-1, 4px) 0 var(--space-3, 12px); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.art-scope { position: absolute; bottom: 6px; left: 6px; background: var(--surface); }
+.sharing-table td, .sharing-table th { vertical-align: top; }
+.sharing-table .greyed { color: var(--muted); }
+.category-list { list-style: none; padding: 0; display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.category-list li { display: flex; gap: 8px; align-items: flex-start; }

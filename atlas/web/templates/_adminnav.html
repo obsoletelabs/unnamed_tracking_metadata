@@ -5,7 +5,7 @@
 {% set groups = [
   ('Node', [('/admin', 'Overview'), ('/admin/users', 'Users'), ('/admin/settings', 'Settings'), ('/admin/schema', 'Fields'), ('/admin/pages', 'Pages'), ('/admin/outbox', 'Email')]),
   ('Catalogue', [('/admin/import', 'Import'), ('/admin/integrations', 'Integrations')]),
-  ('Federation', [('/admin/peers', 'Peers'), ('/admin/group' if p.is_local_admin else '/admin/group/grants', 'Node group'), ('/admin/keys', 'Signing keys'), ('/admin/tokens', 'Tokens'), ('/admin/oidc', 'Sign-in sharing')]),
+  ('Federation', [('/admin/peers', 'Peers'), ('/admin/sharing', 'Sharing'), ('/admin/group' if p.is_local_admin else '/admin/group/grants', 'Node group'), ('/admin/keys', 'Signing keys'), ('/admin/tokens', 'Tokens'), ('/admin/oidc', 'Sign-in sharing')]),
   ('Operations', [('/admin/backup', 'Backups')]),
 ] %}
 <nav class="admin-nav" aria-label="Administration sections">

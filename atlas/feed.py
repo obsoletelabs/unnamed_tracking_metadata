@@ -54,6 +54,7 @@ def emit(session: Session, ctx: Any, kind: str, body: dict[str, Any]) -> int:
     sequence. An observation introduces its own record."""
     protocol = feed_schema.emit_protocol(ctx.settings)
     names = named(kind, body)
+    scope_gate(session, kind, body, names)
     for cid in names:
         ensure_introduced(session, ctx, cid, BECAUSE.get(kind, "sidecar"))
     mode = introduction_mode(ctx.settings)
@@ -65,6 +66,44 @@ def emit(session: Session, ctx: Any, kind: str, body: dict[str, Any]) -> int:
     if kind == "obs" and isinstance(body.get("canonical_id"), str):
         mark(session, body["canonical_id"], seq, VIA_OBS)
     return seq
+
+
+def scope_gate(session: Session, kind: str, body: dict[str, Any], names: list[str]) -> None:
+    """CONTRACT-C14 §5.4: an entry naming a record with a scope ceiling is never signed, in every introduction
+    mode. Only ceiling'd records named: `ScopeCeiling(local_ok=True)`, so the caller may keep the edit on this node
+    (`emit_or_local`). A ceiling'd and a public record (a `merge`, a `relation`): fails closed. An `obs` names its
+    own record, and an observation received from the group is never signed at all."""
+    from .scope import ScopeCeiling, ceiling_of
+
+    cids = list(names)
+    if kind == "obs":
+        if isinstance(body.get("canonical_id"), str) and body["canonical_id"] not in cids:
+            cids.append(body["canonical_id"])
+        o = body.get("observation") or {}
+        if isinstance(o, dict) and (o.get("source") == "atlas-group"
+                                    or str(o.get("source_scope") or "").startswith("group:")):
+            raise ScopeCeiling(str(body.get("canonical_id")), "group", local_ok=True)
+    ceilings = {cid: ceiling_of(session, cid) for cid in cids}
+    capped = [cid for cid, c in ceilings.items() if c]
+    if capped:
+        raise ScopeCeiling(capped[0], ceilings[capped[0]], local_ok=len(capped) == len(cids))
+
+
+def emit_or_local(session: Session, ctx: Any, kind: str, body: dict[str, Any]) -> int | None:
+    """`emit`, except that an edit of records whose ceiling keeps them off the feed is kept on this node without
+    signing (§5.4: "Where this edit goes: This node only"). Returns None then."""
+    from .scope import ScopeCeiling
+
+    try:
+        return emit(session, ctx, kind, body)
+    except ScopeCeiling as exc:
+        if not exc.local_ok:  # §5.4: a mixed entry fails closed with the "Publish it" refusal (409), not a 500
+            from .service import AtlasError
+
+            raise AtlasError(str(exc), "scope_ceiling", canonical_id=exc.canonical_id,
+                             ceiling=exc.ceiling) from exc
+        log.info("not signed: %s has the scope ceiling %s", exc.canonical_id, exc.ceiling)
+        return None
 
 
 def append(session: Session, identity: NodeIdentity, kind: str, body: dict[str, Any], *,
@@ -179,12 +218,23 @@ def strip_ids(provider_ids: Any, limit: int = 32) -> dict[str, str]:
 def record_body(session: Session, settings: Any, row: Canonical, because: str) -> dict[str, Any]:
     """The identity of a record as this node signs it (C13 §3.2): its id and type, and, as
     `federation_snapshot_fields` allows, its display title and store ids. No provider content."""
+    from .models import ScopeProjection
+    from .scope import ANON_OFF
+
     fields = set(getattr(settings, "federation_snapshot_fields", ["title", "provider_ids"]) or [])
-    title = (row.view or {}).get("title") if "title" in fields else ""
+    # CONTRACT-C14 §5.7 (per-field public payloads): the title and ids a follower sees come from the record without
+    # host/plugin library data and without anything received from the group (the `anon_off` projection), never
+    # from those values; a field only they hold is left out.
+    proj = session.get(ScopeProjection, (row.id, ANON_OFF))
+    view = (proj.view if proj is not None else row.view) or {}
+    title = view.get("title") if "title" in fields else ""
+    allowed_ids = set((view.get("provider_ids") or {}).items()) if proj is not None else None
     keys: dict[str, str] = {}
     if "provider_ids" in fields:
         for cw in session.scalars(select(Crosswalk).where(Crosswalk.canonical_id == row.id, Crosswalk.variant == "")
                                   .order_by(Crosswalk.namespace, Crosswalk.external_id)):
+            if allowed_ids is not None and (cw.namespace, cw.external_id) not in allowed_ids:
+                continue
             keys.setdefault(cw.namespace, cw.external_id)
     return {"canonical_id": row.id, "media_type": row.media_type or "game",
             "title": title[:feed_schema.RECORD_TITLE_MAX] if isinstance(title, str) else "",
@@ -226,6 +276,20 @@ def _identity_observation(session: Session, ctx: Any, body: dict[str, Any]) -> O
     return obs
 
 
+def project_now(session: Session, ctx: Any, record: Canonical) -> bool:
+    """C14 §5.7 (T-S11) while the post-upgrade reprojection is still running: a record that needs a projection but
+    has none yet gets it now, so `record_body` never signs a host/plugin or group value and `introduce` never
+    publishes a record a visitor may not see. Returns whether the record exists for a visitor."""
+    from . import scope
+    from .models import ScopeProjection
+
+    proj = session.get(ScopeProjection, (record.id, scope.ANON_OFF))
+    if proj is None and scope.needs_projection(session, record):
+        scope.reproject(session, ctx, record.id)
+        proj = session.get(ScopeProjection, (record.id, scope.ANON_OFF))
+    return proj is None or bool(proj.present)
+
+
 def ensure_introduced(session: Session, ctx: Any, cid: str, because: str) -> int | None:
     """Introduce `cid` on this feed unless it already is (C13 §4.1). Returns the seq signed, or None.
 
@@ -236,10 +300,13 @@ def ensure_introduced(session: Session, ctx: Any, cid: str, because: str) -> int
     record = session.get(Canonical, cid)
     if record is None:
         return None  # nothing to introduce; the gate in `emit` refuses the entry
+    if record.scope_ceiling:
+        return None  # CONTRACT-C14 §5.4: never introduced, never marked, in any mode (Publish lifts it first)
     mode = introduction_mode(ctx.settings)
     if mode == VIA_LEGACY:
         mark(session, cid, None, VIA_LEGACY, because)
         return None
+    project_now(session, ctx, record)
     body = record_body(session, ctx.settings, record, because)
     obs = _identity_observation(session, ctx, body)
     if mode == VIA_BRIDGE:
@@ -280,20 +347,33 @@ def candidates(session: Session, scope: str, after: str = "", limit: int | None 
         query = query.where(Canonical.id.in_(select(FeedIntroduced.canonical_id)
                                              .where(FeedIntroduced.via == VIA_LEGACY)))
     else:
-        query = query.where(Canonical.merged_into.is_(None), Canonical.id.not_in(introduced))
-    query = query.order_by(Canonical.id)
+        query = query.where(Canonical.merged_into.is_(None), Canonical.id.not_in(introduced),
+                            Canonical.id.not_in(publicly_absent()))
+    query = query.where(Canonical.scope_ceiling.is_(None)).order_by(Canonical.id)  # C14 §5.4: never introduced
     return list(session.scalars(query.limit(limit) if limit else query))
 
 
 def unintroduced_count(session: Session, scope: str = "all") -> int:
-    query = select(func.count()).select_from(Canonical)
+    query = select(func.count()).select_from(Canonical).where(Canonical.scope_ceiling.is_(None))
     if scope == "missing":  # merged ones too (see `candidates`)
         query = query.where(Canonical.id.in_(select(FeedIntroduced.canonical_id)
                                              .where(FeedIntroduced.via == VIA_LEGACY)))
     else:
         query = query.where(Canonical.merged_into.is_(None), Canonical.id.not_in(
-            select(FeedIntroduced.canonical_id).where(FeedIntroduced.via != VIA_LEGACY)))
+            select(FeedIntroduced.canonical_id).where(FeedIntroduced.via != VIA_LEGACY)),
+            Canonical.id.not_in(publicly_absent()))
     return session.scalar(query) or 0
+
+
+def publicly_absent() -> Any:
+    """Records that do not exist for a visitor (C14 §5.7: only host/plugin library data or data received from the
+    group, a `private` ceiling): `federation_introduce = all` never introduces them, or the feed would disclose a
+    record a follower's token may not see. An entry that names one still introduces it (`emit`)."""
+    from .models import ScopeProjection
+    from .scope import ANON_OFF
+
+    return select(ScopeProjection.canonical_id).where(ScopeProjection.tier == ANON_OFF,
+                                                      ScopeProjection.present.is_(False))
 
 
 def introduce_batch(session: Session, ctx: Any, scope: str, *, limit: int = INTRODUCE_BATCH) -> dict[str, Any]:
@@ -317,6 +397,9 @@ def introduce_batch(session: Session, ctx: Any, scope: str, *, limit: int = INTR
     rows = candidates(session, scope, after, limit)
     signed = 0
     for row in rows:
+        if scope == "all" and not project_now(session, ctx, row):
+            after = row.id  # not projected yet when the batch was chosen: a record a visitor may not see
+            continue
         if ensure_introduced(session, ctx, row.id, "backfill") is not None:
             signed += 1
         after = row.id

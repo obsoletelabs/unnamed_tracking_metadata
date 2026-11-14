@@ -15,6 +15,7 @@
   <div class="cover">{% if key_art %}<img src="/media/{{ key_art }}" alt="Artwork for {{ v.get('title') }}">{% endif %}</div>
   <div>
     <h1>{{ v.get('title') }}{% if g.media_type != 'game' %} <span class="badge">{{ mtype_label }}</span>{% endif %}</h1>
+    {% if scope_info %}<p class="scope-line" data-scope-widest="{{ scope_info.widest }}"><span class="badge scope scope-{{ scope_info.badge.key }}" title="{{ scope_info.badge.help }}">{{ scope_info.badge.label }}</span> <span class="small muted" data-scope-line>{{ scope_info.line }}</span>{% if scope_info.ceiling %} <span class="small">· {% if scope_info.ceiling == 'local' %}Kept on this node only{% elif scope_info.ceiling == 'group' %}Shared with your nodes only{% else %}Only for one account{% endif %}</span>{% endif %}</p>{% endif %}
     {% if rel.parents %}<p class="part-of">{% for r in rel.parents %}{{ rel_labels[r.type][0] }} <a href="/game/{{ r.id }}">{{ r.title or r.id }}</a>{{ '; ' if not loop.last }}{% endfor %}</p>{% endif %}
     {{ chips(v.get('platforms')) }}
     <dl class="facts">
@@ -78,6 +79,7 @@
 <li><a class="art-tile" href="/game/{{ g.id }}/artwork/{{ a.id }}" data-viewer>
 <img src="/media/{{ a.blob }}" alt="{{ a.label }}{{ ' (default)' if a.preferred }} from {{ a.source }}" loading="lazy">
 {% if a.preferred %}<span class="badge ok art-flag">default</span>{% endif %}
+{% if a.scope %}<span class="badge scope scope-{{ a.scope.key }} art-scope" title="{{ a.scope.help }}">{{ a.scope.label }}</span>{% endif %}
 {% if a.up or a.down %}<span class="art-votes" aria-label="{{ a.up }} up, {{ a.down }} down">▲{{ a.up }} ▼{{ a.down }}</span>{% endif %}
 </a></li>{% endfor %}</ul></section>
 {% endfor %}
@@ -119,7 +121,7 @@
 </form></details>
 {% endif %}
 
-{% if g.media_type == 'game' %}<h2 id="achievements">Achievements</h2>
+{% if g.media_type == 'game' %}<h2 id="achievements">Achievements{% if ach_scope %} <span class="badge scope scope-{{ ach_scope.key }}" title="{{ ach_scope.help }}">{{ ach_scope.label }}</span>{% endif %}</h2>
 {% set ach_all = ach_all if ach_all is defined else achievements %}
 {% if ach_all %}
 {# U1 summary. Counts only: a hidden achievement's name and text never appear here. §8.2: each count is a filter link. #}
@@ -172,6 +174,15 @@
 
 {% if p.can_review %}
 <h2 id="curation">Curation</h2>
+{% if scope_info %}<div class="card scope-card" id="scope"><h3>Where this record goes</h3>
+  <p class="small">Edits here: <strong>{{ scope_info.edit_goes }}</strong>.</p>
+  {% if scope_message %}<p class="small" role="status">{{ scope_message }}</p>{% endif %}
+  {% if scope_info.ceiling %}<p class="small muted">{% if scope_info.ceiling == 'group' %}This game is shared with your nodes only.{% else %}This game is kept on this node only.{% endif %} Publishing lifts that{% if s.role == 'authority' %} and signs it into your feed{% endif %}; followers then keep what they get.</p>
+  <form method="post" action="/game/{{ g.id }}/scope">{{ csrf(p.csrf) }}<input type="hidden" name="action" value="publish"><button type="submit" data-confirm="Publish this game? Followers keep what they receive.">Publish it</button></form>
+  {% elif keep_offered %}<p class="small muted">Keep it here: nothing about it is signed into a feed or shared with your nodes from now on.</p>
+  <form method="post" action="/game/{{ g.id }}/scope">{{ csrf(p.csrf) }}<input type="hidden" name="action" value="local"><button class="secondary" type="submit">Keep on this node only</button></form>
+  {% else %}<p class="small muted">This game is already in your public feed; followers keep what they have, so it cannot be kept on this node only.</p>{% endif %}
+</div>{% endif %}
 <div class="cols">
 <form class="card" method="post" action="/game/{{ g.id }}/merge">{{ csrf(p.csrf) }}
   <h3>Merge into another record</h3>

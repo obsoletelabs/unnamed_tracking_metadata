@@ -55,6 +55,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `GET` | `/games/{cid}/observations` | curate | Raw source records behind a record (current and superseded). |
 | `GET` | `/games/{cid}/provenance/observations` | curate | Every observation of a record, newest first, paged. |
 | `PUT` | `/games/{cid}/relations` | curate | Replace the record's own outgoing relations (`{relations: [{to, type}]}`, at most 200). Self relations, cycles, a second parent of the same kind and memberships that do not point at a series or collection are refused and nothing changes. Published at `emit_protocol` 1.4, kept local below: the answer says `published: false` with `reason` (`emit_protocol` with `pending`, or `local_node`), and `changed.published` counts relations stored while gated that this call signed. |
+| `PUT` | `/games/{cid}/scope` | curate | Keep a record on this node only (`{ceiling: "local"}`) or publish it (`{ceiling: null}`), CONTRACT-C14 §5.3. A record this feed already introduced cannot be kept back (409 `conflict`). See [Scopes and sharing](scopes.md). |
 | `GET` | `/merges` | curate | Merge records of a record (`canonical_id`). |
 | `GET` | `/merges/{merge_id}` | curate | One merge record with its item counts. |
 | `POST` | `/merges/{merge_id}/unmerge` | curate | Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published needs `emit_protocol` 1.7 (409 `emit_protocol`). |

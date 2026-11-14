@@ -1,65 +1,50 @@
-# Authority modes
+# Node roles, kinds and scopes
 
-The metadata service supports the same conceptual model in three deployment modes. A local authority is not a reduced client: it owns a complete local catalogue and can reconcile multiple sources without an account or a central service.
+This page replaces an earlier draft that described an `AUTHORITY_MODE` setting (`local`, `central`, `hybrid`), an
+`authority_mappings` table and `/api/v1/authority/*` endpoints. None of those exist. Atlas is configured
+with the settings below. The operator guide covers them in more depth: see [Concepts](guide/concepts.md),
+[Federation](guide/federation.md), [Node groups](guide/node-groups.md) and [Scopes and sharing](guide/scopes.md).
 
-## Local authority
+## Role: what the node does (`ATLAS_ROLE`)
 
-`AUTHORITY_MODE=local`
+| Role | What it does |
+|---|---|
+| `authority` | Keeps its own catalogue and **signs** a public change feed that others can follow. Records are introduced on that feed (C13). |
+| `mirror` | Follows one or more authorities' feeds and serves a read-only copy. Its own edits stay on it. |
+| `local` | A private catalogue for one person or household. It can follow authorities, but signs nothing for anyone else. |
 
-- SQLite is the default durable database.
-- Local object storage is the default media store.
-- Provider credentials belong to the local installation.
-- Canonical IDs are local and remain stable even when providers change.
-- Provider mappings, aliases, observations, relationships, tags, images and provenance are retained locally.
-- The service continues to search and serve metadata without internet access.
-- No account is required merely to operate the authority.
+All three roles run the same software and keep a complete catalogue. Canonical ids (`atlas:<ulid>`) are local and
+stay stable. Provider ids (`steam:730`, `igdb:…`) are evidence attached to them. A record that is also known
+elsewhere is linked by replicated observations and merges, not by a mapping table.
 
-## Central authority
+## Kind: how the node presents itself (`node_kind`)
 
-`AUTHORITY_MODE=central`
+`auto` follows the role (an authority shows as `community`). It can be set to `official`, `community`, `mirror` or
+`local`. The kind is a label shown to visitors and peers. "Official" means something only to people who pinned that
+node's key.
 
-- PostgreSQL is the production source of truth.
-- S3-compatible object storage is the durable media authority.
-- Redis is optional but recommended for shared cache state.
-- Canonical identities and reconciled metadata are shared across clients.
-- External providers are observations/evidence, never the canonical database.
-- Community preference can influence presentation but cannot silently overwrite authoritative fields.
+## Node groups
 
-## Hybrid authority
+Nodes that belong to the same owner can form a **node group** (C10). Members share sign-in, profiles and, when
+asked, data. See [Node groups](guide/node-groups.md).
 
-`AUTHORITY_MODE=hybrid`
+## Scopes: how far an item may travel (C14)
 
-- The local authority remains usable when the central service is unavailable.
-- Local canonical IDs are never destructively replaced by central IDs.
-- `authority_mappings` records the optional local-to-central relationship.
-- Local overrides remain local and can be excluded from upstream publication.
-- Central synchronization is incremental and should be performed through durable jobs.
-- Contributions are opt-in through `PUBLISH_CONTRIBUTIONS=true`.
+Every item on a record has one **scope**: `public`, `group` (your nodes), `private` (one account) or `local` (this
+node only). A record can also carry a **ceiling**: `local` ("Keep on this node only") or `group`. Nothing about a
+ceiling'd record is ever signed into a public feed. Scope (how far an item travels) is separate from visibility
+(who may see it on this node):
 
-## Identity boundary
+- Host and plugin library data is never shown to visitors, followers' tokens, or accounts without
+  the "sees data from your nodes" right (`scope.detail`).
+- Data received from your other nodes is shown to visitors only while **Show data from your nodes to visitors**
+  is on, and then only in the field categories you allow.
 
-A local entity may look like:
+See [Scopes and sharing](guide/scopes.md).
 
-`local:game:01H...`
+## API
 
-and later map to:
-
-`central:game:12345`
-
-while retaining provider identities such as `steam:730`, `igdb:98765`, and a Playnite identity. Mapping is evidence, not a destructive merge. A local-only entity remains valid when no central match exists.
-
-## Reconciliation boundary
-
-Provider observations, user-local overrides, community observations and curated canonical values are separate layers. Automated or LLM-assisted reconciliation may propose a match or canonical tag, but proposals must retain confidence and provenance and must not silently become authoritative.
-
-This permits the central authority and user-hosted authorities to reconcile the same underlying game without requiring identical provider availability, credentials, or network access.
-
-
-## Current API support
-
-- `GET /api/v1/authority/status` reports the selected mode and whether central sync is configured, without returning the central URL or credentials.
-- `GET /api/v1/authority/mappings` lists local-to-central mappings for a read-scoped API token.
-- `POST /api/v1/authority/mappings` proposes a mapping using a write-scoped token. Proposals remain in `proposed` state and never merge, rename, or replace a local canonical identity.
-- A verified mapping cannot be overwritten through the ordinary proposal endpoint.
-
-**Important:** hybrid sync scheduling, remote authentication, change-feed exchange, and conflict resolution are not yet implemented. The current mapping endpoints establish a safe identity boundary; they do not imply that two authorities are already synchronizing automatically.
+- `GET /api/v2/games/{id}` and the other read routes apply the visibility rule. A record a caller may not see is
+  a plain `404`. Callers with `scope.detail` (and the node's own app tokens) get an additional `scope` object.
+- `PUT /api/v2/games/{id}/scope` (`curate`) sets `{"ceiling": "local"}` or lifts the ceiling with
+  `{"ceiling": null}`. A record already introduced on the feed cannot be kept back (`409`).

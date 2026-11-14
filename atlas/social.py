@@ -81,12 +81,38 @@ def owned_list(session: Session, lid: str, user: User) -> UserList:
     return row
 
 
-def add_to_list(session: Session, ctx: Ctx, user: User, lid: str, cid: str, note: str = "") -> None:
-    _guard_lists(ctx)
-    row = owned_list(session, lid, user)
+def visible_game(session: Session, ctx: Ctx, user: User | None, cid: str, viewer: Any = None) -> Any:
+    """The live record `cid` as `user` sees it (C14 §5.7), or the error of an unknown game: a record the user may
+    not see answers exactly like one that does not exist, so no action tells that it is there."""
+    from . import scope
+
     game = session.get(Canonical, cid)
     if game is None or game.merged_into:
         raise AtlasError("unknown game", "not_found")
+    if viewer is None:
+        viewer = scope.viewer_for_user(session, ctx.settings, user)
+    shown = scope.visible(session, viewer, game)
+    if shown is None:
+        raise AtlasError("unknown game", "not_found")
+    return shown
+
+
+def title_for(session: Session, ctx: Ctx, user_id: str | None, cid: str) -> str | None:
+    """The record's title as that account sees it (C14 §5.7), "" when it shows none, None when the record does
+    not exist for them: a notification never carries a host/plugin or withheld group value."""
+    user = session.get(User, user_id) if user_id else None
+    try:
+        shown = visible_game(session, ctx, user, cid)
+    except AtlasError:
+        return None
+    return (shown.view.get("title") if shown.view else None) or ""
+
+
+def add_to_list(session: Session, ctx: Ctx, user: User, lid: str, cid: str, note: str = "",
+                viewer: Any = None) -> None:
+    _guard_lists(ctx)
+    row = owned_list(session, lid, user)
+    visible_game(session, ctx, user, cid, viewer)
     session.flush()
     if session.get(ListItem, (lid, cid)):
         return
@@ -126,12 +152,10 @@ def move_list_items(session: Session, src: str, dst: str) -> None:
 
 # ---- follows ------------------------------------------------------------------------------------------
 
-def follow(session: Session, ctx: Ctx, user: User, target_type: str, target_id: str) -> None:
+def follow(session: Session, ctx: Ctx, user: User, target_type: str, target_id: str, viewer: Any = None) -> None:
     _guard_lists(ctx)
     if target_type == "game":
-        game = session.get(Canonical, target_id)
-        if game is None or game.merged_into:
-            raise AtlasError("unknown game", "not_found")
+        visible_game(session, ctx, user, target_id, viewer)
     elif target_type == "user":
         other = session.get(User, target_id)
         if other is None or other.deleted_at is not None or not other.profile_public:
@@ -205,21 +229,25 @@ def on_proposal_applied(session: Session, ctx: Ctx, p: Proposal, actor: User | N
     """A change to a game went live: tell the people following the game and the contributor."""
     if not p.canonical_id:
         return
-    game = session.get(Canonical, p.canonical_id)
-    title = (game.view.get("title") if game and game.view else None) or "a game"
     who = session.get(User, p.proposer_id)
+    # C14 §5.7: each follower is told the title they may see, and nothing about a record that does not exist for them
     for uid in followers(session, "game", p.canonical_id):
-        notify(session, ctx, uid, "game_changed", f"{title} was updated", f"/game/{p.canonical_id}",
-               key=f"g:{p.canonical_id}", actor_id=p.proposer_id)
+        title = title_for(session, ctx, uid, p.canonical_id)
+        if title is not None:
+            notify(session, ctx, uid, "game_changed", f"{title or 'a game'} was updated", f"/game/{p.canonical_id}",
+                   key=f"g:{p.canonical_id}", actor_id=p.proposer_id)
     if who is not None and who.profile_public:
         for uid in followers(session, "user", who.id):
-            notify(session, ctx, uid, "followed_user", f"{who.username} contributed to {title}",
-                   f"/game/{p.canonical_id}", key=f"u:{who.id}", actor_id=who.id)
+            title = title_for(session, ctx, uid, p.canonical_id)
+            if title is not None:
+                notify(session, ctx, uid, "followed_user", f"{who.username} contributed to {title or 'a game'}",
+                       f"/game/{p.canonical_id}", key=f"u:{who.id}", actor_id=who.id)
 
 
 def on_proposal_decided(session: Session, ctx: Ctx, p: Proposal, outcome: str, reviewer: User | None) -> None:
-    game = session.get(Canonical, p.canonical_id) if p.canonical_id else None
-    title = (game.view.get("title") if game and game.view else None) or p.payload.get("title") or "your proposal"
+    # C14 §5.7: the title as the proposer may see it; else the title they proposed (their own words)
+    title = title_for(session, ctx, p.proposer_id, p.canonical_id) if p.canonical_id else None
+    title = title or p.payload.get("title") or "your proposal"
     words = {"approved": "was approved", "rejected": "was rejected", "reverted": "was reverted"}
     notify(session, ctx, p.proposer_id, "proposal", f"Your {p.kind.replace('_', ' ')} for {title} {words[outcome]}",
            f"/game/{p.canonical_id}" if p.canonical_id else "/me", key=f"p:{p.id}",
@@ -269,7 +297,7 @@ def can_view_proposal_thread(ctx: Ctx, user: User | None, p: Proposal) -> bool:
 
 
 def add_comment(session: Session, ctx: Ctx, user: User, body: str, *, canonical_id: str | None = None,
-                proposal_id: str | None = None, parent_id: str | None = None) -> Comment:
+                proposal_id: str | None = None, parent_id: str | None = None, viewer: Any = None) -> Comment:
     write_lock(session)
     _may_comment(session, ctx, user)
     body = clean_body(body)
@@ -285,9 +313,7 @@ def add_comment(session: Session, ctx: Ctx, user: User, body: str, *, canonical_
             parent = session.get(Comment, parent.parent_id) if parent.parent_id else parent  # flatten deep threads
     prop = None
     if canonical_id:
-        game = session.get(Canonical, canonical_id)
-        if game is None or game.merged_into:
-            raise AtlasError("unknown game", "not_found")
+        visible_game(session, ctx, user, canonical_id, viewer)
     else:
         prop = session.get(Proposal, proposal_id)
         if prop is None or not can_view_proposal_thread(ctx, user, prop):
@@ -319,7 +345,7 @@ def _comment_notifications(session: Session, ctx: Ctx, user: User, row: Comment,
                key=f"m:{row.id}", actor_id=user.id)
     if row.canonical_id:
         for uid in followers(session, "game", row.canonical_id):
-            if uid not in told:
+            if uid not in told and title_for(session, ctx, uid, row.canonical_id) is not None:
                 told.add(uid)
                 notify(session, ctx, uid, "comment", "New comments on a game you follow", url,
                        key=f"c:{row.canonical_id}", actor_id=user.id)

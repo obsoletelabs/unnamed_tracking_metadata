@@ -25,6 +25,7 @@ from .. import (
     profile,
     proposals,
     relations,
+    scope,
     service,
     social,
     vocab,
@@ -33,6 +34,7 @@ from .. import media as images
 from ..api.routes import _guard_upstream, served_media
 from ..merge import LOCK_FIELDS, UNION_FIELDS
 from ..models import (
+    Achievement,
     Artwork,
     ArtworkVote,
     AuditEntry,
@@ -163,13 +165,15 @@ TILE_KINDS = ("key_art", "poster", "hero", "banner", "screenshot", "icon", "logo
 
 
 def primary_art(p: Page, ids: list[str]) -> dict[str, str]:
-    """Cached tile image hash per game: key art first, best source first, then the fallbacks of `TILE_KINDS`."""
+    """Cached tile image hash per game: key art first, best source first, then the fallbacks of `TILE_KINDS`.
+    Only images the viewer may see (C14 §5.7)."""
     if not ids:
         return {}
     out: dict[str, str] = {}
+    clause = scope.artwork_clause(getattr(p, "viewer", None), p.st.ctx.settings)  # internal callers: no viewer
     rows = p.session.scalars(select(Artwork).where(
         Artwork.canonical_id.in_(ids), Artwork.kind.in_(TILE_KINDS), Artwork.blob_hash.is_not(None),
-        Artwork.duplicate_of.is_(None)))
+        Artwork.duplicate_of.is_(None), *(() if clause is None else (clause,))))
     ranked = sorted(rows, key=lambda a: (TILE_KINDS.index(a.kind), -p.st.ctx.settings.trust(a.source), a.priority))
     for a in ranked:
         out.setdefault(a.canonical_id, a.blob_hash)
@@ -197,7 +201,19 @@ def artwork_view(p: Page, a: Any, votes: dict[str, tuple[int, int]], mine: dict[
     return {"id": a.id, "kind": a.kind, "label": ART_LABELS.get(a.kind, a.kind), "blob": a.blob_hash, "url": a.url,
             "host": urlsplit(a.url).hostname or "", "width": a.width, "height": a.height, "source": a.source,
             "state": state, "preferred": a.preferred, "up": up, "down": down, "mine": mine.get(a.id, 0),
-            "size": a.size_bytes, "type": a.content_type}
+            "size": a.size_bytes, "type": a.content_type, "scope": _art_badge(p, a)}
+
+
+def _art_badge(p: Page, a: Any) -> dict[str, str] | None:
+    """C14 §5.5: a small badge on an image that is not `public`, for viewers with scope.detail only."""
+    if not p.viewer.detail:
+        return None
+    settings = p.st.ctx.settings
+    key = ("scope_grouped", "x")
+    if key not in p.session.info:
+        p.session.info[key] = scope.in_group(p.session)
+    found = scope.of_artwork(settings, a, scope.ceiling_of(p.session, a.canonical_id), grouped=p.session.info[key])
+    return None if found == "public" else scope.badge(found)
 
 
 def artwork_votes(p: Page, ids: list[str]) -> tuple[dict[str, tuple[int, int]], dict[str, int]]:
@@ -284,12 +300,15 @@ def custom_from_form(p: Page, media_type: str, form: dict[str, str], current: di
 
 
 def live_game(p: Page, cid: str) -> tuple[Canonical, str | None]:
-    return service.get_canonical(p.session, cid)
+    """The live record as this viewer sees it (C14 §5.7): a record they may not see is the same 404 as an unknown
+    one."""
+    return scope.get_visible(p.session, p.viewer, cid)
 
 
 def title_of(p: Page, cid: str | None) -> str:
     row = p.session.get(Canonical, cid) if cid else None
-    return (row.view.get("title") if row and row.view else None) or "(new record)"
+    shown = scope.visible(p.session, p.viewer, row) if row is not None else None
+    return (shown.view.get("title") if shown is not None and shown.view else None) or "(new record)"
 
 
 # ---- public pages -------------------------------------------------------------------------------------
@@ -297,18 +316,21 @@ def title_of(p: Page, cid: str | None) -> str:
 @router.get("/", response_class=HTMLResponse)
 def home(p: Annotated[Page, Depends(page)]):
     s = p.session
-    recent = list(s.scalars(select(Canonical).where(Canonical.merged_into.is_(None), Canonical.norm_title != "")
-                            .order_by(Canonical.updated_at.desc()).limit(12)))
+    viewer = p.viewer  # C14 §5.7: lists and counts are of what this viewer may see, computed in SQL
+    stmt, col = scope.project(select(Canonical), viewer)
+    recent = scope.fetch(s, stmt.where(Canonical.merged_into.is_(None), col.norm_title != "")
+                         .order_by(Canonical.updated_at.desc()).limit(12), viewer)
     media_types = custom.types(s, enabled_only=True)
-    record_filter = (Canonical.merged_into.is_(None), Canonical.norm_title != "")
-    type_counts = {
-        item.key: s.scalar(select(func.count()).select_from(Canonical).where(
-            *record_filter, Canonical.media_type == item.key)) or 0
-        for item in media_types
-    }
+    counted, ccol = scope.project(select(Canonical.media_type, func.count(Canonical.id)).select_from(Canonical),
+                                  viewer, with_row=False)
+    counted = counted.where(Canonical.merged_into.is_(None), ccol.norm_title != "").group_by(Canonical.media_type)
+    by_type = {row[0]: row[1] for row in s.execute(counted)}
+    type_counts = {item.key: by_type.get(item.key, 0) for item in media_types}
+    art_clause = scope.artwork_clause(viewer, p.st.ctx.settings)
     totals = {
         "records": sum(type_counts.values()),
-        "artwork": s.scalar(select(func.count()).select_from(Artwork).where(Artwork.blob_hash.is_not(None))) or 0,
+        "artwork": s.scalar(select(func.count()).select_from(Artwork).where(
+            Artwork.blob_hash.is_not(None), *(() if art_clause is None else (art_clause,)))) or 0,
         "contributors": s.scalar(select(func.count()).select_from(User)) or 0}
     return render(p, "home.html", recent=recent, art=primary_art(p, [g.id for g in recent]), totals=totals,
                   media_types=media_types, type_counts=type_counts,
@@ -321,9 +343,12 @@ def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length
            type: Annotated[str, Query(max_length=32)] = "",
            released_from: Annotated[str, Query(max_length=40)] = "",
            released_to: Annotated[str, Query(max_length=40)] = "",
-           sort: Annotated[str, Query(max_length=16)] = ""):
+           sort: Annotated[str, Query(max_length=16)] = "",
+           scope_filter: Annotated[str, Query(alias="scope", max_length=8)] = "",
+           has: Annotated[str, Query(max_length=8)] = ""):
     """Browse and search. `released_from`/`released_to` take a year, a month or a day (C5.2); `sort=release`
-    orders by first release with year-only dates at the start of their year."""
+    orders by first release with year-only dates at the start of their year. `scope` and `has` (C14 §5.5) filter
+    by scope for viewers with scope.detail only; for anyone else they are ignored and not echoed."""
     released_from, released_to = released_from.strip(), released_to.strip()
     error, read_as = None, []
     prefs = profile.values(p.session, p.st.ctx.settings, p.user) if p.user else anonymous_prefs(p.request)
@@ -339,7 +364,8 @@ def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length
     released_from, released_to = bounds["released_from"], bounds["released_to"]
     try:
         rows = service.search(p.session, q, PER_PAGE + 1, (page_no - 1) * PER_PAGE, media_type=type or None,
-                              released_from=released_from, released_to=released_to, sort=sort or "relevance")
+                              released_from=released_from, released_to=released_to, sort=sort or "relevance",
+                              viewer=p.viewer, has=has or None, scope_filter=scope_filter or None)
     except AtlasError as exc:
         rows, error = [], str(exc)
     more = len(rows) > PER_PAGE
@@ -347,15 +373,19 @@ def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length
     mtypes = custom.types(p.session, enabled_only=True)
     type_label = next((item.label for item in mtypes if item.key == type), None)
     filters = {k: v for k, v in (("released_from", released_from), ("released_to", released_to), ("sort", sort)) if v}
+    if p.viewer.detail:  # never echoed to other viewers (C14 §5.7)
+        filters.update({k: v for k, v in (("scope", scope_filter), ("has", has))
+                        if v in ("public", "group", "local", "private")})
     keep = urlencode({**({"q": q} if q else {}), **({"type": type} if type else {}), **filters})
     return render(p, "search.html", status=400 if error else 200, q=q, results=rows, more=more, page=page_no,
                   art=primary_art(p, [g.id for g in rows]), mtypes=mtypes, mtype=type, mtype_label=type_label,
-                  filters=filters, keep=keep, filter_error=error, sorts=service.SORTS, read_as=read_as)
+                  filters=filters, keep=keep, filter_error=error, sorts=service.SORTS, read_as=read_as,
+                  scope_filters=p.viewer.detail, scope_labels=scope.BADGES)
 
 
 @router.get("/media/{digest}")
 def media(digest: str, p: Annotated[Page, Depends(page)]):
-    return served_media(p.session, p.st, digest, "No such image.")  # C12 §12.5.5: redirect/none sources
+    return served_media(p.session, p.st, digest, "No such image.", viewer=p.viewer)  # C12 §12.5.5, C14 §5.7
 
 
 @router.get("/robots.txt", response_class=HTMLResponse)
@@ -393,8 +423,9 @@ def game(cid: str, p: Annotated[Page, Depends(page)], ach: Annotated[str, Query(
     if redirected:
         return RedirectResponse(f"/game/{g.id}?from={redirected}", status_code=301)
     s, ctx = p.session, p.st.ctx
-    listing = facets.achievement_listing(s, ctx, g.id)
-    art = facets.merged_artwork(s, ctx, g.id, include_duplicates=False)  # exact duplicates once (§12.5.4)
+    viewer = p.viewer  # C14 §5.7: every facet below is read under the visibility rule
+    listing = facets.achievement_listing(s, ctx, g.id, viewer=viewer)
+    art = facets.merged_artwork(s, ctx, g.id, include_duplicates=False, viewer=viewer)  # duplicates once (§12.5.4)
     cached = [a for a in art if a.blob_hash and images.fetch_policy(ctx.settings, a.source, a.url) == "proxy"]
     cover_kinds = ("key_art", "poster", "cover") if g.media_type == "game" else ("poster", "key_art", "cover")
     key_art = next((a.blob_hash for kind in cover_kinds for a in cached if a.kind == kind), None)
@@ -419,7 +450,7 @@ def game(cid: str, p: Annotated[Page, Depends(page)], ach: Annotated[str, Query(
                                Proposal.canonical_id == g.id, Proposal.status == "approved",
                                Proposal.kind != "new_game").order_by(Proposal.created_at.desc()).limit(5))]}
     defs = {f.key: f for f in custom.fields_for(s, g.media_type, public=True)}
-    values = custom.merged(s, ctx, g.id)
+    values = custom.merged(s, ctx, g.id, viewer=viewer)
     details = [{"f": defs[k], "value": values[k]} for k in defs if k in values]
     single = vocab.crossplay_projection(values.get("crossplay"), values.get("players_max")) == vocab.NOT_APPLICABLE
     if g.media_type == "game" and "crossplay" in defs and single:
@@ -445,8 +476,56 @@ def game(cid: str, p: Annotated[Page, Depends(page)], ach: Annotated[str, Query(
                   achievements=ach_filter(listing["results"], listing["sets"], ach),
                   ach_all=listing["results"], ach_sets=listing["sets"], ach=ach if ach in ACH_FILTERS or
                   ach.startswith("set:") else "all",
-                  rel=relations.of(s, g.id, limit=RELATION_PREVIEW), rel_labels=relations.LABELS,
+                  rel=relations.of(s, g.id, limit=RELATION_PREVIEW, viewer=viewer, settings=ctx.settings),
+                  rel_labels=relations.LABELS,
+                  scope_info=scope.record_summary(s, ctx.settings, scope.unwrap(g)) if viewer.detail else None,
+                  keep_offered=_keep_offered(s, g.id), scope_message=SCOPE_MESSAGES.get(
+                      p.request.query_params.get("scope", "")),
+                  ach_scope=_ach_badge(p, g) if viewer.detail else None,
                   redirected_from=p.request.query_params.get("from"), **extra)
+
+
+SCOPE_MESSAGES = {"kept": "Kept on this node only. Nothing about it is signed into a feed from now on.",
+                  "published": "Published. The ceiling is lifted; on an authority the game is now in your feed.",
+                  "refused": "This game is already in your public feed; followers keep what they have."}
+
+
+def _keep_offered(session: Any, cid: str) -> bool:
+    """C14 §5.3: `Keep on this node only` only for a record this node's feed has not introduced."""
+    from ..models import FeedIntroduced
+
+    return session.get(FeedIntroduced, cid) is None  # a legacy row: already named by a signed entry
+
+
+@router.post("/game/{cid}/scope")
+def game_scope(cid: str, p: Annotated[Page, Depends(review_form)], action: Annotated[str, Form(max_length=16)]):
+    """`Keep on this node only` (a `local` ceiling) or `Publish it` (lifts the ceiling), C14 §5.3/§5.4. Curators
+    and administrators only (the review form)."""
+    g, _ = live_game(p, cid)
+    try:
+        if action == "local":
+            scope.set_ceiling(p.session, p.st.ctx, g.id, "local", by="operator", actor=p.me.id)
+            outcome = "kept"
+        elif action == "publish":
+            scope.publish(p.session, p.st.ctx, g.id, actor=p.me.id)
+            outcome = "published"
+        else:
+            raise HTTPException(400, "Choose local or publish.")
+    except scope.CeilingRefused:
+        outcome = "refused"
+    return RedirectResponse(f"/game/{g.id}?scope={outcome}#scope", status_code=303)
+
+
+def _ach_badge(p: Page, g: Any) -> dict[str, str] | None:
+    """The achievements section's scope badge (C14 §5.5): the widest scope among the record's rows when none is
+    `public`."""
+    settings = p.st.ctx.settings
+    ceiling, grouped = g.scope_ceiling, scope.in_group(p.session)
+    found = {scope.of_achievement(settings, a, ceiling, grouped=grouped) for a in p.session.scalars(
+        select(Achievement).where(Achievement.canonical_id == g.id, Achievement.retired_at.is_(None)).limit(500))}
+    if not found or "public" in found:
+        return None
+    return scope.badge(min(found, key=lambda s: scope.WIDTH[s]))
 
 
 @router.post("/game/{cid}/artwork/retry")
@@ -706,7 +785,7 @@ def _edit_ctx(p: Page, mtype: str, **extra: Any) -> dict[str, Any]:
 @router.get("/game/{cid}/edit", response_class=HTMLResponse)
 def edit_form(cid: str, p: Annotated[Page, Depends(user_page)]):
     g, _ = live_game(p, cid)
-    cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False)
+    cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False, viewer=p.viewer)
     return render(p, "edit.html", new=False, v=_form_view(g.view), action=f"/game/{g.id}/edit", cancel=f"/game/{g.id}",
                   error=None, cfields=custom_inputs(p, g.media_type, cur),
                   **_edit_ctx(p, g.media_type, rel_rows=_release_rows(g.view.get("releases"))))
@@ -721,7 +800,7 @@ def edit_submit(cid: str, p: Annotated[Page, Depends(user_form)], f: Annotated[d
                        f.get("publisher", "").strip(), f.get("series", "").strip(), f.get("description", "").strip(),
                        f.get("platforms", ""), f.get("tags", ""), f.get("features", ""))
     new.update(_extra_values(f))
-    cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False)
+    cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False, viewer=p.viewer)
     payload = _changed(_form_view(g.view), new)
     rel_rows, entries = _releases_from_form(f)
     releases = _release_change(g.view, entries)
@@ -929,13 +1008,17 @@ def _artwork_of(p: Page, cid: str, aid: str) -> tuple[Any, Any]:
     art = p.session.get(Artwork, aid)
     if art is None or art.canonical_id != g.id or art.blob_hash is None:
         raise HTTPException(404, "No such image.")
+    clause = scope.artwork_clause(p.viewer, p.st.ctx.settings)  # C14 §5.7: an image this viewer may not see
+    if clause is not None and p.session.scalar(select(Artwork.id).where(Artwork.id == art.id, clause)) is None:
+        raise HTTPException(404, "No such image.")
     return g, art
 
 
 def _panel_ctx(p: Page, g: Any, art: Any) -> dict[str, Any]:
     votes, mine = artwork_votes(p, [art.id])
     settings = p.st.ctx.settings
-    kind_items = [a for a in facets.merged_artwork(p.session, p.st.ctx, g.id) if a.kind == art.kind and a.blob_hash
+    kind_items = [a for a in facets.merged_artwork(p.session, p.st.ctx, g.id, viewer=p.viewer)
+                  if a.kind == art.kind and a.blob_hash
                   and (a.id == art.id or a.duplicate_of is None)  # as in the gallery: exact duplicates once
                   and images.fetch_policy(settings, a.source, a.url) == "proxy"]
     ids = [a.id for a in kind_items]
@@ -1177,12 +1260,16 @@ def _proposal_card(p: Page, r: Proposal) -> dict[str, Any]:
         "when": r.created_at, "note": r.note, "own": r.proposer_id == p.me.id,
         "rows": [], "entries": []}
     if r.kind in ("edit", "new_game"):
-        cur = (p.session.get(Canonical, r.canonical_id).view if r.canonical_id and p.session.get(Canonical, r.canonical_id)
-               else {})
         row = p.session.get(Canonical, r.canonical_id) if r.canonical_id else None
+        # C14 §5.7: the "current value" column is the record as this viewer sees it (a proposer without
+        # `scope.detail` sees the projection, never host or withheld group values); a record they may not see
+        # shows no current values at all.
+        shown = scope.visible(p.session, p.viewer, row) if row is not None else None
+        cur = (shown.view or {}) if shown is not None else {}
         mtype = row.media_type if row else r.payload.get("media_type", "game")
         defs = {f.key: f for f in custom.fields_for(p.session, mtype)}
-        old_custom = custom.merged(p.session, p.st.ctx, r.canonical_id, public_only=False) if r.canonical_id else {}
+        old_custom = (custom.merged(p.session, p.st.ctx, r.canonical_id, public_only=False, viewer=p.viewer)
+                      if shown is not None else {})
         for k, v in r.payload.items():
             if k == "custom":
                 for ck, cv in v.items():
@@ -1209,7 +1296,8 @@ def review_queue(p: Annotated[Page, Depends(review_page)]):
     rows = p.session.scalars(select(Proposal).where(Proposal.status == "pending")
                              .order_by(Proposal.created_at).limit(50)).all()
     dups = p.session.scalar(select(func.count()).select_from(ReviewItem).where(ReviewItem.status == "open")) or 0
-    return render(p, "review.html", items=[_proposal_card(p, r) for r in rows], dup_count=dups)
+    return render(p, "review.html", items=[_proposal_card(p, r) for r in rows], dup_count=dups,
+                  pending_badge=scope.badge("local"))
 
 
 @router.post("/review/{pid}")
@@ -1301,7 +1389,8 @@ def game_merge(cid: str, p: Annotated[Page, Depends(review_form)], into: Annotat
         _guard_upstream(p.session, p.st, into.strip())
         target = service.merge_canonicals(p.session, p.st.ctx, cid, into.strip(), actor=p.me.username)
     except AtlasError as exc:
-        raise HTTPException(404 if exc.code == "not_found" else 409 if exc.code == "conflict" else 400, str(exc)) from exc
+        status = 404 if exc.code == "not_found" else 409 if exc.code in ("conflict", "scope_ceiling") else 400
+        raise HTTPException(status, str(exc)) from exc
     return go(f"/game/{target.id}", "merged")
 
 
@@ -1503,7 +1592,10 @@ def _users_page(p: Page, *, q: str = "", role: str = "", status: str = "", error
     return render(p, "admin_users.html", status=http_status, users=users, total=total, limit=USER_LIMIT, uq=q,
                   role=role if role in USER_ROLES else "", filter_status=status if status in USER_STATUSES else "",
                   roles=USER_ROLES, statuses=USER_STATUSES, counts=counts, suspended=suspended, error=error,
-                  group_grants=_group_grants_by_user(p), back=_users_back(q, role, status))
+                  group_grants=_group_grants_by_user(p), back=_users_back(q, role, status),
+                  detail_granted=scope.granted(s, [u.id for u in users]),
+                  detail_by_role={u.id for u in users if u.role in ("admin", "curator")
+                                  or getattr(p.st.ctx.settings, "registration", "open") == "closed"})
 
 
 def _users_back(q: str, role: str, status: str) -> str:
@@ -1543,8 +1635,10 @@ def admin_users(p: Annotated[Page, Depends(admin_page)], q: Annotated[str, Query
 def admin_user(uid: str, p: Annotated[Page, Depends(admin_form)], role: Annotated[str, Form()],
                status: Annotated[str, Form()], fq: Annotated[str, Form(max_length=80)] = "",
                frole: Annotated[str, Form(max_length=16)] = "", fstatus: Annotated[str, Form(max_length=16)] = "",
-               oidc_field: Annotated[str, Form(alias="has_oidc")] = "", oidc: Annotated[str, Form()] = ""):
-    """One save per row (#66): role, status and, when the row's form carries it, external sign-in."""
+               oidc_field: Annotated[str, Form(alias="has_oidc")] = "", oidc: Annotated[str, Form()] = "",
+               detail_field: Annotated[str, Form(alias="has_detail")] = "", detail: Annotated[str, Form()] = ""):
+    """One save per row (#66): role, status and, when the row's form carries them, external sign-in and the
+    `scope.detail` right (C14 §5.7: sees data received from your nodes, with badges)."""
     target = p.session.get(User, uid)
     if target is None:
         raise HTTPException(404, "No such user.")
@@ -1558,6 +1652,15 @@ def admin_user(uid: str, p: Annotated[Page, Depends(admin_form)], role: Annotate
                 raise AtlasError("you cannot change your own account here", "conflict")
             target.oidc_allowed = oidc == "on"
             accounts.audit(p.session, p.me.id, "oidc_allow", target.id, {"allowed": target.oidc_allowed})
+        if detail_field and (detail == "on") != bool(scope.granted(p.session, [target.id])):
+            # C10 §6.3/§6.4: `scope.detail` is a standing per-account right that would outlive a group grant, so
+            # only a local administrator changes it (like roles and admin-minted tokens).
+            if not p.is_local_admin:
+                raise AtlasError("only a local administrator can change who sees data from your nodes", "forbidden")
+            if detail == "on" and scope.grant(p.session, target, scope.DETAIL, p.me.id):
+                accounts.audit(p.session, p.me.id, "permission_grant", target.id, {"permission": scope.DETAIL})
+            elif detail != "on" and scope.revoke(p.session, target, scope.DETAIL):
+                accounts.audit(p.session, p.me.id, "permission_revoke", target.id, {"permission": scope.DETAIL})
     except AtlasError as exc:
         # Show the reason on the list itself, with the controls still there to try again. Nothing was changed:
         # the request's session is rolled back when the response is an error status.

@@ -197,6 +197,16 @@ def _flash_tone(error: str | None, status: int) -> str:
     return "ok"
 
 
+def _peer_badge(p: Ctx, peer: Peer, member: bool) -> dict[str, str]:
+    """C14 §5.5: what this peer's data is here. A node of your own group is "Your nodes"; any other peer's feed is
+    public, with the kind it states (official/community) or Mirror when relayed or unknown."""
+    from .. import scope
+
+    if member:
+        return scope.badge("group")
+    return scope.badge("public", scope.public_kind(p.st.ctx.settings, peer.node_id, p.session))
+
+
 def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, status: int = 200,
                 tone: str | None = None):
     rows = []
@@ -216,6 +226,7 @@ def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, sta
         described = sync.describe_peer(p.session, p.st.ctx.settings, peer, h)
         rows.append({"peer": peer, "seq": cur.last_seq if cur else 0, "fp": fingerprint(peer.node_id),
                      "group_member": peer.node_id in members,
+                     "scope_badge": _peer_badge(p, peer, peer.node_id in members),
                      "heads": h, "status": described["code"], "badge": described,
                      "inferred": sync.inferred_follow(p.session, peer.id) if peer.follow is None else None,
                      "via_fp": fingerprint(peer.via_node_id) if peer.via_node_id else None,
