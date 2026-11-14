@@ -39,6 +39,9 @@ atlas = ["migrations/script.py.mako", "web/templates/*.html", "web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "federation_lab: multi-node federation scenarios on real servers (opt-in: python -m tools.federation_lab)",
+]
 
 [tool.ruff]
 line-length = 125

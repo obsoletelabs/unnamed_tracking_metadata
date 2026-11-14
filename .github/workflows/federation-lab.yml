@@ -1,0 +1,55 @@
+name: Federation lab
+# Starts five real servers per scenario, so it is not part of the main CI run: nightly, on demand,
+# and on pull requests that touch replication, signing, feed storage or the lab itself.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - atlas/sync.py
+      - atlas/feed.py
+      - atlas/signing.py
+      - atlas/key_rotation.py
+      - atlas/promotion.py
+      - atlas/contract.py
+      - atlas/models.py
+      - atlas/migrations/**
+      - atlas/api/routes.py
+      - tools/federation_lab/**
+      - tools/multinode_drill.py
+      - tools/drill_support.py
+      - tests/federation_lab/**
+      - .github/workflows/federation-lab.yml
+permissions: { contents: read }
+concurrency:
+  group: federation-lab-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: pw, POSTGRES_DB: postgres }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --extra dev
+      - name: Federation scenarios (PostgreSQL authorities)
+        run: >-
+          uv run python -m tools.federation_lab
+          --postgres-admin-url postgresql+psycopg://postgres:pw@localhost:5432/postgres
+          --logs lab-logs --junit lab-junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: federation-lab-results
+          path: |
+            lab-junit.xml
+            lab-logs
+          if-no-files-found: ignore
