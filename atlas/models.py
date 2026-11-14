@@ -25,6 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from . import achievement_key
 from .ids import ulid
 
 
@@ -288,8 +289,11 @@ class Achievement(Base):
     locked_icon_fail_count: Mapped[int] = mapped_column(Integer, default=0)
     locked_icon_next_try_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     position: Mapped[int | None] = mapped_column(Integer, nullable=True)  # order chosen by people (curator/community)
+    # stable wire key (CONTRACTS-v1 C2): "ak1:" + 26 base32 characters of sha256(identity); stored, never re-derived
+    key: Mapped[str] = mapped_column(String(30), default=achievement_key.default_key)
 
-    __table_args__ = (UniqueConstraint("canonical_id", "source", "norm_name", name="uq_achievement"),)
+    __table_args__ = (UniqueConstraint("canonical_id", "source", "norm_name", name="uq_achievement"),
+                      Index("uq_achievement_key", "canonical_id", "key", unique=True))
 
 
 class User(Base):

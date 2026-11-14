@@ -461,8 +461,12 @@ def _apply(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: 
         from . import facets
 
         # A missing record or an invalid item raises: quarantined and retried, never silently dropped.
-        fn = facets.set_artwork if kind == "artwork" else facets.set_achievements
-        fn(session, ctx, body["canonical_id"], body["source"], body["items"], redistributable=True, log=False)
+        if kind == "artwork":
+            facets.set_artwork(session, ctx, body["canonical_id"], body["source"], body["items"],
+                               redistributable=True, log=False)
+        else:  # the authority's stored keys win, so mirror and authority publish the same keys (C2.2)
+            facets.set_achievements(session, ctx, body["canonical_id"], body["source"], body["items"],
+                                    redistributable=True, log=False, adopt_keys=True)
     elif kind == "schema":
         from . import custom
 

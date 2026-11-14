@@ -32,7 +32,7 @@
 {% if can_submit %}<button type="submit" name="action" value="submit">Submit proposal</button>{% endif %}</p>
 {% if not can_submit %}<p class="small muted">Preview first: the proposal button appears once the changes have been checked.</p>{% endif %}
 </form>
-<template id="ach-row-template">{% set r = {'key': 'NEWKEY', 'name': '', 'description': '', 'kind': '', 'tier': '', 'points': '', 'hidden': False, 'icon_url': '', 'locked_icon_url': '', 'external_id': '', 'global_percent': '', 'errors': [], 'notes': [], 'inherited': {}, 'icon_blob': None, 'locked_blob': None} %}{% include "_ach_row.html" %}</template>
+<template id="ach-row-template">{% set r = {'key': 'NEWKEY', 'name': '', 'description': '', 'kind': '', 'tier': '', 'points': '', 'hidden': False, 'icon_url': '', 'locked_icon_url': '', 'external_id': '', 'akey': '', 'global_percent': '', 'errors': [], 'notes': [], 'inherited': {}, 'icon_blob': None, 'locked_blob': None} %}{% include "_ach_row.html" %}</template>
 
 <details class="card"><summary>Bulk import (one per line)</summary>
 <form method="post" action="/game/{{ g.id }}/achievements">{{ csrf(p.csrf) }}
