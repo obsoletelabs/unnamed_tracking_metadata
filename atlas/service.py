@@ -6,17 +6,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, text, update
+from sqlalchemy import case, select, text, update
 from sqlalchemy.orm import Session
 
-from . import client_changes, feed
+from . import client_changes, dates, feed, feed_schema
 from .contract import ObservationBatchV1
 from .db import sqlite_write_lock
 from .ids import canonical_id as new_canonical_id
 from .ids import ulid
 from .merge import Obs, merge
 from .models import Canonical, Crosswalk, Lock, Observation, ReviewItem, now
-from .normalize import norm_namespace, norm_title, year_of
+from .normalize import norm_namespace, norm_title
 from .resolve import Match, find, follow
 from .settings import Settings
 from .signing import NodeIdentity
@@ -80,9 +80,10 @@ def keys_of(obs: Observation) -> list[tuple[str, str]]:
     return list(dict.fromkeys(keys))  # a source may list its own namespace in provider_ids; register each key once
 
 
-def rebuild(session: Session, ctx: Ctx, cid: str, *, cause: str = "local") -> Canonical:
+def rebuild(session: Session, ctx: Ctx, cid: str, *, cause: str = "local", only_if_changed: bool = False) -> Canonical:
     """Re-derive a record's view and bump its version. `cause` is the client change cause when no
-    `client_changes.cause` scope is active (a scope, such as a provider import or a sync apply, wins)."""
+    `client_changes.cause` scope is active (a scope, such as a provider import or a sync apply, wins).
+    `only_if_changed`: leave the record and its version alone when the derived data is the same."""
     session.flush()  # the merge reads observations and locks with SQL
     row = session.get(Canonical, cid)
     if row is None:
@@ -100,9 +101,14 @@ def rebuild(session: Session, ctx: Ctx, cid: str, *, cause: str = "local") -> Ca
     ]
     locks = {lk.field: lk.value for lk in session.scalars(select(Lock).where(Lock.canonical_id == cid))}
     view, explain = merge(obs, locks)
+    columns = dates.columns(view.get("first_release"))  # C5.2: year-only dates sort and filter too
+    if only_if_changed and row.view == view and row.explain == explain and \
+            all(getattr(row, k) == v for k, v in columns.items()):
+        return row
     row.view, row.explain = view, explain
     row.norm_title = norm_title(view.get("title"))
-    row.year = year_of(view.get("release_date"))
+    for column, value in columns.items():
+        setattr(row, column, value)
     return bump_version(session, cid, cause)
 
 
@@ -364,16 +370,67 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
     return new
 
 
-def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, actor: str = "",
-             local_only: bool = False, log: bool = True) -> Canonical:
-    from .merge import SCALAR_FIELDS, UNION_FIELDS
+DATES_PROTOCOL = feed_schema.RESERVED_TOKENS["dates-v1"]  # "1.3"
 
-    if field not in SCALAR_FIELDS and field not in UNION_FIELDS:
+
+def dates_gated(ctx: Ctx) -> bool:
+    """True while this node may not sign a partial or regional release date: it is an authority (its writes
+    enter the signed feed) and its `emit_protocol` is below 1.3 (C1.6, H13). Observations are still stored
+    in full; only the signed copy omits `ext.release`. Locks cannot be split like that, so they are refused."""
+    if ctx.settings.role != "authority":
+        return False
+    return feed_schema.parse_protocol(feed_schema.emit_protocol(ctx.settings)) < \
+        feed_schema.parse_protocol(DATES_PROTOCOL)
+
+
+def dates_gate_message(ctx: Ctx, feature: str) -> str:
+    return str(feed_schema.EmitGateError(feature, DATES_PROTOCOL, feed_schema.emit_protocol(ctx.settings)))
+
+
+def clean_lock(field: str, value: Any, *, replicated: bool = False) -> Any:
+    """Validate a lock value. `release_date` takes a PartialDate ("2011", "2011-04", "2011-04-19"; a day may
+    have any year, as the legacy key always allowed); `releases` takes at most five release entries (C5.1).
+    Raises AtlasError.
+
+    `replicated`: the value comes from a signed feed entry, which the authority may have written before C5,
+    when a `release_date` lock took any text ("TBA"). Such a value is stored as it is, so a follower that
+    applies or replays it matches the authority instead of quarantining the entry (the merge shows it in the
+    legacy key, as before). Only new local locks are held to the date rules."""
+    from .merge import LOCK_FIELDS, SCALAR_FIELDS, UNION_FIELDS
+
+    if field not in LOCK_FIELDS:
         raise AtlasError(f"field {field!r} cannot be locked")
     if field in UNION_FIELDS and not (isinstance(value, list) and all(isinstance(v, str) for v in value)):
         raise AtlasError(f"{field} needs a list of strings")
     if field in SCALAR_FIELDS and not isinstance(value, str):
         raise AtlasError(f"{field} needs a string")
+    try:
+        if field == "release_date":
+            if replicated and dates.try_parse_first(value) is None:
+                return value  # a pre-C5 free-text lock (checked to be a string above)
+            return dates.parse_first(value).value
+        if field == "releases":
+            return dates.clean_entries(value)
+    except dates.DateError as exc:
+        raise AtlasError(f"{field}: {exc}") from exc
+    return value
+
+
+def lock_needs_dates_protocol(field: str, value: Any) -> bool:
+    """A lock older followers would misread: a partial first release (a 1.2 follower would store "2011" as a
+    day-only `release_date`) or a `releases` lock (a field they do not know)."""
+    if field == "releases":
+        return True
+    return field == "release_date" and isinstance(value, str) and dates.precision_of(value) != "day"
+
+
+def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, actor: str = "",
+             local_only: bool = False, log: bool = True) -> Canonical:
+    value = clean_lock(field, value, replicated=not log)
+    signed = log and not local_only and ctx.settings.role == "authority"
+    if signed and lock_needs_dates_protocol(field, value) and dates_gated(ctx):
+        what = "a release-dates lock" if field == "releases" else "a partial release date lock"
+        raise AtlasError(dates_gate_message(ctx, what), "emit_protocol")
     write_lock(session)
     row = session.get(Canonical, cid)
     if row is None or row.merged_into:
@@ -384,7 +441,6 @@ def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, ac
     else:
         session.add(Lock(canonical_id=cid, field=field, value=value, set_by=actor, local_only=local_only))
     session.flush()
-    signed = log and not local_only and ctx.settings.role == "authority"
     rebuild(session, ctx, cid, cause="feed" if signed else "local")
     if signed:
         feed.emit(session, ctx, "lock", {"canonical_id": cid, "field": field, "value": value})
@@ -397,17 +453,36 @@ def clear_lock(session: Session, ctx: Ctx, cid: str, field: str, *, log: bool = 
     if lock is None:
         raise AtlasError("no such lock", "not_found")
     local_only = lock.local_only
+    signed = log and not local_only and ctx.settings.role == "authority"
+    if signed and field == "releases" and dates_gated(ctx):
+        raise AtlasError(dates_gate_message(ctx, "removing a release-dates lock"), "emit_protocol")
     session.delete(lock)
     session.flush()
-    signed = log and not local_only and ctx.settings.role == "authority"
     row = rebuild(session, ctx, cid, cause="feed" if signed else "local")
     if signed:
         feed.emit(session, ctx, "unlock", {"canonical_id": cid, "field": field})
     return row
 
 
+SORTS = ("relevance", "title", "release", "-release")
+
+
 def search(session: Session, q: str, limit: int = 25, offset: int = 0,
-           media_type: str | None = None) -> list[Canonical]:
+           media_type: str | None = None, *, released_from: str | None = None, released_to: str | None = None,
+           sort: str = "relevance") -> list[Canonical]:
+    """Records by title. `released_from`/`released_to` are PartialDates ("2011" = the whole year): a record
+    matches when its first release lies entirely inside the range, so a year-only "2011" matches 2011..2011
+    but not April 2011 (it might be any month). `sort=release` orders by the start of the first release, then
+    by precision (year before month before day), unknown dates last; `-release` reverses the dates."""
+    if sort not in SORTS:
+        raise AtlasError(f"sort must be one of {', '.join(SORTS)}")
+    try:
+        low = dates.parse_bound(released_from, "released_from")
+        high = dates.parse_bound(released_to, "released_to")
+    except dates.DateError as exc:
+        raise AtlasError(str(exc)) from exc
+    if low and high and low.start() > high.end():
+        raise AtlasError("released_from is after released_to")
     norm = norm_title(q)
     stmt = (
         select(Canonical)
@@ -416,13 +491,26 @@ def search(session: Session, q: str, limit: int = 25, offset: int = 0,
         .limit(min(limit, 100))
         .offset(max(offset, 0))
     )
+    if low is not None:
+        stmt = stmt.where(Canonical.release_start >= low.start())
+    if high is not None:
+        stmt = stmt.where(Canonical.release_end <= high.end())
     if norm:
         like = "%" + "%".join(norm.split()) + "%"
-        stmt = stmt.where(Canonical.norm_title.like(like)).order_by(Canonical.norm_title.asc())
+        stmt = stmt.where(Canonical.norm_title.like(like))
+    rank = case((Canonical.release_precision == "year", 0), (Canonical.release_precision == "month", 1), else_=2)
+    unknown_last = case((Canonical.release_start.is_(None), 1), else_=0)
+    if sort == "release":
+        stmt = stmt.order_by(unknown_last, Canonical.release_start.asc(), rank.asc(), Canonical.norm_title, Canonical.id)
+    elif sort == "-release":
+        stmt = stmt.order_by(unknown_last, Canonical.release_start.desc(), rank.desc(), Canonical.norm_title,
+                             Canonical.id)
+    elif sort == "title" or norm:
+        stmt = stmt.order_by(Canonical.norm_title.asc(), Canonical.id)
     else:
         stmt = stmt.order_by(Canonical.updated_at.desc())
     rows = list(session.scalars(stmt))
-    if not norm:
+    if not norm or sort != "relevance":
         return rows
     rows.sort(key=lambda r: (r.norm_title != norm, not r.norm_title.startswith(norm), len(r.norm_title)))
     return rows

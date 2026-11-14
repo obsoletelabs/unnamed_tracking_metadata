@@ -10,7 +10,8 @@
     <h1>{{ v.get('title') }}{% if g.media_type != 'game' %} <span class="badge">{{ mtype_label }}</span>{% endif %}</h1>
     {{ chips(v.get('platforms')) }}
     <dl class="facts">
-      {% if v.get('release_date') %}<dt>{{ lbl.release_date }}</dt><dd>{{ v.release_date }}</dd>{% endif %}
+      {% set first = v.get('first_release') or ({'date': v.release_date, 'precision': 'day'} if v.get('release_date') else none) %}
+      {% if first %}<dt>{{ lbl.release_date }}</dt><dd><time datetime="{{ first.date }}" data-precision="{{ first.precision }}">{{ release_text(first.date, first.precision, prefs) }}</time></dd>{% endif %}
       {% if v.get('developer') %}<dt>{{ lbl.developer }}</dt><dd>{{ v.developer }}</dd>{% endif %}
       {% if v.get('publisher') %}<dt>{{ lbl.publisher }}</dt><dd>{{ v.publisher }}</dd>{% endif %}
       {% if v.get('series') %}<dt>{{ lbl.series }}</dt><dd>{{ v.series }}</dd>{% endif %}
@@ -28,6 +29,10 @@
       {% if mtype_label and g.media_type != 'game' %}<dt>Type</dt><dd>{{ mtype_label }}</dd>{% endif %}
       <dt>Provider IDs</dt><dd><code>{{ g.id }}</code>{% for ns, ident in (v.get('provider_ids') or {}).items() %}<br>{{ store_name(ns) }}: {% set link = store_link(ns, ident) %}{% if link %}<a href="{{ link }}" rel="noopener noreferrer nofollow">{{ ident }}</a>{% else %}{{ ident }}{% endif %}{% endfor %}</dd>
     </dl>
+    {% if v.get('releases') %}<h3>Release dates</h3>
+    <table class="releases"><thead><tr><th>Date</th><th>Platform</th><th>Region</th><th>Edition</th><th>Type</th></tr></thead><tbody>
+    {% for r in v.releases %}<tr><td><time datetime="{{ r.date }}" data-precision="{{ r.precision }}">{{ release_text(r.date, r.precision, prefs) }}</time></td><td>{{ r.platform or '' }}</td><td>{{ region_name(r.region) }}</td><td>{{ r.edition or '' }}</td><td>{{ category_name(r.category) }}</td></tr>{% endfor %}
+    </tbody></table>{% endif %}
     {% if v.get('description') %}<p>{{ v.description }}</p>{% endif %}
     <div class="actions-bar">
     {% if p.user %}<a class="btn" href="/game/{{ g.id }}/edit">Suggest an edit</a>{% else %}<a class="btn" href="/login?next=/game/{{ g.id }}/edit">Sign in to suggest an edit</a>{% endif %}
@@ -111,7 +116,7 @@
 <aside class="side-col">
 <h2>Where this came from</h2>
 <table><thead><tr><th>Field</th><th>Chosen from</th><th>How</th></tr></thead><tbody>
-{% for field, e in explain.items() %}<tr><td>{{ field }}</td><td>{% if e.get('source') %}{{ e.source }}{% elif e.get('sources') %}{{ e.sources|join(', ') }}{% else %}curator lock{% endif %}</td><td>{{ e.strategy }}</td></tr>{% endfor %}
+{% for field, e in explain.items() %}<tr><td>{{ field }}</td><td>{% if e.get('source') %}{{ e.source }}{% elif e.get('sources') %}{{ e.sources|join(', ') }}{% elif e.get('entries') %}{{ e.entries|map(attribute='source')|unique|join(', ') }}{% else %}curator lock{% endif %}</td><td>{{ e.strategy }}</td></tr>{% endfor %}
 </tbody></table>
 
 {% if activity %}<h2>Recent changes</h2>
@@ -138,7 +143,7 @@
   {% for lk in locks %}<form class="inline" method="post" action="/game/{{ g.id }}/unlock">{{ csrf(p.csrf) }}<input type="hidden" name="field" value="{{ lk.field }}"><strong>{{ lk.field }}</strong>: {{ lk.value }} <button class="secondary small" type="submit">Unpin</button></form><br>{% else %}<p class="muted small">Nothing pinned.</p>{% endfor %}
   <form method="post" action="/game/{{ g.id }}/lock">{{ csrf(p.csrf) }}
     <label for="lf">Field</label><select id="lf" name="field">{% for f in lockable %}<option>{{ f }}</option>{% endfor %}</select>
-    <label for="lv">Value <span class="hint">lists: one per line</span></label><textarea id="lv" name="value" required></textarea>
+    <label for="lv">Value <span class="hint">lists: one per line; release_date: YYYY, YYYY-MM or YYYY-MM-DD; releases: one per line as date | platform | region | edition | category</span></label><textarea id="lv" name="value" required></textarea>
     <p><button type="submit">Pin value</button></p></form>
 </div></div>
 <h3>Source records</h3>

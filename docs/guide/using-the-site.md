@@ -10,6 +10,24 @@ The home page keeps search at the center of the experience. Its horizontal media
 
 A phone-sized screen works the same way; the site follows your system's light or dark setting.
 
+### Release dates
+
+A record shows only as much of its first release as is known: a year (`2011`), a month (`April 2011`) or a
+day, in the date format you chose in your settings. It is never padded to a 1 January. Below the facts, a
+**Release dates** table lists up to five dated releases by platform, region, edition and type (full
+release, early access, beta, re-release, port, demo).
+
+Search can narrow and order by first release: **Released from** and **to** take a year, a month or a day,
+and a record matches only when its whole release is inside the range, so a game known only as "2011"
+appears for 2011 but not for April 2011. **Oldest release first** puts a year-only date before the months
+and days of that year; records without a date come last.
+
+When you edit a record, the release date field takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD` (enter only what is
+known), and five rows take the per-platform dates. Empty rows are ignored; an invalid row (an impossible
+day such as 2023-02-29, an unknown region, two rows for the same platform, region, edition and type) is
+reported and your input is kept. A less precise date never replaces a more precise one it agrees with:
+"2011" next to a source's "2011-04-19" leaves the day.
+
 ## Creating an account
 
 **Create account** needs a username (3–32 letters, digits, `-`, `_`) and a password of at least the node's minimum length (10 by default). An email address is optional on a private node; **central (authority) nodes require one** and ask you to confirm it before you can contribute. We send a link; opening it shows a button to confirm (so mail scanners cannot confirm for you).
