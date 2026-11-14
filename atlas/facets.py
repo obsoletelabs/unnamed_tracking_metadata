@@ -178,9 +178,10 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
             adopt_local_blob(ctx, art)
             session.add(art)
     session.flush()
-    if redistributable:
-        touch_version(session, cid)
-    if log and redistributable and ctx.settings.role == "authority":
+    # Clients see every change (C3.1); only redistributable data on an authority enters the signed feed.
+    signed = log and redistributable and ctx.settings.role == "authority"
+    touch_version(session, cid, cause="feed" if signed else "local")
+    if signed:
         feed.emit(session, ctx, "artwork", {"canonical_id": cid, "source": source, "items": items})
     return len(items)
 
@@ -340,9 +341,10 @@ def set_achievements(session: Session, ctx: Ctx, cid: str, source: str, items: l
         adopt_local_icons(ctx, row)
         it["key"] = key  # the feed carries the stored key (reserved-optional since 1.1, C1.5)
     session.flush()
-    if redistributable:
-        touch_version(session, cid)
-    if log and redistributable and ctx.settings.role == "authority":
+    # Clients see every change (C3.1); only redistributable data on an authority enters the signed feed.
+    signed = log and redistributable and ctx.settings.role == "authority"
+    touch_version(session, cid, cause="feed" if signed else "local")
+    if signed:
         feed.emit(session, ctx, "achievements", {"canonical_id": cid, "source": source, "items": items})
     return len(items)
 

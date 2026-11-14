@@ -27,7 +27,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import feed_schema, key_rotation, service
+from . import client_changes, feed_schema, key_rotation, service
 from .contract import SourceObservationV1
 from .feed_schema import APPLY, PARK, PROTOCOL, QUARANTINE
 from .models import (
@@ -409,6 +409,13 @@ def _not_found(exc: AtlasError) -> bool:
 
 
 def _apply(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: dict[str, Any]) -> str | None:
+    # Version bumps are `replicated` client changes with the upstream origin (an inner merge or detach
+    # keeps the origin). The local client log is never relayed: relay serves `replicated_change` only.
+    with client_changes.cause(session, "replicated", (node_id, seq)):
+        return _apply_body(session, ctx, node_id, seq, kind, body)
+
+
+def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, body: dict[str, Any]) -> str | None:
     """Apply a classified entry. Returns "noop" for an idempotent replay; raises on anything it cannot do."""
     if kind == "obs":
         cid = body["canonical_id"]

@@ -181,6 +181,36 @@ def test_client_changes_advance_versions_for_artwork_and_custom_values(atlas):
     assert item["version"] > next(item["version"] for item in after_artwork["results"] if item["id"] == cid)
 
 
+def test_local_client_feed_reports_provider_and_curator_changes(atlas):
+    """`/changes?feed=local` (C3.2): the mode client authors should use. It covers changes the signed feed
+    never carries, such as non-redistributable provider data, and keeps v1's paging fields."""
+    cid = seed(atlas, ext="703", title="Portal 2", source="steamsync")  # a plugin source: never signed
+    start = atlas.get("/api/v2/changes", params={"feed": "local"}, headers=atlas.read)
+    assert start.status_code == 200
+    page = start.json()
+    assert page["feed"] == "local" and page["node_id"] == atlas.state.ctx.identity.node_id
+    assert page["reset"] is False and isinstance(page["head"], int) and isinstance(page["epoch"], str)
+    item = next(item for item in page["results"] if item["id"] == cid)
+    assert ATLAS_ID.match(item["id"]) and isinstance(item["version"], int) and item["merged_into"] is None
+    assert item["causes"] == ["local"]
+    signed = atlas.get("/api/v2/changes", headers=atlas.read).json()
+    assert signed["feed"] == "signed" and signed["local_feed"] is True
+    assert cid not in {item["id"] for item in signed["results"]}  # the signed feed never saw this record
+
+    assert atlas.put(f"/api/v2/games/{cid}/achievements", headers=atlas.write,
+                     json={"items": [{"name": "Curated"}]}).status_code == 200
+    after = atlas.get("/api/v2/changes", params={"feed": "local", "since": page["next_cursor"],
+                                                       "epoch": page["epoch"]},
+                      headers=atlas.read).json()
+    assert [(i["id"], i["version"] > item["version"], i["causes"]) for i in after["results"]] == [(cid, True, ["feed"])]
+    stale = atlas.get("/api/v2/changes", params={"feed": "local", "since": after["head"] + 100},
+                      headers=atlas.read).json()
+    assert stale["reset"] is True and stale["results"] == [] and stale["next_cursor"] == after["head"]
+    foreign = atlas.get("/api/v2/changes", params={"feed": "local", "since": page["next_cursor"], "epoch": "f" * 16},
+                        headers=atlas.read).json()  # the log was recreated: a stored epoch no longer matches
+    assert foreign["reset"] is True and foreign["epoch"] == page["epoch"]
+
+
 def test_artwork_flow_matches_what_the_plugin_publishes_to_the_host(atlas):
     cid = seed(atlas)
     assert atlas.put(f"/api/v2/games/{cid}/artwork", headers=atlas.write, json={"items": [

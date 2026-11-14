@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import __version__, auth, backup, custom, mail, media, oidc, ratelimit, sync
+from . import __version__, auth, backup, client_changes, custom, mail, media, oidc, ratelimit, sync
 from .api.deps import AppState, get_session, require
 from .api.routes import router
 from .db import make_engine, make_sessionmaker, upgrade
@@ -102,6 +102,9 @@ def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event)
             with maker() as s:
                 oidc.purge(s)
                 s.commit()
+            with maker() as s:  # daily retention of the local client change log (C3.2)
+                if client_changes.maybe_prune(s, ctx.settings.client_changes_retain_days) is not None:
+                    s.commit()
         except Exception as exc:
             log.warning("housekeeping failed: %s", exc)
         stop.wait(60)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,6 +25,7 @@ from .. import (
     service,
     sync,
 )
+from .. import client_changes as client_change_log
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
 from ..models import (
     Artwork,
@@ -280,7 +281,11 @@ class ClientChangedCanonical(BaseModel):
 
 
 class ClientChangesPage(BaseModel):
+    """`feed=signed` (the default, unchanged v1): a page of the signed federation feed."""
+
     model_config = ConfigDict(json_schema_extra={"examples": [{
+        "feed": "signed",
+        "local_feed": True,
         "node_id": "atlas-authority",
         "head": 124,
         "next_cursor": 124,
@@ -291,11 +296,45 @@ class ClientChangesPage(BaseModel):
              "merged_into": "atlas:2123456789abcdefghijklmnop"},
         ],
     }]})
+    feed: Literal["signed"] = Field("signed", description="Which change log this page reads.")
+    local_feed: bool = Field(True, description="Hint: this node also serves `feed=local`, which covers every "
+                                                "change including provider imports. Recommended for clients.")
     node_id: str = Field(description="Authority feed selected for this page.")
     head: int = Field(description="Highest feed sequence currently retained by the selected node.")
     next_cursor: int = Field(description="Pass this value as `since` for the next page.")
     has_more: bool = Field(description="Whether another page is available from the current feed snapshot.")
     results: list[ClientChangedCanonical] = Field(description="Unique canonical records touched by this page.")
+
+
+class LocalChangedCanonical(ClientChangedCanonical):
+    causes: list[str] = Field(description="Why the record changed within this page, sorted: feed, replicated, local, "
+                                          "provider, merge or detach. Informational; refresh the record whatever it is.")
+
+
+class LocalChangesPage(BaseModel):
+    """`feed=local`: a page of this node's local, unsigned client change log (C3.2)."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "feed": "local", "node_id": "3f2a9c0d1e2b4a55", "epoch": "9c41e07a5b2d8f13", "head": 9123,
+        "next_cursor": 9000, "has_more": True, "reset": False,
+        "results": [{"id": "atlas:0123456789abcdefghijklmnop", "version": 14, "merged_into": None,
+                     "causes": ["provider"]}],
+    }]})
+    feed: Literal["local"] = Field(description="Which change log this page reads.")
+    node_id: str = Field(description="This node. The local log is never federated, so it has no other origin.")
+    epoch: str = Field(description="Identifies this incarnation of the log. It changes whenever the log is recreated "
+                                   "or rewound (a downgrade and re-upgrade, a restore, a recovered node). Store it "
+                                   "with `next_cursor` and send it back as `epoch`.")
+    head: int = Field(description="Highest sequence in this node's local change log.")
+    next_cursor: int = Field(description="Pass this value as `since` for the next page.")
+    has_more: bool = Field(description="Whether another page is available from the current log snapshot.")
+    reset: bool = Field(description="True when `since` cannot be continued (pruned, the log was recreated, or "
+                                    "`epoch` differs). "
+                                    "`results` is then empty: store `next_cursor`, then re-read every cached record.")
+    results: list[LocalChangedCanonical] = Field(description="Unique canonical records changed in this page.")
+
+
+ChangesPage = Annotated[ClientChangesPage | LocalChangesPage, Field(discriminator="feed")]
 
 
 def _client_changed_ids(kind: str, body: dict[str, Any]) -> list[str]:
@@ -313,29 +352,32 @@ def _client_changed_ids(kind: str, body: dict[str, Any]) -> list[str]:
 @router.get(
     "/changes",
     tags=["games"],
-    response_model=ClientChangesPage,
+    response_model=ChangesPage,
     summary="List canonical records changed since a client cursor",
     responses={
         200: {
             "content": {
                 "application/json": {
-                    "example": {
-                        "node_id": "atlas-authority",
-                        "head": 124,
-                        "next_cursor": 124,
-                        "has_more": False,
-                        "results": [
-                            {
-                                "id": "atlas:0123456789abcdefghijklmnop",
-                                "version": 8,
-                                "merged_into": None,
-                            },
-                            {
-                                "id": "atlas:1123456789abcdefghijklmnop",
-                                "version": 5,
-                                "merged_into": "atlas:2123456789abcdefghijklmnop",
-                            },
-                        ],
+                    "examples": {
+                        "signed": {"summary": "Default (v1): the signed feed", "value": {
+                            "feed": "signed",
+                            "local_feed": True,
+                            "node_id": "atlas-authority",
+                            "head": 124,
+                            "next_cursor": 124,
+                            "has_more": False,
+                            "results": [
+                                {"id": "atlas:0123456789abcdefghijklmnop", "version": 8, "merged_into": None},
+                                {"id": "atlas:1123456789abcdefghijklmnop", "version": 5,
+                                 "merged_into": "atlas:2123456789abcdefghijklmnop"},
+                            ],
+                        }},
+                        "local": {"summary": "feed=local: every change on this node (recommended)", "value": {
+                            "feed": "local", "node_id": "3f2a9c0d1e2b4a55", "epoch": "9c41e07a5b2d8f13",
+                            "head": 9123, "next_cursor": 9000, "has_more": True, "reset": False,
+                            "results": [{"id": "atlas:0123456789abcdefghijklmnop", "version": 14,
+                                         "merged_into": None, "causes": ["provider"]}],
+                        }},
                     }
                 }
             }
@@ -349,14 +391,34 @@ def client_changes(
     since: Annotated[int, Query(ge=0, description="Last `next_cursor` stored by the client.")] = 0,
     limit: Annotated[int, Query(ge=1, le=500, description="Maximum feed events in this page.")] = 100,
     node_id: Annotated[
-        str | None, Query(max_length=64, description="Optional authority node whose replicated feed is retained here.")
+        str | None, Query(max_length=64, description="Optional authority node whose replicated feed is retained here. "
+                                                     "Not allowed with `feed=local`.")
+    ] = None,
+    feed_name: Annotated[
+        Literal["signed", "local"] | None,
+        Query(alias="feed", description="`local` pages this node's local change log, which also covers provider "
+                                        "imports, local edits, merges and detaches (recommended). Omit it, or pass "
+                                        "`signed`, for the signed feed (unchanged v1 behaviour)."),
+    ] = None,
+    epoch: Annotated[
+        str | None,
+        Query(max_length=64, description="`feed=local` only: the `epoch` stored with `since`. When it differs from "
+                                         "the log's current epoch the page is a `reset`. Always send it."),
     ] = None,
 ) -> dict[str, Any]:
     """Return current versions of canonical records touched by a bounded feed page.
 
     The sequence cursor is independent of timestamps and includes merge redirects.
     Clients should retain `next_cursor` and request the next page while `has_more` is true.
+    The two feeds have separate cursors; never pass a cursor from one to the other.
     """
+    if feed_name == "local":
+        if node_id is not None:
+            raise HTTPException(400, "node_id is not allowed with feed=local: the local log has no other origin.")
+        return {"feed": "local", "node_id": st.ctx.identity.node_id,
+                **client_change_log.page(session, since, limit, epoch)}
+    if epoch is not None:
+        raise HTTPException(400, "epoch is only used with feed=local.")
     origin = node_id or st.ctx.identity.node_id
     if origin == st.ctx.identity.node_id:
         entries = feed.read(session, since, limit)
@@ -389,6 +451,8 @@ def client_changes(
     } if ids else {}
     next_cursor = entries[-1].seq if entries else since
     return {
+        "feed": "signed",
+        "local_feed": True,
         "node_id": origin,
         "head": head,
         "next_cursor": next_cursor,
