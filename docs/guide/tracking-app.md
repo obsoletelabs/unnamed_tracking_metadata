@@ -32,6 +32,38 @@ The app combines Atlas with its other providers. The user's provider order sets 
 
 `tests/test_tracking_app_contract.py` covers the plugin's read-only token, search variations, lookup by Atlas ID, resolving a candidate that only has other provider IDs, metadata and achievement fields, artwork before and after caching, and tokenless public `/media/<sha256>` downloads. It also covers the incremental change endpoint below, in both its signed and its local mode. An Atlas change that breaks these client requests fails this contract suite.
 
+`tests/test_resolve_contract.py` replays `tests/fixtures/resolve-contract-v1.json`, the `/resolve` cases a client vendors (see below), and checks the database state behind them.
+
+### Resolving ids (`POST /resolve`)
+
+`/resolve` maps what the app holds (provider ids, an Atlas id, a title and year) to a canonical Atlas id. It is read-only. Each result says **why** in `reason`, and how strong the evidence is in `tier`:
+
+| `reason` | `tier` | `canonical_id` | Assign it? | When |
+| --- | --- | --- | --- | --- |
+| `id` | `id` | the record | yes | an Atlas id you sent (`namespace: "atlas"` or `provider_ids.atlas`) names a live record |
+| `redirect` | `id` | the live record | yes, and replace your stored id | that Atlas id was merged; `redirected_from` is the id you sent |
+| `crosswalk` | `id` | the record | yes | your provider ids point at exactly one record |
+| `conflict` | `id` | `null` | **no** | your ids point at more than one record, of any media type. `conflict` lists them, `conflict.own` is the record your item's own `namespace`/`external_id` points at, `conflict.review_id` the open curator review if there is one |
+| `type_mismatch` | `id` | `null` | **no** | your ids all point at one record, and it is of another media type |
+| `exact` | `strong` | the record | yes | no id matched; the normalized title is equal, the year agrees enough to reach the auto-match threshold, and the next candidate is 0.1 behind |
+| `fuzzy` | `strong` | the record | only if you opt in | as `exact` with a near-equal title. Capped at 0.8, so it only appears when an administrator lowers the threshold |
+| `ambiguous` | `weak` | `null` | **no** | title candidates exist but cannot be assigned: too weak, too close to each other, or contradicted by an id you hold, or you sent an Atlas id Atlas does not know (see below) |
+| `none` | `none` | `null` | no | nothing |
+
+Rules a client can rely on:
+
+* An id-tier answer never depends on the title. A renamed record keeps its id and resolves by its provider ids whatever title you send; the rename itself shows up in `/changes` as a new version.
+* A merged Atlas id keeps resolving, through up to 20 merges, with `reason: redirect`. `GET /games/{old id}` returns the live record with `redirected_from` too. Ids are followed by id, never by title. A chain longer than 20 merges names no live record: that Atlas id is then treated as unknown (next rule).
+* An Atlas id that Atlas does not know (another node's id, a reset database, a typo) is not evidence for any record, but it is evidence against adopting a different one on title alone: every record already has its own Atlas id. Your provider ids still decide on their own; if none match, a title that would be `exact` is answered `ambiguous` instead, with the candidates listed.
+* Placeholder titles such as `Steam app 12345` or `GOG game 1207658924` are never title evidence. A placeholder record refreshes by its provider id or not at all.
+* Equal titles are not proof. Two records may share a title (`Doom`, 1993 and 2016). When you send an id in a namespace (say `steam`) that Atlas does not know, and the best title candidate already has a different id in that namespace, the answer is `ambiguous`, not `exact`.
+* `method` is kept for older clients. Since contract C4 it is `none` whenever `canonical_id` is `null`. **Behaviour change:** an id conflict used to return the item's own record with `method: crosswalk`; it now returns `canonical_id: null` and `method: none`, so an older client stops adopting a contested id.
+* `matched_keys` lists the ids you sent that Atlas knows and the live record each points at. `release_date` may be `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; only the year is used.
+
+Ingest (`POST /observations`) is unchanged: on an id conflict it still attaches the observation to its own record and opens an `id_conflict` review for a curator.
+
+The fixture `tests/fixtures/resolve-contract-v1.json` holds these cases as data (seed records, requests, expected `reason`, `tier` and record). A client can vendor it with the digest in `resolve-contract-v1.json.sha256`, computed over the file with LF line endings.
+
 ### Incremental client updates
 
 Client apps that cache Atlas records can ask which records changed since they last looked. The
