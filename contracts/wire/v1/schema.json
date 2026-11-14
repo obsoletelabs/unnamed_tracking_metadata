@@ -1,0 +1,395 @@
+{
+  "feed.capabilities": [
+    "book-v1",
+    "dates-v1",
+    "ext-v1"
+  ],
+  "feed.critical_members": {
+    "obs:observation.payload.ext.book": "book-v1",
+    "obs:observation.payload.ext.release": "dates-v1"
+  },
+  "feed.envelope": [
+    "_v",
+    "_requires",
+    "_wire"
+  ],
+  "feed.kind.achievements": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "canonical_id",
+      "items",
+      "source"
+    ],
+    "nested": {
+      "items[]": [
+        "description",
+        "external_id",
+        "global_percent",
+        "hidden",
+        "icon_url",
+        "key",
+        "kind",
+        "locked_icon_url",
+        "name",
+        "points",
+        "tier"
+      ]
+    },
+    "optional": [
+      "items[].key"
+    ],
+    "since": 1,
+    "values": {
+      "items[].kind": "achievement_kind",
+      "items[].tier": "achievement_tier"
+    }
+  },
+  "feed.kind.artwork": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "canonical_id",
+      "items",
+      "source"
+    ],
+    "nested": {
+      "items[]": [
+        "height",
+        "kind",
+        "priority",
+        "url",
+        "width"
+      ]
+    },
+    "optional": [],
+    "since": 1,
+    "values": {
+      "items[].kind": "artwork_kind"
+    }
+  },
+  "feed.kind.custom": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "canonical_id",
+      "clear",
+      "source",
+      "values"
+    ],
+    "nested": {},
+    "optional": [],
+    "since": 1,
+    "values": {}
+  },
+  "feed.kind.detach": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "canonical_id",
+      "new_canonical_id",
+      "observation_id"
+    ],
+    "nested": {},
+    "optional": [],
+    "since": 1,
+    "values": {}
+  },
+  "feed.kind.key_rotation": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "key_id",
+      "public_key"
+    ],
+    "nested": {},
+    "optional": [],
+    "since": 1,
+    "values": {}
+  },
+  "feed.kind.lock": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "canonical_id",
+      "field",
+      "value"
+    ],
+    "nested": {},
+    "optional": [],
+    "since": 1,
+    "values": {
+      "field": "lock_field"
+    }
+  },
+  "feed.kind.merge": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "dst",
+      "src"
+    ],
+    "nested": {},
+    "optional": [],
+    "since": 1,
+    "values": {}
+  },
+  "feed.kind.obs": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "canonical_id",
+      "media_type",
+      "observation"
+    ],
+    "nested": {
+      "observation": [
+        "external_id",
+        "id",
+        "observed_at",
+        "payload",
+        "source",
+        "source_kind",
+        "source_scope",
+        "source_updated_at"
+      ],
+      "observation.payload": [
+        "available",
+        "edition",
+        "ext",
+        "facts",
+        "platform",
+        "platforms",
+        "provider_ids",
+        "release_date",
+        "source_updated_at",
+        "title"
+      ],
+      "observation.payload.ext.book": [
+        "authors",
+        "editions",
+        "original_language",
+        "page_count",
+        "series",
+        "subtitle"
+      ],
+      "observation.payload.ext.book.authors[]": [
+        "ids",
+        "name",
+        "role"
+      ],
+      "observation.payload.ext.book.editions[]": [
+        "format",
+        "isbn_10",
+        "isbn_13",
+        "key",
+        "language",
+        "name",
+        "pages",
+        "provider_ids",
+        "published",
+        "publisher"
+      ],
+      "observation.payload.ext.book.editions[].published": [
+        "date",
+        "precision"
+      ],
+      "observation.payload.ext.book.series": [
+        "name",
+        "position"
+      ],
+      "observation.payload.ext.release": [
+        "entries",
+        "first"
+      ],
+      "observation.payload.ext.release.entries[]": [
+        "category",
+        "date",
+        "edition",
+        "platform",
+        "precision",
+        "region"
+      ],
+      "observation.payload.ext.release.first": [
+        "date",
+        "precision"
+      ]
+    },
+    "optional": [],
+    "since": 1,
+    "values": {
+      "observation.payload.ext.book.authors[].role": "book_creator_role",
+      "observation.payload.ext.book.editions[].format": "book_format",
+      "observation.payload.ext.book.editions[].published.precision": "date_precision",
+      "observation.payload.ext.release.entries[].category": "release_category",
+      "observation.payload.ext.release.entries[].precision": "date_precision",
+      "observation.payload.ext.release.entries[].region": "release_region",
+      "observation.payload.ext.release.first.precision": "date_precision",
+      "observation.source_kind": "source_kind"
+    }
+  },
+  "feed.kind.record": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "because",
+      "canonical_id",
+      "media_type",
+      "provider_ids",
+      "title"
+    ],
+    "nested": {},
+    "optional": [],
+    "since": 1,
+    "values": {
+      "because": "record_because"
+    }
+  },
+  "feed.kind.relation": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "from",
+      "op",
+      "position",
+      "source",
+      "to",
+      "type"
+    ],
+    "nested": {},
+    "optional": [],
+    "since": 1,
+    "values": {
+      "op": "relation_op",
+      "type": "relation_type"
+    }
+  },
+  "feed.kind.schema": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "fields",
+      "types"
+    ],
+    "nested": {
+      "fields[]": [
+        "choices",
+        "editable",
+        "help",
+        "key",
+        "kind",
+        "label",
+        "media_type",
+        "position",
+        "public"
+      ],
+      "types[]": [
+        "achievements",
+        "enabled",
+        "key",
+        "label",
+        "labels",
+        "position"
+      ]
+    },
+    "optional": [],
+    "since": 1,
+    "values": {
+      "fields[].kind": "field_kind"
+    }
+  },
+  "feed.kind.unlock": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "canonical_id",
+      "field"
+    ],
+    "nested": {},
+    "optional": [],
+    "since": 1,
+    "values": {
+      "field": "lock_field"
+    }
+  },
+  "feed.kind.wire_start": {
+    "apply": 1,
+    "emit": 1,
+    "fields": [
+      "first_seq",
+      "wire"
+    ],
+    "nested": {
+      "wire": [
+        "max",
+        "min"
+      ]
+    },
+    "optional": [],
+    "since": 1,
+    "values": {}
+  },
+  "feed.reserved": {
+    "bodies": [
+      "achievements:2",
+      "artwork:2",
+      "lock:2",
+      "unlock:2"
+    ],
+    "kinds": [
+      "distinct",
+      "price",
+      "unmerge"
+    ],
+    "tokens": [
+      "ach-v2",
+      "art-v2",
+      "field-clear-v1",
+      "merge-guard-v1",
+      "price-channel-v1",
+      "relation-v1"
+    ],
+    "values": [
+      "artwork_kind:trailer",
+      "lock_field:_no_merge"
+    ]
+  },
+  "feed.since": {
+    "kind:'record'": 1,
+    "kind:'relation'": 1,
+    "kind:'wire_start'": 1,
+    "member:('relation', 'position')": 1,
+    "member:('schema', 'types[].achievements')": 1,
+    "token:'book-v1'": 1,
+    "token:'dates-v1'": 1,
+    "token:'ext-v1'": 1,
+    "token:'tier-platinum'": 1,
+    "value:('achievement_tier', 'platinum')": 1,
+    "value:('lock_field', 'authors')": 1,
+    "value:('lock_field', 'original_language')": 1,
+    "value:('lock_field', 'page_count')": 1,
+    "value:('lock_field', 'subtitle')": 1
+  },
+  "wire.header": {
+    "actions": [
+      "upgrade_client",
+      "upgrade_server",
+      "admin_review"
+    ],
+    "header": "Atlas-Wire",
+    "legacy_header": "Atlas-Protocol",
+    "max": 1,
+    "min": 0,
+    "min_peer": 1,
+    "reasons": [
+      "peer_too_old",
+      "peer_too_new",
+      "peer_v0",
+      "peer_downgraded"
+    ]
+  },
+  "wire.tombstone": {
+    "min_follower_protocol": "2.0",
+    "protocol": "2.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "feed.capabilities": "9eed8538f94f1ede7360958b15fe91ddce78f07309496cf2d420af7fe83f49bf",
+  "feed.critical_members": "a09a226ea016e07df93318c22a45f1b5f910975b61a31af794c05ef43f6b2d70",
+  "feed.envelope": "0266d783393a033a1b5fa8531cc4c6a99faa6cd59a01a422af5d95a3bac30853",
+  "feed.kind.achievements": "46608a16c17413c6abf7b16e81ddc400af1f27f1779af8a4269dc53a35d2de82",
+  "feed.kind.artwork": "9f2cb4d942391c7eb4c4ca6675d0e48878ed9b6c7cf858442cd9983a83530001",
+  "feed.kind.custom": "53950dcad20c55abc97d3f00aa530865655010d1c13d4080bc4ef8c864491a8a",
+  "feed.kind.detach": "8fcbf386db14d4d2e2b536e178ff2a5928348ff3ef5c406fb6a81b3c5f651724",
+  "feed.kind.key_rotation": "1c9ac4008ff4c21ff7fbb12ca48fbaf0f991732f471ace1cd4d3b57530d9fd2a",
+  "feed.kind.lock": "33f47c0f5a959a90a64a920358c1e79caa4be8a4a1415945c283207ba8ba2f9f",
+  "feed.kind.merge": "890952934101addb2c39a98bd489f7a0f94b853ad3f870f3b391c2152fdfcb3e",
+  "feed.kind.obs": "10ebf1f2349eac10ce568b1e46d7315e503266a6f215ac34e3398868d50bae8f",
+  "feed.kind.record": "6a6698e8cdb7358252dbb7eb8343172ee959cf5863271979d7c8bb3c398925d3",
+  "feed.kind.relation": "ade8bb7e7afc8c0f08a5eb75ad75f259d57554cd234afededf4ae312492ec6a3",
+  "feed.kind.schema": "bd35c3a71eeca934a73e6b5e4884dc557c5844ef195900bff898876b3685a06f",
+  "feed.kind.unlock": "b2b269049205a749cb6ecb91fcc154776404f4f93e90af279a20acdc885dad84",
+  "feed.kind.wire_start": "98c2e9e3081c02b3d93b3bd0d3b30b5aad27cbbccd4d13e7efdf3f0776b33ec7",
+  "feed.reserved": "c13d14bfae684d79f51ac1c20d8ca9a53cf66addf307fc0e29680274dffd1242",
+  "feed.since": "54cd1ce019d0bb9420ad7d07e16066fa62c422966b327b9d266dec566e1b9eb8",
+  "wire.header": "387e24de78d018aac1fa191262dd0ffaa19175cd282c439e73166f10eda55d7d",
+  "wire.tombstone": "8de1d9a0d0f885fa0042402919a39aed9eb0710c8effcbda3ff3859a16507596"
+}

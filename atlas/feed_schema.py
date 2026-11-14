@@ -128,7 +128,21 @@ EXT_TOKENS = {"release": "dates-v1", "book": "book-v1"}
 #: Design §4.1 critical-member rule: `ext` members whose being ignored would change what a record is (a book filed as
 #: a bare record with no authors or editions; a partial release date read as a full day). `check_emit` always adds
 #: their token to `_requires`, so a reader that cannot apply them parks the entry instead of stripping the member.
+#: Kept as the `obs.ext.*` view of `CRITICAL_MEMBERS` below (nothing else reads `CRITICAL_EXT`/`EXT_TOKENS` any
+#: more); still here because it is the shorter name for the common case of marking a whole `ext` member critical.
 CRITICAL_EXT: frozenset[str] = frozenset({"release", "book"})
+#: Z2 (CONTRACT-AMENDMENTS, "Critical members"): a registry-level mark, generalised past `ext.*`. Only `ext.release`
+#: and `ext.book` were critical in Z1 (hard-coded in `check_emit`); any future scope-like member -- not only an
+#: `ext` member, any field of any kind -- registers itself here once, as `(kind, "dotted.path.to.member")` ->
+#: the `_requires` token a reader needs before applying it, instead of adding a new ad hoc set and a new
+#: `check_emit` branch. `check_emit` walks this registry generically (via `_members`, so a path may contain
+#: `[]` for a list of objects) and adds the token whenever the member is present in the body, for any kind.
+#: A member path's parent must be registered under the kind's `KindSpec.nested` (or be the body itself); the gate
+#: `critical_members_are_registered` (`tools/release_gates.py`, function check) enforces both of these:
+#: every token here is itself a registered `("token", name)` in `SINCE`, and the token is in `CAPABILITIES`,
+#: so a critical mark can never ship without the plumbing an old reader needs to park on it correctly.
+CRITICAL_MEMBERS: dict[tuple[str, str], str] = {("obs", f"observation.payload.ext.{member}"): EXT_TOKENS[member]
+                                                for member in sorted(CRITICAL_EXT)}
 _RELEASE = "observation.payload.ext.release"
 #: C5.1 shapes inside `ext.release`; an unknown member is ignored (`ignored_member`).
 RELEASE_NESTED = {_RELEASE: frozenset({"first", "entries"}),
@@ -565,10 +579,13 @@ def check_emit(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             token = vocab.VALUE_TOKEN.get((name, value))
             if token and token not in needed_tokens:
                 needed_tokens.append(token)
-    if kind == "obs":
-        payload = (body.get("observation") or {}).get("payload")
-        ext_members = payload["ext"] if isinstance(payload, dict) and isinstance(payload.get("ext"), dict) else {}
-        needed_tokens += [EXT_TOKENS[m] for m in sorted(CRITICAL_EXT & set(ext_members))]
+    for (member_kind, path), token in CRITICAL_MEMBERS.items():
+        if member_kind != kind:
+            continue
+        parent, _, leaf = path.rpartition(".")
+        for _where, obj in (_members(body, parent) if parent else [("", body)]):
+            if leaf in obj and token not in needed_tokens:
+                needed_tokens.append(token)
     if kind in ("lock", "unlock") and _dates_lock(body):
         needed_tokens.append("dates-v1")
     present = body.get("_requires") if isinstance(body.get("_requires"), list) else []
