@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Users · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+<h2 class="flush-top">Users</h2>
+<p class="muted">{{ counts.get('admin', 0) }} administrator{{ '' if counts.get('admin', 0) == 1 else 's' }},
+{{ counts.get('curator', 0) }} curator{{ '' if counts.get('curator', 0) == 1 else 's' }},
+{{ counts.get('user', 0) }} member{{ '' if counts.get('user', 0) == 1 else 's' }}; {{ suspended }} suspended.</p>
+<details class="card"><summary>What each role can do</summary>
+<ul>
+  <li><strong>user</strong>: contributes records and proposals, votes, keeps lists.</li>
+  <li><strong>curator</strong>: also reviews and approves other people's proposals and can import from providers.</li>
+  <li><strong>admin</strong>: also manages this node: settings, peers, tokens, backups and these users.</li>
+  <li><strong>suspended</strong>: cannot sign in; open sessions and API tokens end immediately. Their contributions stay.</li>
+</ul>
+<p class="small muted">You cannot change your own role or status, so the last administrator can never lock themselves out.</p></details>
+<form class="card" method="get" action="/admin/users" role="search" aria-label="Filter users">
+  <div class="row filter-row">
+    <div class="grow"><label for="uq">Name or email</label><input id="uq" type="search" name="q" value="{{ uq }}" maxlength="80"></div>
+    <div><label for="urole">Role</label><select id="urole" name="role"><option value="">Any</option>{% for r in roles %}<option {{ 'selected' if r == role }}>{{ r }}</option>{% endfor %}</select></div>
+    <div><label for="ustatus">Status</label><select id="ustatus" name="status"><option value="">Any</option>{% for s in statuses %}<option {{ 'selected' if s == filter_status }}>{{ s }}</option>{% endfor %}</select></div>
+    <div class="align-end"><button type="submit">Filter</button></div>
+  </div>
+</form>
+{% if users %}
+<div class="table-scroll">
+<table class="users"><caption class="sr">Users of this node</caption><thead><tr><th scope="col">User</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Email</th><th scope="col">Rep</th><th scope="col">Change</th></tr></thead><tbody>
+{% for u in users %}<tr data-user="{{ u.username }}"><th scope="row" data-label="User">{{ u.username }}{% if u.id == p.user.id %} <span class="badge">you</span>{% endif %}</th><td data-label="Role">{{ u.role }}</td><td data-label="Status">{{ 'deleted' if u.deleted_at else u.status }}</td>
+<td data-label="Email">{% if u.email %}{{ 'confirmed' if u.email_verified_at else 'unconfirmed' }}{% else %}none{% endif %}{% if u.email and not u.email_verified_at %} <form class="inline" method="post" action="/admin/users/{{ u.id }}/verify">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Mark confirmed</button></form>{% endif %}</td><td data-label="Reputation">{{ u.reputation }}</td>
+<td data-label="Change">{% if u.id != p.user.id and not u.deleted_at %}<form class="user-edit" method="post" action="/admin/users/{{ u.id }}">{{ csrf(p.csrf) }}
+  <input type="hidden" name="fq" value="{{ uq }}"><input type="hidden" name="frole" value="{{ role }}"><input type="hidden" name="fstatus" value="{{ filter_status }}">
+  <select name="role" aria-label="Role of {{ u.username }}">{% for r in roles %}<option {{ 'selected' if r == u.role }}>{{ r }}</option>{% endfor %}</select>
+  <select name="status" aria-label="Status of {{ u.username }}">{% for s in statuses %}<option {{ 'selected' if s == u.status }}>{{ s }}</option>{% endfor %}</select>
+  <button class="secondary small" type="submit">Apply</button></form>
+<form class="user-edit" method="post" action="/admin/users/{{ u.id }}/oidc">{{ csrf(p.csrf) }}<label class="small"><input type="checkbox" name="allowed" {{ 'checked' if u.oidc_allowed }}> external sign-in</label> <button class="secondary small" type="submit">Set</button></form>
+{% elif u.id == p.user.id %}<span class="small muted">Your own role and status cannot be changed here.</span>{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
+<p class="small muted">Showing {{ users|length }} of {{ total }}{% if total > users|length %}. Narrow the filter to see the rest{% endif %}.</p>
+{% else %}<p class="muted">No user matches this filter.</p>{% endif %}
+{% endblock %}

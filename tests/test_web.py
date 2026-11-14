@@ -271,8 +271,8 @@ def test_admin_manages_roles_and_suspension(site):
     site.post(f"/admin/users/{uid}", data={"csrf": t, "role": "curator", "status": "suspended"})
     assert bob.get("/me").status_code == 303  # suspended: session ended
     assert login(fresh(site), "bob").status_code == 400
-    page = site.get("/admin").text
-    assert "suspended" in page and "set_status" in page
+    assert "set_status" in site.get("/admin").text
+    assert "suspended" in site.get("/admin/users").text
 
 
 def test_personal_tokens_work_against_the_api_and_are_scoped(site):

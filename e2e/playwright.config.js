@@ -8,7 +8,9 @@ const ROOT = path.resolve(__dirname, '..');
 // Screenshots are opt-in: set E2E_SCREENSHOT_DIR=<dir> to also write full-page PNGs at both sizes.
 const SHOTS = !!process.env.E2E_SCREENSHOT_DIR;
 // A project-level testIgnore replaces the top-level one, so the shared list is spelled out for each project.
-const IGNORE = [/auth\.setup\.js$/, ...(SHOTS ? [] : [/screenshots\.spec\.js$/])];
+// evidence.spec.js captures the before/after shots of a pull request and runs only when E2E_EVIDENCE_DIR is set.
+const IGNORE = [/auth\.setup\.js$/, ...(SHOTS ? [] : [/screenshots\.spec\.js$/]),
+  ...(process.env.E2E_EVIDENCE_DIR ? [] : [/evidence\.spec\.js$/])];
 const AUTH = path.join(__dirname, '.auth', 'admin.json');
 
 module.exports = defineConfig({
