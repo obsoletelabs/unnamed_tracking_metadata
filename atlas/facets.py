@@ -474,11 +474,14 @@ _ART_FIELDS = ("region", "locale", "licence", "attribution", "source_page_url")
 
 
 def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[dict[str, Any]], *,
-                redistributable: bool = False, log: bool = True) -> int:
+                redistributable: bool = False, log: bool = True, skipped: list[dict[str, Any]] | None = None) -> int:
     """Replace the artwork a source contributes to a record. Cached bytes survive for unchanged URLs.
 
     An upload (this node's own /media/ address) is `owner_upload` unless it says otherwise, and one whose licence
-    cannot enter the CC0 feed must be marked `local_only` (§12.5.5, H47: `licence_not_federable`)."""
+    cannot enter the CC0 feed must be marked `local_only` (§12.5.5, H47: `licence_not_federable`). An image another
+    source of the record already lists (same kind and address) stays that source's; it is not stored for this one,
+    and `skipped`, when given, receives `{kind, url, held_by, reason}` for each (Phase 4 note O3); the signed
+    entry leaves such images out too. Returns the number of items given, as before."""
     write_lock(session)
     _live(session, cid)
     source = norm_namespace(source)
@@ -492,6 +495,7 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
     existing = {(a.kind, a.url): a for a in session.scalars(
         select(Artwork).where(Artwork.canonical_id == cid, Artwork.source == source))}
     wanted = {(i["kind"], i["url"]) for i in items}
+    held: set[tuple[str, str]] = set()
     for key, art in existing.items():
         if key not in wanted:
             session.delete(art)
@@ -509,6 +513,10 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
             clash = session.scalars(select(Artwork).where(
                 Artwork.canonical_id == cid, Artwork.kind == i["kind"], Artwork.url == i["url"])).first()
             if clash:  # another source already lists this exact image; it keeps it
+                held.add((i["kind"], i["url"]))
+                if skipped is not None:
+                    skipped.append({"kind": i["kind"], "url": i["url"], "held_by": clash.source,
+                                    "reason": "held_by_another_source"})
                 continue
             art = Artwork(canonical_id=cid, source=source, kind=i["kind"], url=i["url"],
                           priority=i["priority"], width=i.get("width"), height=i.get("height"),
@@ -525,7 +533,10 @@ def set_artwork(session: Session, ctx: Ctx, cid: str, source: str, items: list[d
     signed = log and redistributable and ctx.settings.role == "authority"
     touch_version(session, cid, cause="feed" if signed else "local")
     if signed:
-        body, withheld = artwork_v1(items, source=source, settings=ctx.settings)
+        # what was not stored for this source is not signed as its own either, so a follower stores what this
+        # node stores, attributed the same way (A18b #4)
+        body, withheld = artwork_v1([i for i in items if (i["kind"], i["url"]) not in held], source=source,
+                                    settings=ctx.settings)
         if withheld:
             log_.info("artwork %s/%s: %d image(s) kept out of the signed feed (licence_withheld)", cid, source,
                       withheld)

@@ -40,6 +40,8 @@ previous release's game page lists every explain key). Upgrading again brings ev
 locks restored on their live record unless that field was locked meanwhile, variants restored on keys that still
 exist, review columns and statuses restored on items that still exist (a pair the previous release reopened keeps
 one open item), `last_seen_at` restored. Only `observation.payload_hash` is not kept: it is recomputed lazily.
+The derived `explain._meta` and `field_conflict` rows are re-derived by the application after the re-upgrade: the
+downgrade leaves `node_state["view_rebuild_pending"]` (`atlas.dates_rebuild.finish_pending`, Phase 4 defect D3).
 """
 from __future__ import annotations
 
@@ -377,8 +379,21 @@ def _restore_variants(bind) -> None:
     op.drop_table(VARIANT_KEPT)
 
 
+#: Phase 4 defect D3: a re-upgrade re-derives what this downgrade removed (`atlas.dates_rebuild.finish_pending`
+#: reads this key; spelled out here because a migration never imports application code that may change later).
+REBUILD_KEY = "view_rebuild_pending"
+
+
+def _ask_for_rebuild(bind) -> None:
+    """Leave the node a note: once the schema is current again, the application re-derives every view."""
+    state = sa.table("node_state", sa.column("key", sa.String), sa.column("value", sa.Text))
+    bind.execute(state.delete().where(state.c.key == REBUILD_KEY))
+    bind.execute(state.insert().values(key=REBUILD_KEY, value="pending"))
+
+
 def downgrade() -> None:
     bind = op.get_bind()
+    _ask_for_rebuild(bind)  # explain._meta and field_conflict are derived: rebuilt after the re-upgrade
     # The previous release lists every explain key on the game page: remove the v2 metadata key.
     last = ""
     while True:

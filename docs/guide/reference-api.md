@@ -46,7 +46,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `POST` | `/distinct` | curate | Mark two records as different works: never merged or paired for review again (local to this node). |
 | `DELETE` | `/distinct/{rejection_id}` | curate | End a "different works" decision. |
 | `PUT` | `/games/{cid}/achievements` | curate | Replace the curated achievement set for a record. |
-| `PUT` | `/games/{cid}/artwork` | curate | Replace the curated artwork set for a record. |
+| `PUT` | `/games/{cid}/artwork` | curate | Replace the curated artwork set for a record. Answers `count` (items given), `stored` (now curated) and `skipped`: each image another source of the record already lists (same kind and address), which stays that source's, as `{kind, url, held_by, reason: "held_by_another_source"}`. |
 | `PUT` | `/games/{cid}/custom` | curate | Set or clear curated custom-field values. |
 | `GET` | `/games/{cid}/decisions` | curate | Match decisions for a record and the records merged into it, newest first. |
 | `DELETE` | `/games/{cid}/locks/{field}` | curate | Remove a pinned field value. |
@@ -54,7 +54,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `POST` | `/games/{cid}/merge` | curate | Merge a record into another (leaves a redirect and a merge record that can be undone). `dry_run=1` previews the survivor's view and every field change; `override_distinct` merges records marked as different works. |
 | `GET` | `/games/{cid}/observations` | curate | Raw source records behind a record (current and superseded). |
 | `GET` | `/games/{cid}/provenance/observations` | curate | Every observation of a record, newest first, paged. |
-| `PUT` | `/games/{cid}/relations` | curate | Replace the record's own outgoing relations (`{relations: [{to, type}]}`, at most 200). Self relations, cycles, a second parent of the same kind and memberships that do not point at a series or collection are refused and nothing changes. Published at `emit_protocol` 1.4, kept local below. |
+| `PUT` | `/games/{cid}/relations` | curate | Replace the record's own outgoing relations (`{relations: [{to, type}]}`, at most 200). Self relations, cycles, a second parent of the same kind and memberships that do not point at a series or collection are refused and nothing changes. Published at `emit_protocol` 1.4, kept local below: the answer says `published: false` with `reason` (`emit_protocol` with `pending`, or `local_node`), and `changed.published` counts relations stored while gated that this call signed. |
 | `GET` | `/merges` | curate | Merge records of a record (`canonical_id`). |
 | `GET` | `/merges/{merge_id}` | curate | One merge record with its item counts. |
 | `POST` | `/merges/{merge_id}/unmerge` | curate | Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published needs `emit_protocol` 1.6 (409 `emit_protocol`). |

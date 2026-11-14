@@ -20,6 +20,7 @@ from . import (
     backup,
     client_changes,
     custom,
+    dates_rebuild,
     facets,
     mail,
     matching,
@@ -288,6 +289,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     with maker() as s:  # a relation restore left by migration 0032 (a no-op unless one is pending)
         if relations.finish_restore(s) is not None:
             s.commit()
+    if (rebuilt := dates_rebuild.finish_pending(maker, settings)) is not None and not rebuilt.get("busy"):
+        log.info("re-derived %d record(s) after a downgrade and re-upgrade (%d changed)", rebuilt["rebuilt"],
+                 rebuilt["changed"])
     with maker() as s:
         identity = load_identity(s, settings)
         _warn_key_at_rest(settings, signing_key_at_rest(s))

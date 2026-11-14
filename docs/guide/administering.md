@@ -93,6 +93,14 @@ Reviewers handle proposals, duplicates and reported comments ([Reviewing](review
   `atlas dates rebuild` once to re-derive every record with the new merge. It works in batches
   (`--batch`, default 500), can stop after `--limit` records, resumes where it stopped, and starts over
   with `--restart`. Records whose result does not change keep their version.
+* After a rollback (the database downgraded below 0031 or 0034) and an upgrade again, nothing needs to be run by
+  hand: those downgrades leave a note in `node_state` (`view_rebuild_pending`), and `atlas migrate` (or the next
+  start) re-derives every record once, restoring partial and regional release dates, `explain._meta` and the
+  conflict index. It runs in batches and resumes after an interruption. A record whose view comes back unchanged
+  keeps its version (only its explain is rewritten); one whose view the downgrade had changed is bumped, so
+  clients see it come back. On a large database this makes that first start slower. On PostgreSQL only one
+  process does it (the others start without waiting), and it keeps its own progress, so an `atlas dates rebuild`
+  you had running is not reset.
 * Review the activity log occasionally; it is your audit trail.
 
 ## Artwork quality (C12)

@@ -39,6 +39,12 @@ must park it (`unsupported_kind`), hold back later entries, and converge after a
 0032) with a plain `atlas sync replay`. A 1.0 follower cannot park: it passes over it, and after the upgrade
 `atlas sync replay --rescan` records it (`dropped_by_previous_release`) and `atlas sync replay --historical`
 applies it. Without `--previous-ref`/`--previous-dir` it runs against the 1.0 release.
+
+`--scenario rescan` (Phase 4 defect D1) runs the 1.0 release as the follower of a 1.4 authority that signs a
+platinum achievement list and a `releases` lock through its API. The 1.0 release drops both without recording
+anything; after an in-place upgrade `atlas sync replay --rescan` must record both (`dropped_by_previous_release`),
+`atlas sync replay --historical` must apply them, and a second rescan must record nothing. Without
+`--previous-ref`/`--previous-dir` it runs against the 1.0 release.
 """
 
 from __future__ import annotations
@@ -297,7 +303,7 @@ def _prepare(root: Path, previous_ref: str, previous_dir: Path | None) -> tuple[
 def _achievements(node: Node, cid: str) -> set[tuple[str, str | None, str]]:
     response = node.client.get(f"/api/v2/games/{cid}/achievements", headers=node.headers())
     assert response.status_code == 200, f"achievements on {node.name}: {response.status_code}"
-    return {(a["name"], a["tier"], a["key"]) for a in response.json()["results"]}
+    return {(a["name"], a.get("tier"), a.get("key")) for a in response.json()["results"]}  # 1.0 serves no key
 
 
 def run_platinum(previous_ref: str, previous_dir: Path | None = None) -> dict[str, Any]:
@@ -540,16 +546,94 @@ def run_relations(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | Non
     return report
 
 
+def _date_keys(node: Node, cid: str) -> dict[str, Any]:
+    game = node.game(cid)
+    return {k: game.get(k) for k in ("release_date", "first_release", "releases", "release_year")}
+
+
+def run_rescan(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) -> dict[str, Any]:
+    """skew-1.0 rescan (Phase 4 defect D1): a real 1.0 follower drops a platinum list and a `releases` lock from a
+    1.4 authority without recording them; after an in-place upgrade `--rescan` must record both and
+    `--historical` must apply them."""
+    report: dict[str, Any] = {"drill": "skew-1.0-rescan", "started_at": datetime.now(UTC).isoformat(),
+                              "checks": [], "transport": "isolated loopback HTTP, development mode, SQLite"}
+    checks = report["checks"]
+    with tempfile.TemporaryDirectory(prefix="atlas-skew10r-", ignore_cleanup_errors=True) as folder, \
+            ExitStack() as stack:
+        root = Path(folder)
+        source, python, commit = _prepare(root, previous_ref, previous_dir)
+        report["previous"] = {"ref": previous_ref if previous_dir is None else str(previous_dir), "commit": commit}
+        report["current"] = {"commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
+                                                      text=True).stdout.strip()}
+        authority = Node(root, "authority-1.4", "authority", extra_env={"ATLAS_EMIT_PROTOCOL": "1.4"})
+        follower = PreviousNode(root, "local-1.0", "local", source, python)
+        for node in (authority, follower):
+            stack.callback(node.close)
+            node.start()
+        old_info = follower.client.get("/api/v2/sync/info", headers=follower.headers()).json()
+        assert "protocol" not in old_info, old_info.get("protocol")  # a 1.0 release advertises none
+        checks.append("the follower runs a 1.0 release; the authority emits 1.4")
+
+        curator = authority.headers(authority.admin_token)
+        game, locked = authority.publish("Skew Rescan Game"), authority.publish("Skew Rescan Locked")
+        start = [{"name": "Start", "tier": "bronze"}]
+        assert authority.client.put(f"/api/v2/games/{game}/achievements", headers=curator,
+                                    json={"items": start}).status_code == 200
+        peer = follower.add_peer(authority)
+        assert follower.sync(peer) is None
+        assert {(n, t) for n, t, _ in _achievements(follower, game)} == {("Start", "bronze")}
+        response = authority.client.put(f"/api/v2/games/{game}/achievements", headers=curator,
+                                        json={"items": [*start, {"name": "All", "tier": "platinum"}]})
+        assert response.status_code == 200, response.text
+        response = authority.client.put(f"/api/v2/games/{locked}/locks/releases", headers=curator, json={
+            "value": [{"date": "2030", "precision": "year", "platform": "pc", "region": "ww", "category": "full"}]})
+        assert response.status_code == 200, response.text
+        later = authority.publish("Skew Rescan Later")
+        assert follower.sync(peer) is None  # no error, nothing recorded: the documented 1.0 limitation
+        assert {(n, t) for n, t, _ in _achievements(follower, game)} == {("Start", "bronze")}
+        assert follower.game(locked).get("releases") is None
+        assert follower.game(later)["title"] == "Skew Rescan Later"
+        checks.append("the 1.0 follower drops the platinum list and the releases lock silently and applies the "
+                      "later record")
+
+        follower.upgrade()
+        rescan = follower.cli("sync", "replay", "--rescan")
+        assert rescan.returncode == 3 and "recorded 2 parked" in rescan.stdout, (rescan.stdout, rescan.stderr)
+        with sqlite3.connect(follower.db_path) as db:
+            reasons = db.execute("SELECT kind, reason FROM sync_failure ORDER BY seq").fetchall()
+        assert reasons == [("achievements", "dropped_by_previous_release"),
+                           ("lock", "dropped_by_previous_release")], reasons
+        replay = follower.cli("sync", "replay", "--historical")
+        assert replay.returncode == 0, (replay.stdout, replay.stderr)
+        assert _achievements(follower, game) == _achievements(authority, game)
+        assert {t for _, t, _ in _achievements(follower, game)} == {"bronze", "platinum"}
+        assert _date_keys(follower, locked) == _date_keys(authority, locked)
+        assert len(_date_keys(follower, locked)["releases"]) == 1
+        again = follower.cli("sync", "replay", "--rescan")
+        assert again.returncode == 0 and "recorded 0 parked" in again.stdout, (again.stdout, again.stderr)
+        assert follower.sync(peer) is None
+        status = follower.cli("sync", "status", "--json")
+        assert status.returncode == 0, (status.stdout, status.stderr)
+        checks.append("after upgrading it in place, `atlas sync replay --rescan` records both entries as "
+                      "dropped_by_previous_release (exit 3), `--historical` applies them (achievements with keys "
+                      "and the regional releases equal the authority's), a second rescan records nothing and "
+                      "`atlas sync status` exits 0")
+    report["status"] = "passed"
+    report["finished_at"] = datetime.now(UTC).isoformat()
+    return report
+
+
 def main_cli() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--previous-ref", default=DEFAULT_PREVIOUS, help="git ref of the previous release")
     parser.add_argument("--previous-dir", type=Path,
                         help="an existing checkout of the previous release with its own .venv (skips git and uv)")
     parser.add_argument("--output", type=Path, help="write the JSON report here")
-    parser.add_argument("--scenario", choices=("1.0", "platinum", "dates", "relations"), default="1.0",
+    parser.add_argument("--scenario", choices=("1.0", "platinum", "dates", "relations", "rescan"), default="1.0",
                         help="1.0: the previous 1.0 release (default); platinum: a 1.1 release meets platinum; "
                              "dates: a 1.2 release meets partial and regional release dates; relations: any "
-                             "earlier release meets relations from a 1.4 authority")
+                             "earlier release meets relations from a 1.4 authority; rescan: a 1.0 release drops "
+                             "a platinum list and a releases lock, recovered after the upgrade")
     args = parser.parse_args()
     if args.scenario == "platinum":
         if args.previous_dir is None and args.previous_ref == DEFAULT_PREVIOUS:
@@ -561,6 +645,8 @@ def main_cli() -> None:
         report = run_dates(args.previous_ref, args.previous_dir)
     elif args.scenario == "relations":
         report = run_relations(args.previous_ref, args.previous_dir)
+    elif args.scenario == "rescan":
+        report = run_rescan(args.previous_ref, args.previous_dir)
     else:
         report = run(args.previous_ref, args.previous_dir)
     text = json.dumps(report, indent=2) + "\n"

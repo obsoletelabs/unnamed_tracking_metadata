@@ -34,10 +34,13 @@ from . import client_changes, feed_schema, key_rotation, matching, service
 from .contract import SourceObservationV1
 from .feed_schema import APPLY, PARK, PROTOCOL, QUARANTINE
 from .models import (
+    Achievement,
     AuditEntry,
     Canonical,
     Crosswalk,
     Lock,
+    MergeRecord,
+    MergeRecordItem,
     NodeState,
     Observation,
     Peer,
@@ -530,7 +533,18 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         from . import facets
 
         # A missing record or an invalid item raises: quarantined and retried, never silently dropped.
-        if kind == "artwork":
+        cid = body.get("canonical_id")
+        late = _late_merge(session, node_id, seq, cid) if kind == "achievements" else None
+        if kind == "achievements" and (late is not None or (
+                isinstance(cid, str) and _later_merges_into(session, node_id, seq, cid))):
+            # `replay --historical`: the list ran before a merge this feed made later
+            from .merge import source_class
+
+            at = _ENTRY_AT.get()
+            _achievements_as_they_ran(session, ctx, node_id, seq, body, late=late,
+                                      curated=source_class(body["source"]) in ("curator", "community"),
+                                      written_on=at.astimezone(UTC).date() if at is not None else None)
+        elif kind == "artwork":
             facets.set_artwork(session, ctx, body["canonical_id"], body["source"], body["items"],
                                redistributable=True, log=False)
         else:  # the authority's stored keys win, so mirror and authority publish the same keys (C2.2)
@@ -580,6 +594,10 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
             return NOOP
         service.detach_observation(session, ctx, body["observation_id"], new_id=body["new_canonical_id"], log=False,
                                    actor="sync")
+    elif kind in ("lock", "unlock") and (late := _late_merge(session, node_id, seq, body.get("canonical_id"))):
+        return _lock_through_merge(session, ctx, node_id, late, kind, body)
+    elif kind == "unlock" and _lock_carried_later(session, node_id, seq, body["canonical_id"], body["field"]):
+        return NOOP  # the lock there now came with a later merge: it was not there when this unlock ran
     elif kind == "lock":
         existing = session.get(Lock, (body["canonical_id"], body["field"]))
         if existing is not None and existing.local_only:
@@ -603,6 +621,166 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         return None  # Verified with the complete key history before any entry is applied.
     else:  # classify() parks unknown kinds; reaching here means the registry and this function disagree
         raise KeyError(f"no apply rule for feed kind {kind!r}")
+    return None
+
+
+# ---- entries on a record this feed merged later (`replay --historical`) -------------------------------------
+
+def _late_merge(session: Session, node_id: str, seq: int, cid: Any) -> MergeRecord | None:
+    """The live merge of `cid` this node applied from `node_id`'s own feed at a sequence after `seq`.
+
+    The entry at `seq` ran on `cid` while it was live on the authority, and that later merge carried the result to
+    the survivor. A follower that dropped the entry (a 1.0 release, Phase 4 D1) moved nothing, so a historical
+    replay must land the entry where the authority's merge put it. None when `cid` is live, or was merged here in
+    some other way (that case is not this feed's history, and the entry is refused as before)."""
+    if not isinstance(cid, str):
+        return None
+    row = session.get(Canonical, cid)
+    if row is None or row.merged_into is None:
+        return None
+    rec = session.scalars(select(MergeRecord).where(MergeRecord.src == cid, MergeRecord.reverted_at.is_(None))
+                          .order_by(MergeRecord.created_at.desc())).first()
+    if rec is None or rec.origin_node != node_id or rec.origin_seq is None or rec.origin_seq <= seq:
+        return None
+    return rec
+
+
+def _merge_items(session: Session, rec: MergeRecord, *kinds: str) -> dict[tuple[str, str], MergeRecordItem]:
+    return {(i.kind, i.ref): i for i in session.scalars(select(MergeRecordItem).where(
+        MergeRecordItem.merge_id == rec.id, MergeRecordItem.kind.in_(kinds)))}
+
+
+def _add_merge_item(session: Session, rec: MergeRecord, kind: str, ref: str, data: Any, hashed: str | None) -> None:
+    last = session.scalar(select(func.max(MergeRecordItem.n)).where(MergeRecordItem.merge_id == rec.id))
+    session.add(MergeRecordItem(merge_id=rec.id, n=(-1 if last is None else last) + 1, kind=kind, ref=ref[:900],
+                                data=data, data_hash=hashed))
+    rec.item_count = (rec.item_count or 0) + 1
+    session.flush()
+
+
+def _truncated(rec: MergeRecord) -> None:
+    if rec.truncated:  # a large sync merge kept identity items only: what it carried is not known here
+        raise AtlasError(f"this entry ran on {rec.src}, merged since into {rec.dst} by a merge whose snapshot was "
+                         "truncated, so where it would have landed is not known here", "merged_since")
+
+
+def _later_merges_into(session: Session, node_id: str, seq: int, cid: str) -> list[MergeRecord]:
+    """Live merges into `cid` this node applied from `node_id`'s feed after `seq`, oldest first: what they carried
+    was not on `cid` when the entry at `seq` ran on the authority."""
+    return list(session.scalars(select(MergeRecord).where(
+        MergeRecord.dst == cid, MergeRecord.reverted_at.is_(None), MergeRecord.origin_node == node_id,
+        MergeRecord.origin_seq > seq).order_by(MergeRecord.origin_seq)))
+
+
+def _carried_ids(session: Session, recs: list[MergeRecord]) -> set[str]:
+    return {ref for m in recs for _, ref in _merge_items(session, m, "ach")}
+
+
+def _carried(session: Session, rec: MergeRecord, source: str) -> list[Achievement]:
+    ids = sorted(ref for _, ref in _merge_items(session, rec, "ach"))
+    if not ids:
+        return []
+    return list(session.scalars(select(Achievement).where(Achievement.id.in_(ids), Achievement.source == source)))
+
+
+def _achievements_as_they_ran(session: Session, ctx: Ctx, node_id: str, seq: int, body: dict[str, Any], *,
+                              late: MergeRecord | None, curated: bool, written_on: Any) -> None:
+    """Replay a list exactly as it ran on the authority (`replay --historical` over merges this feed made later).
+
+    Rows a later merge carried onto the record are set aside while the list reconciles, then carried in again by
+    the merge's own rules (`facets.move_facets`: the record's duplicates win). When the record itself was merged
+    later (`late`), the rows that merge carried for this source come back to it for the duration, so the list
+    reconciles in place against them (ids and keys kept), and then move on to the survivor again. Rows the replay
+    adds there are recorded on the merge record as carried, so a later replay and an unmerge treat them as the
+    merge's own."""
+    from . import facets, merges
+    from .normalize import norm_namespace
+
+    cid, source = body["canonical_id"], norm_namespace(body["source"])
+    later = _later_merges_into(session, node_id, seq, cid)
+    for m in [*later, *([late] if late is not None else [])]:
+        _truncated(m)
+    record = session.get(Canonical, cid)
+    merged_into = record.merged_into  # type: ignore[union-attr]
+    if late is not None:  # first: what `late` carried includes what the later merges had carried onto `cid`
+        for r in _carried(session, late, source):
+            r.canonical_id = cid
+        record.merged_into = None  # type: ignore[union-attr]
+    for m in later:
+        for r in _carried(session, m, source):
+            r.canonical_id = m.src  # set aside on the record it came from (merged: nothing else lives there)
+    session.flush()
+    try:
+        facets.set_achievements(session, ctx, cid, source, body["items"], redistributable=True, log=False,
+                                adopt_keys=True, ordered=curated, written_on=written_on)
+    finally:
+        record.merged_into = merged_into  # type: ignore[union-attr]
+        session.flush()
+    for m in later:  # carried in again, as the merge did
+        facets.move_facets(session, m.src, cid, ctx.settings)
+    if late is None:
+        return
+    keys = {r.id: r.key for r in session.scalars(select(Achievement).where(Achievement.canonical_id == cid))}
+    survivor = service.follow(session, cid)
+    facets.move_facets(session, cid, survivor, ctx.settings)
+    items = _merge_items(session, late, "ach")
+    for aid, key in keys.items():
+        row = session.get(Achievement, aid)
+        if row is None:
+            continue  # a duplicate of the survivor's own row: the survivor's stays, as the merge decided
+        hashed = merges.data_hash(merges._ach_data(row))
+        item = items.get(("ach", aid))
+        if item is None:
+            _add_merge_item(session, late, "ach", aid, {"key": key}, hashed)
+        else:
+            item.data_hash = hashed  # what the merge would have carried, not an edit made on the survivor
+    service.touch_version(session, survivor, cause="local")
+
+
+def _lock_carried_later(session: Session, node_id: str, seq: int, cid: Any, field: str) -> bool:
+    """Whether a merge this feed made after `seq` carried a lock on `field` onto `cid`."""
+    if not isinstance(cid, str):
+        return False
+    return any(("lock", field) in _merge_items(session, m, "lock")
+               for m in _later_merges_into(session, node_id, seq, cid))
+
+
+def _lock_through_merge(session: Session, ctx: Ctx, node_id: str, rec: MergeRecord, kind: str,
+                        body: dict[str, Any]) -> str | None:
+    """Replay a lock or unlock as it ran on the authority: on the merged record before the merge. The merge then
+    moved the lock to the survivor unless the survivor had a lock on that field (its own wins: `lock_dropped`)."""
+    from . import merges
+
+    _truncated(rec)
+    field = body["field"]
+    survivor = service.follow(session, rec.src)
+    items = _merge_items(session, rec, "lock", "lock_dropped")
+    moved, dropped = items.get(("lock", field)), items.get(("lock_dropped", field))
+    lock = session.get(Lock, (survivor, field))
+    if dropped is not None or (lock is not None and (lock.local_only or lock.cleared)):
+        return NOOP  # the survivor's own lock, or this node's own pin or clear, wins
+    if kind == "unlock":
+        if moved is None or lock is None:
+            return NOOP  # the merge carried no lock for this field
+        session.delete(lock)
+        session.flush()
+        service.rebuild(session, ctx, survivor, cause="local")
+        return None
+    if lock is not None and moved is None:
+        return NOOP  # the survivor had its own lock at merge time: the merge kept it
+    value = service.clean_lock(field, body["value"], replicated=True)
+    if lock is None:
+        lock = Lock(canonical_id=survivor, field=field, value=value, set_by=node_id, local_only=False, cleared=False)
+        session.add(lock)
+    else:
+        lock.value, lock.set_by = value, node_id
+    session.flush()
+    hashed = merges.data_hash(merges._lock_data(lock))
+    if moved is None:
+        _add_merge_item(session, rec, "lock", field, None, hashed)
+    else:
+        moved.data_hash = hashed
+    service.rebuild(session, ctx, survivor, cause="local")
     return None
 
 
@@ -1117,7 +1295,161 @@ def rescan(session: Session, node_id: str) -> dict[str, int]:
                 _record(session, node_id, row.seq, row.kind, QUARANTINE, "invalid",
                         "InvalidEntry: observation fails the observation contract (found by rescan)", {"kind": "obs"})
                 counts["quarantined"] += 1
+    counts["parked"] += _rescan_replaced_state(session, node_id, applied)
     return counts
+
+
+#: Kinds whose entries replace a whole piece of state (a source's achievement list, one field's lock), so only the
+#: newest entry per piece says what this node should hold. A 1.0 release dropped such an entry when its value was
+#: new to it (a `platinum` tier, a `releases` lock) without recording anything (Phase 4 D1).
+_REPLACING = ("achievements", "lock", "unlock")
+
+
+def _state_key(kind: str, body: dict[str, Any]) -> tuple[str, str, str] | None:
+    cid = body.get("canonical_id")
+    if not isinstance(cid, str) or not cid.startswith("atlas:") or len(cid) > 40:
+        return None
+    if kind == "achievements":
+        from .normalize import norm_namespace
+
+        source = body.get("source")
+        return ("achievements", cid, norm_namespace(source)) if isinstance(source, str) and source else None
+    field = body.get("field")
+    return ("lock", cid, field) if isinstance(field, str) and field else None
+
+
+#: What a list entry says about each item that this node stores as given (C2.2 step 4). Translations (`i18n`),
+#: the order and percent dates are not compared: they never made a 1.0 release drop an entry.
+def _item_state(it: dict[str, Any]) -> tuple[Any, ...]:
+    return (it["external_id"], it["name"], it.get("description") or "", bool(it.get("hidden")), it.get("icon_url"),
+            it.get("locked_icon_url"), it.get("kind"), it.get("tier"), it.get("points"), it.get("global_percent"),
+            it.get("set") or "base", it.get("status"), it.get("locale"), it.get("icon_licence"),
+            it.get("icon_attribution"))
+
+
+def _row_state(r: Achievement) -> tuple[Any, ...]:
+    return (r.external_id, r.name, r.description or "", bool(r.hidden), r.icon_url, r.locked_icon_url, r.kind,
+            r.tier, r.points, r.global_percent, r.set_key or "base", r.status, r.text_locale, r.icon_licence,
+            r.icon_attribution)
+
+
+def _replaced_state_holds(session: Session, node_id: str, seq: int, kind: str, body: dict[str, Any]) -> bool:
+    """Whether this node holds what the newest `achievements`/`lock`/`unlock` entry for its piece of state says.
+
+    On a record this feed merged after the entry, the entry is judged where the authority's merge put it: on the
+    survivor, by the merge's rules (the rows and lock it carried, the survivor's own duplicates winning)."""
+    from .achievement_key import norm_name
+    from .facets import clean_achievements
+    from .normalize import norm_namespace
+
+    cid = body["canonical_id"]
+    record = session.get(Canonical, cid)
+    if record is None:
+        return False  # the entry's record never arrived (its observation was dropped as well)
+    late = None
+    if record.merged_into is not None:
+        late = _late_merge(session, node_id, seq, cid)
+        if late is None:
+            return True  # merged here in another way: not this feed's history, nothing to replay it onto
+        if late.truncated:
+            return False  # replay records why it cannot land it (quarantined), instead of nothing
+    if kind == "achievements":
+        try:
+            wanted = clean_achievements(json.loads(json.dumps(body.get("items") or [])))
+        except (AtlasError, TypeError, ValueError):
+            return False  # replay records why this release refuses it (quarantined), instead of nothing
+        source = norm_namespace(body["source"])
+        if late is None:  # rows a later merge carried here were not here when the entry ran
+            arrived = _carried_ids(session, _later_merges_into(session, node_id, seq, cid))
+            have = [r for r in session.scalars(select(Achievement).where(
+                Achievement.canonical_id == cid, Achievement.source == source, Achievement.retired_at.is_(None)))
+                if r.id not in arrived]
+            return sorted(map(_row_state, have)) == sorted(map(_item_state, wanted))
+        carried_ids = _carried_ids(session, [late])
+        chain = _merge_chain(session, cid)
+        arrived = _carried_ids(session, [m for other in chain[1:]
+                                         for m in _later_merges_into(session, node_id, late.origin_seq or seq, other)])
+        rows = [r for r in session.scalars(select(Achievement).where(
+            Achievement.canonical_id == chain[-1], Achievement.source == source)) if r.id not in arrived]
+        own = [r for r in rows if r.id not in carried_ids]  # the survivor's own rows win over carried duplicates
+        own_ident = {(r.external_id, r.norm_name) for r in own}
+        own_keys = {r.key for r in own}
+        wanted = [i for i in wanted if (i["external_id"], norm_name(i["name"])) not in own_ident
+                  and i.get("key") not in own_keys]
+        joined = _carried_ids(session, _later_merges_into(session, node_id, seq, cid))  # not the entry's rows
+        have = [r for r in rows if r.id in carried_ids and r.id not in joined and r.retired_at is None]
+        return sorted(map(_row_state, have)) == sorted(map(_item_state, wanted))
+    target = cid if late is None else service.follow(session, cid)
+    lock = session.get(Lock, (target, body["field"]))
+    if lock is not None and (lock.local_only or lock.cleared):
+        return True  # this node's own pin or clear wins over the feed (as when the entry is applied)
+    if late is not None:
+        items = _merge_items(session, late, "lock", "lock_dropped")
+        if ("lock_dropped", body["field"]) in items:
+            return True  # the survivor's own lock won the merge
+        moved = ("lock", body["field"]) in items
+        if kind == "unlock":
+            return not (moved and lock is not None)
+        if lock is not None and not moved:
+            return True  # the survivor had its own lock at merge time: the merge kept it
+    if kind == "unlock":
+        return lock is None or _lock_carried_later(session, node_id, seq, cid, body["field"])
+    if lock is None:
+        return False
+    try:
+        return lock.value == service.clean_lock(body["field"], body.get("value"), replicated=True)
+    except AtlasError:
+        return False
+
+
+def _merge_chain(session: Session, cid: str) -> list[str]:
+    """`cid` and every record it was merged into since, survivor last (the same bounded walk as `follow`)."""
+    chain = [cid]
+    for _ in range(20):
+        row = session.get(Canonical, chain[-1])
+        if row is None or row.merged_into is None:
+            break
+        chain.append(row.merged_into)
+    return chain
+
+
+def _rescan_replaced_state(session: Session, node_id: str, applied: int) -> int:
+    """Rescan step for entries that replace state (`_REPLACING`): park the newest entry per piece of state when
+    this node does not hold what it says (`dropped_by_previous_release`). Older entries for the same piece are
+    left alone: `replay --historical` re-applies the whole range from the oldest parked entry, in feed order, so
+    the newest one wins as it did on the authority. An entry on a record merged since is judged on the survivor,
+    unless a later entry on a record of its merge chain replaced that piece there (that one decides). Idempotent:
+    once applied, the state holds and nothing is recorded again."""
+    newest: dict[tuple[str, str, str], int] = {}
+    rows = session.execute(select(ReplicatedChange.seq, ReplicatedChange.kind, ReplicatedChange.body).where(
+        ReplicatedChange.node_id == node_id, ReplicatedChange.seq <= applied,
+        ReplicatedChange.kind.in_(_REPLACING)).order_by(ReplicatedChange.seq).execution_options(yield_per=500))
+    for seq, kind, body in rows:
+        key = _state_key(kind, body if isinstance(body, dict) else {})
+        if key is not None:
+            newest[key] = seq
+    parked = 0
+    for (group, cid, piece), seq in sorted(newest.items(), key=lambda kv: kv[1]):
+        chain = _merge_chain(session, cid)
+        if len(chain) > 1:
+            late = _late_merge(session, node_id, seq, cid)
+            after = late.origin_seq if late is not None and late.origin_seq is not None else seq
+            if any(newest.get((group, other, piece), -1) > after for other in chain[1:]):
+                continue  # an entry after the merge replaced this piece on the survivor: that one decides
+        existing = session.get(SyncFailure, (node_id, seq))
+        if existing is not None and existing.resolved_at is None:
+            continue  # already tracked (parked, quarantined or skipped by the administrator)
+        entry = session.get(ReplicatedChange, (node_id, seq))
+        outcome = feed_schema.classify(entry.kind, entry.body)
+        if outcome.action != APPLY:
+            continue  # the main rescan loop recorded it
+        if _replaced_state_holds(session, node_id, seq, entry.kind, outcome.body or {}):
+            continue
+        _record(session, node_id, seq, entry.kind, PARK, "dropped_by_previous_release",
+                f"an earlier release skipped this {entry.kind} entry; `atlas sync replay --historical` applies it",
+                {"kind": entry.kind})
+        parked += 1
+    return parked
 
 
 def skip(session: Session, ctx: Ctx, node_id: str, seq: int, reason: str, *, actor_id: str | None = None,

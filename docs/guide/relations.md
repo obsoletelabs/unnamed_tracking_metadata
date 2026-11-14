@@ -103,8 +103,13 @@ Each change is one signed `relation` entry: `{"op": "add", "from", "to", "type",
 `{"op": "end", "from", "to", "type"}`. Followers apply them in feed order and follow merge redirects.
 
 * Below `emit_protocol` **1.4** an authority keeps relations local and signs nothing; once a relation was
-  published it cannot be removed until the protocol is 1.4 again (HTTP 409). Raising the protocol does not
-  publish relations made earlier: remove and add them again to publish them.
+  published it cannot be removed until the protocol is 1.4 again (HTTP 409). While gated,
+  `PUT /games/{id}/relations` answers `published: false` with `reason: "emit_protocol"` and `pending` (how many
+  of the record's own relations wait to be signed); a mirror or local node answers `published: false`,
+  `reason: "local_node"`. Raising the protocol does not publish relations made earlier by itself: put the
+  record's relations again (or add the same relation again in the editor) and the ones still waiting are signed
+  then, once each (`changed.published` counts them). A relation stored while gated and removed before it was
+  ever signed is ended on the authority only; no `end` is signed for it, since followers never had it.
 * A follower of 1.1, 1.2 or 1.3 **parks** the first `relation` entry (`unsupported_kind`) and holds back what
   follows, then applies everything in order after it is upgraded (see
   [Compatibility and upgrades](federation.md#compatibility-and-upgrades)).

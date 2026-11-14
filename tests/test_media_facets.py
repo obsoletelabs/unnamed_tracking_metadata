@@ -292,7 +292,7 @@ def test_api_artwork_achievements_and_media(api, tmp_path):
     cid = api.post("/api/v2/observations", json=body).json()["results"][0]["atlas"]["canonical_id"]
     assert api.put(f"/api/v2/games/{cid}/artwork", json={"items": [
         {"kind": "key_art", "url": "https://img.test/c.png"}, {"kind": "screenshot", "url": "https://img.test/s.png"}
-    ]}).json() == {"count": 2}
+    ]}).json() == {"count": 2, "stored": 2, "skipped": []}
     assert api.put(f"/api/v2/games/{cid}/artwork", json={"items": [{"kind": "x", "url": "https://a.b/c"}]}
                    ).status_code == 400
     assert api.put(f"/api/v2/games/{cid}/achievements", json={"items": [
