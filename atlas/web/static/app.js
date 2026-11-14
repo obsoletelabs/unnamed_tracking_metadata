@@ -147,3 +147,30 @@ document.addEventListener("DOMContentLoaded", function () {
   var f = document.querySelector("form[data-autosubmit]");
   if (f) { f.submit(); }
 });
+
+// Phone header (U1): the Menu button opens and closes the main navigation. Without scripts the navigation is
+// simply always shown (the collapse needs html.js, set by early.js). Escape closes it and returns focus.
+(function () {
+  var toggle = document.querySelector("[data-nav-toggle]");
+  var nav = document.getElementById("site-nav");
+  if (!toggle || !nav) { return; }
+  function set(open) {
+    nav.classList.toggle("open", open);
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  toggle.addEventListener("click", function () { set(toggle.getAttribute("aria-expanded") !== "true"); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && nav.classList.contains("open")) { set(false); toggle.focus(); }
+  });
+})();
+
+// A tab bar that scrolls sideways on a phone starts with its current tab in view (no vertical page jump).
+(function () {
+  var bars = document.querySelectorAll("[data-scroll-current]");
+  for (var i = 0; i < bars.length; i += 1) {
+    var bar = bars[i], cur = bar.querySelector("[aria-current=page]");
+    if (cur && bar.scrollWidth > bar.clientWidth) {
+      bar.scrollLeft = Math.max(0, cur.offsetLeft - bar.offsetLeft - 110);  // keeps the group label in view too
+    }
+  }
+})();
