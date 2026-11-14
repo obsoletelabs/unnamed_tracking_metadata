@@ -1,12 +1,13 @@
 import re
+import time
 from html import unescape
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
-from atlas import main, service
-from atlas.models import Proposal, Token, User
+from atlas import main, service, sync
+from atlas.models import NodeState, Proposal, Token, User
 
 from .conftest import batch, build_settings
 
@@ -26,10 +27,27 @@ def site(tmp_path):
                              system=True)
         sess.commit()
     with TestClient(app, base_url="http://localhost:8000", follow_redirects=False) as c:
+        _wait_for_startup_replay(st)
         c.gid = r.canonical_id
         c.st = st
         c.st_app = app
         yield c
+
+
+def _wait_for_startup_replay(st, timeout=30.0):
+    """The app's atlas-sync thread runs `sync.startup_replay` once at startup. Wait until it has finished
+    (it writes the `sync_replayed_for` marker), so it cannot apply entries a test seeds afterwards: on SQLite
+    its write lock waits for the test's own setup transaction, then replays what that transaction inserted."""
+    marker = sync.replay_marker()
+    deadline = time.monotonic() + timeout
+    while True:
+        with st.maker() as sess:
+            row = sess.get(NodeState, "sync_replayed_for")
+            if row is not None and row.value == marker:
+                return
+        if time.monotonic() > deadline:
+            raise AssertionError(f"the startup replay did not finish within {timeout}s")
+        time.sleep(0.01)
 
 
 def token(client, path="/login") -> str:

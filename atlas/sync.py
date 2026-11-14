@@ -24,7 +24,7 @@ from typing import Any
 
 import httpx
 from pydantic import ValidationError
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from . import client_changes, feed_schema, key_rotation, service
@@ -665,6 +665,7 @@ def negotiate(info: dict[str, Any]) -> str:
 
 def _record_refusal(maker: sessionmaker[Session], node_id: str, upstream_url: str, exc: SyncRefused) -> None:
     with maker() as session:
+        service.write_lock(session)  # concurrent pulls of one upstream would both insert the row
         _set_state(session, "sync_refused:" + node_id, json.dumps(
             {"reason": exc.reason, "upstream_protocol": exc.upstream_protocol, "at": datetime.now(UTC).isoformat()},
             sort_keys=True))
@@ -675,6 +676,7 @@ def _record_refusal(maker: sessionmaker[Session], node_id: str, upstream_url: st
 def _record_rewind(maker: sessionmaker[Session], node_id: str, exc: SyncRewound) -> None:
     """Remember a detected rewind or fork in its own transaction (the pull itself rolled back)."""
     with maker() as session:
+        service.write_lock(session)
         _set_state(session, "sync_rewound:" + node_id, json.dumps(
             {"reason": str(exc)[:500], "kind": exc.kind, "advertised_head": exc.advertised,
              "verified_head": exc.verified, "at": datetime.now(UTC).isoformat()}, sort_keys=True))
@@ -689,6 +691,8 @@ def _note_peer_protocol(session: Session, node_id: str, upstream_url: str, proto
 def _note_downloaded(maker: sessionmaker[Session], node_id: str, seq: int) -> None:
     """Highest sequence fetched, in its own short transaction so it survives a page that fails to verify."""
     with maker() as session:
+        # Read-then-write: without the lock two concurrent pulls both see no row and both insert it (D2).
+        service.write_lock(session)
         current = _int_state(session, "sync_downloaded:" + node_id) or 0
         if seq > current:
             _set_state(session, "sync_downloaded:" + node_id, str(seq))
@@ -811,9 +815,7 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
                      relay: bool, upstream_url: str, transport_protocol: str, feed_protocol: str | None) -> None:
     with maker() as session:
         try:
-            if session.get_bind().dialect.name == "sqlite":
-                session.execute(text("BEGIN IMMEDIATE"))
-            service.write_lock(session)
+            service.write_lock(session)  # SQLite: BEGIN IMMEDIATE (atlas.db); PostgreSQL: advisory lock
             expected = since
             try:
                 key_rotation.remember(session, node_id, history)
