@@ -69,15 +69,21 @@ def require(scope: str):
         session: Annotated[Session, Depends(get_session, scope="function")],
         authorization: Annotated[str | None, Header()] = None,
     ) -> auth.Principal:
+        from ..instruments import authorization as decisions
+
         principal = auth.authenticate(session, authorization)
         key = _client_key(request, principal)
         ok, retry = ratelimit.hit(st.maker, key, st.ctx.settings.rate_limit_per_minute if principal else 60)
         if not ok:
+            decisions.inc(scope=scope, decision="denied", reason="rate_limited")
             raise HTTPException(429, "rate limit exceeded", headers={"Retry-After": str(retry)})
         if principal is None:
+            decisions.inc(scope=scope, decision="denied", reason="missing_token")
             raise HTTPException(401, "missing or invalid token", headers={"WWW-Authenticate": "Bearer"})
         if not principal.allows(scope):
+            decisions.inc(scope=scope, decision="denied", reason="insufficient_scope")
             raise HTTPException(403, f"token lacks the {scope!r} scope")
+        decisions.inc(scope=scope, decision="allowed", reason="ok")
         return principal
 
     dep.required_scope = scope  # type: ignore[attr-defined]  # read by tools/gen_docs.py

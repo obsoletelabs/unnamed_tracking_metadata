@@ -61,6 +61,13 @@ def pkce_challenge(verifier: str) -> str:
 
 # ---- JWT (EdDSA only) ---------------------------------------------------------------------------------
 
+def _refusal(message: str, reason: str) -> AtlasError:
+    """An AtlasError carrying a bounded metrics outcome (instruments.IDENTITY_OUTCOMES / TOKEN_OUTCOMES)."""
+    exc = AtlasError(message)
+    exc.metric_reason = reason  # type: ignore[attr-defined]
+    return exc
+
+
 def sign_jwt(identity: NodeIdentity, claims: dict[str, Any]) -> str:
     header = b64u(json.dumps({"alg": "EdDSA", "typ": "JWT", "kid": identity.node_id}, separators=(",", ":")).encode())
     body = b64u(json.dumps(claims, separators=(",", ":"), default=str).encode())
@@ -229,27 +236,28 @@ def claims_for(user: User, scope: str) -> dict[str, Any]:
 def exchange_code(session: Session, ctx: Ctx, client: OidcClient, code: str, redirect_uri: str,
                   verifier: str) -> dict[str, Any]:
     row = session.get(OidcCode, sha(code or ""))
-    err = AtlasError("invalid_grant")
     if row is None or row.client_id != client.client_id:
-        raise err
+        raise _refusal("invalid_grant", "invalid")
     if row.used_at is not None:  # reuse: revoke what this code produced
         session.execute(delete(OidcAccess).where(OidcAccess.client_id == client.client_id,
                                                  OidcAccess.user_id == row.user_id))
         session.commit()
-        raise err
+        raise _refusal("invalid_grant", "reused")
     row.used_at = now()
     session.commit()  # a code is burned by any attempt, successful or not
     exp = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=now().tzinfo)
-    if exp <= now() or row.redirect_uri != redirect_uri:
-        raise err
+    if exp <= now():
+        raise _refusal("invalid_grant", "expired")
+    if row.redirect_uri != redirect_uri:
+        raise _refusal("invalid_grant", "redirect_mismatch")
     if row.challenge:
         if not hmac.compare_digest(pkce_challenge(verifier or ""), row.challenge):
-            raise err
+            raise _refusal("invalid_grant", "pkce_failed")
     elif client.require_pkce:
-        raise err
+        raise _refusal("invalid_grant", "pkce_failed")
     user = session.get(User, row.user_id)
     if user is None or user.status != "active" or user.deleted_at is not None:
-        raise err
+        raise _refusal("invalid_grant", "account_unavailable")
     access = secrets.token_urlsafe(32)
     session.add(OidcAccess(id=sha(access), client_id=client.client_id, user_id=user.id, scope=row.scope,
                            expires_at=now() + ACCESS_TTL))
@@ -264,17 +272,27 @@ def exchange_code(session: Session, ctx: Ctx, client: OidcClient, code: str, red
 
 
 def userinfo(session: Session, access_token: str) -> dict[str, Any] | None:
+    from . import instruments
+
+    claims, outcome = _userinfo(session, access_token)
+    instruments.token_operations.inc(token="access_token", operation="validate", outcome=outcome)
+    return claims
+
+
+def _userinfo(session: Session, access_token: str) -> tuple[dict[str, Any] | None, str]:
     row = session.get(OidcAccess, sha(access_token or ""))
     if row is None:
-        return None
+        return None, "invalid"
     client = session.get(OidcClient, row.client_id)
     if client is None or not client.enabled:  # disabling an application ends its access immediately
-        return None
+        return None, "client_disabled"
     exp = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=now().tzinfo)
     user = session.get(User, row.user_id)
-    if exp <= now() or user is None or user.status != "active" or user.deleted_at is not None:
-        return None
-    return claims_for(user, row.scope)
+    if exp <= now():
+        return None, "expired"
+    if user is None or user.status != "active" or user.deleted_at is not None:
+        return None, "account_unavailable"
+    return claims_for(user, row.scope), "ok"
 
 
 def purge(session: Session) -> None:
@@ -333,36 +351,37 @@ def finish_login(session: Session, ctx: Ctx, http: Any, issuer: OidcIssuer, code
     """Complete the callback. Returns (user, next_url, linked_now). Raises AtlasError with a user-safe message."""
     row = session.get(OidcState, sha(state or ""))
     if row is None or row.issuer_id != issuer.id:
-        raise AtlasError("This sign-in attempt is unknown or was already used. Start again.")
+        raise _refusal("This sign-in attempt is unknown or was already used. Start again.", "state_invalid")
     session.delete(row)  # single use, even if the rest fails
     session.commit()
     if not row.binding or not hmac.compare_digest(row.binding, sha(binding or "")):
-        raise AtlasError("This sign-in was started in a different browser. Start again here.")
+        raise _refusal("This sign-in was started in a different browser. Start again here.", "browser_mismatch")
     if row.link_user_id and current_user_id != row.link_user_id:
-        raise AtlasError("This link request belongs to another signed-in user. Start again.")
+        raise _refusal("This link request belongs to another signed-in user. Start again.", "browser_mismatch")
     exp = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=now().tzinfo)
     if exp <= now():
-        raise AtlasError("This sign-in attempt expired. Start again.")
+        raise _refusal("This sign-in attempt expired. Start again.", "state_expired")
     try:
         secret = secrets_box.decrypt(ctx.settings, issuer.client_secret_enc)
         resp = http.post(issuer.token_endpoint, data={
             "grant_type": "authorization_code", "code": code, "client_id": issuer.client_id, "client_secret": secret,
             "redirect_uri": f"{ctx.settings.public_url}/oidc/callback/{issuer.id}", "code_verifier": row.verifier})
         if resp.status_code != 200:
-            raise AtlasError("The provider refused the sign-in.")
+            raise _refusal("The provider refused the sign-in.", "provider_refused")
         id_token = resp.json()["id_token"]
         claims = verify_jwt(id_token, public_key_b64=issuer.public_key, kid=issuer.node_id, issuer=issuer.issuer_url,
                             audience=issuer.client_id, nonce=row.nonce)
     except (secrets_box.SecretsError, httpx.HTTPError, KeyError, ValueError, TokenError) as exc:
-        raise AtlasError(f"Could not verify the provider's answer ({type(exc).__name__}).") from exc
+        raise _refusal(f"Could not verify the provider's answer ({type(exc).__name__}).",
+                       "verification_failed") from exc
     subject = claims["sub"][:200]
     link = session.get(OidcLink, (issuer.id, subject))
     if row.link_user_id:  # an explicit "link this to my account" flow
         user = session.get(User, row.link_user_id)
         if user is None or user.status != "active" or user.deleted_at is not None:
-            raise AtlasError("Your session ended. Sign in and try again.")
+            raise _refusal("Your session ended. Sign in and try again.", "account_unavailable")
         if link is not None and link.user_id != user.id:
-            raise AtlasError("That external account is already linked to someone else.")
+            raise _refusal("That external account is already linked to someone else.", "link_conflict")
         _require_allowed(issuer, user)
         if link is None:
             session.add(OidcLink(issuer_id=issuer.id, subject=subject, user_id=user.id))
@@ -370,14 +389,14 @@ def finish_login(session: Session, ctx: Ctx, http: Any, issuer: OidcIssuer, code
     if link is not None:
         user = session.get(User, link.user_id)
         if user is None or user.status != "active" or user.deleted_at is not None:
-            raise AtlasError("This account is not available.")
+            raise _refusal("This account is not available.", "account_unavailable")
         _require_allowed(issuer, user)
         return user, row.next_url, False
     if not issuer.auto_create:
-        raise AtlasError("No account here is linked to that identity. Sign in with your password, then link it "
-                         "from your profile settings.")
+        raise _refusal("No account here is linked to that identity. Sign in with your password, then link it "
+                       "from your profile settings.", "no_account")
     if ctx.settings.registration != "open":
-        raise AtlasError("This server is not accepting new accounts.")
+        raise _refusal("This server is not accepting new accounts.", "registration_closed")
     user = _create_account(session, issuer, claims)
     session.add(OidcLink(issuer_id=issuer.id, subject=subject, user_id=user.id))
     return user, row.next_url, True
@@ -385,7 +404,7 @@ def finish_login(session: Session, ctx: Ctx, http: Any, issuer: OidcIssuer, code
 
 def _require_allowed(issuer: OidcIssuer, user: User) -> None:
     if not (issuer.allow_all_users or user.oidc_allowed):
-        raise AtlasError("External sign-in is not enabled for this account. Ask an administrator.")
+        raise _refusal("External sign-in is not enabled for this account. Ask an administrator.", "not_allowed")
 
 
 def _create_account(session: Session, issuer: OidcIssuer, claims: dict[str, Any]) -> User:

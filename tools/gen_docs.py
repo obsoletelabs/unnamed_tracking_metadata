@@ -201,6 +201,11 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "require_mfa_for_privileged": ("Community", "Require TOTP enrolment and verified sessions for reviewers and admins."),
     "json_logs": ("Limits", "Opt-in structured request/application logs; no query, body or credential logging."),
     "metrics_enabled": ("Limits", "Enable `/metrics`; a `metrics`-scoped bearer token is required."),
+    "metrics_dir": ("Limits", "Several worker processes on one host: a private directory they share (writable by "
+                    "Atlas only). Each worker writes its counters there and any worker's `/metrics` reports all of "
+                    "them. Empty: every process reports only itself."),
+    "metrics_cache_seconds": ("Limits", "How long the expensive `/metrics` collectors (catalogue aggregates, the "
+                              "media directory walk) are cached in each process; 0 recomputes them on every scrape."),
     "auto_approve_reputation": ("Community", "Reputation from which a user's changes apply immediately (0 disables)."),
     "curator_reputation": ("Community", "Reputation that grants review rights (0 = only people you promote)."),
     "max_pending_proposals": ("Community", "Pending proposals per user."),

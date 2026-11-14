@@ -12,10 +12,11 @@ from typing import Any
 import httpx
 from sqlalchemy.orm import Session
 
+from .. import instruments as m
 from ..contract import ObservationBatchV1
 from ..models import ProviderCache, now
 from ..settings import Settings
-from .base import Provider, ProviderError, ProviderResult
+from .base import CURRENT_PROVIDER, Provider, ProviderError, ProviderResult
 from .igdb import Igdb
 from .openlibrary import OpenLibrary
 from .rawg import Rawg
@@ -105,21 +106,49 @@ class Fetcher:
         return session.get(ProviderCache, (provider, key))
 
     def _call(self, session: Session, p: Provider, kind: str, arg: str) -> list[ProviderResult] | None:
+        outcome = "error"
+        try:
+            results, outcome = self._call_inner(session, p, kind, arg)
+            return results
+        except ProviderError as exc:
+            outcome = "unavailable" if getattr(exc, "held_back", False) else "error"
+            raise
+        finally:
+            m.provider_calls.inc(provider=p.name, operation=kind, outcome=outcome)
+
+    def _held_back(self, p: Provider, reason: str, message: str) -> ProviderError:
+        m.provider_backoff.inc(provider=p.name, reason=reason)
+        exc = ProviderError(message)
+        exc.held_back = True  # type: ignore[attr-defined]
+        return exc
+
+    def _call_inner(self, session: Session, p: Provider, kind: str, arg: str
+                    ) -> tuple[list[ProviderResult], str]:
         key = f"{kind}:{arg.casefold()}"
         row = self._cached(session, p.name, key)
         fresh = row is not None and row.expires_at.replace(tzinfo=now().tzinfo) > now()
         if fresh:
-            return [] if row.negative else [ProviderResult(**r) for r in row.payload]
+            assert row is not None
+            m.provider_cache.inc(provider=p.name, result="negative_hit" if row.negative else "hit")
+            if row.negative:
+                return [], "negative_cache_hit"
+            return [ProviderResult(**r) for r in row.payload], "cache_hit"
+        m.provider_cache.inc(provider=p.name, result="miss")
         b = self._budget(p, kind)
         stale = None if row is None or row.negative else [ProviderResult(**r) for r in row.payload]
         if self._clock() < b.open_until:
             if stale is not None:
-                return stale
-            raise ProviderError(f"{p.name} is temporarily unavailable (circuit open)")
+                m.provider_backoff.inc(provider=p.name, reason="circuit_open")
+                m.provider_cache.inc(provider=p.name, result="stale")
+                return stale, "stale_served"
+            raise self._held_back(p, "circuit_open", f"{p.name} is temporarily unavailable (circuit open)")
         if not b.take():
             if stale is not None:
-                return stale
-            raise ProviderError(f"{p.name} request budget exhausted; retry shortly")
+                m.provider_backoff.inc(provider=p.name, reason="budget_exhausted")
+                m.provider_cache.inc(provider=p.name, result="stale")
+                return stale, "stale_served"
+            raise self._held_back(p, "budget_exhausted", f"{p.name} request budget exhausted; retry shortly")
+        token = CURRENT_PROVIDER.set(p.name)
         try:
             if kind == "search":
                 results = p.search(self.client, arg)
@@ -133,9 +162,13 @@ class Fetcher:
             if b.failures >= 5:
                 b.open_until = self._clock() + 60
                 b.failures = 0
+                m.provider_backoff.inc(provider=p.name, reason="circuit_tripped")
             if stale is not None:
-                return stale
+                m.provider_cache.inc(provider=p.name, result="stale")
+                return stale, "stale_served"
             raise
+        finally:
+            CURRENT_PROVIDER.reset(token)
         b.failures = 0
         ttl = self.settings.provider_ttl_seconds if results else self.settings.provider_negative_ttl_seconds
         payload: list[dict[str, Any]] = [r.__dict__ for r in results]
@@ -146,7 +179,7 @@ class Fetcher:
             row.payload, row.negative, row.fetched_at = payload, not results, now()
             row.expires_at = now() + timedelta(seconds=ttl)
         session.flush()
-        return results
+        return results, "ok" if results else "empty"
 
     def lookup(self, session: Session, provider: str, *, query: str | None = None,
                external_id: str | None = None) -> list[ProviderResult]:
@@ -191,19 +224,42 @@ class Fetcher:
         fn = getattr(p, method, None)
         if p is None or fn is None or not (provider_obj is not None or _SAFE_ID.match(str(external_id))):
             return empty
+        outcome = "error"
+        try:
+            data, outcome = self._cached_call_inner(session, p, fn, key, empty, call)
+            return data
+        finally:
+            m.provider_calls.inc(provider=p.name, operation=method, outcome=outcome)
+
+    def _cached_call_inner(self, session: Session, p: Provider, fn: Any, key: str, empty: Any, call: Any
+                           ) -> tuple[Any, str]:
         row = self._cached(session, p.name, key)
         if row is not None and row.expires_at.replace(tzinfo=now().tzinfo) > now():
-            return empty if row.negative else row.payload
+            m.provider_cache.inc(provider=p.name, result="negative_hit" if row.negative else "hit")
+            return (empty, "negative_cache_hit") if row.negative else (row.payload, "cache_hit")
+        m.provider_cache.inc(provider=p.name, result="miss")
+        usable = row is not None and not row.negative
         b = self._budget(p, "fetch")
         if self._clock() < b.open_until or not b.take():
-            return empty if row is None or row.negative else row.payload
+            reason = "circuit_open" if self._clock() < b.open_until else "budget_exhausted"
+            m.provider_backoff.inc(provider=p.name, reason=reason)
+            if usable:
+                m.provider_cache.inc(provider=p.name, result="stale")
+                return row.payload, "stale_served"  # type: ignore[union-attr]
+            return empty, "unavailable"
+        token = CURRENT_PROVIDER.set(p.name)
         try:
             data = call(p, fn)
         except ProviderError:
             with self._lock:
                 self._failure_counts[p.name] = self._failure_counts.get(p.name, 0) + 1
             b.failures += 1
-            return empty if row is None or row.negative else row.payload
+            if usable:
+                m.provider_cache.inc(provider=p.name, result="stale")
+                return row.payload, "stale_served"  # type: ignore[union-attr]
+            return empty, "error"
+        finally:
+            CURRENT_PROVIDER.reset(token)
         b.failures = 0
         ttl = self.settings.provider_ttl_seconds if data else self.settings.provider_negative_ttl_seconds
         if row is None:
@@ -213,7 +269,7 @@ class Fetcher:
             row.payload, row.negative, row.fetched_at = data, not data, now()
             row.expires_at = now() + timedelta(seconds=ttl)
         session.flush()
-        return data
+        return data, "ok" if data else "empty"
 
     def as_batch(self, provider: str, results: list[ProviderResult]) -> ObservationBatchV1 | None:
         if not results:

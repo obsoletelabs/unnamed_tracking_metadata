@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from atlas import auth, main, readiness
 from atlas.models import Outbox
-from atlas.observability import ERROR_CLASSES, MAX_ROUTE_LABELS, RequestTelemetry, Stats
+from atlas.observability import COLLECTORS, ERROR_CLASSES, MAX_ROUTE_LABELS, RequestTelemetry, Stats
 
 from .conftest import build_settings
 
@@ -346,7 +346,7 @@ def test_a_collector_that_raises_something_unexpected_is_isolated_and_timed(tmp_
         assert 'atlas_collector_success{collector="backup"} 0' in body and "atlas_backup_enabled" not in body
         assert "secret-collector-detail" not in body
         durations = series(body, "atlas_collector_duration_seconds")
-        assert len(durations) == 7 and all(v >= 0 for v in durations.values())
+        assert len(durations) == len(COLLECTORS) and all(v >= 0 for v in durations.values())
 
 
 def test_scope_and_opt_in_are_unchanged(tmp_path):

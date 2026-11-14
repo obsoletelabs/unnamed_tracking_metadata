@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     max_body_bytes: int = Field(default=2_000_000, ge=1024)
     json_logs: bool = False
     metrics_enabled: bool = False
+    # Several worker processes on one host: a directory they share, so any worker's /metrics reports all of them
+    metrics_dir: str | None = None
+    # How long the expensive collectors (catalogue aggregates, the media directory walk) are cached per process
+    metrics_cache_seconds: int = Field(default=300, ge=0, le=86400)
 
     # Providers (all optional)
     steam_enabled: bool = True

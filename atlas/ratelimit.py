@@ -33,6 +33,9 @@ def hit(maker: sessionmaker[Session], key: str, limit: int, window_seconds: int 
         row = s.get(RateCounter, (key, window))
         count = row.count if row else 1
         s.commit()
+    from .instruments import auth_rate_limit, rate_limit_operation
+
+    auth_rate_limit.inc(operation=rate_limit_operation(key), decision="allowed" if count <= limit else "limited")
     return count <= limit, retry
 
 

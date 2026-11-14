@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -31,6 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from . import client_changes, feed_schema, key_rotation, matching, service
+from . import instruments as metric
 from .contract import SourceObservationV1
 from .feed_schema import APPLY, PARK, PROTOCOL, QUARANTINE
 from .models import (
@@ -58,7 +60,16 @@ NOOP = "noop"
 
 
 class SyncError(Exception):
+    #: Metrics class of a page refused before anything was applied (instruments.VERIFICATION_REASONS), or None
+    metric_reason: str | None = None
+
     pass
+
+
+def _refused(reason: str, message: str) -> SyncError:
+    exc = SyncError(message)
+    exc.metric_reason = reason
+    return exc
 
 
 class SyncRefused(SyncError):
@@ -1613,7 +1624,11 @@ def _note_downloaded(maker: sessionmaker[Session], node_id: str, seq: int) -> No
 
 # ---- the pull ----------------------------------------------------------------------------------------------
 
-def _apply_pending(session: Session, ctx: Ctx, node_id: str, *, limit: int | None = None) -> tuple[int, int]:
+_RESULT_LABEL = {APPLY: "applied", NOOP: "noop", PARK: "parked", QUARANTINE: "quarantined", WAIT: "waiting"}
+
+
+def _apply_pending(session: Session, ctx: Ctx, node_id: str, *, limit: int | None = None,
+                   tally: Counter[str] | None = None) -> tuple[int, int]:
     """Apply verified entries from applied+1 in order, stopping at the first one that parks.
     Returns (entries processed, new applied head); the cursor is updated here."""
     applied = applied_head(session, node_id)
@@ -1636,6 +1651,8 @@ def _apply_pending(session: Session, ctx: Ctx, node_id: str, *, limit: int | Non
         skipped = failure is not None and failure.disposition == QUARANTINE and failure.reason == "skipped"
         with entry_at(row.created_at):
             result = apply_entry(session, ctx, node_id, row.seq, row.kind, row.body, may_park=not skipped)
+        if tally is not None:
+            tally[_RESULT_LABEL.get(result, "applied")] += 1
         if result == PARK:
             break
         if result in (QUARANTINE, WAIT):
@@ -1675,9 +1692,63 @@ def inferred_follow(session: Session, peer_id: str) -> dict[str, Any] | None:
         return None
 
 
+class _PullState:
+    """Facts about the pull in progress that decide its metrics outcome (never labels)."""
+
+    def __init__(self) -> None:
+        self.relay = False
+        self.backlog_full = False
+
+
+_PULL_STATE: ContextVar[_PullState | None] = ContextVar("atlas_pull_state", default=None)
+
+
+def pull_outcome(exc: BaseException | None, fetched: int, state: _PullState) -> str:
+    """The `atlas_federation_batches_total` outcome of one pulled page; counts a verification class as well."""
+    if exc is None:
+        if state.backlog_full:
+            return "backlog_full"
+        return "ok" if fetched else "empty"
+    if isinstance(exc, SyncRefused):
+        metric.federation_verification.inc(reason="protocol")
+        return "refused"
+    if isinstance(exc, SyncRewound):  # its verification class was counted where it was detected
+        return "fork" if exc.kind == "fork" else "rewound"
+    if isinstance(exc, SyncError) and exc.metric_reason:
+        metric.federation_verification.inc(reason=exc.metric_reason)
+        return "untrusted" if exc.metric_reason in ("untrusted_key", "key_mismatch") else "verification_failed"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return "http_error"
+    if isinstance(exc, httpx.HTTPError):
+        return "transport_error"
+    return "error"
+
+
 def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upstream_url: str,
               token: str | None, trusted: dict[str, str] | None = None, *, follow: str | None = None,
               peer_id: str | None = None, timeout: float | None = None) -> int:
+    """`_pull_once`, recording exactly one `atlas_federation_batches_total` outcome per call."""
+    state = _PullState()
+    reset = _PULL_STATE.set(state)
+    fetched, failure = 0, None
+    try:
+        fetched = _pull_once(maker, ctx, client, upstream_url, token, trusted, follow=follow, peer_id=peer_id,
+                             timeout=timeout)
+        return fetched
+    except BaseException as exc:
+        failure = exc
+        raise
+    finally:
+        _PULL_STATE.reset(reset)
+        metric.federation_batches.inc(follow="relayed" if state.relay else "own",
+                                 outcome=pull_outcome(failure, fetched, state))
+
+
+def _pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upstream_url: str,
+               token: str | None, trusted: dict[str, str] | None = None, *, follow: str | None = None,
+               peer_id: str | None = None, timeout: float | None = None) -> int:
     """Negotiate, fetch one page from the verified head, verify and retain it, then apply in order.
     Returns the number of entries fetched. `trusted` maps node id -> public key. `follow` is the peer's explicit
     choice (C13 §7.4): `own` never falls back to a relayed feed, `relayed` always takes the pinned relayed feed;
@@ -1686,9 +1757,13 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
     keys = ctx.settings.trusted_keys if trusted is None else trusted
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     headers[feed_schema.PROTOCOL_HEADER] = PROTOCOL
+    state = _PULL_STATE.get() or _PullState()
+    fetch_started = time.monotonic()
     info = client.get(f"{upstream_url}/api/v2/sync/info", headers=headers, timeout=timeout or 15)
+    metric.federation_bytes.inc(len(info.content), request="info")
     info.raise_for_status()
     meta = top = info.json()
+    fetch_seconds = time.monotonic() - fetch_started
     node_id = meta["node_id"]
     relay = False
     available = {f.get("node_id") for f in meta.get("feeds", []) if isinstance(f, dict)}
@@ -1696,12 +1771,12 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
         # C13 §7.4: the operator chose this node's own feed. Never fall back to a feed it relays: a node that
         # answers with another identity is not the peer that was pinned.
         if node_id not in keys:
-            raise SyncError(f"this peer follows the node's own feed, but {upstream_url} now answers as {node_id}; "
-                            "check the address, or add the authority feed it relays as its own peer")
+            raise _refused("untrusted_key", f"this peer follows the node's own feed, but {upstream_url} now answers "
+                           f"as {node_id}; check the address, or add the authority feed it relays as its own peer")
     elif follow == FOLLOW_RELAYED:
         choices = available & keys.keys()
         if not choices:
-            raise SyncError(f"{upstream_url} no longer relays the pinned authority feed")
+            raise _refused("untrusted_key", f"{upstream_url} no longer relays the pinned authority feed")
         node_id = choices.pop()
         meta = next(f for f in meta["feeds"] if f.get("node_id") == node_id)
         relay = True
@@ -1713,6 +1788,7 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
             relay = True
         elif len(choices) > 1:
             raise SyncError("relay has several trusted feeds; configure a separate peer for each authority")
+    state.relay = relay
     if follow is None and peer_id is not None:
         inferred = FOLLOW_RELAYED if relay else FOLLOW_OWN
         _note_inferred(maker, peer_id, inferred, top.get("node_id") if relay else None)
@@ -1720,7 +1796,8 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
         _note_info(maker, node_id, top)
     pub = keys.get(node_id)
     if pub is None:
-        raise SyncError(f"upstream key {node_id} is not trusted (pin it under Admin → Peers or in ATLAS_TRUSTED_KEYS)")
+        raise _refused("untrusted_key",
+                       f"upstream key {node_id} is not trusted (pin it under Admin → Peers or in ATLAS_TRUSTED_KEYS)")
     try:
         transport_protocol = negotiate(top)
     except SyncRefused as exc:
@@ -1732,12 +1809,12 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
 
     import base64
     if key_id_for(base64.b64decode(pub)) != node_id:
-        raise SyncError("configured trusted key does not match its key id")
+        raise _refused("key_mismatch", "configured trusted key does not match its key id")
     try:
         history, signing_keys = key_rotation.validate_history(node_id, pub, meta.get("rotations", []),
                                                               meta.get("signing_key_id", node_id))
     except key_rotation.RotationError as exc:
-        raise SyncError(str(exc)) from exc
+        raise _refused("rotation", str(exc)) from exc
 
     with maker() as session:
         applied, verified = applied_head(session, node_id), verified_head(session, node_id)
@@ -1754,9 +1831,12 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
         params: dict[str, Any] = {"since": since, "limit": min(ctx.settings.sync_batch_size, room)}
         if relay:
             params["node_id"] = node_id
+        fetch_started = time.monotonic()
         resp = client.get(f"{upstream_url}/api/v2/sync/changes", params=params, headers=headers, timeout=timeout or 30)
+        metric.federation_bytes.inc(len(resp.content), request="changes")
         resp.raise_for_status()
         page = resp.json()
+        fetch_seconds += time.monotonic() - fetch_started
         entries = page["entries"]
         advertised_head = page.get("head")
         if entries and type(entries[-1].get("seq")) is int:
@@ -1764,7 +1844,10 @@ def pull_once(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upst
     else:
         log.warning("sync backlog for %s is full (%s entries held back behind a parked entry); not downloading",
                     node_id, held_back)
+        state.backlog_full = True
+    metric.federation_batch_duration.observe(fetch_seconds, stage="fetch")
     if (not relay and type(advertised_head) is int and advertised_head < verified):
+        metric.federation_verification.inc(reason="rewind")
         exc = SyncRewound(f"authority feed fork or rewind: it advertises head {advertised_head} but this node "
                           f"already verified {verified} of its signed entries (restored from an older backup?). "
                           "Nothing was applied; compare histories before trusting it again.",
@@ -1787,36 +1870,42 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
         try:
             service.write_lock(session)  # SQLite: BEGIN IMMEDIATE (atlas.db); PostgreSQL: advisory lock
             started = datetime.now(UTC)
+            verify_started = time.monotonic()
+            tally: Counter[str] = Counter({"received": len(entries)})
             expected = since
             try:
                 key_rotation.remember(session, node_id, history)
             except key_rotation.RotationError as exc:
-                raise SyncError(str(exc)) from exc
+                raise _refused("rotation", str(exc)) from exc
             retained_feed = session.get(ReplicatedFeed, node_id)
             if retained_feed is None:
                 session.add(ReplicatedFeed(node_id=node_id, public_key=pub))
                 session.flush()
             elif retained_feed.public_key != pub:
-                raise SyncError("retained authority key differs from the pinned key")
+                raise _refused("key_mismatch", "retained authority key differs from the pinned key")
             for e in entries:
                 if e["seq"] != expected + 1:
-                    raise SyncError(f"feed gap or rewind: expected {expected + 1}, got {e['seq']}")
+                    raise _refused("sequence", f"feed gap or rewind: expected {expected + 1}, got {e['seq']}")
                 if not isinstance(e.get("kind"), str) or not 0 < len(e["kind"]) <= 32:
-                    raise SyncError(f"entry {e['seq']} has a feed kind this node cannot store")
+                    raise _refused("kind", f"entry {e['seq']} has a feed kind this node cannot store")
                 if not key_rotation.check_entry(node_id, history, signing_keys, e):
-                    raise SyncError(f"bad signature on entry {e['seq']}")
+                    raise _refused("signature", f"bad signature on entry {e['seq']}")
                 retained_entry = session.get(ReplicatedChange, (node_id, e["seq"]))
+                tally["retained" if retained_entry is None else "duplicate"] += 1
                 if retained_entry is None:
                     session.add(ReplicatedChange(node_id=node_id, seq=e["seq"], kind=e["kind"], body=e["body"],
                                                  body_hash=e["body_hash"], signature=e["signature"], key_id=e["key_id"],
                                                  created_at=origin_time(e.get("created_at"))))
                 elif (retained_entry.body_hash, retained_entry.signature) != (e["body_hash"], e["signature"]):
+                    metric.federation_verification.inc(reason="fork")
                     raise SyncRewound(f"authority feed fork: already retained entry {e['seq']} changed",
                                       "fork", advertised_head if type(advertised_head) is int else None,
                                       verified_head(session, node_id))
                 expected = e["seq"]
             session.flush()
-            _apply_pending(session, ctx, node_id)
+            verify_seconds = time.monotonic() - verify_started
+            apply_started = time.monotonic()
+            _apply_pending(session, ctx, node_id, tally=tally)
             retry_failures(session, ctx, node_id, started=started)
             verified_now = verified_head(session, node_id)
             if type(advertised_head) is int and verified_now <= advertised_head < 2**63:
@@ -1840,6 +1929,11 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
         except Exception:
             session.rollback()
             raise
+    # Counted once the page committed: a page rolled back changed nothing and shows only as its pull outcome.
+    metric.federation_batch_duration.observe(verify_seconds, stage="verify")
+    metric.federation_batch_duration.observe(time.monotonic() - apply_started, stage="apply")
+    for result, n in tally.items():
+        metric.federation_entries.inc(n, result=result)
 
 
 def pull_all(maker: sessionmaker[Session], ctx: Ctx, client: httpx.Client, upstream_url: str,

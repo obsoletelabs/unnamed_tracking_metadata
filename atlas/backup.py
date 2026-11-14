@@ -416,3 +416,78 @@ def latest(settings: Settings) -> list[dict[str, Any]]:
         out.append({"name": f.name, "size": st.st_size, "when": datetime.fromtimestamp(st.st_mtime, UTC)})
     return out
 
+
+
+# ---- recovery evidence (#75) -------------------------------------------------------------------------------
+# Three separate facts, never inferred from one another: an archive exists (`latest`), an archive was verified
+# against its manifest (VERIFIED), and an archive was restored into an isolated database and its row counts
+# matched (DRILL). The last two are stored in node_state so every worker and replica reports the same time.
+
+VERIFIED = "backup:last_verified_at"
+DRILL = "backup:last_restore_drill_at"
+
+
+def record(engine: Engine, key: str, when: datetime | None = None) -> None:
+    """Store when a verification or drill passed. Never raises: the evidence is optional, the backup is not."""
+    from sqlalchemy.orm import Session
+
+    from .models import NodeState
+
+    try:
+        with Session(engine) as s:
+            db.sqlite_write_lock(s)  # a no-op except on SQLite
+            row = s.get(NodeState, key)
+            value = (when or datetime.now(UTC)).isoformat()
+            if row is None:
+                s.add(NodeState(key=key, value=value))
+            else:
+                row.value = value
+            s.commit()
+    except Exception:  # noqa: BLE001 - a busy or read-only database must not fail the backup itself
+        pass
+
+
+def recorded(session: Any, key: str) -> float | None:
+    """Unix time of the stored evidence, or None when it was never recorded."""
+    from .models import NodeState
+
+    row = session.get(NodeState, key)
+    if row is None:
+        return None
+    try:
+        when = datetime.fromisoformat(row.value)
+    except ValueError:
+        return None
+    return (when if when.tzinfo else when.replace(tzinfo=UTC)).timestamp()
+
+
+def drill(settings: Settings, path: Path, *, record_to: Engine | None = None) -> dict[str, Any]:
+    """Restore `path` into a throwaway SQLite database and media directory (never the live ones), and compare the
+    rows loaded with the manifest. On success the drill (and the verification it includes) is recorded in
+    `record_to` when given. Raises BackupError on any failure."""
+    path = Path(path)
+    manifest = verify(path)
+    with tempfile.TemporaryDirectory(prefix="atlas-drill-") as tmp:
+        url = "sqlite:///" + (Path(tmp) / "drill.db").as_posix()
+        isolated = settings.model_copy(update={"database_url": url, "media_dir": str(Path(tmp) / "media"),
+                                                "backup_dir": None})
+        try:
+            db.upgrade(url, manifest["revision"] or "head", settings=isolated)
+        except Exception as exc:  # noqa: BLE001 - an archive from a revision this release cannot build
+            raise BackupError(f"cannot prepare a database at revision {manifest['revision']!r}: "
+                              f"{type(exc).__name__}") from exc
+        engine = db.make_engine(url)
+        try:
+            loaded = restore(isolated, engine, path, include_media=bool(manifest.get("media_included")))
+        finally:
+            engine.dispose()
+    expected = manifest.get("tables", {})
+    wrong = sorted(t for t, n in expected.items() if loaded.get(t, 0) != n)
+    if wrong:
+        raise BackupError(f"restored row counts differ from the manifest for {', '.join(wrong[:4])}")
+    if record_to is not None:
+        now = datetime.now(UTC)
+        record(record_to, VERIFIED, now)
+        record(record_to, DRILL, now)
+    return {"rows": sum(loaded.values()), "tables": len(loaded), "revision": manifest["revision"],
+            "created_at": manifest["created_at"]}

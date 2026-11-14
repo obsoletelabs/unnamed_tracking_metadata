@@ -60,6 +60,11 @@ def cmd_backup(args) -> int:
                 print(f"secrets ok: signing key {c['signing_key'] or 'absent'}"
                       f"{' (key id ' + c['signing_key_id'] + ')' if c.get('signing_key_id') else ''}, "
                       f"{c['secrets']} stored secrets decrypt with ATLAS_SECRET_KEY")
+        elif args.action == "drill":
+            # an isolated restore: a throwaway SQLite database and media directory, never this node's own
+            got = backup.drill(settings, Path(args.file), record_to=make_engine(settings.database_url))
+            print(f"drill ok: restored {got['rows']} rows into an isolated database at revision {got['revision']} "
+                  f"(archive made {got['created_at']}); recorded for atlas_backup_last_restore_drill_timestamp_seconds")
         else:
             loaded = backup.restore(settings, make_engine(settings.database_url), Path(args.file), force=args.force,
                                     include_media=not args.no_media)
@@ -480,8 +485,8 @@ def main(argv: list[str] | None = None) -> int:
     mg = sub.add_parser("migrate")
     mg.add_argument("--revision", default="head", help="migrate to this revision instead of the latest (used before a restore)")  # noqa: E501
     mg.set_defaults(fn=cmd_migrate)
-    b = sub.add_parser("backup", help="create, verify or restore a full backup archive")
-    b.add_argument("action", choices=["create", "verify", "restore"])
+    b = sub.add_parser("backup", help="create, verify, drill (isolated restore) or restore a full backup archive")
+    b.add_argument("action", choices=["create", "verify", "drill", "restore"])
     b.add_argument("file", nargs="?", help="archive path (create defaults to atlas-<timestamp>.tar.gz here)")
     b.add_argument("--no-media", action="store_true", help="leave cached artwork out (it can be downloaded again)")
     b.add_argument("--force", action="store_true", help="restore: replace any data already in the database")

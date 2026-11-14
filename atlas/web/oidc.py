@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import re
+import time
 from typing import Annotated
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -12,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .. import accounts, oidc, ratelimit, secrets_box
+from .. import accounts, instruments, oidc, ratelimit, secrets_box
 from ..api.deps import AppState, get_session, state
 from ..ids import ulid
 from ..models import OidcAccess, OidcClient, OidcIssuer, OidcLink, User
@@ -88,10 +89,14 @@ def _consent_response(response, redirect_uri: str):
 def authorize(request: Request, p: Annotated[Ctx, Depends(user_page)]):
     _provider_on(p)
     params = _params(request.query_params)
+    started = time.monotonic()
     try:
         client, scope = oidc.check_authorize(p.session, params)
     except AtlasError as exc:
+        instruments.oidc_consent.inc(decision="invalid_request")
+        instruments.oidc_stage.observe(time.monotonic() - started, stage="authorize", outcome="error")
         raise HTTPException(400, f"Cannot sign you in: {exc}") from exc
+    instruments.oidc_stage.observe(time.monotonic() - started, stage="authorize", outcome="ok")
     return _consent_response(
         render(p, "oidc_consent.html", client=client, params=params, scopes=scope.split()), params["redirect_uri"])
 
@@ -104,13 +109,17 @@ async def authorize_decide(request: Request, p: Annotated[Ctx, Depends(user_form
     try:
         client, scope = oidc.check_authorize(p.session, params)
     except AtlasError as exc:
+        instruments.oidc_consent.inc(decision="invalid_request")
         raise HTTPException(400, f"Cannot sign you in: {exc}") from exc
     sep = "&" if "?" in params["redirect_uri"] else "?"
     if form.get("decision") != "allow":
         q = {"error": "access_denied"}
+        instruments.oidc_consent.inc(decision="denied")
     else:
         q = {"code": oidc.issue_code(p.session, client, p.me, params, scope)}
         accounts.audit(p.session, p.me.id, "oidc_consent", client.client_id)
+        instruments.oidc_consent.inc(decision="allowed")
+        instruments.token_operations.inc(token="authorization_code", operation="issue", outcome="ok")
     if params["state"]:
         q["state"] = params["state"]
     return _consent_response(
@@ -134,6 +143,7 @@ def revoke_app(client_id: str, p: Annotated[Ctx, Depends(user_form)]):
     _provider_on(p)
     p.session.execute(delete(OidcAccess).where(OidcAccess.user_id == p.me.id, OidcAccess.client_id == client_id))
     accounts.audit(p.session, p.me.id, "oidc_revoke", client_id)
+    instruments.token_operations.inc(token="access_token", operation="revoke", outcome="ok")
     return go("/me/apps", "revoked", p)
 
 
@@ -153,6 +163,18 @@ async def token(request: Request, st: St, session: Sess):
     headers = {"Cache-Control": "no-store", "Pragma": "no-cache"}
     if not st.ctx.settings.oidc_provider_enabled:
         return JSONResponse({"error": "unsupported"}, status_code=404, headers=headers)
+    started, outcome = time.monotonic(), "invalid"
+    try:
+        response, outcome = await _token(request, st, session, headers)
+        return response
+    finally:
+        if outcome != "rate_limited":  # a throttled request never reached the exchange
+            instruments.token_operations.inc(token="authorization_code", operation="exchange", outcome=outcome)
+        instruments.oidc_stage.observe(time.monotonic() - started, stage="token",
+                                       outcome="ok" if outcome == "ok" else "error")
+
+
+async def _token(request: Request, st: AppState, session: Session, headers: dict[str, str]):
     ip = request.client.host if request.client else "?"
     form = await request.form()
     cid, secret = _client_credentials(request, form)
@@ -160,25 +182,32 @@ async def token(request: Request, st: St, session: Sess):
     if client is None:  # only failed authentications count against the address
         ok, retry = ratelimit.hit(st.maker, f"oidc:token-fail:{ip}", 30, 60)
         status = 401 if ok else 429
-        return JSONResponse({"error": "invalid_client" if ok else "slow_down"}, status_code=status,
-                            headers={**headers, **({} if ok else {"Retry-After": str(retry)})})
+        response = JSONResponse({"error": "invalid_client" if ok else "slow_down"}, status_code=status,
+                                headers={**headers, **({} if ok else {"Retry-After": str(retry)})})
+        return response, "client_auth_failed" if ok else "rate_limited"
     ok, retry = ratelimit.hit(st.maker, f"oidc:token:{client.client_id}", 600, 60)
     if not ok:
-        return JSONResponse({"error": "slow_down"}, status_code=429, headers={**headers, "Retry-After": str(retry)})
+        response = JSONResponse({"error": "slow_down"}, status_code=429, headers={**headers, "Retry-After": str(retry)})
+        return response, "rate_limited"
     if form.get("grant_type") != "authorization_code":
-        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400, headers=headers)
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400, headers=headers), "unsupported_grant"
     try:
         out = oidc.exchange_code(session, st.ctx, client, str(form.get("code", "")), str(form.get("redirect_uri", "")),
                                  str(form.get("code_verifier", "")))
-    except AtlasError:
-        return JSONResponse({"error": "invalid_grant"}, status_code=400, headers=headers)
-    return JSONResponse(out, headers=headers)
+    except AtlasError as exc:
+        return JSONResponse({"error": "invalid_grant"}, status_code=400, headers=headers), getattr(
+            exc, "metric_reason", "invalid")
+    instruments.token_operations.inc(token="access_token", operation="issue", outcome="ok")
+    return JSONResponse(out, headers=headers), "ok"
 
 
 @router.get("/oidc/userinfo")
 def userinfo(request: Request, st: St, session: Sess):
+    started = time.monotonic()
     auth = request.headers.get("authorization", "")
     claims = oidc.userinfo(session, auth[7:].strip()) if auth.lower().startswith("bearer ") else None
+    instruments.oidc_stage.observe(time.monotonic() - started, stage="userinfo",
+                                   outcome="ok" if claims is not None else "error")
     if not st.ctx.settings.oidc_provider_enabled or claims is None:
         return JSONResponse({"error": "invalid_token"}, status_code=401, headers={"WWW-Authenticate": "Bearer"})
     return JSONResponse(claims, headers={"Cache-Control": "no-store"})
@@ -234,11 +263,15 @@ def callback(iid: str, request: Request, p: Annotated[Ctx, Depends(page)]):
     issuer = p.session.get(OidcIssuer, iid)
     if issuer is None or not issuer.enabled:
         raise HTTPException(404, "No such sign-in provider.")
+    flow = "oidc_link" if p.user else "oidc_signin"  # a signed-in browser at the callback is linking
     if request.query_params.get("error"):
+        instruments.identity_flows.inc(flow=flow, outcome="provider_cancelled")
         raise HTTPException(400, "The provider did not complete the sign-in.")
     ok, retry = ratelimit.hit(p.st.maker, f"oidc:cb:{client_ip(request)}", 30, 300)
     if not ok:
+        instruments.identity_flows.inc(flow=flow, outcome="rate_limited")
         raise HTTPException(429, f"Too many attempts. Try again in {retry} seconds.")
+    started = time.monotonic()
     try:
         user, next_url, linked = oidc.finish_login(p.session, p.st.ctx, p.st.http, issuer,
                                                    request.query_params.get("code", ""),
@@ -247,7 +280,11 @@ def callback(iid: str, request: Request, p: Annotated[Ctx, Depends(page)]):
                                                    p.user.id if p.user else None)
     except AtlasError as exc:
         p.session.rollback()
+        instruments.identity_flows.inc(flow=flow, outcome=getattr(exc, "metric_reason", "verification_failed"))
+        instruments.oidc_stage.observe(time.monotonic() - started, stage="callback", outcome="error")
         raise HTTPException(400, str(exc)) from exc
+    instruments.identity_flows.inc(flow=flow, outcome="ok")
+    instruments.oidc_stage.observe(time.monotonic() - started, stage="callback", outcome="ok")
     secret, _row = accounts.create_session(p.session, p.st.ctx.settings, user)
     accounts.audit(p.session, user.id, "login_oidc", issuer.id)
     resp = go(next_url, "saved" if linked else None)
