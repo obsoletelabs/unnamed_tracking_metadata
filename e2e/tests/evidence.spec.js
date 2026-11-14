@@ -36,7 +36,7 @@ test('evidence: user management (#66)', async ({ page }, info) => {
       el.append(o);
       el.value = 'wizard';
     });
-    await row.getByRole('button', { name: 'Apply' }).click();
+    await row.getByRole('button', { name: 'Save' }).click();
     await page.getByRole('alert').waitFor();
     await shoot(page, 'users-refused-change', info);
   }

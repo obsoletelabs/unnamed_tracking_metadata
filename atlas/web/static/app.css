@@ -224,6 +224,13 @@ table.achievements { max-width: none; }
 .ach-icon-row img { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; border: 1px solid var(--border); }
 .ach-icon-row .ach-ph { width: 48px; height: 48px; flex: none; }
 .ach-icon-row > div { flex: 1; min-width: 0; }
+/* #97: the editor's read-only list of other sources is a plain table; the game page's phone card layout of
+   table.achievements (icon, description and rarity columns) does not fit its columns. */
+table.ach-sources { width: 100%; max-width: none; }
+table.ach-sources td { vertical-align: top; white-space: nowrap; }
+table.ach-sources td:first-child { white-space: normal; overflow-wrap: anywhere; width: 100%; }
+@media (max-width: 640px) { table.ach-sources th:nth-child(2), table.ach-sources td:nth-child(2),
+  table.ach-sources th:nth-child(4), table.ach-sources td:nth-child(4) { display: none; } }
 .ach-tools { display: flex; gap: 10px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
 .field-error { color: var(--danger); font-weight: 600; margin: 4px 0; }
 .diff-list ins, .diff-list del { text-decoration: none; padding: 0 4px; border-radius: 3px; }

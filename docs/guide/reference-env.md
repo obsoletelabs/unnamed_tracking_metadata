@@ -64,6 +64,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_GROUP_DENIED_ACCOUNTS` | — | Node groups: space-separated group account ids whose grants are ignored here. **live** |
 | `ATLAS_INHERIT_SCHEMA` | `true` | Adopt the upstream authority's media types and custom fields (yours always take precedence). Editable in Admin → Settings. **live** |
 | `ATLAS_OIDC_PROVIDER_ENABLED` | `false` | Let other nodes and the Tracking App sign users in with accounts on this node (OpenID Connect). Editable in Admin → Settings. **live** |
+| `ATLAS_SELF_SERVICE_SYNC_TOKENS` | `false` | Let members create their own read-only tokens with the `sync` scope (Profile → API tokens), to follow this node from their own node or app. Off by default; turning it off stops those tokens' sync access at once. Editable in Admin → Settings. **live** |
 
 ## Matching
 

@@ -102,9 +102,20 @@ def consume_verification(session: Session, secret: str) -> User:
 
 
 def is_verified(settings: Settings, user: User) -> bool:
-    """Whether this user may contribute under the node's email policy."""
+    """Whether this user may contribute under the node's email policy. True for every account when the policy
+    is not "required" (optional or off): this answers "is contribution allowed", not "is this account's email
+    actually verified" -- use `account_verified` for a restriction that is advertised as needing a verified
+    account specifically, whatever the general contribution policy is."""
     return (settings.verification_mode() != "required" or user.role == "admin"
             or user.email_verified_at is not None)
+
+
+def account_verified(user: User) -> bool:
+    """Whether this account's own email is actually verified (admins are exempt, as `is_verified` treats them),
+    independent of the node's general contribution policy. For a restriction specifically advertised as "for
+    verified accounts" (e.g. self-service sync tokens, #84): `is_verified` would wrongly admit every account
+    once email verification is optional or off, since that policy answers a different question."""
+    return user.role == "admin" or user.email_verified_at is not None
 
 
 # ---- delivery ----------------------------------------------------------------------------------------

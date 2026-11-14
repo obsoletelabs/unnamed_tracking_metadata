@@ -71,7 +71,7 @@ def require(scope: str):
     ) -> auth.Principal:
         from ..instruments import authorization as decisions
 
-        principal = auth.authenticate(session, authorization)
+        principal = auth.authenticate(session, authorization, st.ctx.settings.self_service_sync_tokens)
         key = _client_key(request, principal)
         ok, retry = ratelimit.hit(st.maker, key, st.ctx.settings.rate_limit_per_minute if principal else 60)
         if not ok:

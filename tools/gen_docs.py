@@ -152,6 +152,10 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "provider_negative_ttl_seconds": ("Providers", "How long “not found” is cached."),
     "media_dir": ("Artwork", "Directory for cached images (content-addressed). Mount a volume here; it must be writable by the user Atlas runs as "
                   "(uid 10001 in the official image). See [Troubleshooting](troubleshooting.md#artwork-doesnt-show)."),
+    "self_service_sync_tokens": ("Federation", "Let members create their own read-only tokens with the `sync` scope "
+                                 "(Profile → API tokens), to follow this node from their own node or app. Off by "
+                                 "default; turning it off stops those tokens' sync access at once. Editable in "
+                                 "Admin → Settings."),
     "media_cache_enabled": ("Artwork", "Download and verify artwork in the background. Editable in Admin → Settings."),
     "media_max_bytes": ("Artwork", "Largest image accepted (bytes)."),
     "media_max_pixels": ("Artwork", "Largest image by pixel count (decompression-bomb guard)."),

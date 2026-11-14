@@ -1374,7 +1374,7 @@ def hello_result(identity: Any) -> dict:
             "node": {"node_id": identity.node_id, "signing_key_id": identity.key_id},
             "kinds": group_schema.kinds_advertised(), "profile_schema": profile_schema.SCHEMA_VERSION,
             "profile_fields": profile_schema.fields(), "capabilities": list(group_schema.CAPABILITIES_GROUP),
-            "ops": ["hello", "state", "rotations", "heads", "changes", "snapshot", "notify"]}
+            "ops": ["hello", "state", "rotations", "heads", "changes", "snapshot", "notify", "push", "member_update"]}
 
 
 def accept_for_scope(session: Session, settings: Any, group_id: str, scope: str) -> list[str]:

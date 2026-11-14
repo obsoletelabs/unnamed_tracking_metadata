@@ -62,7 +62,11 @@ def sync_bootstrap(session: Session, secret: str | None) -> None:
     session.flush()
 
 
-def authenticate(session: Session, header: str | None) -> Principal | None:
+PERSONAL_SCOPES = frozenset({"read"})
+PERSONAL_SYNC_SCOPES = frozenset({"read", "sync"})  # only while `self_service_sync_tokens` is on (#84)
+
+
+def authenticate(session: Session, header: str | None, personal_sync: bool = False) -> Principal | None:
     if not header or not header.lower().startswith("bearer "):
         return None
     secret = header[7:].strip()
@@ -81,7 +85,10 @@ def authenticate(session: Session, header: str | None) -> Principal | None:
         owner = session.get(User, row.user_id)
         if owner is None or owner.status != "active":
             return None
-        scopes &= {"read"}  # personal tokens never write: contributions go through proposals and review
+        # Personal tokens never write: contributions go through proposals and review. `sync` (reading the change
+        # feed) is honoured only while the node allows self-service sync tokens, checked on every request, so
+        # turning the setting off leaves no standing access behind (#84).
+        scopes &= PERSONAL_SYNC_SCOPES if personal_sync else PERSONAL_SCOPES
     last = row.last_used_at
     if last is None or (current - (last if last.tzinfo else last.replace(tzinfo=current.tzinfo))).total_seconds() > 60:
         row.last_used_at = current
