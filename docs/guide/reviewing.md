@@ -32,6 +32,7 @@ Reviewers also see **Curation**:
 
 * **Merge** into another record by id.
 * **Pinned fields**: fix a value permanently (beats every source). Unpin later.
+* **Relations**: open **Edit relations** to say that the record is a DLC, port, remake, mod... of another record, or a member of a series or collection. See [Relationships and editions](relations.md).
 * **Source records**: every observation behind the record; **Split off** moves a wrongly merged source record onto its own game.
 * **Revert a change**: undo an approved community change. Reverts go newest first, because each restores the state before that change.
 

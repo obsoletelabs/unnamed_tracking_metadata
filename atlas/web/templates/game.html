@@ -49,6 +49,8 @@
 </div>
 
 <div class="main-col">
+{% include "_relations.html" %}
+{% if p.can_review %}<p class="small"><a href="/game/{{ g.id }}/relations">Edit relations</a> (DLC, ports, remakes, series, collections)</p>{% endif %}
 <h2>Artwork</h2>
 {% for grp in gallery %}
 <section class="gallery-group" aria-labelledby="g-{{ grp.kind }}">
@@ -139,6 +141,10 @@
   <p class="small muted">This record becomes a redirect to the target. Observations and identifiers move with it.</p>
   <button class="danger" data-confirm="Merge this record into the target?" type="submit">Merge</button>
 </form>
+<div class="card"><h3>Relations</h3>
+  <p class="small muted">{{ rel.counts.parents + rel.counts.members_of }} from this record, {{ rel.counts.children + rel.counts.members }} to it.</p>
+  <a class="btn secondary" href="/game/{{ g.id }}/relations">Edit relations</a>
+</div>
 <div class="card"><h3>Pinned fields</h3>
   {% for lk in locks %}<form class="inline" method="post" action="/game/{{ g.id }}/unlock">{{ csrf(p.csrf) }}<input type="hidden" name="field" value="{{ lk.field }}"><strong>{{ lk.field }}</strong>: {{ lk.value }} <button class="secondary small" type="submit">Unpin</button></form><br>{% else %}<p class="muted small">Nothing pinned.</p>{% endfor %}
   <form method="post" action="/game/{{ g.id }}/lock">{{ csrf(p.csrf) }}

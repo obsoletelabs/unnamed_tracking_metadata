@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import __version__, auth, backup, client_changes, custom, mail, media, oidc, ratelimit, sync
+from . import __version__, auth, backup, client_changes, custom, mail, media, oidc, ratelimit, relations, sync
 from .api.deps import AppState, get_session, require
 from .api.group_routes import router as group_router
 from .api.routes import router
@@ -248,6 +248,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     auto = settings.auto_migrate if settings.auto_migrate is not None else settings.database_url.startswith("sqlite")
     if auto:
         upgrade(settings.database_url, settings=settings)
+    with maker() as s:  # a relation restore left by migration 0032 (a no-op unless one is pending)
+        if relations.finish_restore(s) is not None:
+            s.commit()
     with maker() as s:
         identity = load_identity(s, settings)
         _warn_key_at_rest(settings, signing_key_at_rest(s))

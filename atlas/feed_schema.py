@@ -23,6 +23,11 @@ Protocol 1.3 (C5.2) adds `observation.payload.ext.release` (partial and regional
 `releases` lock and partial `release_date` lock values. An entry that carries any of them lists the
 `_requires` token `dates-v1`, so a 1.1 or 1.2 follower parks it (`unsupported_capability`) instead of
 stripping the dates or storing "2011" as a day-only `release_date`.
+
+Protocol 1.4 (C6.3) adds the feed kind `relation` (`{op: add|end, from, to, type, source}`): a directed
+relation between two works with a type from `vocab.RELATION_TYPES`. A 1.1-1.3 follower does not know the kind
+and parks it (`unsupported_kind`); an unknown type or op parks a 1.4 follower (`unsupported_value`). Below
+emit protocol 1.4 an authority keeps relations local (C1.6, H13): nothing is appended.
 """
 
 from __future__ import annotations
@@ -38,7 +43,7 @@ from . import vocab
 # ---- versions -------------------------------------------------------------------------------------------
 
 #: The federation wire protocol this release speaks and applies ("MAJOR.MINOR").
-PROTOCOL = "1.3"
+PROTOCOL = "1.4"
 #: Pre-A1 releases advertise no protocol; they speak this.
 LEGACY_PROTOCOL = "1.0"
 #: Version of the observation payload schema (`SourceObservationV1`).
@@ -167,10 +172,14 @@ FEED_KINDS: dict[str, KindSpec] = {spec.name: spec for spec in (
              values={"field": "lock_field"}),
     KindSpec("key_rotation", "1.0", 1, 1, frozenset({"key_id", "public_key"}),
              "The authority's next signing key, signed by the current one."),
+    KindSpec("relation", "1.4", 1, 1, frozenset({"op", "from", "to", "type", "source"}),
+             "A relation between two works added or ended (`from` is the DLC, port, member...; `to` the parent).",
+             values={"op": "relation_op", "type": "relation_type"}),
 )}
 
 #: Kinds reserved by later protocols. A follower of this release parks them; this node never emits them.
-RESERVED_KINDS: dict[str, str] = {"relation": "1.4"}
+#: (`relation` was reserved for 1.4 and ships in this release.)
+RESERVED_KINDS: dict[str, str] = {}
 
 
 @cache
@@ -190,6 +199,8 @@ def vocabularies() -> dict[str, Any]:
         "date_precision": frozenset(vocab.DATE_PRECISIONS),
         "release_category": frozenset(vocab.RELEASE_CATEGORIES),
         "release_region": OpenVocabulary(dates.REGION_RE),
+        "relation_type": frozenset(vocab.RELATION_TYPES),
+        "relation_op": frozenset(vocab.RELATION_OPS),
     }
 
 
@@ -405,7 +416,8 @@ def check_emit(kind: str, body: dict[str, Any], current: str) -> dict[str, Any]:
     """Return the body to sign, or raise EmitGateError. Fail closed: an unknown kind is never emitted.
 
     Features that need a newer protocol than `current`:
-    * a reserved kind (`relation`, 1.4): refused; callers keep it local and append nothing;
+    * a reserved kind, or a kind newer than `current` (`relation`, 1.4): refused; callers keep it local and
+      append nothing;
     * a `_requires` token reserved for a later minor (`tier-platinum`, 1.2): refused;
     * a vocabulary value a later minor added (`tier: "platinum"`, 1.2): refused with the operator-facing
       message. At or above that protocol the value is signed and its token (`tier-platinum`) is added to
