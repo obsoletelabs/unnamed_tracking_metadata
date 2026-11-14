@@ -108,7 +108,7 @@ async def logo_upload(p: Annotated[Ctx, Depends(admin_form)], file: Annotated[Up
         raise HTTPException(400, "The logo must be smaller than 512 KB.")
     s = p.st.ctx.settings
     try:
-        ext, _ctype, w, h = media.validate_image(data, s)
+        data, ext, _ctype, w, h = media.reencode_upload(data, s)  # metadata stripped (C12 §12.6.2)
     except media.MediaError as exc:
         raise HTTPException(400, f"That is not a usable image: {exc}") from exc
     if max(w, h) > 1024:

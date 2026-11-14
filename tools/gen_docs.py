@@ -124,7 +124,23 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "media_max_bytes": ("Artwork", "Largest image accepted (bytes)."),
     "media_max_pixels": ("Artwork", "Largest image by pixel count (decompression-bomb guard)."),
     "media_cache_batch": ("Artwork", "Images processed per background pass."),
-    "media_allowed_hosts": ("Artwork", "If non-empty, only these hostnames may be downloaded from. Always public addresses only."),
+    "media_https_only": ("Artwork", "New downloads need `https` (C12 §12.6, H40). A redirect from https to http is "
+                         "refused either way."),
+    "media_fetch_deadline_s": ("Artwork", "Seconds one download may take in all, redirects and body included (5-60)."),
+    "media_host_concurrency": ("Artwork", "Simultaneous downloads from one host, per process."),
+    "media_host_rpm": ("Artwork", "Downloads from one host per minute, per process. Over the limit an image waits a "
+                       "minute; it is not counted as a failure."),
+    "media_max_frames": ("Artwork", "Most frames an animated image may have; the frames together may have at most 4 x "
+                         "`ATLAS_MEDIA_MAX_PIXELS` pixels."),
+    "media_policy": ("Artwork", "JSON overrides of the per-source media policy (C12 §12.5.5), for example "
+                     "`{\"steam\": {\"fetch\": \"redirect\"}}`. Fields: `fetch` (`proxy`, `redirect`, `none`), "
+                     "`federate`, `licence`, `attribution`, `redirect_hosts`. An unknown field or value stops the "
+                     "node at start-up."),
+    "achievement_percent_max_age_days": ("Limits", "Days after which an achievement's rarity is shown as stale and a "
+                                         "fresher value from another source wins (C12 §12.1.6)."),
+    "achievement_retired_retention_days": ("Limits", "Days a retired achievement row (one its source no longer lists) "
+                                           "is kept, with its id and key, before it is deleted (C12 §12.1.3, H37)."),
+    "media_allowed_hosts": ("Artwork", "If non-empty, only these hostnames may be downloaded from. Always public addresses only. A provider image not cached yet may also be redirected to these hosts by `/api/v2/artwork/{id}/image`."),
     "backup_dir": ("Backups", "Folder for scheduled backups (use a persistent volume). Unset = no scheduled backups."),
     "backup_interval_hours": ("Backups", "Hours between scheduled backups (default 24)."),
     "backup_keep": ("Backups", "How many scheduled backups to keep (default 14)."),
@@ -187,7 +203,9 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/prices/status"): "Stored price observations, how many the next purge removes, retention bounds, and the price channel's state (protocol 1.5, disabled in this release).",
     ("get", "/sync/price-changes"): "The price channel (protocol 1.5, capability `price-channel-v1`). Designed but disabled in this release: always 404.",
     ("get", "/games/{cid}/achievements"): "Merged achievement list: name, description, kind, tier, points, icons, global percent, and a stable `key` (`ak1:…`) with `keys` and `key_identity`. Hidden ones are redacted unless `reveal=all` or `reveal=<id or key>,…` is sent with a signed-in user's token or a curator token. No per-user progress. See [Achievements](achievements.md).",
-    ("get", "/games/{cid}/artwork"): "Artwork by trust and priority, plus the best image per kind; `media_url` once cached, and `image_url` always.",
+    ("get", "/games/{cid}/artwork"): ("Artwork in its long-standing order (community choice, trust, priority) with `primary`, the first image "
+                                       "per kind in it, as before; `best`, the C12 quality pick per kind; `?order=quality` sorts the list (and "
+                                       "`primary`) by the C12 ranking. `media_url` once cached, and `image_url` always."),
     ("get", "/artwork/{art_id}/image"): "One image: its cached bytes, or a redirect to the original public address while it is not cached.",
     ("get", "/games/{cid}/explain"): "Which source and rule produced each field (provenance).",
     ("get", "/media/{digest}"): "A cached, verified image. Immutable; `nosniff`.",
@@ -203,6 +221,7 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/games/{cid}/provenance/observations"): "Every observation of a record, newest first, paged.",
     ("get", "/games/{cid}/decisions"): "Match decisions for a record and the records merged into it, newest first.",
     ("get", "/observations/{oid}/decision"): "The newest match decision recorded for one observation.",
+    ("get", "/artwork/misfits"): "Measured images whose aspect does not suit their role (C12 §12.5.3), for curators.",
     ("get", "/conflicts"): "Records whose `field` has disagreeing sources in the winning trust class.",
     ("get", "/merges"): "Merge records of a record (`canonical_id`).",
     ("get", "/merges/{merge_id}"): "One merge record with its item counts.",

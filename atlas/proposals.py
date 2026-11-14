@@ -113,6 +113,8 @@ def _validate(session: Session, kind: str, canonical_id: str | None, payload: di
         return {"items": facets.clean_artwork(payload.get("items") or [])}
     if kind == "achievements":
         body: dict[str, Any] = {"items": facets.clean_achievements(payload.get("items") or [])}
+        if payload.get("sets"):  # C12 §12.1.1: the list's sets; merged by key with the community list's own
+            body["sets"] = facets.clean_sets(payload["sets"])
         if payload.get("mode") == "replace":
             body["mode"] = "replace"  # the community list becomes exactly these entries (removals included)
         return body
@@ -257,18 +259,22 @@ def apply(session: Session, ctx: Ctx, p: Proposal) -> None:
         redistribute = ctx.settings.role == "authority"
         if p.kind == "artwork":
             rows = session.scalars(select(Artwork).where(Artwork.canonical_id == cid, Artwork.source == SOURCE)).all()
-            old = [{"kind": a.kind, "url": a.url, "priority": a.priority, "width": a.width, "height": a.height}
-                   for a in rows]
-            old = [{k: v for k, v in i.items() if v is not None} for i in old]
+            old = facets.artwork_items(list(rows))  # every field (QV15), so a revert restores them all
             p.previous = {"items": old}
             facets.set_artwork(session, ctx, cid, SOURCE, old + p.payload["items"], redistributable=redistribute)
         else:
             rows = session.scalars(select(Achievement).where(
                 Achievement.canonical_id == cid, Achievement.source == SOURCE)).all()
-            old = facets.achievement_items(list(rows))
-            p.previous = {"items": old}
-            new = p.payload["items"] if p.payload.get("mode") == "replace" else old + p.payload["items"]
-            facets.set_achievements(session, ctx, cid, SOURCE, new, redistributable=redistribute, ordered=True)
+            old = facets.achievement_items(list(rows), session)
+            old_sets = facets.set_items(session, cid, SOURCE)
+            p.previous = {"items": old, "sets": old_sets}
+            replace = p.payload.get("mode") == "replace"
+            new = p.payload["items"] if replace else old + p.payload["items"]
+            # a replacement that names no sets keeps the list's sets (the editor has no control for them)
+            sets = {s["key"]: s for s in ([] if replace and "sets" in p.payload else old_sets)}
+            sets.update({s["key"]: s for s in p.payload.get("sets") or []})
+            facets.set_achievements(session, ctx, cid, SOURCE, new, sets=list(sets.values()),
+                                    redistributable=redistribute, ordered=True)
     elif p.kind == "artwork_default":
         art = session.get(Artwork, p.payload["artwork_id"])
         if art is None or art.canonical_id != p.canonical_id:
@@ -338,8 +344,10 @@ def revert_applied(session: Session, ctx: Ctx, p: Proposal) -> None:
         facets.set_artwork(session, ctx, p.canonical_id, SOURCE, prev.get("items", []),  # type: ignore[arg-type]
                            redistributable=ctx.settings.role == "authority")
     elif p.kind == "achievements":
+        # a snapshot from before C12 has no `sets`: the community list's current sets stay
+        sets = prev["sets"] if "sets" in prev else facets.set_items(session, p.canonical_id, SOURCE)  # type: ignore[arg-type]
         facets.set_achievements(session, ctx, p.canonical_id, SOURCE, prev.get("items", []),  # type: ignore[arg-type]
-                                redistributable=ctx.settings.role == "authority", ordered=True)
+                                sets=sets, redistributable=ctx.settings.role == "authority", ordered=True)
     else:
         raise AtlasError("this kind of proposal cannot be reverted; merge or edit the game instead", "conflict")
 

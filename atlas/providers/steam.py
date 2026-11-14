@@ -45,18 +45,26 @@ class Steam:
             artwork=_artwork(external_id, d),
         )
 
-    def achievements(self, client, external_id, api_key=None):
-        """Names/descriptions need a Steam Web API key; global percentages do not."""
+    def achievement_stats(self, client, external_id):
+        """Global unlock percentages by achievement API name. Public: no Web API key needed (C12 §12.1.6)."""
         pct = {}
         data = get_json(client, "GET", "https://api.steampowered.com/ISteamUserStats/"
                         "GetGlobalAchievementPercentagesForApp/v2/", params={"gameid": external_id})
-        for a in (data.get("achievementpercentages") or {}).get("achievements", []):
+        for a in ((data.get("achievementpercentages") or {}).get("achievements", []))[:5000]:
             try:
-                pct[a["name"]] = float(a["percent"])
+                name, value = str(a["name"])[:200], float(a["percent"])
             except (KeyError, TypeError, ValueError):
                 continue
+            if name and 0 <= value <= 100:
+                pct[name] = value
+        return pct
+
+    def achievements(self, client, external_id, api_key=None):
+        """Names/descriptions need a Steam Web API key; global percentages do not (see `achievement_stats`, which
+        the importer stores on their own when there is no key)."""
         if not api_key:
             return []
+        pct = self.achievement_stats(client, external_id)
         schema = get_json(client, "GET", "https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/",
                           params={"key": api_key, "appid": external_id, "l": "english"})
         out = []

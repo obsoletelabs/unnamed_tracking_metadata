@@ -720,7 +720,8 @@ def test_gallery_groups_images_by_kind_and_opens_each_in_a_viewer(site):
     assert 'id="g-key_art"' in page and 'id="g-screenshot"' in page and page.count("data-viewer") == 3
     assert page.index("g-key_art") < page.index("g-screenshot")  # cover before screenshots
     with site.st.maker() as s:
-        shot = s.scalars(select(Artwork).where(Artwork.kind == "screenshot")).first()
+        # the larger image ranks first (C12 §12.5.7: measured pixels after priority)
+        shot = s.scalars(select(Artwork).where(Artwork.kind == "screenshot").order_by(Artwork.width.desc())).first()
     full = site.get(f"/game/{site.gid}/artwork/{shot.id}")
     assert full.status_code == 200 and "Downloaded and checked" in full.text and "Image 1 of 2" in full.text
     frag = site.get(f"/game/{site.gid}/artwork/{shot.id}?panel=1")
@@ -734,8 +735,8 @@ def test_members_vote_and_votes_are_opinions_only(site):
     from atlas.models import Artwork, ArtworkVote
 
     signup(site, "alice")
+    _upload(site, site.gid, "key_art", 31, 40)  # the larger, first image ranks first (C12 §12.5.7)
     _upload(site, site.gid, "key_art", 30, 40)
-    _upload(site, site.gid, "key_art", 31, 40)
     with site.st.maker() as s:
         first, second = [a.id for a in s.scalars(select(Artwork).order_by(Artwork.created_at, Artwork.id))]
     bob = fresh(site)

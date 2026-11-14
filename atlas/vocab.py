@@ -55,6 +55,29 @@ PRICE_AVAILABILITY: tuple[str, ...] = ("available", "unavailable", "preorder", "
 #: C8.1 `source_kind` of a price observation: a provider fetch or a curator/import entry (Atlas-only).
 PRICE_SOURCE_KINDS: tuple[str, ...] = ("provider", "manual")
 
+#: C12 §12.1.1 kind of an achievement set (Atlas-only until achievements body v2, protocol 1.7, ships them).
+ACHIEVEMENT_SET_KINDS: tuple[str, ...] = ("base", "dlc", "expansion", "edition", "platform", "update", "event",
+                                          "other")
+#: C12 §12.1.3 stated status of an achievement. `retired` is derived (a row its source stopped listing) and
+#: never sent by a source; the API shows it only with `include_retired=1`.
+ACHIEVEMENT_STATUSES: tuple[str, ...] = ("active", "unobtainable")
+#: C12 §12.1.6 rarity band, derived from the merged percent: (band, lowest percent of the band).
+RARITY_BANDS: tuple[tuple[str, float], ...] = (("common", 50.0), ("uncommon", 20.0), ("rare", 5.0),
+                                              ("very_rare", 1.0), ("ultra_rare", 0.0))
+#: C12 §12.5.3 aspect class of an image, derived from its measured size (never sent on the wire).
+ASPECT_CLASSES: tuple[str, ...] = ("tall", "portrait", "square", "landscape", "capsule", "wide", "other")
+#: C12 §12.5.5 licence of an image (artwork rows and achievement icons). Absent = `unknown`.
+LICENCES: tuple[str, ...] = ("provider_terms", "publisher_press", "owner_upload", "cc0", "cc-by", "cc-by-sa",
+                             "unknown")
+#: C12 §12.6.1 why the last download of an image failed (`last_error`).
+MEDIA_ERRORS: tuple[str, ...] = (
+    "invalid_url", "https_required", "host_not_allowed", "not_public", "dns_failed", "port_not_allowed", "timeout",
+    "too_large", "bad_type", "bad_image", "dimensions", "status_4xx", "status_404", "status_410", "status_5xx",
+    "too_many_redirects", "hash_mismatch", "storage")
+#: C12 §12.6.1 the state of an image row as the API reports it (this release: no revalidation or quota, so
+#: `gone` and `evicted` are not produced yet).
+MEDIA_STATES: tuple[str, ...] = ("cached", "pending", "failing", "gone", "evicted", "not_fetched", "blocked")
+
 #: The protocol that ships each vocabulary value a 1.1 follower does not know (C1.1, H13). The authority
 #: refuses to write such a value into its signed feed until its `emit_protocol` reaches this protocol.
 VALUE_PROTOCOL: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "1.2"}

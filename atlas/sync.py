@@ -19,7 +19,10 @@ import json
 import logging
 import re
 from collections import Counter
-from datetime import UTC, datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -129,7 +132,8 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
     Nothing is silently dropped: a parked or quarantined entry is recorded in `sync_failure`, and the
     entry's partial changes are rolled back. `may_park=False` is for entries at or below the applied
     head (retries, a skipped entry): they cannot block any more, so an unsupported one is recorded as
-    quarantined unless it is already parked."""
+    quarantined unless it is already parked. A caller applying a retained entry wraps the call in
+    `entry_at(<its created_at>)`, the origin timestamp the contract dates some values by (C12 §12.1.6)."""
     outcome = feed_schema.classify(kind, body)
     existing = session.get(SyncFailure, (node_id, seq))
     if outcome.action == PARK:
@@ -164,6 +168,40 @@ def apply_entry(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
         failure.resolved_at = datetime.now(UTC)
         failure.last_attempt_at = failure.resolved_at
     return NOOP if result == NOOP else APPLY
+
+
+#: The origin timestamp of the entry being applied (set by `entry_at`, read by `_apply_body`). A context
+#: variable keeps the signatures of `apply_entry` and `_apply`, which release-simulation tests replace, unchanged.
+_ENTRY_AT: ContextVar[datetime | None] = ContextVar("atlas_sync_entry_at", default=None)
+
+
+@contextmanager
+def entry_at(at: datetime | None) -> Iterator[None]:
+    token = _ENTRY_AT.set(_aware(at))
+    try:
+        yield
+    finally:
+        _ENTRY_AT.reset(token)
+
+
+def _aware(at: datetime | None) -> datetime | None:
+    """SQLite returns stored timestamps without a zone; they were written in UTC."""
+    return at.replace(tzinfo=UTC) if at is not None and at.tzinfo is None else at
+
+
+def origin_time(value: Any) -> datetime:
+    """The origin timestamp an upstream serves with an entry (`created_at`), kept on the retained copy so every
+    node (and every relay) dates the entry alike (C12 §12.1.6). It is not signed: anything that does not parse,
+    or lies more than a day in the future, is replaced by this node's clock."""
+    received = datetime.now(UTC)
+    if not isinstance(value, str) or len(value) > 64:
+        return received
+    try:
+        at = datetime.fromisoformat(value)
+    except ValueError:
+        return received
+    at = at.replace(tzinfo=UTC) if at.tzinfo is None else at.astimezone(UTC)
+    return at if at <= received + timedelta(days=1) else received
 
 
 def _record(session: Session, node_id: str, seq: int, kind: str, disposition: str, reason: str, message: str,
@@ -208,14 +246,19 @@ def retry_failures(session: Session, ctx: Ctx, node_id: str | None = None, *, li
             _record_failure(session, row.node_id, row.seq, row.kind, KeyError("retained entry is missing"))
             continue
         if entry.kind == "merge":
-            if retry_merge(session, ctx, row.node_id, row.seq, entry.body) in (APPLY, NOOP):
+            with entry_at(entry.created_at):
+                result = retry_merge(session, ctx, row.node_id, row.seq, entry.body)
+            if result in (APPLY, NOOP):
                 resolved += 1
             continue
         later, body = superseding(session, row.node_id, row.seq, entry.kind, entry.body)
         if later is not None:
             _resolve_superseded(row, later)
             resolved += 1
-        elif apply_entry(session, ctx, row.node_id, row.seq, entry.kind, body, may_park=False) in (APPLY, NOOP):
+            continue
+        with entry_at(entry.created_at):
+            result = apply_entry(session, ctx, row.node_id, row.seq, entry.kind, body, may_park=False)
+        if result in (APPLY, NOOP):
             resolved += 1
     return {"retried": len(rows), "resolved": resolved, "still_failing": len(rows) - resolved}
 
@@ -388,7 +431,8 @@ def retry_merge(session: Session, ctx: Ctx, node_id: str, seq: int, body: Any) -
             for later in replay:
                 later_outcome = feed_schema.classify(later.kind, later.body)
                 if later_outcome.action == APPLY:
-                    _apply(session, ctx, node_id, later.seq, later.kind, later_outcome.body)
+                    with entry_at(later.created_at):  # each replayed entry keeps its own origin time (§12.1.6)
+                        _apply(session, ctx, node_id, later.seq, later.kind, later_outcome.body)
             row = session.get(SyncFailure, (node_id, seq))
             if row is not None:
                 row.detail = {**(row.detail or {}), "replayed": [later.seq for later in replay]}
@@ -490,8 +534,15 @@ def _apply_body(session: Session, ctx: Ctx, node_id: str, seq: int, kind: str, b
             facets.set_artwork(session, ctx, body["canonical_id"], body["source"], body["items"],
                                redistributable=True, log=False)
         else:  # the authority's stored keys win, so mirror and authority publish the same keys (C2.2)
+            from .merge import source_class
+
+            # a curated list was arranged by hand: its order is its position here too (C12 §12.1.3, QV4)
+            curated = source_class(body["source"]) in ("curator", "community")
+            # a percent without a date is dated by the entry's origin timestamp, as on the authority (§12.1.6)
+            at = _ENTRY_AT.get()
             facets.set_achievements(session, ctx, body["canonical_id"], body["source"], body["items"],
-                                    redistributable=True, log=False, adopt_keys=True)
+                                    redistributable=True, log=False, adopt_keys=True, ordered=curated,
+                                    written_on=at.astimezone(UTC).date() if at is not None else None)
     elif kind == "schema":
         from . import custom
 
@@ -740,7 +791,9 @@ def _apply_pending(session: Session, ctx: Ctx, node_id: str, *, limit: int | Non
             break
         failure = session.get(SyncFailure, (node_id, row.seq))
         skipped = failure is not None and failure.disposition == QUARANTINE and failure.reason == "skipped"
-        if apply_entry(session, ctx, node_id, row.seq, row.kind, row.body, may_park=not skipped) == PARK:
+        with entry_at(row.created_at):
+            result = apply_entry(session, ctx, node_id, row.seq, row.kind, row.body, may_park=not skipped)
+        if result == PARK:
             break
         seq, processed = row.seq, processed + 1
     if seq != applied:
@@ -863,7 +916,8 @@ def _store_and_apply(maker: sessionmaker[Session], ctx: Ctx, node_id: str, pub: 
                 retained_entry = session.get(ReplicatedChange, (node_id, e["seq"]))
                 if retained_entry is None:
                     session.add(ReplicatedChange(node_id=node_id, seq=e["seq"], kind=e["kind"], body=e["body"],
-                                                 body_hash=e["body_hash"], signature=e["signature"], key_id=e["key_id"]))
+                                                 body_hash=e["body_hash"], signature=e["signature"], key_id=e["key_id"],
+                                                 created_at=origin_time(e.get("created_at"))))
                 elif (retained_entry.body_hash, retained_entry.signature) != (e["body_hash"], e["signature"]):
                     raise SyncRewound(f"authority feed fork: already retained entry {e['seq']} changed",
                                       "fork", advertised_head if type(advertised_head) is int else None,
@@ -973,7 +1027,8 @@ def _replay_history(session: Session, ctx: Ctx, node_id: str, first: int, last: 
         if failure is not None and failure.resolved_at is None and failure.reason == "skipped":
             continue
         was_parked = failure is not None and failure.resolved_at is None and failure.disposition == PARK
-        result = apply_entry(session, ctx, node_id, entry.seq, entry.kind, entry.body, may_park=False)
+        with entry_at(entry.created_at):
+            result = apply_entry(session, ctx, node_id, entry.seq, entry.kind, entry.body, may_park=False)
         counts["reapplied"] += 1
         if was_parked and result in (APPLY, NOOP):
             counts["recovered_parked"] += 1

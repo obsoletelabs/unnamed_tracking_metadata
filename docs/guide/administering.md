@@ -36,7 +36,7 @@ Upload a PNG/JPEG/WebP/GIF (≤512 KB, ≤1024 px; checked and re-served from th
 
 **Linking a store id to an existing game.** Signed-in members use *Link a store page or id* on a game page (pick Steam, GOG, Epic, TheGamesDB, itch.io, IGDB or RAWG, or type another store's short name, and its id), or open **Find it by name**, which **suggests matches automatically**: it searches Steam, IGDB and RAWG (whichever the node has configured) for the game's own name, skips stores the game is already linked to, and lists the results with likely matches first (same title and, where known, the same year), each one click to propose. You can also search by hand. This searches Steam, IGDB or RAWG (whichever the node has configured) by the game's name and links the match you pick, with no id to look up. It is a reviewed contribution like any other (trusted accounts apply immediately, reviewers can revert). An id already used by another game is refused (the games should be merged instead), and so is replacing a different id the game already has for that store (propose an edit).
 
-**Artwork cache.** The same page shows how many images are cached or failing, with *Retry uncached images now* (clears backoff so the next pass tries them) and *Clear cached images* (deletes downloaded provider images; uploads are kept; type `clear` to confirm). Turn automatic caching on or off in **Admin → Settings → Artwork**. Members can **upload an image file** from any record page instead of linking one: it is checked and stored by this node, then follows the normal review rules (trusted accounts apply immediately). Clients can always request `GET /api/v2/artwork/{id}/image`, which serves cached bytes or redirects to the original public address.
+**Artwork cache.** The same page shows how many images are cached or failing, with *Retry uncached images now* (clears backoff so the next pass tries them) and *Clear cached images* (deletes downloaded provider images; uploads are kept; type `clear` to confirm). Turn automatic caching on or off in **Admin → Settings → Artwork**. Members can **upload an image file** from any record page instead of linking one: it is checked and stored by this node, then follows the normal review rules (trusted accounts apply immediately). Clients can request `GET /api/v2/artwork/{id}/image`: it serves the cached bytes. Otherwise a provider image (Steam, IGDB, RAWG, ...) is redirected to its original, but only when the host is one of that source's allow-listed `redirect_hosts` (or listed in `ATLAS_MEDIA_ALLOWED_HOSTS`), so the link works even with caching off; any other host answers 404, and a curated, community or uploaded image answers 404 until it is cached (C12, H50). See [Artwork quality](#artwork-quality-c12).
 
 The page also lists the store namespaces Atlas links on game pages (`steam`, `gog`, `epic`, `tgdb`, `itch`, `igdb`, `rawg`): add ids as `namespace:id` lines when adding a game, or let a plugin submit them. GOG, Epic and TheGamesDB have no import adapter yet, so their ids are stored and linked but Atlas does not fetch data from them.
 
@@ -94,3 +94,35 @@ Reviewers handle proposals, duplicates and reported comments ([Reviewing](review
   (`--batch`, default 500), can stop after `--limit` records, resumes where it stopped, and starts over
   with `--restart`. Records whose result does not change keep their version.
 * Review the activity log occasionally; it is your audit trail.
+
+## Artwork quality (C12)
+
+* **Measured size and aspect.** Every cached image is measured; the measurement replaces the size a source declared
+  (kept as `declared_width` / `declared_height`). The API reports the `aspect` class (`tall`, `portrait`, `square`,
+  `landscape`, `capsule`, `wide`, `other`) and `role_fit` (whether it suits its kind: a cover is portrait, a banner
+  capsule or wide, an icon square). Curators can list misfits with `GET /api/v2/artwork/misfits`. Images cached
+  before this release are measured in the background, or at once with `atlas media backfill` (`atlas media stats`
+  shows how many are left).
+* **Duplicates.** Images of one record and kind with the same bytes are exact duplicates: the best-ranked one is
+  shown, the others carry `duplicate_of` and are left out of the API list (unless `?include_duplicates=1`) and
+  of the website.
+  Perceptual near-duplicates are only reported to curators (`near_duplicate_of`), never hidden.
+* **Ranking.** Curator images first, then the community's chosen default, then non-duplicates, role fit, source class
+  and trust, region and language (`?region=jp&lang=ja`), priority and measured size. The website and the API's
+  `best` (one image per kind) use it. The API list keeps its long-standing order by default, so an older client that
+  shows the first image is not surprised; `?order=quality` sorts the list by this ranking.
+* **Licence and attribution.** Each image may state `licence` (`provider_terms`, `publisher_press`, `owner_upload`,
+  `cc0`, `cc-by`, `cc-by-sa`, `unknown`), `attribution` and `source_page_url`; provider images default to the
+  provider's terms and name. Images under `cc-by`, `cc-by-sa`, `publisher_press` or `provider_terms`, and images
+  marked `local_only`, are kept and served here but never signed into the feed (`licence_withheld` in the log). An
+  upload is `owner_upload`; an upload under a licence that cannot enter the CC0 feed must be marked `local_only`.
+* **Media policy per source.** `ATLAS_MEDIA_POLICY` overrides, per source, whether images are downloaded and served
+  here (`proxy`, the default), only redirected to (`redirect`, with `redirect_hosts`), or never served (`none`).
+* **Safe downloads.** New downloads need https (`ATLAS_MEDIA_HTTPS_ONLY`); a redirect from https to http is always
+  refused. One download has `ATLAS_MEDIA_FETCH_DEADLINE_S` seconds in all; a response that says it is not an image
+  is refused before its body is read; animated images are capped by frames and total pixels; each host gets at most
+  `ATLAS_MEDIA_HOST_CONCURRENCY` downloads at a time and `ATLAS_MEDIA_HOST_RPM` per minute. Every failure is
+  recorded as a code (`last_error`: `not_public`, `https_required`, `status_404`, `bad_type`, `too_large`,
+  `timeout`, ...) and the API reports each image's `state` (`cached`, `pending`, `failing`, `not_fetched`, `blocked`).
+* **Uploads** are decoded and written again without EXIF, XMP, ICC or text metadata (PNG and WebP losslessly, JPEG at
+  quality 92, animated GIFs stay animated).

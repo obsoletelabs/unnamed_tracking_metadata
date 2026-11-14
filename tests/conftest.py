@@ -17,6 +17,15 @@ def build_settings(**kw) -> Settings:
     return Settings(_env_file=None, **base)
 
 
+@pytest.fixture(autouse=True)
+def _media_host_limits():
+    """Per-host download limits are per process (C12 §12.6.2): every test starts with fresh counters."""
+    from atlas import media
+
+    media.reset_host_limits()
+    yield
+
+
 @pytest.fixture
 def settings() -> Settings:
     return build_settings()

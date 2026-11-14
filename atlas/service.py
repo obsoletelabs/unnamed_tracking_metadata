@@ -415,7 +415,7 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
     from .relations import move as move_relations
     from .social import move_list_items
 
-    move_facets(session, src, dst)
+    move_facets(session, src, dst, ctx.settings)
     move_values(session, src, dst)
     move_list_items(session, src, dst)
     move_prices(session, src, dst)  # C8: prices follow the record; they are not part of its view
@@ -506,11 +506,16 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
         elif row is None:
             session.add(Crosswalk(namespace=key[0], external_id=key[1], canonical_id=cid))
     if not any(s.is_current and s.source == obs.source for s in siblings):
-        from .models import Achievement, Artwork
+        from .models import Achievement, AchievementSet, AchievementStat, Artwork
 
-        for model in (Artwork, Achievement):
+        for model in (Artwork, Achievement, AchievementSet, AchievementStat):
             for row in session.scalars(select(model).where(model.canonical_id == old, model.source == obs.source)):
                 row.canonical_id = cid
+        session.flush()
+        from .facets import dedupe
+
+        for record in (old, cid):  # §12.5.4: a duplicate_of must not point at a row now on the other record
+            dedupe(session, ctx.settings, record)
     session.flush()
     who = actor or ("sync" if not log else "curator")
     matching.add_rejection(session, "chain", matching.chain_hash(obs.source, obs.source_scope, obs.external_id), old,

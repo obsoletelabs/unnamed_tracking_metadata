@@ -4,6 +4,7 @@ click-to-reveal for hidden achievements (signed-in members only)."""
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -31,7 +32,8 @@ EXTRA_PLATINUM_NOTE = ("Another row is already platinum. Platinum usually marks 
                        "keep more than one only if the game really has several.")
 FIELDS = ("kind", "tier", "points", "hidden", "icon_url", "locked_icon_url")
 FIELD_LABELS = {"description": "Description", "kind": "Kind", "tier": "Tier", "points": "Points", "hidden": "Hidden",
-                "icon_url": "Icon", "locked_icon_url": "Locked icon"}
+                "icon_url": "Icon", "locked_icon_url": "Locked icon", "global_percent": "Rarity (%)",
+                "status": "Status"}
 MAX_ROWS = 200
 SOURCE = proposals.SOURCE
 
@@ -76,7 +78,30 @@ def _inherited(p: Page, cid: str) -> dict[str, dict[str, Any]]:
             slot.setdefault("hidden", (True, a.source))
         if (a.icon_url or a.icon_blob_hash) and "icon" not in slot:
             slot["icon"] = a.source
+        if a.global_percent is not None and "rarity" not in slot:
+            slot["rarity"] = (f"{a.global_percent:g}", a.source)
     return out
+
+
+#: Item fields of C12 the editor does not show as controls; a row carries them through unchanged (JSON). The
+#: rarity date is not among them: an unchanged rarity keeps its date, an edited one is dated today (§12.1.6).
+EXTRA_FIELDS = ("set", "locale", "i18n", "icon_licence", "icon_attribution")
+MAX_EXTRA = 20000
+
+
+def _extra_of(item: dict[str, Any]) -> str:
+    extra = {k: item[k] for k in EXTRA_FIELDS if item.get(k) not in (None, "", {})}
+    return json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else ""
+
+
+def _parse_extra(raw: str) -> dict[str, Any]:
+    if not raw or len(raw) > MAX_EXTRA:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return {k: value[k] for k in EXTRA_FIELDS if isinstance(value, dict) and k in value}
 
 
 def _row_from_item(item: dict[str, Any], key: str) -> dict[str, Any]:
@@ -85,15 +110,15 @@ def _row_from_item(item: dict[str, Any], key: str) -> dict[str, Any]:
             "points": "" if item.get("points") is None else str(item["points"]), "hidden": bool(item.get("hidden")),
             "icon_url": item.get("icon_url", ""), "locked_icon_url": item.get("locked_icon_url", ""),
             "external_id": item.get("external_id", ""), "akey": item.get("key", ""),
-            "global_percent": "" if item.get("global_percent") is None else str(item["global_percent"]),
-            "errors": [], "notes": []}
+            "global_percent": "" if item.get("global_percent") is None else f"{item['global_percent']:g}",
+            "status": item.get("status", ""), "extra": _extra_of(item), "errors": [], "notes": []}
 
 
 def _community_items(p: Page, cid: str) -> list[dict[str, Any]]:
     rows = list(p.session.scalars(select(Achievement).where(
         Achievement.canonical_id == cid, Achievement.source == SOURCE).order_by(
         Achievement.position.is_(None), Achievement.position, Achievement.name)))
-    return facets.achievement_items(rows)
+    return facets.achievement_items(rows, p.session)  # retired rows are not part of the list (C12 §12.1.3)
 
 
 def _decorate(p: Page, cid: str, rows: list[dict[str, Any]]) -> None:
@@ -122,16 +147,16 @@ def _editor_ctx(p: Page, g: Any, rows: list[dict[str, Any]], **extra: Any) -> di
 
 def _clean_row(row: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
     """The item a row stands for (None for an untouched blank row) and the problems found in it."""
-    if not any(str(row[f]).strip() for f in ("name", "description", "kind", "tier", "points", "icon_url",
-                                              "locked_icon_url")) and not row["hidden"]:
+    shown = ("name", "description", "kind", "tier", "points", "icon_url", "locked_icon_url", "global_percent", "status")
+    if not any(str(row.get(f, "")).strip() for f in shown) and not row["hidden"]:
         return None, []
     item: dict[str, Any] = {"name": row["name"], "description": row["description"], "hidden": row["hidden"],
-                            "external_id": row.get("external_id", "")}
+                            "external_id": row.get("external_id", ""), **_parse_extra(row.get("extra", ""))}
     if row.get("akey"):  # the stored key of the entry this row edits: a rename keeps the entry (C2.2)
         item["key"] = row["akey"]
     problems = []
-    for field in ("kind", "tier", "icon_url", "locked_icon_url"):
-        if str(row[field]).strip():
+    for field in ("kind", "tier", "icon_url", "locked_icon_url", "status"):
+        if str(row.get(field, "")).strip():
             item[field] = str(row[field]).strip()
     points = str(row["points"]).strip()
     if points:
@@ -139,12 +164,16 @@ def _clean_row(row: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
             item["points"] = int(points)
         else:
             problems.append("Points must be a whole number.")
-    pct = str(row.get("global_percent", "")).strip()
+    pct = str(row.get("global_percent", "")).strip().rstrip("%").replace(",", ".")
     if pct:
         try:
-            item["global_percent"] = float(pct)
+            value = float(pct)
         except ValueError:
-            pass
+            value = -1.0
+        if not 0 <= value <= 100:
+            problems.append("Rarity must be a number from 0 to 100.")
+        else:
+            item["global_percent"] = value
     if not str(row["name"]).strip():
         problems.append("A name is required.")
     if not problems:
@@ -162,7 +191,7 @@ async def _store_upload(p: Page, upload: Any) -> tuple[str | None, str | None]:
     if len(data) > s.media_max_bytes:
         return None, f"The image may be at most {s.media_max_bytes // 1024 // 1024} MB."
     try:
-        ext, _ctype, _w, _h = images.validate_image(data, s)
+        data, ext, _ctype, _w, _h = images.reencode_upload(data, s)  # metadata stripped (C12 §12.6.2)
         images.store(s, data, ext)
     except images.MediaError as exc:
         return None, f"That is not a usable image: {exc}."
@@ -183,7 +212,8 @@ async def _read_rows(p: Page, form: Any) -> tuple[list[dict[str, Any]], list[dic
         row = {"key": k, "external_id": str(form.get(f"external_id.{k}") or "")[:200],
                "akey": str(form.get(f"akey.{k}") or "")[:30],
                "global_percent": str(form.get(f"global_percent.{k}") or "")[:20], "errors": [], "notes": [],
-               "hidden": bool(form.get(f"hidden.{k}"))}
+               "hidden": bool(form.get(f"hidden.{k}")), "extra": str(form.get(f"extra.{k}") or "")[:MAX_EXTRA],
+               "status": str(form.get(f"status.{k}") or "")[:16]}
         for f in ("name", "description", "kind", "tier", "points", "icon_url", "locked_icon_url"):
             row[f] = str(form.get(f"{f}.{k}") or "").strip()
         problems: list[str] = []
@@ -210,12 +240,14 @@ async def _read_rows(p: Page, form: Any) -> tuple[list[dict[str, Any]], list[dic
             elif platinum_seen:
                 row["notes"].append(EXTRA_PLATINUM_NOTE)  # a warning, not a refusal (C7.1)
             platinum_seen = True
-        norm = facets._norm_name(row["name"]) if row["name"] else ""
-        if norm:
-            if norm in seen:
-                problems.append("Another row already has this name.")
+        # two rows may share a name when they are different achievements (different external ids, C12 §12.1.4)
+        ident = (row["external_id"], facets._norm_name(row["name"])) if row["name"] else None
+        if ident:
+            if ident in seen:
+                problems.append("Another row already has this name." if not row["external_id"]
+                                else "Another row already has this name and external id.")
                 item = None
-            seen[norm] = k
+            seen[ident] = k
         row["errors"] = problems
         rows.append(row)
         if item is not None and not problems:
@@ -254,7 +286,8 @@ def _diff(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> dict[str, Any
             continue
         a = old[n]
         deltas = []
-        for f in ("name", "description", "kind", "tier", "points", "hidden", "icon_url", "locked_icon_url"):
+        for f in ("name", "description", "kind", "tier", "points", "global_percent", "status", "hidden", "icon_url",
+                  "locked_icon_url"):
             x, y = a.get(f) or ("" if f != "hidden" else False), b.get(f) or ("" if f != "hidden" else False)
             if x != y:
                 deltas.append((FIELD_LABELS.get(f, f.replace("_", " ").capitalize()), _show(x), _show(y)))

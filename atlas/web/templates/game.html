@@ -102,14 +102,17 @@
 
 {% if g.media_type == 'game' %}<h2 id="achievements">Achievements</h2>
 {% if achievements %}
-<table class="achievements"><thead><tr><th></th><th>Name</th><th>Description</th><th>Points</th><th>Global %</th></tr></thead><tbody>
-{% for a in achievements %}{% set concealed = a.hidden and not a.revealed %}<tr>
+<div class="table-scroll"><table class="achievements"><thead><tr><th></th><th>Name</th><th>Description</th><th>Points</th><th>Global %</th></tr></thead><tbody>
+{% set ns = namespace(set=None) %}
+{% for a in achievements %}{% set concealed = a.hidden and not a.revealed %}
+{% if ach_sets|length > 1 and a.set != ns.set %}{% set ns.set = a.set %}{% set s = ach_sets|selectattr('id', 'equalto', a.set)|first %}<tr class="ach-set"><th colspan="5" scope="rowgroup">{{ s.name or s.key }}{% if s.kind != 'base' %} <span class="badge">{{ s.kind }}</span>{% endif %}{% if s.platforms %} <span class="small muted">{{ s.platforms|join(', ') }}</span>{% endif %}</th></tr>{% endif %}
+<tr{% if a.status == 'unobtainable' %} class="muted"{% endif %}>
 <td class="ach-icon">{% if a.icon_url %}<img src="{{ a.icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="40" height="40" loading="lazy">{% else %}<span class="ach-ph" aria-hidden="true">{{ '?' if concealed else '★' }}</span>{% endif %}</td>
 <td>{% if concealed %}<span data-hidden-name>Hidden achievement</span> <span class="badge">hidden</span>{% else %}{{ a.name }}{% if a.hidden %} <span class="badge">hidden</span>{% endif %}{% endif %}{% if a.kind %} <span class="badge">{{ a.kind|replace('_', ' ') }}</span>{% endif %}{% if a.tier %} <span class="badge tier-{{ a.tier }}">{{ a.tier }}</span>{% endif %}</td>
 <td>{% if concealed %}{% if p.user %}<a class="btn ghost small" href="/game/{{ g.id }}/achievements/{{ a.id }}" data-reveal="/game/{{ g.id }}/achievements/{{ a.id }}?json=1" aria-label="Reveal this hidden achievement (may spoil the game)">Reveal (spoiler)</a>{% else %}<a class="small" href="/login?next=/game/{{ g.id }}/achievements/{{ a.id }}">Sign in to reveal</a>{% endif %}{% else %}{{ a.description }}{% endif %}</td>
 <td>{% if a.points is not none %}{{ a.points }}{% endif %}</td>
-<td>{% if a.global_percent is not none %}{{ '%.1f'|format(a.global_percent) }}% {% if a.global_percent < 5 %}<span class="badge bad">ultra rare</span>{% elif a.global_percent < 15 %}<span class="badge warn">rare</span>{% elif a.global_percent >= 50 %}<span class="badge ok">common</span>{% endif %}{% endif %}</td></tr>{% endfor %}
-</tbody></table>
+<td>{% if a.global_percent is not none %}{{ '%.1f'|format(a.global_percent) }}% {% if a.global_percent < 5 %}<span class="badge bad">ultra rare</span>{% elif a.global_percent < 15 %}<span class="badge warn">rare</span>{% elif a.global_percent >= 50 %}<span class="badge ok">common</span>{% endif %}{% if a.rarity and a.rarity.stale %} <span class="small muted" title="Measured {{ a.rarity.as_of or 'at an unknown date' }}">(old)</span>{% endif %}{% endif %}{% if a.status == 'unobtainable' %} <span class="badge">unobtainable</span>{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
 {% else %}<p class="muted">No achievements recorded.</p>{% endif %}
 {% if p.user %}<p><a class="btn secondary" href="/game/{{ g.id }}/achievements/edit">Edit achievements</a></p>{% else %}<p class="small"><a href="/login?next=/game/{{ g.id }}/achievements/edit">Sign in</a> to add or edit achievements.</p>{% endif %}
 {% endif %}

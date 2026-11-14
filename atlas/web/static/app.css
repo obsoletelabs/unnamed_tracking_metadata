@@ -161,7 +161,9 @@ details.inline { display: inline; } details.inline > form, details.inline > .car
 .badge.tier-bronze { color: var(--accent); border-color: var(--accent); }
 .badge.tier-platinum { color: var(--text); border-color: var(--text); font-weight: 600; }
 @media (max-width: 640px) { .achievements th:nth-child(4), .achievements td:nth-child(4) { display: none; } }
-.achievements { display: block; overflow-x: auto; }
+/* #97: the table itself is full width; a narrow screen scrolls its .table-scroll wrapper instead */
+table.achievements { width: 100%; }
+.achievements tr.ach-set th { text-align: left; padding-top: 14px; border-bottom: 1px solid var(--border); }
 
 .gallery { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .gallery.kind-screenshot, .gallery.kind-banner, .gallery.kind-hero { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
@@ -192,6 +194,16 @@ dialog#viewer::backdrop { background: rgba(0, 0, 0, .6); }
 .ach-check { align-self: end; padding-bottom: 8px; }
 .ach-check label { display: flex; align-items: center; gap: 8px; margin: 0; }
 table.achievements { max-width: none; }
+/* #97: the description starts at its two rows (the global 7em minimum is for free-text notes) and every control in
+   a row lines up: same height for inputs and selects, labels on one line above them */
+.ach-grid textarea { min-height: 0; }
+.ach-grid > .ach-check { grid-column: span 3; }  /* beside Status, so the two icon fields share the next line */
+@media (max-width: 900px) { .ach-grid > .ach-check { grid-column: span 1; } }
+@media (max-width: 640px) { .ach-grid > .ach-check { grid-column: 1 / -1; } }
+.ach-grid input:not([type=checkbox]):not([type=file]), .ach-grid select { min-height: 2.5em; }
+.ach-grid label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ach-row > .ach-legend { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+#ach-form > textarea, #ach-form > label { display: block; width: 100%; }
 .ach-icon-field { grid-column: span 2; min-width: 0; }
 .ach-icon-row { display: flex; gap: 10px; align-items: flex-start; }
 .ach-icon-row img { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; border: 1px solid var(--border); }

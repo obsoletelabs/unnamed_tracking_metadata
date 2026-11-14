@@ -320,6 +320,26 @@ def cmd_cache_media(_) -> int:
     return 0
 
 
+def cmd_media(args) -> int:
+    """`atlas media backfill|stats`: measure images cached before migration 0035 (C12 §12.5.2) in bounded batches."""
+    from . import media
+
+    settings, maker = _maker()
+    if args.action == "stats":
+        with maker() as s:
+            print({**media.stats(s), "unmeasured": media.pending_backfill(s)})
+        return 0
+    total = 0
+    while (n := media.backfill(maker, settings, limit=args.batch)):
+        total += n
+        if args.limit and total >= args.limit:
+            break
+    with maker() as s:
+        left = media.pending_backfill(s)
+    print(f"measured {total} images; {left} still to measure")
+    return 0
+
+
 def cmd_import_legacy(args) -> int:
     from .legacy_import import import_legacy
 
@@ -447,6 +467,11 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("username")
     a.set_defaults(fn=cmd_make_admin)
     sub.add_parser("cache-media").set_defaults(fn=cmd_cache_media)
+    md = sub.add_parser("media", help="cached artwork: measure images stored before 0035 (C12), or show counts")
+    md.add_argument("action", choices=["backfill", "stats"])
+    md.add_argument("--batch", type=int, default=200, help="images per transaction (default 200)")
+    md.add_argument("--limit", type=int, help="stop after about this many images (the next run continues)")
+    md.set_defaults(fn=cmd_media)
     dt = sub.add_parser("dates", help="release dates: re-derive views with partial and regional dates (C5.2)")
     dt.add_argument("action", choices=["rebuild"])
     dt.add_argument("--batch", type=int, default=500, help="records per transaction (default 500)")
