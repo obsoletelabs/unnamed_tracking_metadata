@@ -398,6 +398,9 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("import-legacy")
     i.add_argument("path", help="path to the demo-1 SQLite database")
     i.set_defaults(fn=cmd_import_legacy)
+    from . import group_cli
+
+    group_cli.register(sub)
     args = p.parse_args(argv)
     return args.fn(args)
 

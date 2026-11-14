@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Node group enrolment · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+<ol class="chips" aria-label="Steps"><li class="chip">1. {{ 'Invite' if step == 'invite' else 'Address and code' }}</li><li class="chip">2. Compare numbers</li><li class="chip">3. Confirm on both nodes</li><li class="chip">4. Done</li></ol>
+{% if step == 'invite' %}
+<section class="card" aria-labelledby="e-invite" data-enrol-step="invite"><h2 id="e-invite">Invite a node to {{ group.name }}</h2>
+  <p>On the new node, open <strong>Administration → Node group → Join</strong> and enter:</p>
+  <dl class="facts"><dt>Address</dt><dd><code>{{ address }}</code></dd>
+  <dt>Code</dt><dd><code class="invite-code" data-invite-code>{{ code }}</code></dd>
+  <dt>Valid until</dt><dd>{{ row.expires_at.strftime('%H:%M UTC') }} (single use)</dd>
+  <dt>This node</dt><dd><code class="fingerprint">{{ fp(row.group_id) }}</code> (group) · node <code class="fingerprint">{{ fp(p.st.ctx.identity.node_id) }}</code></dd></dl>
+  <details><summary class="small">QR payload (code only, no personal data)</summary><pre class="small">{{ qr }}</pre></details>
+  <p class="small muted">Send the code over a channel you trust. Anyone who has it can try to join in place of your node, which is why both screens show a number to compare next.</p>
+  <p><a class="btn" href="/admin/group">Back to the group</a></p>
+</section>
+{% elif step == 'join' %}
+<section class="card" aria-labelledby="e-join" data-enrol-step="join"><h2 id="e-join">Join a node group</h2>
+  <form method="post" action="/admin/group/join">{{ csrf(p.csrf) }}
+    <label for="j-url">Address of the inviting node</label><input id="j-url" name="url" type="url" required maxlength="300" placeholder="https://home.example.net">
+    <label for="j-code">Invite code</label><input id="j-code" name="code" type="text" required maxlength="120" autocomplete="off" spellcheck="false" placeholder="AG1-…">
+    <label for="j-name">Name of this node in the group (optional)</label><input id="j-name" name="name" type="text" maxlength="80">
+    <p><button type="submit">Continue</button></p>
+  </form>
+</section>
+{% else %}
+<section class="card" aria-labelledby="e-sas" data-enrol-step="sas" data-enrol-state="{{ row.state }}"><h2 id="e-sas">Compare the numbers</h2>
+  {% if peer %}<p>{{ 'Joining node' if row.side == 'inviter' else 'Inviting node' }}:</p>
+  <p><code class="fingerprint big"><strong>{{ fp(peer.node_id) }}</strong></code><br><span class="small">{{ peer.name }} · {{ peer.url }}</span></p>{% endif %}
+  {% if sas %}<p class="small muted">Both screens must show exactly this number:</p>
+  <p class="sas" data-sas><strong>{{ sas }}</strong></p>
+  {% else %}<p class="muted">Waiting for the joining node to reveal its part of the number…</p>{% endif %}
+  <dl class="facts"><dt>Enrolment</dt><dd><code>{{ row.id }}</code></dd><dt>State</dt><dd>{{ row.state }}</dd>
+  {% if row.side == 'inviter' %}<dt>Permissions offered</dt><dd><ul class="chips">{% for s in row.scopes %}<li class="chip">{{ s }}</li>{% endfor %}</ul></dd>{% endif %}</dl>
+  {% if sas and row.state in ('revealed', 'confirmed') %}
+  <form method="post" action="/admin/group/enrolment/{{ row.id }}/confirm">{{ csrf(p.csrf) }}
+    <label><input type="checkbox" name="matches" required> The numbers match on both screens.</label>
+    {% if needs_root %}<label for="e-root">Root passphrase</label><input id="e-root" name="root_passphrase" type="password" required maxlength="256" autocomplete="off">{% endif %}
+    {% if row.side == 'inviter' %}<label for="e-acct">Your current account password</label><input id="e-acct" name="password" type="password" maxlength="256" autocomplete="current-password">{% endif %}
+    <p><button type="submit">{{ 'Issue certificate' if row.side == 'inviter' else ('Join group' if row.state == 'revealed' else 'Check again') }}</button></p>
+  </form>{% endif %}
+  {% if row.state not in ('active', 'aborted', 'burned', 'expired') %}
+  <form method="post" action="/admin/group/enrolment/{{ row.id }}/cancel">{{ csrf(p.csrf) }}<button class="secondary small" type="submit" data-confirm="Cancel this enrolment?">The numbers differ: cancel</button></form>{% endif %}
+  <p><a href="/admin/group">Back to the group</a></p>
+</section>
+{% endif %}
+{% endblock %}

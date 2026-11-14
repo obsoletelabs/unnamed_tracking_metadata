@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from collections import Counter
+from datetime import timedelta
 
 from sqlalchemy import case, func, select
 from starlette.requests import ClientDisconnect
@@ -199,6 +200,48 @@ class Stats:
                 "# TYPE atlas_backup_enabled gauge",
                 f"atlas_backup_enabled {int(bool(state.ctx.settings.backup_dir))}"]
 
+    def _group(self, state, session):
+        """Owner-group health (CONTRACT-C10 §8.3). Only rendered while this node is in a group; it discloses the
+        member node ids to whoever may scrape /metrics (docs/guide/node-groups.md)."""
+        from . import groups
+
+        group = groups.load(session)
+        now = groups.utcnow()
+        members = list(session.scalars(select(groups.GroupMember).where(groups.GroupMember.group_id == group.group_id)))
+        lines = ["# TYPE atlas_group_member gauge"]
+        for status in ("active", "expiring", "expired", "revoked", "left", "fork"):
+            lines.append(f'atlas_group_member{{status="{status}"}} {sum(m.status == status for m in members)}')
+        lines.append("# TYPE atlas_group_cert_expiry_seconds gauge")
+        lines += [f'atlas_group_cert_expiry_seconds{{node="{m.node_id}"}} '
+                  f'{(groups.aware(m.not_after) - now).total_seconds():.0f}' for m in members[:32]]
+        lines.append("# TYPE atlas_group_crl_seq gauge")
+        lines.append(f'atlas_group_crl_seq{{issuer="root"}} {groups.crl_seqs(session, group.group_id).get("root", 0)}')
+        lines.append("# TYPE atlas_group_last_sync_age_seconds gauge")
+        lines += [f'atlas_group_last_sync_age_seconds{{node="{m.node_id}"}} '
+                  f'{(now - groups.aware(m.last_seen_at)).total_seconds():.0f}' for m in members[:32] if m.last_seen_at]
+        views = list(session.scalars(select(groups.GroupView).where(groups.GroupView.group_id == group.group_id)))
+        lines.append("# TYPE atlas_group_view_age_seconds gauge")
+        lines += [f'atlas_group_view_age_seconds{{issuer="{v.node_id}"}} '
+                  f'{(now - groups.aware(v.issued_at)).total_seconds():.0f}' for v in views[:32]]
+        since = now - timedelta(days=30)
+        lines.append("# TYPE atlas_group_enrolments gauge")
+        rows = list(session.scalars(select(groups.GroupEnrolment.state).where(
+            groups.GroupEnrolment.side == "inviter", groups.GroupEnrolment.created_at >= since)))
+        for result, states in (("issued", ("issued", "active")), ("burned", ("burned",)), ("expired", ("expired",)),
+                               ("aborted", ("aborted",))):
+            lines.append(f'atlas_group_enrolments{{result="{result}"}} {sum(r in states for r in rows)}')
+        lines += ["# TYPE atlas_group_resyncing gauge", f"atlas_group_resyncing {int(group.status == 'resyncing')}"]
+        return lines
+
+    def _collectors(self, session) -> tuple[str, ...]:
+        try:
+            from . import groups
+
+            return (*COLLECTORS, "group") if groups.active(session) is not None else COLLECTORS
+        except Exception:
+            session.rollback()
+            return COLLECTORS
+
     def render(self, state, session):
         """One scrape. Each collector is isolated: a failure drops only that collector's series (never
         reported as zero) and shows as `atlas_collector_success{collector=...} 0`. Collector names are the
@@ -206,7 +249,8 @@ class Stats:
         lines = ["# TYPE atlas_uptime_seconds gauge", f"atlas_uptime_seconds {time.time() - self.started:.3f}"]
         lines += self._http()
         status, timing = {}, {}
-        for name in COLLECTORS:
+        collectors = self._collectors(session)
+        for name in collectors:
             started = time.monotonic()
             try:
                 lines += getattr(self, f"_{name}")(state, session)
@@ -221,9 +265,9 @@ class Stats:
                     "event": "metrics.collector_failed", "collector": name, "error_type": type(exc).__name__}})
             timing[name] = time.monotonic() - started
         lines.append("# TYPE atlas_collector_success gauge")
-        lines += [f'atlas_collector_success{{collector="{name}"}} {status[name]}' for name in COLLECTORS]
+        lines += [f'atlas_collector_success{{collector="{name}"}} {status[name]}' for name in collectors]
         lines.append("# TYPE atlas_collector_duration_seconds gauge")
-        lines += [f'atlas_collector_duration_seconds{{collector="{name}"}} {timing[name]:.6f}' for name in COLLECTORS]
+        lines += [f'atlas_collector_duration_seconds{{collector="{name}"}} {timing[name]:.6f}' for name in collectors]
         return "\n".join(lines) + "\n"
 
 

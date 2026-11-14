@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Node group · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_adminnav.html" %}
+{% if error %}<div class="card error" role="alert">{{ error }}</div>{% endif %}
+{% if not group or group.status in ('left',) %}
+<section class="card" aria-labelledby="group-none"><h2 id="group-none">Node group</h2>
+  <p>A node group joins the Atlas nodes <strong>you</strong> run (for example a home server, a VPS and a laptop) so they recognise each other. Membership is private: it is never in the public feed, and other nodes cannot tell that this node is in a group.</p>
+  {% if group and group.status == 'left' %}<p class="small muted">This node left the group {{ group.name }} ({{ fp(group.group_id) }}).</p>{% endif %}
+  <p><a class="btn" href="/admin/group/join">Join an existing group</a></p>
+</section>
+<section class="card" aria-labelledby="group-create"><h2 id="group-create">Create a group on this node</h2>
+  <p class="small muted">This node keeps the group root, encrypted with a passphrase you choose and with ATLAS_SECRET_KEY. You also get a recovery file: keep it offline. Without it, losing this node means creating a new group.</p>
+  <p class="small" data-group-honest-risk>A stolen database without ATLAS_SECRET_KEY gives nothing. A stolen database (or backup) plus ATLAS_SECRET_KEY does not reveal the group root key directly, but it allows unthrottled offline guessing of the root passphrase at scrypt cost (N=2^17, r=8: about 128 MiB and 0.3-0.5 s per guess per core). A random 14-character passphrase resists that; a human-chosen phrase may not. Owners who keep backups together with the secret key should use the offline-root mode; this release does not offer it yet, so until then keep backups apart from ATLAS_SECRET_KEY and use a random root passphrase.</p>
+  <form method="post" action="/admin/group/create">{{ csrf(p.csrf) }}
+    <label for="g-name">Group name</label><input id="g-name" name="name" type="text" required maxlength="80" value="My nodes">
+    <label for="g-root">Root passphrase (at least 14 characters, not a common password)</label><input id="g-root" name="root_passphrase" type="password" required minlength="14" maxlength="256" autocomplete="new-password">
+    <label for="g-root2">Root passphrase again</label><input id="g-root2" name="root_passphrase2" type="password" required minlength="14" maxlength="256" autocomplete="new-password">
+    <label for="g-rec">Recovery-file passphrase (different from the root passphrase)</label><input id="g-rec" name="recovery_passphrase" type="password" required minlength="14" maxlength="256" autocomplete="new-password">
+    <label for="g-rec2">Recovery-file passphrase again</label><input id="g-rec2" name="recovery_passphrase2" type="password" required minlength="14" maxlength="256" autocomplete="new-password">
+    <label for="g-create-pw">Your current account password</label><input id="g-create-pw" name="password" type="password" maxlength="256" autocomplete="current-password">
+    <p><button type="submit">Create group</button></p>
+  </form>
+</section>
+{% if joins %}<section class="card"><h2>Join attempts</h2><ul>{% for j in joins %}<li><a href="/admin/group/enrolment/{{ j.id }}">{{ j.id }}</a> · {{ j.state }} · {{ when(j.created_at) }}</li>{% endfor %}</ul></section>{% endif %}
+{% else %}
+{% if recovery_pending %}
+<section class="card error" aria-labelledby="g-recovery" data-group-recovery="pending"><h2 id="g-recovery">Download the recovery file to finish</h2>
+  <p>Root operations stay locked until the recovery file is downloaded and its passphrase confirmed once more.</p>
+  <p class="small" data-group-recovery-risk>{% if group.recovery.threshold == 1 %}This file holds the recovery key and the root key. Anyone who has it and guesses its passphrase can take over the group: a root succession they issue stays pending for 24 hours, is shown on every member, and can be cancelled with your own copy of the file (the two then conflict, which means creating a new group).{% else %}Each file holds one recovery key and never the root key; any two of the three can sign a root succession.{% endif %} Store it offline. If it is lost while the root is fine, export a new one (<code>atlas group root export-recovery</code>); replacing the recovery key itself needs a root succession.</p>
+  <p><a class="btn" href="/admin/group/recovery.json" download>Download recovery file</a></p>
+  <form method="post" action="/admin/group/recovery/confirm">{{ csrf(p.csrf) }}
+    <label><input type="checkbox" name="downloaded"> I downloaded it and stored it offline.</label>
+    <label for="g-rec-confirm">Recovery-file passphrase</label><input id="g-rec-confirm" name="passphrase" type="password" required maxlength="256" autocomplete="off">
+    <p><button type="submit">Confirm</button></p>
+  </form>
+</section>
+{% endif %}
+{% if group.status == 'halted' %}<div class="card error" role="alert">Conflicting root successions were seen: the recovery keys of this group are compromised. Create a new group.</div>{% endif %}
+{% if pending %}<div class="card error" role="alert">A root succession is pending (index {{ pending[0].body.body.index }}, activates {{ pending[0].activates_at }}). If it is not yours, cancel it with a recovery quorum (<code>atlas group root succession-cancel</code>).</div>{% endif %}
+<section class="card" aria-labelledby="g-card" data-group-status="{{ group.status }}"><h2 id="g-card">{{ group.name }}</h2>
+  <dl class="facts">
+    <dt>Group fingerprint</dt><dd><code class="fingerprint">{{ fp(group.group_id) }}</code></dd>
+    <dt>Status</dt><dd><span class="badge {{ 'ok' if group.status == 'active' else 'warn' }}">{{ group.status }}</span></dd>
+    <dt>Group root</dt><dd>{{ {'holder': 'on this node (passphrase-locked)', 'moved': 'moved to another member', 'none': 'on another member or offline'}[group.root_state] }}</dd>
+    <dt>Recovery</dt><dd>{{ group.recovery.threshold }}-of-{{ group.recovery['keys']|length }}</dd>
+    <dt>Revocation lists</dt><dd>{% if crl_seq %}{% for issuer, seq in crl_seq.items() %}<span class="chip">{{ 'root' if issuer == 'root' else fp(issuer) }} #{{ seq }}</span> {% endfor %}{% else %}none yet{% endif %}</dd>
+    <dt>Group protocol</dt><dd>1.0</dd>
+  </dl>
+</section>
+<section class="card" aria-labelledby="g-fresh" data-group-fresh="{{ 'yes' if fresh.ok else 'no' }}"><h2 id="g-fresh">Freshness</h2>
+  {% if fresh.ok and fresh.waived %}<p class="small">Only two members are live, so no third node can confirm freshness; privileged actions are allowed (two-member waiver).</p>
+  {% elif fresh.ok %}<p class="small"><span class="badge ok">fresh</span> newest view from another member is {{ (fresh.view_age // 60)|int }} minutes old.</p>
+  {% else %}<p class="small"><span class="badge warn">not confirmed</span> {{ fresh.reason }}. Delegated and privileged actions wait until a member's view is newer than {{ settings.group_view_max_age_hours }} h.</p>{% endif %}
+  {% if group.status == 'resyncing' %}<p class="error">This node was restored: it pulls every member's state before any privileged action.</p>
+  <form class="inline" method="post" action="/admin/group/resync/skip">{{ csrf(p.csrf) }}<label for="g-skip-pw">Current password</label><input id="g-skip-pw" name="password" type="password" maxlength="256" autocomplete="current-password"><button class="secondary small" type="submit" data-confirm="Skip the resync? This is audited.">Skip resync</button></form>{% endif %}
+  <form class="inline" method="post" action="/admin/group/sync">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Sync with members now</button></form>
+</section>
+<section aria-labelledby="g-members"><h2 id="g-members">Members ({{ members|length }})</h2>
+<div class="table-scroll"><table data-group-members><thead><tr><th scope="col">Node</th><th scope="col">Address</th><th scope="col">Permissions</th><th scope="col">Certificate</th><th scope="col">Status</th><th scope="col">Last seen</th><th scope="col">Actions</th></tr></thead><tbody>
+{% for m in members %}{% set cert = certs[m.node_id] %}<tr data-member="{{ m.node_id }}" data-member-status="{{ m.status }}">
+  <td><code class="fingerprint"><strong>{{ fp(m.node_id) }}</strong></code><div class="small">{{ m.name }}{% if m.node_id == me_id %} <span class="badge">this node</span>{% endif %}</div></td>
+  <td class="small">{{ m.url }}{% if cert and not cert.body.member.url_verified %}<div class="badge warn">address not verified</div>{% endif %}</td>
+  <td><ul class="chips">{% for s in m.scopes %}<li class="chip">{{ s }}</li>{% endfor %}</ul>{% if m.delegate %}<div class="small muted">may enrol up to {{ m.delegate.max_members }} nodes</div>{% endif %}</td>
+  <td class="small"><code>{{ m.serial }}</code><div class="muted">{% if cert %}{{ 'root' if cert.body.issuer == 'root' else 'by ' ~ fp(cert.body.issuer) }} · {% endif %}expires {{ when(m.not_after) }}</div></td>
+  <td><span class="badge {{ 'ok' if m.status == 'active' else ('warn' if m.status in ('expiring', 'expired') else 'bad') }}">{{ m.status }}</span></td>
+  <td class="small">{% if m.last_seen_at %}{{ when(m.last_seen_at) }}{% else %}—{% endif %}{% if m.last_error %}<div class="error">{{ m.last_error }}</div>{% endif %}</td>
+  <td>{% if m.node_id != me_id and m.status in ('active', 'expiring', 'expired', 'fork') %}
+    <details><summary class="small">Revoke…</summary>
+    <form method="post" action="/admin/group/members/{{ m.node_id }}/revoke">{{ csrf(p.csrf) }}
+      <label for="r-{{ m.node_id }}">Reason</label><select id="r-{{ m.node_id }}" name="reason"><option value="removed">removed</option><option value="key_compromise">compromised</option></select>
+      <label for="s-{{ m.node_id }}">Suspect since (compromised only, UTC)</label><input id="s-{{ m.node_id }}" name="suspect_since" type="datetime-local">
+      {% if group.root_state == 'holder' %}<label for="rp-{{ m.node_id }}">Root passphrase</label><input id="rp-{{ m.node_id }}" name="root_passphrase" type="password" maxlength="256" autocomplete="off">{% endif %}
+      <label for="rpw-{{ m.node_id }}">Your current account password</label><input id="rpw-{{ m.node_id }}" name="password" type="password" maxlength="256" autocomplete="current-password">
+      <p><button class="secondary small" type="submit" data-confirm="Revoke {{ fp(m.node_id) }}? It loses every group permission on every member.">Revoke</button></p>
+    </form></details>{% endif %}</td>
+</tr>{% endfor %}
+</tbody></table></div></section>
+{% if group.root_state == 'holder' %}
+<section class="card" aria-labelledby="g-renew"><h2 id="g-renew">Renew certificates</h2>
+  <form method="post" action="/admin/group/renew">{{ csrf(p.csrf) }}<label for="g-renew-pw">Root passphrase</label><input id="g-renew-pw" name="root_passphrase" type="password" required maxlength="256" autocomplete="off"><label for="g-renew-acct">Your current account password</label><input id="g-renew-acct" name="password" type="password" maxlength="256" autocomplete="current-password"><p><button class="secondary" type="submit">Renew every root-issued certificate</button></p></form>
+</section>{% endif %}
+<section class="card" aria-labelledby="g-recover"><h2 id="g-recover">Recovery</h2>
+  <p class="small muted" data-group-recovery-commands>Recovery runs on the command line of a member: <code>atlas group root import --recovery-file F</code> moves the root to that member (when the root node is lost); <code>atlas group root succession --recovery-file F</code> replaces a stolen root key with a recovery quorum (pending {{ group.genesis.body.policy.succession_delay_hours }} h); <code>atlas group root succession-cancel</code> cancels a succession that is not yours. Offline root signing, box-key rotation and member updates are not available in this release.</p>
+</section>
+{% if can_invite %}
+<section class="card" aria-labelledby="g-invite"><h2 id="g-invite">Add a node</h2>
+  <p class="small muted">Creates a one-time code valid for 10 minutes. Both administrators then compare a 12-digit number on their screens.</p>
+  <form method="post" action="/admin/group/invite">{{ csrf(p.csrf) }}
+    <label for="g-del">Let the new node enrol other nodes (0 = no)</label><input id="g-del" name="delegate_enrol" type="number" min="0" max="8" value="0">
+    <p><button type="submit">Create invite</button></p></form>
+</section>{% endif %}
+{% if enrolments %}<section class="card" aria-labelledby="g-enrol"><h2 id="g-enrol">Recent enrolments</h2><ul>
+{% for e in enrolments %}<li><a href="/admin/group/enrolment/{{ e.id }}">{{ e.side }} · {{ e.state }}</a>{% if e.peer_node_id %} · <code>{{ fp(e.peer_node_id) }}</code>{% endif %} · {{ when(e.created_at) }}</li>{% endfor %}</ul></section>{% endif %}
+{% if revoked %}<section class="card" aria-labelledby="g-rev"><h2 id="g-rev">Revocations</h2><ul class="small">
+{% for r in revoked %}<li><code>{{ r.serial }}</code> · {{ r.reason }}{% if r.node_id %} · {{ fp(r.node_id) }}{% endif %} · {{ when(r.revoked_at) }}</li>{% endfor %}</ul></section>{% endif %}
+{% if group.status in ('active', 'resyncing', 'revoked') %}
+<section class="card" aria-labelledby="g-leave"><h2 id="g-leave">Leave the group</h2>
+  {% if group.root_state == 'holder' %}<p class="small muted">This node holds the group root. Export and verify a recovery file that holds it (<code>atlas group root export-recovery</code>) before leaving.</p>{% endif %}
+  <form method="post" action="/admin/group/leave">{{ csrf(p.csrf) }}<label for="g-leave-pw">Current password</label><input id="g-leave-pw" name="password" type="password" maxlength="256" autocomplete="current-password"><p><button class="secondary" type="submit" data-confirm="Leave the group? Other members will stop trusting this node.">Leave group</button></p></form>
+</section>{% endif %}
+{% endif %}
+{% endblock %}

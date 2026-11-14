@@ -62,18 +62,19 @@ def rewrap_token(settings: Settings, token: str) -> str:
 def rewrap(session: Any, settings: Settings) -> dict[str, int]:
     """Re-encrypt every secret this node keeps in the database with the current secret (`atlas secrets rewrap`).
 
-    Covers the node signing key, peer tokens, OIDC client secrets, provider credentials (Admin → Integrations)
-    and TOTP secrets. Nothing is written unless every value decrypts: one undecryptable value aborts the run
+    Covers the node signing key, peer tokens, OIDC client secrets, provider credentials (Admin → Integrations),
+    TOTP secrets and the owner-group secrets (sealed root, box keys, enrolment secrets, a pending recovery
+    file). Nothing is written unless every value decrypts: one undecryptable value aborts the run
     with a `SecretsError` naming where it is, so a retired secret is never dropped while still needed."""
     from sqlalchemy import select, text
 
     from . import integrations, signing
-    from .models import AuditEntry, NodeState, OidcIssuer, Peer, Setting, UserMfa
+    from .models import AuditEntry, GroupEnrolment, NodeState, OidcIssuer, OwnerGroup, Peer, Setting, UserMfa
 
     if not available(settings):
         raise SecretsError("set ATLAS_SECRET_KEY to the new secret (and the old one in ATLAS_SECRET_KEY_PREVIOUS)")
     counts = {"signing_key": 0, "peer_tokens": 0, "oidc_client_secrets": 0, "integration_secrets": 0,
-              "mfa_secrets": 0}
+              "mfa_secrets": 0, "group_secrets": 0}
 
     def again(where: str, token: str) -> str:
         try:
@@ -114,6 +115,43 @@ def rewrap(session: Any, settings: Settings) -> dict[str, int]:
     for factor in session.scalars(select(UserMfa)):
         factor.secret_enc = again(f"the authenticator secret of user {factor.user_id}", factor.secret_enc)
         counts["mfa_secrets"] += 1
+    prefix = signing.ENC_PREFIX
+
+    def group_secret(where: str, value: str | None) -> str | None:
+        if not value:
+            return value
+        if not value.startswith(prefix):
+            raise SecretsError(f"{where} is not stored encrypted; nothing was changed")
+        counts["group_secrets"] += 1
+        return prefix + again(where, value[len(prefix):])
+
+    for group in session.scalars(select(OwnerGroup)):
+        for column in ("root_sealed", "box_sealed", "box_previous_sealed", "box_pending_sealed"):
+            setattr(group, column, group_secret(f"the {column} of group {group.group_id}", getattr(group, column)))
+    for enrolment in session.scalars(select(GroupEnrolment)):
+        where = f"the secret of enrolment {enrolment.id}"
+        value = group_secret(where, enrolment.secret_enc)
+        try:
+            import base64
+            import json
+
+            inner = json.loads(base64.b64decode(decrypt(settings, value[len(prefix):])))  # type: ignore[index]
+        except (SecretsError, ValueError) as exc:
+            raise SecretsError(f"{where} cannot be decrypted; nothing was changed") from exc
+        if isinstance(inner, dict) and isinstance(inner.get("box"), str):  # a joiner's new box key, sealed inside
+            inner["box"] = group_secret(f"the box key of enrolment {enrolment.id}", inner["box"])
+            value = prefix + encrypt(settings, base64.b64encode(json.dumps(inner).encode()).decode())
+        enrolment.secret_enc = value
+    pending = session.get(NodeState, "group_recovery_pending")
+    if pending is not None:
+        pending.value = group_secret("the pending group recovery file", pending.value)
+    successor = session.get(NodeState, "group_succession_root")  # {index, key_id, sealed}: a pending G'
+    if successor is not None:
+        import json
+
+        held = json.loads(successor.value)
+        held["sealed"] = group_secret("the root key of a pending succession", held.get("sealed"))
+        successor.value = json.dumps(held)
     session.add(AuditEntry(actor_id=None, action="secrets_rewrapped", target="", detail=counts))
     session.flush()
     return counts
