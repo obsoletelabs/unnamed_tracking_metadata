@@ -20,6 +20,7 @@ from . import (
     auth,
     background,
     backup,
+    build_info,
     client_changes,
     custom,
     dates_rebuild,
@@ -438,6 +439,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         wire.check_high_water(s, restoring=bool(getattr(settings, "restoring", False)))
         wire.log_ignored(s, dict(os.environ), log)
         s.commit()
+    if (build_problems := build_info.check()):  # C16 §10.4: a stale or mixed build never starts
+        raise build_info.BuildMismatch("; ".join(build_problems))
     with maker() as s:
         identity = load_identity(s, settings)
         _warn_key_at_rest(settings, signing_key_at_rest(s))

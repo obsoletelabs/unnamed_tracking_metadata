@@ -36,7 +36,9 @@ build-backend = "setuptools.build_meta"
 include = ["atlas*"]
 
 [tool.setuptools.package-data]
-atlas = ["migrations/script.py.mako", "web/templates/*.html", "web/static/*", "data/*.txt"]
+# _build.json (C16 10.4): written by tools/write_build_manifest.py just before `uv build`; absent in a source
+# checkout, where atlas.build_info.compute() is simply called at import instead.
+atlas = ["migrations/script.py.mako", "web/templates/*.html", "web/static/*", "data/*.txt", "_build.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

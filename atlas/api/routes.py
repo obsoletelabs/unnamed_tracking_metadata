@@ -16,6 +16,7 @@ from .. import (
     __version__,
     accounts,
     auth,
+    build_info,
     client_api,
     custom,
     facets,
@@ -162,9 +163,11 @@ def _guard_upstream(session: Session, st: AppState, cid: str) -> None:
 def health(st: St) -> dict[str, Any]:
     # Liveness stays "ok" (the process serves); "media" tells operators artwork cannot be stored. `wire`: the wire
     # range this build speaks (C16 §22, design §3.1), so a probe can tell versions apart without a credential.
+    # `build` (C16 §10.4): what this code actually implements, derived at call time, never hand maintained, so
+    # "2.0.0" alone is never taken as proof of what shipped (a probe compares it with release-manifest.json).
     return {"status": "ok", "version": __version__,
             "media": "ok" if media.storage_problem(st.ctx.settings) is None else "unwritable",
-            "wire": wire.profile(st).advertised()}
+            "wire": wire.profile(st).advertised(), "build": build_info.compute()}
 
 
 @router.get("/ready", tags=["ops"])

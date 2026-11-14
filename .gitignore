@@ -16,3 +16,5 @@ e2e/.run/
 /build/
 *.egg-info/
 /dist/
+# written by tools/write_build_manifest.py at wheel-build time (C16 10.4); a source checkout has none
+/atlas/_build.json

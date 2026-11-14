@@ -411,6 +411,38 @@ def cmd_check(args) -> int:
     return 0 if report["ok"] else 1
 
 
+def cmd_selfcheck(args) -> int:
+    """`atlas selfcheck` (C16 §10.4): recompute the build manifest from the running code and compare it with
+    `atlas/_build.json` (present in a packaged build; absent and skipped in a source checkout). Exit 1 and name
+    both values on a mismatch (a stale `build/lib` copy, a partial install, or a mixed wheel). `--scan` also runs
+    the release gates (`tools/release_gates.py`) over this installation's own `atlas` package, so a container that
+    ships a tracked `build/` directory or a v0 header fails the same way the source tree's CI job does."""
+    from . import build_info
+
+    problems = build_info.check()
+    for problem in problems:
+        print(f"selfcheck: {problem}", file=sys.stderr)
+    manifest = build_info.compute()
+    if args.json:
+        print(json.dumps({"manifest": manifest, "problems": problems}, indent=2))
+    elif not problems:
+        print(f"selfcheck: ok (version {manifest['version']}, wire {manifest['wire']}, commit {manifest['commit']})")
+    code = 1 if problems else 0
+    if args.scan:
+        from pathlib import Path
+
+        try:
+            from tools import release_gates
+        except ImportError:
+            print("selfcheck: --scan needs tools/release_gates.py on the image (not only the wheel)",
+                  file=sys.stderr)
+            return 1
+        root = Path(__file__).resolve().parent.parent
+        if release_gates.run(root):
+            code = 1
+    return code
+
+
 def cmd_import_legacy(args) -> int:
     from .legacy_import import import_legacy
 
@@ -730,6 +762,11 @@ def main(argv: list[str] | None = None) -> int:
     ck.add_argument("--only", action="append", help="run only this check (repeatable)")
     ck.add_argument("--json", action="store_true", help="machine-readable output")
     ck.set_defaults(fn=cmd_check)
+    sc = sub.add_parser("selfcheck", help="compare this build's running code with its own atlas/_build.json "
+                                          "(C16 §10.4): a stale build/lib copy or a partial install never starts")
+    sc.add_argument("--scan", action="store_true", help="also run the release gates over the installed package")
+    sc.add_argument("--json", action="store_true", help="machine-readable output")
+    sc.set_defaults(fn=cmd_selfcheck)
     md = sub.add_parser("media", help="cached artwork: measure images stored before 0035 (C12), or show counts")
     md.add_argument("action", choices=["backfill", "stats"])
     md.add_argument("--batch", type=int, default=200, help="images per transaction (default 200)")

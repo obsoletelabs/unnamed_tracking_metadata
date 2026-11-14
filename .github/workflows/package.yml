@@ -16,16 +16,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      - name: Write the build manifest before packaging (C16 10.4), so the wheel ships it
+        run: uv run python tools/write_build_manifest.py
       - run: uv build --wheel --sdist -o dist
       - name: Install the wheel into a clean environment and start it
         run: |
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install dist/*.whl
+          /tmp/venv/bin/atlas selfcheck
           cd "$(mktemp -d)"
           ATLAS_DATABASE_URL=sqlite:///./a.db /tmp/venv/bin/atlas migrate
           ATLAS_DATABASE_URL=sqlite:///./a.db /tmp/venv/bin/atlas serve --port 8000 &
           for i in $(seq 30); do curl -fs localhost:8000/api/v2/health && break; sleep 1; done
           curl -fs localhost:8000/ >/dev/null && curl -fs localhost:8000/static/app.css >/dev/null
+          curl -fs localhost:8000/api/v2/health | grep -q '"build"'
       - uses: actions/upload-artifact@v4
         with:
           name: python-package
