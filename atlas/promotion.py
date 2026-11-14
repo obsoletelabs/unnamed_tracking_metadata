@@ -65,13 +65,15 @@ def candidate(settings: Settings, source_engine, authority: str, confirm_mirror:
             target_settings = Settings(_env_file=None, database_url=f"sqlite:///{folder}/candidate.db", role="authority",
                                        environment="dev", public_url="http://localhost:8000",
                                        source_trust=settings.source_trust, default_trust=settings.default_trust,
-                                       media_dir=f"{folder}/media", media_cache_enabled=False)
-            db.upgrade(target_settings.database_url)
+                                       media_dir=f"{folder}/media", media_cache_enabled=False,
+                                       # the candidate's new signing key is encrypted under the operator's secret
+                                       secret_key=settings.secret_key)
+            db.upgrade(target_settings.database_url, settings=target_settings)
             target_engine = db.make_engine(target_settings.database_url)
-            target_maker = db.make_sessionmaker(target_engine)
+            target_maker = db.make_sessionmaker(target_engine, target_settings)
             try:
                 with target_maker() as target:
-                    identity = load_identity(target)
+                    identity = load_identity(target, target_settings)
                     ctx = Ctx(target_settings, identity)
                     custom.seed(target)
                     target.add(ReplicatedFeed(node_id=authority, public_key=root.public_key))

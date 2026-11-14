@@ -73,7 +73,10 @@ Restore: new host, same `.env`, restore the database and media, `docker compose 
 ## Upgrading
 
 1. Back up (above).
-2. `git pull`, then `docker compose -f compose.authority.yaml up -d --build` (the migration job runs first). With several replicas set `ATLAS_AUTO_MIGRATE=false` and run `atlas migrate` once as a job.
+2. `git pull`, then `docker compose -f compose.authority.yaml up -d --build` (the migration job runs first). With several replicas set `ATLAS_AUTO_MIGRATE=false` and run `atlas migrate` once as a job. For the upgrade that adds
+   migration 0024 (signing key encrypted at rest), stop **every** replica on the old release before running `atlas migrate`
+   with `ATLAS_SECRET_KEY` or starting any new replica with it: old replicas cannot read the encrypted key, and their feed
+   writes fail until they are replaced (see [the signing key at rest](backup.md#the-signing-key-at-rest)).
 3. Migrations are forward-only; to roll back, restore the backup.
 
 ## Operating

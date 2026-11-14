@@ -16,7 +16,8 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_NODE_OPERATOR` | — | Who runs this node. Editable in Admin → Settings. **live** |
 | `ATLAS_INITIAL_ADMIN` | — | Username that becomes the website administrator when it registers. If unset, the first account to register is the administrator (production with open registration refuses to start without it). |
 | `ATLAS_BOOTSTRAP_ADMIN_TOKEN` | — | 32+ random characters. Becomes an admin API token while set; removing it revokes it. Use it to create the first real tokens. |
-| `ATLAS_SECRET_KEY` | — | Encrypts secrets stored in the database (peer tokens, OIDC client secrets, provider credentials entered in Admin → Integrations). Generate one with `atlas secret-key`. Losing it makes those secrets unreadable. |
+| `ATLAS_SECRET_KEY` | — | Encrypts secrets stored in the database (the node signing key, peer tokens, OIDC client secrets, provider credentials entered in Admin → Integrations). Generate one with `atlas secret-key`. Losing it makes those secrets unreadable, and a backup's node identity unrecoverable. |
+| `ATLAS_SECRET_KEY_PREVIOUS` | — | Comma-separated retired secrets that can still decrypt while you rotate `ATLAS_SECRET_KEY`. Run `atlas secrets rewrap`, then remove them. |
 | `ATLAS_AUTO_MIGRATE` | — | Run database migrations on start. Default: on for SQLite, off otherwise. With several replicas set `false` and run `atlas migrate` as a job. |
 
 ## Backups

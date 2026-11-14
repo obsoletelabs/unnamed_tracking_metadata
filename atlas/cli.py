@@ -15,7 +15,7 @@ from .signing import key_id_for, load_identity
 
 def _maker():
     s = get_settings()
-    return s, make_sessionmaker(make_engine(s.database_url))
+    return s, make_sessionmaker(make_engine(s.database_url), s)
 
 
 def cmd_serve(args) -> int:
@@ -27,7 +27,8 @@ def cmd_serve(args) -> int:
 
 
 def cmd_migrate(args) -> int:
-    upgrade(get_settings().database_url, args.revision)
+    settings = get_settings()
+    upgrade(settings.database_url, args.revision, settings=settings)
     print("database is up to date" if args.revision == "head" else f"database is at revision {args.revision}")
     return 0
 
@@ -51,6 +52,14 @@ def cmd_backup(args) -> int:
         elif args.action == "verify":
             m = backup.verify(Path(args.file))
             print(f"ok: {sum(m['tables'].values())} rows, revision {m['revision']}, made {m['created_at']} by Atlas {m['atlas']}")  # noqa: E501
+            if args.secret_check:
+                c = backup.secret_check(settings, Path(args.file))
+                if c["signing_key"] == "plaintext":
+                    print("warning: the signing key in this backup is NOT encrypted (made without ATLAS_SECRET_KEY)",
+                          file=sys.stderr)
+                print(f"secrets ok: signing key {c['signing_key'] or 'absent'}"
+                      f"{' (key id ' + c['signing_key_id'] + ')' if c.get('signing_key_id') else ''}, "
+                      f"{c['secrets']} stored secrets decrypt with ATLAS_SECRET_KEY")
         else:
             loaded = backup.restore(settings, make_engine(settings.database_url), Path(args.file), force=args.force,
                                     include_media=not args.no_media)
@@ -97,7 +106,7 @@ def cmd_recover_mirror(args) -> int:
 def cmd_node(_) -> int:
     settings, maker = _maker()
     with maker() as session:
-        ident = load_identity(session)
+        ident = load_identity(session, settings)
         session.commit()
     pub = ident.trust_public_b64
     print(f"node_id:    {ident.node_id}")
@@ -105,6 +114,24 @@ def cmd_node(_) -> int:
     print(f"signing_key_id: {ident.key_id}")
     print(f"mirrors trust this node with:\n  ATLAS_TRUSTED_KEYS='{json.dumps({ident.node_id: pub})}'")
     assert key_id_for(__import__("base64").b64decode(pub)) == ident.node_id
+    return 0
+
+
+def cmd_secrets(args) -> int:
+    from . import secrets_box
+
+    settings, maker = _maker()
+    with maker() as session:
+        try:
+            counts = secrets_box.rewrap(session, settings)
+        except secrets_box.SecretsError as exc:
+            print(f"secrets rewrap: {exc}", file=sys.stderr)
+            return 1
+        session.commit()
+    print("re-encrypted with the current ATLAS_SECRET_KEY: " + ", ".join(f"{v} {k.replace('_', ' ')}"
+                                                                        for k, v in counts.items()))
+    print("ATLAS_SECRET_KEY_PREVIOUS can be removed once every replica runs with the new secret and older backups "
+          "are no longer needed (they still need the old secret).")
     return 0
 
 
@@ -125,7 +152,7 @@ def _ctx(settings, maker):
     from . import runtime
 
     with maker() as session:
-        ctx = Ctx(runtime.effective(settings, runtime.load(session)), load_identity(session))
+        ctx = Ctx(runtime.effective(settings, runtime.load(session)), load_identity(session, settings))
         session.commit()
     return ctx
 
@@ -298,7 +325,7 @@ def cmd_import_legacy(args) -> int:
 
     settings, maker = _maker()
     with maker() as session:
-        ctx = Ctx(settings, load_identity(session))
+        ctx = Ctx(settings, load_identity(session, settings))
         stats = import_legacy(session, ctx, args.path)
         session.commit()
     print(json.dumps(stats))
@@ -321,6 +348,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("file", nargs="?", help="archive path (create defaults to atlas-<timestamp>.tar.gz here)")
     b.add_argument("--no-media", action="store_true", help="leave cached artwork out (it can be downloaded again)")
     b.add_argument("--force", action="store_true", help="restore: replace any data already in the database")
+    b.add_argument("--secret-check", action="store_true",
+                   help="verify: also decrypt the signing key and stored secrets with ATLAS_SECRET_KEY")
     b.set_defaults(fn=cmd_backup)
     recovery = sub.add_parser("recover-mirror", help="build an offline authority candidate from one retained signed feed")
     recovery.add_argument("--from-authority", required=True, help="independently verified original authority node ID")
@@ -335,6 +364,11 @@ def main(argv: list[str] | None = None) -> int:
     t.set_defaults(fn=cmd_token)
     sub.add_parser("node").set_defaults(fn=cmd_node)
     sub.add_parser("secret-key").set_defaults(fn=cmd_secret_key)
+    sc = sub.add_parser("secrets", help="manage secrets stored encrypted in the database")
+    sc.add_argument("action", choices=["rewrap"],
+                    help="rewrap: re-encrypt the signing key and stored secrets with the current ATLAS_SECRET_KEY "
+                         "(after moving the old one to ATLAS_SECRET_KEY_PREVIOUS)")
+    sc.set_defaults(fn=cmd_secrets)
     sy = sub.add_parser("sync", help="pull from ATLAS_UPSTREAM_URL now; or status, replay, skip, reconcile")
     sy.set_defaults(fn=cmd_sync, action=None)
     sya = sy.add_subparsers(dest="action")
