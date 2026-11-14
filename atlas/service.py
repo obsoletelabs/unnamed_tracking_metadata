@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
-from . import feed
+from . import client_changes, feed
 from .contract import ObservationBatchV1
 from .ids import canonical_id as new_canonical_id
 from .ids import ulid
@@ -74,7 +74,9 @@ def keys_of(obs: Observation) -> list[tuple[str, str]]:
     return list(dict.fromkeys(keys))  # a source may list its own namespace in provider_ids; register each key once
 
 
-def rebuild(session: Session, ctx: Ctx, cid: str) -> Canonical:
+def rebuild(session: Session, ctx: Ctx, cid: str, *, cause: str = "local") -> Canonical:
+    """Re-derive a record's view and bump its version. `cause` is the client change cause when no
+    `client_changes.cause` scope is active (a scope, such as a provider import or a sync apply, wins)."""
     session.flush()  # the merge reads observations and locks with SQL
     row = session.get(Canonical, cid)
     if row is None:
@@ -95,21 +97,28 @@ def rebuild(session: Session, ctx: Ctx, cid: str) -> Canonical:
     row.view, row.explain = view, explain
     row.norm_title = norm_title(view.get("title"))
     row.year = year_of(view.get("release_date"))
-    row.version += 1
-    row.updated_at = now()
-    session.flush()
-    return row
+    return bump_version(session, cid, cause)
 
 
-def touch_version(session: Session, cid: str) -> Canonical:
-    """Advance a record version when client-visible data outside `view` changes."""
+def bump_version(session: Session, cid: str, cause: str = "local",
+                 origin: tuple[str, int] | None = None) -> Canonical:
+    """The single writer of `Canonical.version` (C3.1): advance it and record the bump in the local client
+    change log. Nothing here touches the signed feed; whether a change is federated is decided by the
+    caller's `feed.emit`, gated on `redistributable` and the node role as before."""
     row = session.get(Canonical, cid)
     if row is None:
         raise AtlasError(f"unknown canonical {cid}", "not_found")
+    write_lock(session)  # seq order must equal commit order, or a polling client could skip a row
     row.version += 1
     row.updated_at = now()
+    client_changes.record(session, cid, row.version, cause, origin)
     session.flush()
     return row
+
+
+def touch_version(session: Session, cid: str, *, cause: str = "local") -> Canonical:
+    """Advance a record version when client-visible data outside `view` changes."""
+    return bump_version(session, cid, cause)
 
 
 def _redistributable(ctx: Ctx, source: str, curator: bool) -> bool:
@@ -213,11 +222,12 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
             elif follow(session, existing.canonical_id) != cid:
                 conflicts.append((follow(session, existing.canonical_id), 1.0))
         session.flush()
-        rebuild(session, ctx, cid)
+        cause = "provider" if system else ("feed" if obs.redistributable else "local")
+        rebuild(session, ctx, cid, cause=cause)
         touched.add(cid)
         left_row = session.get(Canonical, left) if left else None
         if left_row is not None and left_row.merged_into is None:
-            rebuild(session, ctx, left)
+            rebuild(session, ctx, left, cause=cause)
 
         review = False
         if conflicts:
@@ -289,11 +299,10 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
     move_values(session, src, dst)
     move_list_items(session, src, dst)
     s.merged_into = dst
-    s.version += 1
-    s.updated_at = now()
     s.view, s.explain = {}, {}
-    session.flush()
-    rebuild(session, ctx, dst)
+    with client_changes.cause(session, "merge"):  # both ids reach clients: the redirect and the survivor
+        bump_version(session, src, "merge")
+        rebuild(session, ctx, dst, cause="merge")
     if log and ctx.settings.role == "authority":
         feed.emit(session, ctx, "merge", {"src": src, "dst": dst})
     return d
@@ -338,8 +347,9 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
             for row in session.scalars(select(model).where(model.canonical_id == old, model.source == obs.source)):
                 row.canonical_id = cid
     session.flush()
-    rebuild(session, ctx, old)
-    new = rebuild(session, ctx, cid)
+    with client_changes.cause(session, "detach"):
+        rebuild(session, ctx, old, cause="detach")
+        new = rebuild(session, ctx, cid, cause="detach")
     if log and ctx.settings.role == "authority":
         feed.emit(session, ctx, "detach", {
             "observation_id": observation_id, "canonical_id": old, "new_canonical_id": cid,
@@ -367,8 +377,9 @@ def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, ac
     else:
         session.add(Lock(canonical_id=cid, field=field, value=value, set_by=actor, local_only=local_only))
     session.flush()
-    rebuild(session, ctx, cid)
-    if log and not local_only and ctx.settings.role == "authority":
+    signed = log and not local_only and ctx.settings.role == "authority"
+    rebuild(session, ctx, cid, cause="feed" if signed else "local")
+    if signed:
         feed.emit(session, ctx, "lock", {"canonical_id": cid, "field": field, "value": value})
     return row
 
@@ -381,8 +392,9 @@ def clear_lock(session: Session, ctx: Ctx, cid: str, field: str, *, log: bool = 
     local_only = lock.local_only
     session.delete(lock)
     session.flush()
-    row = rebuild(session, ctx, cid)
-    if log and not local_only and ctx.settings.role == "authority":
+    signed = log and not local_only and ctx.settings.role == "authority"
+    row = rebuild(session, ctx, cid, cause="feed" if signed else "local")
+    if signed:
         feed.emit(session, ctx, "unlock", {"canonical_id": cid, "field": field})
     return row
 

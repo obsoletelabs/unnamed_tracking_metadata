@@ -13,9 +13,9 @@ from pathlib import Path
 from PIL import Image
 from sqlalchemy import select
 
-from atlas import accounts, auth, backup, db, key_rotation, main, mfa, secrets_box, service
+from atlas import accounts, auth, backup, client_changes, db, key_rotation, main, mfa, secrets_box, service
 from atlas.contract import ObservationBatchV1
-from atlas.models import Artwork, Base, ChangeLog, User, UserMfa, now
+from atlas.models import Artwork, Base, ChangeLog, NodeState, User, UserMfa, now
 from atlas.settings import Settings
 from atlas.signing import load_identity
 
@@ -30,11 +30,19 @@ def normalized(value):
     raise TypeError(type(value).__name__)
 
 
+def epoch(engine):
+    with engine.connect() as connection:
+        return connection.execute(select(NodeState.value).where(NodeState.key == client_changes.EPOCH)).scalar()
+
+
 def fingerprints(engine):
+    """A hash per table. The client change log epoch is left out: every restore renews it on purpose (C3.2)."""
     result = {}
     with engine.connect() as connection:
         for table in Base.metadata.sorted_tables:
             rows = [dict(row) for row in connection.execute(select(table).order_by(*table.primary_key.columns)).mappings()]
+            if table.name == "node_state":
+                rows = [row for row in rows if row["key"] != client_changes.EPOCH]
             encoded = json.dumps(rows, sort_keys=True, separators=(",", ":"), default=normalized).encode()
             result[table.name] = hashlib.sha256(encoded).hexdigest()
     return result
@@ -88,6 +96,8 @@ def run(postgres_admin_url=None):
             db.upgrade(target_url)
             restored = backup.restore(target, target_engine, archive)
             assert fingerprints(target_engine) == before
+            assert epoch(target_engine) and epoch(target_engine) != epoch(engine)
+            checks.append("client change log epoch renewed, so client cursors reset")
             assert (Path(target.media_dir) / digest[:2] / f"{digest}.png").read_bytes() == image.read_bytes()
             checks.append("every table and cached artwork restored without changing data")
             maker = db.make_sessionmaker(target_engine)
