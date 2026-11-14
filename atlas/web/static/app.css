@@ -597,3 +597,8 @@ details.ach-others > summary { cursor: pointer; margin-top: 1.6em; }
 /* C14-3 node links: a fingerprint stays on one line, and the facts stack on a phone */
 .link-facts code.mono { overflow-wrap: normal; white-space: nowrap; }
 @media (max-width: 480px) { dl.facts.link-facts { grid-template-columns: 1fr; gap: 2px 0; } dl.facts.link-facts dd { margin-bottom: 8px; } }
+/* C14-4 super group: the administrators' group bar, and the people's generic "syncing" state */
+.group-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 6px 12px; margin-bottom: var(--gap);
+  border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface-2); }
+.group-bar a:last-child { margin-left: auto; }
+.sync-state { margin: 0 0 var(--gap); }

@@ -1,0 +1,11 @@
+{# What a person sees of group sync (C14-4, invisible topology): what this account shares, the decisions waiting
+   for it and how fresh the group is. Never a node name, id, fingerprint or member count: the per-member strip is
+   `_group_sync.html`, on the admin group page only. `strip` from profile_pages.sync_strip. #}
+<section class="card group-sync" aria-labelledby="group-sync-h" data-group-sync="me">
+  <div class="section-head"><h2 id="group-sync-h">Sync</h2>
+  <p class="small muted" data-group-sync-fresh>{% if strip.last %}Last synced {{ when(strip.last, relative=True) }}{% else %}Not synced yet{% endif %}</p></div>
+  <dl class="facts small">
+    <dt>Shared</dt><dd data-group-sync-shared>{% if not strip.linked %}Nothing yet: this account is not linked{% elif strip.shared %}{{ strip.shared|join(', ') }}{% else %}Nothing: no preference is ticked below{% endif %}</dd>
+    <dt>Decisions</dt><dd data-group-sync-conflicts="{{ strip.conflicts }}">{% if strip.conflicts %}<a class="badge warn" href="/me/conflicts">{{ strip.conflicts }} need{{ 's' if strip.conflicts == 1 }} a decision</a>{% else %}none waiting{% endif %}</dd>
+  </dl>
+</section>

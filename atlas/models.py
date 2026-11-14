@@ -1634,6 +1634,70 @@ class GroupContribState(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+# ---- the super group (C14-4, migration 0041) ----------------------------------------------------------------------
+# One user write made on any member of the owner group, signed by that member and replicated to every member;
+# the last-writer-wins state of each subject; and the conflicts (a real overwrite of a concurrent write) admins see.
+
+class GroupWrite(Base):
+    """One signed user write (`group.write` object). `id` is this node's own receive order, which is what members
+    page through (`since`); `op_id` (`<origin>:<seq>`) is global and idempotent. `status`: `applied` (counted in the
+    subject's state), `held` (kept but not counted: its origin's certificate expired (D7), or a later release's kind
+    this one cannot read) or `refused`. `author_user_id` is set only on the origin, for the "syncing" state."""
+
+    __tablename__ = "group_write"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    op_id: Mapped[str] = mapped_column(String(96), unique=True)
+    origin_node: Mapped[str] = mapped_column(String(96), index=True)
+    seq: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(24))
+    subject: Mapped[str] = mapped_column(String(200), index=True)
+    hlc: Mapped[str] = mapped_column(String(96))
+    status: Mapped[str] = mapped_column(String(12), default="applied")
+    reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    author_user_id: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
+    envelope: Mapped[dict[str, Any]] = mapped_column(JSON)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class GroupWriteState(Base):
+    """The winning write of one subject (highest hybrid clock among applied writes), identical on every member once
+    they hold the same writes. `waiting`: why it is not shown here yet (`no_account`, `no_record`, `no_list`,
+    `media_type`, `lists_off`, `limit`, `invalid`), retried every group round, least recently tried first
+    (`tried_at`); NULL once materialised."""
+
+    __tablename__ = "group_write_state"
+
+    subject: Mapped[str] = mapped_column(String(200), primary_key=True)
+    op_id: Mapped[str] = mapped_column(String(96))
+    hlc: Mapped[str] = mapped_column(String(96))
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    value: Mapped[Any] = mapped_column(JSON, nullable=True)
+    waiting: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    tried_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # last retry
+
+
+class GroupWriteConflict(Base):
+    """A real overwrite: `winner_op` won over a concurrent `loser_op` (its writer had not seen the loser) with a
+    different value. `id` is a hash of (subject, winner, loser), so every member records the same entries. Shown to
+    administrators only; `seen_at`/`seen_by` record an administrator's acknowledgement on this node."""
+
+    __tablename__ = "group_write_conflict"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(200), index=True)
+    winner_op: Mapped[str] = mapped_column(String(96))
+    loser_op: Mapped[str] = mapped_column(String(96))
+    winner_node: Mapped[str] = mapped_column(String(96))
+    loser_node: Mapped[str] = mapped_column(String(96))
+    winner_hlc: Mapped[str] = mapped_column(String(96))
+    loser_hlc: Mapped[str] = mapped_column(String(96))
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    seen_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
+
+
 # ---- node links (CONTRACT-C14 Part C, migration 0040) -----------------------------------------------------------
 # Main side: one `node_link` per (account, node link key); the device flow's challenge and device rows; DPoP-bound
 # refresh tokens and proof ids; banned keys; the stored answer of every contribution (idempotent execution).

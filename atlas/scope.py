@@ -53,6 +53,7 @@ CEILINGS = ("group", "private", "local")
 #: widest first: the record header shows the widest scope among its items
 WIDTH = {"public": 0, "group": 1, "private": 2, "local": 3}
 GROUP_SOURCE = "atlas-group"
+GROUP_WRITE_SOURCE = "group-write"  # C14-4: replicated user writes (stored under the `group:write` scope)
 GROUP_SCOPE_PREFIX = "group:"
 HOST_KINDS = ("host", "plugin")
 #: The `user_permission` values this release knows (C14 §9): `scope.detail` (C14-1 §5.7) and `feed.access`
@@ -79,7 +80,9 @@ BADGE_HELP = {
     "group": "Shared among your own nodes. Never public, never sent upstream.",
     "private": "Belongs to one account.", "local": "Stays on this node."}
 EDIT_GOES = {"public": "Public: signed into your feed", "group": "Your nodes", "private": "Only you",
-             "local": "This node only"}
+             "local": "This node only",
+             # C14-4 (super group): written once and synced to the whole group; no node is named (owner refinement)
+             "synced": "Saved and synced, never public"}
 
 # ---- field categories of the partial public projection (owner decision D1) ----------------------------------------
 
@@ -285,7 +288,7 @@ def is_group_art(a: Artwork, ceiling: str | None = None) -> bool:
 
 
 def _group_source(source: str | None) -> bool:
-    return bool(source) and (source == GROUP_SOURCE or source.startswith(GROUP_SCOPE_PREFIX))
+    return bool(source) and (source in (GROUP_SOURCE, GROUP_WRITE_SOURCE) or source.startswith(GROUP_SCOPE_PREFIX))
 
 
 # ---- travel scope derivation (§5.2, first match wins) ---------------------------------------------------------------
@@ -433,8 +436,20 @@ def record_summary(session: Session, settings: Any, row: Canonical) -> dict[str,
         parts.append(f"{counts['private']} only for one account")
     return {"ceiling": ceiling, "ceiling_by": row.scope_ceiling_by, "widest": widest, "counts": counts,
             "badge": badge(widest, kind), "line": " · ".join(parts),
-            "edit_goes": EDIT_GOES["local" if ceiling in CEILINGS else
-                                    ("public" if getattr(settings, "role", "") == "authority" else "local")]}
+            "edit_goes": EDIT_GOES[edit_goes(settings, ceiling, grouped)]}
+
+
+def edit_goes(settings: Any, ceiling: str | None, grouped: bool) -> str:
+    """Where an edit of a record goes. A `private` or `local` ceiling keeps it on this node. In a super group (C14-4)
+    any other record's edit is written once and synced to every member, so it is never labelled "this node only"
+    (the owner's original complaint); an authority still signs it into its public feed."""
+    if ceiling in ("private", "local"):
+        return "local"
+    if getattr(settings, "role", "") == "authority" and ceiling is None:
+        return "public"
+    if grouped and getattr(settings, "group_super", False):
+        return "synced"
+    return "local"
 
 
 # ---- the projection (§5.7) ----------------------------------------------------------------------------------------
