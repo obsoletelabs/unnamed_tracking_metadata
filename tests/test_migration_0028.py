@@ -51,7 +51,7 @@ def test_migration_0028_up_down_and_guards(url):
     engine = create_engine(url)
     with engine.begin() as c:
         c.execute(text("INSERT INTO node_state (key, value) VALUES ('m28-probe', 'kept')"))
-    db.upgrade(url)
+    db.upgrade(url, "0028")
     assert version(engine) == "0028"
     tables = set(inspect(engine).get_table_names())
     assert TABLES <= tables
@@ -82,7 +82,7 @@ def test_migration_0028_up_down_and_guards(url):
     with engine.connect() as c:
         assert c.execute(text("SELECT value FROM node_state WHERE key='m28-probe'")).scalar() == "kept"
 
-    db.upgrade(url)  # and up again
+    db.upgrade(url, "0028")  # and up again
     assert version(engine) == "0028" and TABLES <= set(inspect(engine).get_table_names())
     with engine.begin() as c:
         add_group(engine, "active", None)
@@ -96,7 +96,7 @@ def test_migration_0028_up_down_and_guards(url):
 
 
 def test_migration_0028_on_an_empty_database(url):
-    db.upgrade(url)
+    db.upgrade(url, "0028")
     engine = create_engine(url)
     assert version(engine) == "0028"
     db.downgrade(url, "0024")

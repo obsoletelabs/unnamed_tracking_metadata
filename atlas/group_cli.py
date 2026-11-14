@@ -272,6 +272,24 @@ def cmd_resync(args) -> int:
     return _run(run)
 
 
+def cmd_new_epoch(_args) -> int:
+    """§3.6: open a new epoch of this node's change streams (`reason: manual`). After a clone fork, run it on the
+    real node once the copy is shut down: receivers accept the new epoch and lift their halt (the disputed history
+    stays closed at what each receiver holds)."""
+    from . import group_channel
+
+    def run(session, settings, identity):
+        group = _group(session)
+        if not group_channel.may_emit(session, group, identity):
+            raise groups.GroupError("this node cannot emit now (not active, or no in-force certificate with "
+                                    "profile.sync)")
+        epoch = group_channel.open_epoch(session, group, identity, "manual")
+        print(f"new epoch {epoch}")
+        return 0
+
+    return _run(run)
+
+
 def _open_files(paths: list[str]) -> list[gc.RecoveryKeys]:
     opened = []
     for i, path in enumerate(paths, start=1):
@@ -404,6 +422,8 @@ def register(sub) -> None:
     rs = ga.add_parser("resync")
     rs.add_argument("--skip", action="store_true")
     rs.set_defaults(fn=cmd_resync)
+    ne = ga.add_parser("new-epoch", help="open a new epoch of this node's change streams (after a clone fork)")
+    ne.set_defaults(fn=cmd_new_epoch)
     ro = ga.add_parser("root")
     roa = ro.add_subparsers(dest="root_cmd", required=True)
     ex = roa.add_parser("export-recovery")

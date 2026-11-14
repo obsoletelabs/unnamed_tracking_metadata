@@ -141,3 +141,9 @@ document.addEventListener("click", function (e) {
     }
   });
 })();
+
+// Owner-group link flow: the hand-over form to the other node submits itself (its button stays for no-JS).
+document.addEventListener("DOMContentLoaded", function () {
+  var f = document.querySelector("form[data-autosubmit]");
+  if (f) { f.submit(); }
+});
