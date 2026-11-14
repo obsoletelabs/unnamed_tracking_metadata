@@ -19,6 +19,7 @@ from .settings import Settings
 
 _COLOR = re.compile(r"^#[0-9a-fA-F]{6}\Z")
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}\Z")
+_ACCOUNT_UID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}\Z")
 
 
 class SettingError(ValueError):
@@ -37,6 +38,9 @@ class Spec:
     hi: int | None = None
     max_len: int = 200
     nullable: bool = False  # empty input means "use the default"
+
+
+GROUP_POLICY = "Node group"  # the specs only /admin/group edits (local administrators only)
 
 
 def S(key, label, group, kind, help="", **kw) -> Spec:
@@ -91,12 +95,36 @@ REGISTRY: tuple[Spec, ...] = (
       "Matches at or above this are merged automatically.", lo=50, hi=100),
     S("review_threshold", "Review confidence (percent)", "Matching", "int",
       "Weaker matches below the auto threshold but above this open a duplicate review.", lo=0, hi=100),
-    S("group_profile_sync", "Sync user preferences in the owner group", "Federation", "bool",
+    # Owner-group local policy (C10 §8.1). Edited only on /admin/group by a local administrator, never from the
+    # general settings form, so a delegated administrator can change none of them (§6.3 local_admin_only).
+    S("group_profile_sync", "Sync user preferences in the owner group", GROUP_POLICY, "bool",
       "Linked accounts may share the preferences each user chose with the other nodes of your group. Off: nothing "
       "is sent or applied; local preferences keep working."),
-    S("group_profile_fields", "Preferences that may be synced", "Federation", "str",
+    S("group_profile_fields", "Preferences that may be synced", GROUP_POLICY, "str",
       "Space-separated preference names, for example 'theme language a11y.font_scale'. Empty = every preference "
       "the user agrees to.", max_len=600),
+    S("group_max_delegated_role", "Highest role a group grant may give here", GROUP_POLICY, "choice",
+      "Grants signed by the group can add rights here up to this role. 'none' ignores every grant.",
+      choices=("none", "moderator", "curator", "admin")),
+    S("group_federated_privilege", "Rights in a session opened through another node", GROUP_POLICY, "choice",
+      "'deny': ordinary user rights only. 'local_mfa': reviewer and administrator rights only after this node's "
+      "own two-factor step. 'allow': as in a local session.", choices=("deny", "local_mfa", "allow")),
+    S("group_trust_remote_mfa", "Accept the other node's two-factor step", GROUP_POLICY, "bool",
+      "Off: people with a second factor here always enter this node's code after signing in through another node."),
+    S("group_delegated_requires_mfa", "Delegated rights need this node's two-factor step", GROUP_POLICY, "bool",
+      "Rights that come from a group grant apply only after this node's own second factor in that session."),
+    S("group_auto_provision", "Create an account here on first group sign-in", GROUP_POLICY, "bool",
+      "Only while registration is open. The new account has user rights and no password on this node."),
+    S("group_signin", "Sign-in through another node of the group", GROUP_POLICY, "bool"),
+    S("group_signin_public", "Show group sign-in buttons on the login page", GROUP_POLICY, "bool",
+      "Shows every visitor which nodes are in your group and their addresses (often a home address). Off: people "
+      "start from the node they are signed in on, with 'Open ... signed in'."),
+    S("group_denied_accounts", "Group accounts whose grants are ignored here", GROUP_POLICY, "str",
+      "Space-separated group account ids. Their grants add nothing on this node.", max_len=2000),
+    S("group_view_max_age_hours", "Freshness limit for privileged group actions (hours)", GROUP_POLICY, "int",
+      "Sign-ins and delegated rights need a view of the group from a third node newer than this.", lo=1, hi=168),
+    S("group_hold_timeout_days", "Days a preference waits for its missing history", GROUP_POLICY, "int",
+      lo=1, hi=90),
     S("inherit_schema", "Adopt the upstream media types and fields", "Federation", "bool",
       "Mirrors and local nodes copy the authority's custom fields; yours always take precedence."),
     S("media_cache_enabled", "Download and cache artwork", "Artwork", "bool"),
@@ -232,6 +260,11 @@ def save(session: Session, base: Settings, actor_id: str | None, form: dict[str,
         if spec is None:
             continue
         parsed[key] = parse(spec, raw)
+    if "group_denied_accounts" in parsed:
+        ids = parsed["group_denied_accounts"].split()
+        if any(not _ACCOUNT_UID.match(i) for i in ids):
+            raise SettingError("Group accounts whose grants are ignored here: give group account ids (26 characters)")
+        parsed["group_denied_accounts"] = " ".join(dict.fromkeys(ids))
     trial = current.model_copy(update={k: to_attr(BY_KEY[k], v) for k, v in parsed.items()})
     _check(trial)
     changed = []

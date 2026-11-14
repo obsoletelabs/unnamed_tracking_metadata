@@ -17,9 +17,9 @@ from .deps import (
     client_ip,
     csrf_form,
     go,
+    moderate_form,
+    moderate_page,
     page,
-    review_form,
-    review_page,
     throttle,
     user_form,
     user_page,
@@ -305,7 +305,7 @@ def comment_report(cid: str, p: Annotated[Ctx, Depends(user_form)], reason: Anno
 
 
 @router.post("/comments/{cid}/moderate")
-def comment_moderate(cid: str, p: Annotated[Ctx, Depends(review_form)], action: Annotated[str, Form()],
+def comment_moderate(cid: str, p: Annotated[Ctx, Depends(moderate_form)], action: Annotated[str, Form()],
                      to: Annotated[str, Form()] = "/review/reports"):
     try:
         social.moderate(p.session, p.st.ctx, p.me, cid, action)
@@ -315,7 +315,7 @@ def comment_moderate(cid: str, p: Annotated[Ctx, Depends(review_form)], action: 
 
 
 @router.get("/review/reports", response_class=HTMLResponse)
-def reports(p: Annotated[Ctx, Depends(review_page)]):
+def reports(p: Annotated[Ctx, Depends(moderate_page)]):
     p.session.flush()
     rows = []
     ids = {r.comment_id for r in p.session.scalars(select(Report).where(Report.status == "open"))}

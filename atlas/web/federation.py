@@ -16,8 +16,8 @@ from .. import accounts, auth, feed_schema, key_rotation, runtime, secrets_box, 
 from ..models import FollowerSeen, Peer, Setting, SyncCursor, SyncFailure, Token, User
 from ..service import AtlasError
 from ..signing import key_id_for, load_identity, signing_key_at_rest
+from .deps import LOCAL_ADMIN_ONLY, admin_form, admin_page, go, local_admin_form, throttle
 from .deps import Page as Ctx
-from .deps import admin_form, admin_page, go, throttle
 from .routes import render, when
 
 router = APIRouter()
@@ -36,7 +36,7 @@ def signing_keys(p: Annotated[Ctx, Depends(admin_page)]):
 
 
 @router.post("/admin/keys/rotate", response_class=HTMLResponse)
-def rotate_signing_key(p: Annotated[Ctx, Depends(admin_form)], confirm: Annotated[str, Form(max_length=64)],
+def rotate_signing_key(p: Annotated[Ctx, Depends(local_admin_form)], confirm: Annotated[str, Form(max_length=64)],
                        password: Annotated[str, Form(max_length=256)] = "",
                        followers_upgraded: Annotated[str, Form()] = ""):
     throttle(p, f"key-rotation:{p.me.id}", 3, 3600)
@@ -286,6 +286,8 @@ def token_create(p: Annotated[Ctx, Depends(admin_form)], name: Annotated[str, Fo
             raise ValueError
     except ValueError:
         return _tokens_page(p, None, 400, "Expiry must be a number of days between 1 and 3650.")
+    if not p.is_local_admin:  # C10 §6.3, §6.4: a token is a standing credential that would outlive a group grant
+        return _tokens_page(p, None, 403, LOCAL_ADMIN_ONLY)
     try:
         row, secret = auth.create_token(p.session, name.strip() or "token", scopes, expires)
     except ValueError as exc:

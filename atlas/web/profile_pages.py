@@ -220,6 +220,10 @@ def linked_context(p: Ctx, error: str | None = None) -> dict:
         linkable.append({"node": node, "name": member["name"], "url": member["url"],
                          "verified": member.get("url_verified", False)})
     consent_row = profile.consent(s, me.id, group.group_id)
+    from .. import group_signin
+
+    ctx.update(open_targets=group_signin.open_targets(s, p.st.ctx.identity, me),
+               chained=p.login is not None and p.login.via_group is not None)
     ctx.update(link=link, holders=sorted(holders, key=lambda h: (not h["self"], h["name"])), linkable=linkable,
                policy=set(profile.policy_fields(settings)), consent=set(profile.consent_fields(s, me.id,
                                                                                                group.group_id)),

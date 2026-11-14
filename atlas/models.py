@@ -346,6 +346,13 @@ class UserSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     mfa_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # A12 (CONTRACT-C10 §5.4, §9.3): set only on a session opened by a group sign-in assertion.
+    via_group: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    origin_node: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    assertion_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    amr: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
+    __table_args__ = (Index("ix_user_session_origin", "origin_node"),)
 
 
 class UserMfa(Base):
@@ -746,6 +753,30 @@ class GroupCert(Base):
     held_reason: Mapped[str | None] = mapped_column(String(24), nullable=True)
 
     __table_args__ = (Index("ix_group_cert_node", "group_id", "node_id", "not_after"),)
+
+
+class GroupGrant(Base):
+    """Every signed administrative delegation grant this node holds (CONTRACT-C10 §6.1, §9.3)."""
+
+    __tablename__ = "group_grant"
+
+    group_id: Mapped[str] = mapped_column(ForeignKey("owner_group.group_id", ondelete="CASCADE"), primary_key=True)
+    serial: Mapped[str] = mapped_column(String(40), primary_key=True)
+    issuer: Mapped[str] = mapped_column(String(16))
+    serial_n: Mapped[int] = mapped_column(BigInteger)
+    parent_serial: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    authorized_by_grant: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    account_uid: Mapped[str] = mapped_column(String(26))
+    role: Mapped[str] = mapped_column(String(16))
+    nodes: Mapped[list[str]] = mapped_column(JSON)
+    not_before: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    not_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    body: Mapped[dict[str, Any]] = mapped_column(JSON)  # the whole signed envelope
+    body_hash: Mapped[str] = mapped_column(String(64))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    held_reason: Mapped[str | None] = mapped_column(String(24), nullable=True)  # collision|succession_pending
+
+    __table_args__ = (Index("ix_group_grant_account", "group_id", "account_uid", "not_after"),)
 
 
 class GroupBannedNode(Base):
