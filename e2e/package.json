@@ -1,0 +1,14 @@
+{
+  "name": "atlas-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Playwright end-to-end tests for the Atlas web interface (see docs/guide/testing.md)",
+  "scripts": {
+    "test": "playwright test",
+    "install:browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  },
+  "engines": { "node": ">=20" }
+}
