@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -58,14 +59,22 @@ def alembic_config(url: str, settings: Any = None):
     return cfg
 
 
+@functools.lru_cache(maxsize=8)
+def _script_heads(url: str) -> frozenset[str]:
+    """The newest revisions shipped in this build. They cannot change while the process runs, and parsing the
+    migration scripts on every readiness probe or scrape is wasted work."""
+    from alembic.script import ScriptDirectory
+
+    return frozenset(ScriptDirectory.from_config(alembic_config(url)).get_heads())
+
+
 def schema_state(session: Session, url: str) -> str:
     """"current" when the database is at the newest migration, "behind" when migrations are pending,
     "unknown" when it cannot be told (never raises: this feeds readiness checks)."""
     try:
-        from alembic.script import ScriptDirectory
         from sqlalchemy import text
 
-        heads = set(ScriptDirectory.from_config(alembic_config(url)).get_heads())
+        heads = set(_script_heads(url))
         applied = set(session.execute(text("SELECT version_num FROM alembic_version")).scalars())
     except Exception:
         return "unknown"
