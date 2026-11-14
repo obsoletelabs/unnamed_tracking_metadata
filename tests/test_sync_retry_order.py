@@ -70,6 +70,7 @@ def test_retried_artwork_does_not_overwrite_the_newer_replacement(net, monkeypat
                                "items": [{"kind": "key_art", "url": "https://example.test/new.png"}]})
     _fail_once(monkeypatch, facets, "set_artwork")
     pull(mirror, authority)
+    pull(mirror, authority)  # C13 §5.4: an entry that failed during a pull is first retried by the next one
     assert mirror.failures() == []  # the old entry is resolved: a later entry superseded it
     heads = mirror.heads(authority)
     assert heads["applied_head"] == authority.head() and heads["in_sync"]
@@ -331,3 +332,71 @@ def test_retried_achievements_on_a_record_merged_later_land_once_on_the_survivor
     again = sync.retry_failures(session, ctx, NODE, max_attempts=None)
     assert again["retried"] == 0
     assert session.scalar(select(func.count()).select_from(Achievement)) == 2
+
+
+# ---- C13 (A19): redirects, the wake safety net and late wakes use the same ordering rules ---------------------
+
+OLD_ART = [{"kind": "key_art", "url": "https://example.test/old.png"}]
+NEW_ART = [{"kind": "key_art", "url": "https://example.test/new.png"}]
+
+
+def _art_urls(session, cid):
+    return [a.url for a in session.scalars(select(Artwork).where(Artwork.canonical_id == cid))]
+
+
+def test_a_retry_on_a_record_merged_here_compares_as_its_survivor(session, ctx, monkeypatch):
+    """SRC was merged into DST on this node. The old entry names SRC, the later one DST: after `_follow_redirects`
+    both write DST's curator artwork, so the old one is superseded instead of overwriting the newer list."""
+    _two_games(session)
+    session.get(Canonical, SRC).merged_into = DST
+    session.flush()
+    _feed(session,
+          ("artwork", {"canonical_id": SRC, "source": "curator", "items": OLD_ART}),
+          ("artwork", {"canonical_id": DST, "source": "curator", "items": NEW_ART}))
+    _fail_once(monkeypatch, facets, "set_artwork")
+    head, result = _pull_then_retry(session, ctx)
+    assert head == 2 and result["resolved"] == 1 and _open_failures(session) == []
+    assert session.get(SyncFailure, (NODE, 1)).detail["superseded_by"] == 2
+    assert _art_urls(session, DST) == ["https://example.test/new.png"]
+
+
+def test_the_wake_safety_net_does_not_overwrite_a_later_applied_entry(session, ctx, monkeypatch):
+    """`_wake_ready` (startup, and every retry pass) applies waiting entries after later entries of the feed may
+    have applied (a wake a crash interrupted). It goes through the same superseding check as a retry."""
+    _feed(session,
+          ("artwork", {"canonical_id": CID, "source": "curator", "items": OLD_ART}),
+          ("artwork", {"canonical_id": CID, "source": "curator", "items": NEW_ART}))
+    processed, head = sync._apply_pending(session, ctx, NODE)
+    assert head == 2 and [f.disposition for f in session.scalars(select(SyncFailure))] == [sync.WAIT, sync.WAIT]
+    _game(session)  # the record arrived; the in-order wake did not run
+    monkeypatch.setattr(sync, "introduced_by", lambda *_args: True)
+    later = session.get(ReplicatedChange, (NODE, 2))
+    assert sync.apply_entry(session, ctx, NODE, 2, later.kind, later.body, may_park=False) == sync.APPLY
+    result = sync.retry_failures(session, ctx, NODE, due_only=False)
+    session.flush()
+    assert result["woken"] == 1 and _open_failures(session) == []
+    assert session.get(SyncFailure, (NODE, 1)).detail["superseded_by"] == 2
+    assert _art_urls(session, CID) == ["https://example.test/new.png"]
+
+
+def test_a_late_wake_sends_a_waiting_merge_through_retry_merge(session, ctx):
+    """The record arrives through an entry applied out of order (a retry): what waited for it may be older than
+    entries that already applied. A woken merge then re-applies them after it, as in-order application would."""
+    session.add(Canonical(id=DST, view={}, explain={}))
+    session.flush()
+    _feed(session,
+          ("lock", {"canonical_id": SRC, "field": "title", "value": "Pinned"}),
+          ("merge", {"src": SRC, "dst": DST}),
+          ("unlock", {"canonical_id": DST, "field": "title"}))
+    processed, head = sync._apply_pending(session, ctx, NODE)
+    assert head == 3 and [(f.seq, f.disposition) for f in session.scalars(
+        select(SyncFailure).where(SyncFailure.resolved_at.is_(None)).order_by(SyncFailure.seq))] == [
+        (1, sync.WAIT), (2, sync.WAIT)]
+    session.add(Canonical(id=SRC, view={}, explain={}))
+    session.flush()
+    assert sync.wake_waiting(session, ctx, NODE, SRC, late=True) == 2
+    session.flush()
+    assert _open_failures(session) == []
+    assert session.get(Canonical, SRC).merged_into == DST
+    assert session.get(Lock, (DST, "title")) is None and session.get(Lock, (SRC, "title")) is None
+    assert session.get(SyncFailure, (NODE, 2)).detail["replayed"] == [3]

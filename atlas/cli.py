@@ -224,6 +224,9 @@ def cmd_sync(args) -> int:
                     print(f"{n}: scanned {c['scanned']} applied entries; recorded {c['parked']} parked and "
                           f"{c['quarantined']} quarantined that earlier releases skipped. Nothing was re-applied; "
                           "run `atlas sync replay --historical` to re-apply them in feed order.")
+                    if c.get("waiting"):
+                        print(f"  {c['waiting']} entries now wait for a record the feed has not introduced yet; they "
+                              "apply when it arrives.")
                 upstreams = sync.status(session, ctx)["upstreams"]
                 return _exit_for({n: upstreams[n] for n in nodes if n in upstreams})
             result = sync.replay(session, ctx, args.node, limit=args.limit, historical=args.historical)
@@ -404,6 +407,36 @@ def cmd_prices(args) -> int:
     return 0
 
 
+def cmd_feed(args) -> int:
+    """`atlas feed introduce --missing|--all [--dry-run]` (C13 §4.2): publish a `record` (or, below 1.5 with the
+    bridge on, a bridge observation) for records this feed names but never introduced (`--missing`), or for every
+    live record (`--all`). In batches of their own transactions, resumable. Exit 2 when refused."""
+    from . import feed
+
+    settings, maker = _maker()
+    scope = "all" if args.all else "missing"
+    ctx = _ctx(settings, maker)  # the emit protocol raised in Admin → Peers is a runtime setting
+    if args.dry_run:
+        with maker() as session:
+            print(json.dumps({"scope": scope, "would_introduce": feed.unintroduced_count(session, scope),
+                              "mode": feed.introduction_mode(ctx.settings), **feed.records_summary(session)}))
+        return 0
+    total = 0
+    while True:
+        with maker() as session:
+            try:
+                result = feed.introduce_batch(session, ctx, scope, limit=args.batch)
+            except feed.IntroduceRefused as exc:
+                print(f"refused: {exc}", file=sys.stderr)
+                return 2
+            session.commit()
+        total += result["introduced"]
+        if result["finished"] or (args.limit and total >= args.limit) or not result["examined"]:
+            break
+    print(json.dumps({**result, "introduced": total}))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="atlas")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -487,6 +520,16 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("prices", help="price observations (C8): purge expired rows now, or show status")
     pr.add_argument("action", choices=["purge", "status"])
     pr.set_defaults(fn=cmd_prices)
+    fd = sub.add_parser("feed", help="this node's signed feed (C13): introduce records it names but never published")
+    fda = fd.add_subparsers(dest="action", required=True)
+    intro = fda.add_parser("introduce", help="sign a `record` for records followers cannot know yet")
+    which = intro.add_mutually_exclusive_group(required=True)
+    which.add_argument("--missing", action="store_true", help="records entries name but nothing introduced")
+    which.add_argument("--all", action="store_true", help="every live record not introduced yet")
+    intro.add_argument("--dry-run", action="store_true", help="count only, sign nothing")
+    intro.add_argument("--batch", type=int, default=500, help="records per transaction (default 500)")
+    intro.add_argument("--limit", type=int, help="stop after about this many records (the next run continues)")
+    intro.set_defaults(fn=cmd_feed)
     i = sub.add_parser("import-legacy")
     i.add_argument("path", help="path to the demo-1 SQLite database")
     i.set_defaults(fn=cmd_import_legacy)

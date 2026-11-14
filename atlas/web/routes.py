@@ -135,14 +135,19 @@ def lines(text: str) -> list[str]:
     return out
 
 
+#: C13 §6.4: a tile shows the cover; when no cover is cached here, the best other cached image of the record.
+TILE_KINDS = ("key_art", "poster", "hero", "banner", "screenshot", "icon", "logo")
+
+
 def primary_art(p: Page, ids: list[str]) -> dict[str, str]:
-    """Cached key-art hash per game, best source first."""
+    """Cached tile image hash per game: key art first, best source first, then the fallbacks of `TILE_KINDS`."""
     if not ids:
         return {}
     out: dict[str, str] = {}
     rows = p.session.scalars(select(Artwork).where(
-        Artwork.canonical_id.in_(ids), Artwork.kind == "key_art", Artwork.blob_hash.is_not(None)))
-    ranked = sorted(rows, key=lambda a: (-p.st.ctx.settings.trust(a.source), a.priority))
+        Artwork.canonical_id.in_(ids), Artwork.kind.in_(TILE_KINDS), Artwork.blob_hash.is_not(None),
+        Artwork.duplicate_of.is_(None)))
+    ranked = sorted(rows, key=lambda a: (TILE_KINDS.index(a.kind), -p.st.ctx.settings.trust(a.source), a.priority))
     for a in ranked:
         out.setdefault(a.canonical_id, a.blob_hash)
     return out
@@ -162,6 +167,10 @@ def artwork_view(p: Page, a: Any, votes: dict[str, tuple[int, int]], mine: dict[
         state = f"Download failed {a.fail_count} time{'' if a.fail_count == 1 else 's'}; retrying later"
     else:
         state = "Waiting to be downloaded and checked"
+    tried = [e for e in (getattr(a, "sources_tried", None) or []) if isinstance(e, dict) and e.get("error")]
+    if tried:  # C13 §6.3: why each place this image was asked of said no, kept after a later success too
+        state += " (" + "; ".join(f"{'the peer' if str(e.get('source', '')).startswith('peer:') else 'its origin'}: "
+                                  f"{str(e['error']).replace('_', ' ')}" for e in tried) + ")"
     return {"id": a.id, "kind": a.kind, "label": ART_LABELS.get(a.kind, a.kind), "blob": a.blob_hash, "url": a.url,
             "host": urlsplit(a.url).hostname or "", "width": a.width, "height": a.height, "source": a.source,
             "state": state, "preferred": a.preferred, "up": up, "down": down, "mine": mine.get(a.id, 0),

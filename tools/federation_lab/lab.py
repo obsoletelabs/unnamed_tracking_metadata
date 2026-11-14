@@ -46,7 +46,7 @@ from atlas.models import (
 )
 from atlas.signing import load_identity
 from tools.drill_support import postgres_databases
-from tools.multinode_drill import Node, csrf
+from tools.multinode_drill import Node
 
 ROLES = {"official": "authority", "indie": "authority", "mirror": "mirror", "local": "local", "local2": "local"}
 
@@ -184,14 +184,16 @@ class LabNode(Node):
         """Register `remote` as an upstream, pinned to `authority`'s feed (default: remote's own).
         The keyword overrides let a scenario pin the wrong identity on purpose."""
         pinned = authority or remote
-        data = {"csrf": csrf(self.admin), "name": f"{pinned.name}-via-{remote.name}", "url": remote.url,
-                "node_id": node_id or pinned.node_id, "public_key": public_key or pinned.root_key,
-                "token": token or remote.follower}
-        response = self.admin.post("/admin/peers", data=data)
-        assert response.status_code == 303, f"add peer on {self.name}: {response.status_code}"
+        # Stored as a peer added before A19 (`follow` NULL): its pulls infer own or relayed exactly as the scenarios
+        # were written for. The C13 choose-feed form (probe, `follow`, acknowledgements) has its own scenario
+        # (`test_c13_live_regression`); it cannot pin a wrong identity on purpose, which these scenarios need.
         with self.state.maker() as session:
-            return session.scalars(select(Peer.id).where(Peer.node_id == data["node_id"],
-                                                         Peer.url == remote.url)).one()
+            row = Peer(name=f"{pinned.name}-via-{remote.name}", url=remote.url, node_id=node_id or pinned.node_id,
+                       public_key=public_key or pinned.root_key,
+                       token_enc=secrets_box.encrypt(self.state.ctx.settings, token or remote.follower))
+            session.add(row)
+            session.commit()
+            return row.id
 
     def set_peer_token(self, peer_id: str, token: str) -> None:
         with self.state.maker() as session:
@@ -296,6 +298,7 @@ class Lab:
     postgres_admin_url: str | None = None
     keep_logs: Path | None = None
     pythons: dict[str, str] = field(default_factory=dict)  # node name -> interpreter of another release
+    env: dict[str, dict[str, str]] = field(default_factory=dict)  # node name -> extra ATLAS_* settings
     password: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     nodes: dict[str, LabNode] = field(default_factory=dict)
     peers: dict[tuple[str, str], str] = field(default_factory=dict)
@@ -324,7 +327,8 @@ class Lab:
             if name not in self.nodes:
                 database = {"official": self._databases[0], "indie": self._databases[1]}.get(name)
                 python = self.pythons.get(name) or os.environ.get(f"ATLAS_LAB_PYTHON_{name.upper()}")
-                node = LabNode(self._folder, name, ROLES[name], database, password=self.password, python=python)
+                node = LabNode(self._folder, name, ROLES[name], database, password=self.password, python=python,
+                               extra_env=self.env.get(name))
                 self._stack.callback(node.close)
                 self.nodes[name] = node
                 node.start()

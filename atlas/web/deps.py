@@ -27,6 +27,11 @@ FLASH = {
     "voted": "Vote saved.", "artretry": "Download retry scheduled. The images are fetched in the background shortly.",
     "artnone": "No uncached images to retry.", "reset": "Your password was changed. Sign in with the new one.",
     "relation-added": "Relation added.", "relation-removed": "Relation removed.",
+    # C13 §7.3: what the first pull after adding a peer did (its badge is on the peer's row)
+    "peer_following": "Peer added and synced once: its status is below.",
+    "peer_not_contacted": "Peer added. It did not answer in time, so it shows Not contacted yet; the next sync tries "
+                          "again.",
+    "peer_failed": "Peer added, but its first sync failed: the reason is next to it below.",
 }
 
 

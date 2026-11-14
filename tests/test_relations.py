@@ -28,7 +28,7 @@ from .test_sync_compat import Node, observation, pull
 from .test_web import _wait_for_startup_replay, signup, token
 
 # C11 (A17) reserved the merge-undo kinds for protocol 1.6.
-RESERVED_C11 = {"price": "1.5", "unmerge": "1.6", "distinct": "1.6"}
+RESERVED_C11 = {"price": "1.6", "unmerge": "1.7", "distinct": "1.7"}  # after the H52 shift (C13)
 
 # ---- helpers --------------------------------------------------------------------------------------------
 
@@ -80,7 +80,7 @@ def test_relation_kind_is_registered_with_closed_vocabularies():
     spec = feed_schema.FEED_KINDS["relation"]
     assert (spec.since, spec.emit, spec.apply) == ("1.4", 1, 1)
     assert spec.fields == {"op", "from", "to", "type", "source"}
-    assert feed_schema.PROTOCOL == "1.4" and feed_schema.RESERVED_KINDS == RESERVED_C11
+    assert feed_schema.PROTOCOL == "1.5" and feed_schema.RESERVED_KINDS == RESERVED_C11
     assert feed_schema.vocabularies()["relation_type"] == set(vocab.RELATION_TYPES)
     assert feed_schema.vocabularies()["relation_op"] == {"add", "end"}
     assert relations.TYPES == vocab.RELATION_TYPES
@@ -743,7 +743,9 @@ def test_restore_after_a_downgrade_converges_with_a_follower_that_applied_the_me
         s.execute(text("UPDATE canonical SET merged_into = :dst, view = '{}', explain = '{}', "
                        "version = version + 1 WHERE id = :src"), p)
         s.execute(text("UPDATE canonical SET version = version + 1 WHERE id = :dst"), p)
-        feed.emit(s, authority.st.ctx, "merge", {"src": dup, "dst": game})
+        # signed as that release signed it (it has no `feed_introduced` table: C13 introductions came later)
+        feed.append(s, authority.st.ctx.identity, "merge", {"src": dup, "dst": game},
+                    protocol=feed_schema.emit_protocol(authority.st.ctx.settings))
         s.commit()
     pull(mirror, authority)
     assert mirror.failures(authority) == []
@@ -786,18 +788,18 @@ def test_a_replicated_cycle_is_quarantined_without_blocking(fed):
     assert relation_state(mirror)[0] == [(a, b, "dlc_of")]
 
 
-def test_a_relation_to_a_record_not_here_yet_is_retried(fed):
+def test_a_relation_to_a_record_not_here_yet_waits_for_it(fed):
+    """C13 §5.2 (A19): a relation naming a record the follower does not hold yet waits for it (it used to be
+    quarantined and retried); the record's arrival applies it in the same pull."""
     authority, mirror = fed
     a = authority.publish("Rt A")
     ghost = canonical_id()
     seq = authority.emit("relation", {"op": "add", "from": a, "to": ghost, "type": "port_of", "source": "curator"})
     pull(mirror, authority)
-    assert mirror.failures(authority) == [(seq, "relation", "quarantined", "apply_error")]
+    assert mirror.failures(authority) == [(seq, "relation", "wait", "waiting_for_record")]
+    assert mirror.heads(authority)["applied_head"] == seq  # not blocked
     authority.emit("obs", {**observation("Rt Ghost"), "canonical_id": ghost})
     pull(mirror, authority)
-    with mirror.st.maker() as s:
-        sync.retry_failures(s, mirror.st.ctx)
-        s.commit()
     assert mirror.failures(authority) == [] and relation_state(mirror)[0] == [(a, ghost, "port_of")]
 
 

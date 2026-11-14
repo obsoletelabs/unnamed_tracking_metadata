@@ -16,8 +16,8 @@ Prices are **not** observations and never enter `Canonical.view`, record version
 is kept for `retention_days` (default 30, at most 365) after `observed_at`; `purge()` deletes expired rows
 (the housekeeping thread runs it hourly, `atlas prices purge` on demand) and reads hide them already.
 
-Federation (C8.3, protocol 1.5) is designed in `feed_schema.PRICE_CHANNEL` and disabled in this release: no
-capability is advertised, `/api/v2/sync/price-changes` answers 404 and nothing price-related is signed.
+Federation (C8.3, protocol 1.6 since the H52 shift) is designed in `feed_schema.PRICE_CHANNEL` and disabled in
+this release: no capability is advertised, `/api/v2/sync/price-changes` answers 404 and nothing price-related is signed.
 `channel_body` is the designed entry body; only tests sign it.
 """
 

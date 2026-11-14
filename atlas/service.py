@@ -194,6 +194,8 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
     reserved = set(ctx.settings.source_trust) | ctx.settings.redistributable_sources
     if ns in reserved and not trusted:
         raise AtlasError(f"source {ns!r} is reserved; it needs a token with the curate scope", "forbidden")
+    if ns == feed_schema.RECORD_SOURCE:  # C13 §3.2: only a feed's own `record` entries write this source
+        raise AtlasError(f"source {ns!r} is reserved for record identities", "forbidden")
     horizon = int(now().timestamp()) + 86400
     results: list[IngestResult] = []
     touched: dict[str, str] = {}  # record -> client change cause, rebuilt once at the end
@@ -335,6 +337,8 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
                     "source_updated_at": obs.source_updated_at, "observed_at": obs.observed_at.isoformat(),
                 },
             })
+        elif ctx.settings.role == "authority" and getattr(ctx.settings, "federation_introduce", "") == "all":
+            feed.ensure_introduced(session, ctx, cid, "publish")  # C13 §4.3 (H55): publish every record
         method = "forced" if decision.reason == "forced" else \
             ({"exact": "exact", "fuzzy": "fuzzy"}.get(decision.reason, "crosswalk") if decision.assigned else "none")
         results.append(IngestResult(
@@ -390,6 +394,10 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
             raise AtlasError("these records are marked as different works; merge with override_distinct to "
                              "end that decision", "distinct", rejection_id=rej.id)
         ended.append(rej.id)
+    if log and ctx.settings.role == "authority":
+        # C13 §4.1: introduce both while their identity (title, store ids) is still on them
+        for cid in (src, dst):
+            feed.ensure_introduced(session, ctx, cid, "merge")
     try:
         record, pre = merges.begin(session, s, d, cause=cause, actor=actor, decision_id=decision_id,
                                    review_id=review_id, origin=origin)
@@ -467,7 +475,8 @@ def merge_preview(session: Session, ctx: Ctx, src: str, dst: str) -> dict[str, A
                            "dropped_locks": sorted(f for f in locks_s if f in locks_d),
                            "undoable": not signed}
     if signed:
-        out["undo_note"] = "this merge cannot be undone until federation emit protocol 1.6 (feed kind 'unmerge')"
+        unmerge = feed_schema.KIND_SINCE['unmerge']
+        out["undo_note"] = f"this merge cannot be undone until federation emit protocol {unmerge} (feed kind 'unmerge')"
     return out
 
 
@@ -527,9 +536,15 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
         rebuild(session, ctx, old, cause="detach")
         new = rebuild(session, ctx, cid, cause="detach")
     if log and ctx.settings.role == "authority":
-        feed.emit(session, ctx, "detach", {
+        seq = feed.emit(session, ctx, "detach", {
             "observation_id": observation_id, "canonical_id": old, "new_canonical_id": cid,
         })
+        # C13 §4.1: a follower creates the new record only when it holds the moved observation (it was signed);
+        # otherwise the new record gets its own `record` (or bridge observation) right after the detach.
+        if obs.redistributable:
+            feed.mark(session, cid, seq, feed.VIA_DETACH, "detach")
+        else:
+            feed.ensure_introduced(session, ctx, cid, "detach")
     return new
 
 
@@ -587,14 +602,14 @@ def lock_needs_dates_protocol(field: str, value: Any) -> bool:
     return field == "release_date" and isinstance(value, str) and dates.precision_of(value) != "day"
 
 
-#: C11 §11.8: a federated explicit clear is a lock body version 2 (`field-clear-v1`, protocol 1.6).
+#: C11 §11.8: a federated explicit clear is a lock body version 2 (`field-clear-v1`, protocol 1.7).
 CLEAR_PROTOCOL = feed_schema.TOKEN_SINCE["field-clear-v1"]
 
 
 def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, actor: str = "",
              local_only: bool = False, log: bool = True, clear: bool = False) -> Canonical:
     """Pin a field, or with `clear` mark it deliberately empty (C11 §11.8; `value` must then be None). JSON null
-    never clears anything. A clear that would enter the signed feed needs protocol 1.6 and is refused; a
+    never clears anything. A clear that would enter the signed feed needs protocol 1.7 and is refused; a
     `local_only` clear is always allowed."""
     signed = log and not local_only and ctx.settings.role == "authority"
     if clear:

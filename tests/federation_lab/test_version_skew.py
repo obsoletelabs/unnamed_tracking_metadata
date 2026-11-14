@@ -112,3 +112,93 @@ def test_older_follower_still_reads_entries_it_understands_from_a_newer_authorit
     assert lab.sync("local", "official") is None
     assert entry["observation"]["id"] in local.observations(official)
     assert disposition(local, official, official.head(), entry["observation"]["id"]) == "applied"
+
+
+# ---- CONTRACT-C13 §10.1 T-V2 and T-V3 (A19): a follower of this release and an upstream or a past of an older one ----
+
+ART = [{"kind": "key_art", "url": "https://img.example.org/skew-key.png"}]
+
+
+def _orphan(official) -> tuple[str, int]:
+    """An authority in legacy emission with a provider-only record and curated artwork on it (the live shape)."""
+    from atlas import service
+    from atlas.contract import ObservationBatchV1
+
+    body = ObservationBatchV1.model_validate({
+        "connection": {"source_kind": "metadata", "source": "steam", "source_scope": "federation-lab"},
+        "observations": [{"external_id": "7770101", "title": "Skew Provider Only", "provider_ids": {"steam": "7770101"}}]})
+    with official.state.maker() as session:
+        [result] = service.ingest(session, official.state.ctx, body, system=True)
+        session.commit()
+    cid = result.canonical_id
+    response = official.client.put(f"/api/v2/games/{cid}/artwork", headers=official.headers(official.admin_token),
+                                   json={"items": ART})
+    assert response.status_code == 200, response.text
+    return cid, official.head()
+
+
+def _as_1_0(path, body):
+    """What a 1.0 upstream's `/sync/info` says: no record counts, no introduction mark, protocol 1.0."""
+    if path.endswith("/sync/info"):
+        for key in ("records", "introduced_through", "media_withheld"):
+            body.pop(key, None)
+        body["protocol"] = "1.0"
+    return body
+
+
+def test_v2_a_follower_under_a_1_0_upstream_with_orphans_says_waiting_not_failed(lab):
+    """T-V2: the upstream speaks 1.0 (no `records`, no `introduced_through`) and its feed names a record it never
+    published. This release's follower is caught up with one change waiting for its game, says the upstream has
+    not published it, and does not claim a record count the upstream never reported."""
+    official, mirror = lab.nodes["official"], lab.nodes["mirror"]
+    official.post("Skew Curated")
+    cid, art_seq = _orphan(official)
+    mirror.pull(official, tamper=_as_1_0)
+    assert mirror.open_failures() == [(official.node_id, art_seq, "artwork")]
+    status = mirror.sync_status(official)
+    assert status["state"] == "waiting" and status["applied_head"] == official.head()
+    page = mirror.admin.get("/admin/peers").text
+    assert 'data-peer-status="caught_up_waiting"' in page
+    assert "Caught up · 1 change waiting for their game" in page
+    assert "record count unknown (this upstream does not report it)" in page
+    assert "has not published this game&#39;s record yet" in page or "has not published this game's record yet" in page
+    assert f'data-waiting-for="{cid}" data-waiting-subreason="upstream_unpublished"' in page
+    for wrong in ("degraded", "apply error", "upstream_defect"):
+        assert wrong not in page.lower(), wrong
+
+
+def test_v3_an_upgrade_from_1_0_rescans_and_recovers_the_dropped_sidecar_when_the_record_arrives(lab):
+    """T-V3: under 1.0 the follower dropped the artwork (cursor past it, nothing recorded). After the upgrade,
+    `atlas sync replay --rescan` finds it and makes it wait for its record; when the authority introduces the record,
+    the next sync applies the record and the artwork, with nothing left open."""
+    from sqlalchemy import delete, select
+
+    from atlas.models import Artwork, SyncFailure
+    from tools.multinode_drill import csrf
+    from tools.skew_drill import _current_cli
+
+    official, mirror = lab.nodes["official"], lab.nodes["mirror"]
+    cid, art_seq = _orphan(official)
+    assert lab.sync("mirror", "official") is None
+    with mirror.state.maker() as session:  # what 1.0 left behind: the entry retained, the cursor past it, no row
+        session.execute(delete(SyncFailure).where(SyncFailure.node_id == official.node_id))
+        session.commit()
+    assert mirror.cursor(official) == art_seq and mirror.open_failures() == []
+
+    done = _current_cli(mirror, "sync", "replay", "--rescan")
+    assert "1 entries now wait for a record" in done.stdout, (done.stdout, done.stderr)
+    with mirror.state.maker() as session:
+        row = session.get(SyncFailure, (official.node_id, art_seq))
+        assert (row.disposition, row.reason, row.waiting_for) == ("wait", "dropped_by_previous_release", cid)
+
+    form = {"csrf": csrf(official.admin, "/admin/peers"), "emit_protocol": "1.5", "password": lab.password,
+            "followers_upgraded": "on"}
+    assert official.admin.post("/admin/peers/protocol", data=form).status_code == 303
+    done = _current_cli(official, "feed", "introduce", "--missing")
+    assert done.returncode == 0, (done.stdout, done.stderr)
+    assert lab.sync("mirror", "official") is None
+    assert mirror.open_failures() == []
+    with mirror.state.maker() as session:
+        assert [(a.kind, a.url) for a in session.scalars(select(Artwork).where(Artwork.canonical_id == cid))] == [
+            (ART[0]["kind"], ART[0]["url"])]
+    assert mirror.sync_status(official)["state"] == "in_sync"

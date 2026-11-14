@@ -75,6 +75,12 @@ scrape_configs:
 | `atlas_sync_in_sync` | One only when every head the origin reported is verified and applied, with nothing parked, quarantined or refused |
 | `atlas_peer_last_success_timestamp_seconds` | Last successful pull per enabled peer; zero before first success |
 | `atlas_peer_error` | One when the last peer pull failed |
+| `atlas_sync_waiting_entries` | Entries waiting for a game this node does not hold yet, per origin (not failures; applied when the game arrives) |
+| `atlas_sync_waiting_records` | Games those waiting entries wait for, per origin |
+| `atlas_sync_open_failures` | Open entries per origin that are not applied: waiting plus quarantined |
+| `atlas_sync_woken_total` | Arrivals of a game that applied waiting entries, per origin and `trigger` (`record`, `obs`, `bridge` for an `atlas-record` observation, `detach`) |
+| `atlas_peer_status` | One for the peer's current status (`status` is `paused`, `not_contacted`, `needs_you`, `unreachable`, `empty`, `catching_up`, `caught_up_waiting` or `caught_up`), zero for the others, per peer |
+| `atlas_feed_records` | Authority only: live games by `state`: `introduced` to followers, `not_federated` (never introduced), `missing` (named by a signed entry but never introduced: `atlas feed introduce --missing` would publish them) |
 | `atlas_outbox_messages` | Pending, failed and sent email counts; failed deliveries may be retried |
 | `atlas_provider_failures_total` | Provider fetch failures in this process |
 | `atlas_backup_enabled` | Whether scheduled archive storage is configured |

@@ -73,8 +73,81 @@ On the **authority** (administrator):
 On the **follower** (set `ATLAS_ROLE=mirror` or `local`, and `ATLAS_SECRET_KEY` so the token can be stored encrypted):
 
 1. **Admin → Peers → Add a peer:** address + token → **Look up node**.
-2. Atlas shows the node's id. **Compare it with what you were told.** Then **Trust this node and replicate from it**.
-3. **Sync now** to pull immediately; afterwards it follows every `ATLAS_SYNC_INTERVAL_SECONDS` (60 by default). The peer list shows position, last success and any error.
+2. Atlas shows the node's id. **Compare it with what you were told.** Then choose **which feed to follow** (below) and **Confirm this node and choose its feed**.
+3. Adding the peer **pulls the first page at once**. Each of its two requests to the node gives up after ten
+   seconds, and applying the page happens before the screen returns, so a slow node or a large first page can
+   take longer than that; if the node does not answer in time the peer is saved as *Not contacted yet* and the
+   sync worker tries again. Afterwards it follows every
+   `ATLAS_SYNC_INTERVAL_SECONDS` (60 by default); **Sync now** pulls immediately. The peer list shows what it
+   follows, a status in plain numbers, position, last success and any error.
+
+### Which feed to follow
+
+A node can sign its own feed and relay the feeds of others (a mirror relays its authorities'). The lookup reads
+`/sync/info` and always asks `/sync/changes` for the node's own head (which also proves the token has the **sync**
+scope; without it the screen says so and every follow button is disabled). It lists the node's own feed first, then
+every feed it relays, each with its head, and recommends the own feed unless that is known to be empty (a pure
+mirror), in which case it recommends the relayed feed that holds the most:
+
+* **Its own feed** (`own`): the node's own signed entries. Choose it for an authority. A peer that follows its own
+  feed never falls back to a relayed one: if the node later answers as someone else, the sync fails with "now
+  answers as …" instead of silently following another feed.
+* **A feed it relays** (`relayed`): an authority's feed served through this node (for example a local node that
+  follows an authority through its mirror). The authority's identity is pinned, not the relay's.
+
+Two choices need an explicit acknowledgement, checked by the server (a form without it answers 400):
+
+* following a **relayed** feed, or any feed at a plain `http` address: "I compared the fingerprint with that
+  operator" (`ack_relayed_fingerprint`);
+* following an **empty** feed: "Follow it anyway — it has no entries yet" (`ack_empty`).
+
+A feed whose key differs from the one this node already pinned or retains for that node id (`key_mismatch`) is shown
+disabled and is never re-pinned from the lookup. The choice is bound to what you looked up (`probe_token`, an HMAC
+over the address, the feed's node id and key, the mode, the relay and whether it was empty, keyed to your session and
+valid for ten minutes), so a form cannot be replayed with another key, mode or session; the add form without a
+choice is refused.
+
+Peers added before this release have no choice recorded. They keep working as before; Admin → Peers shows the feed
+Atlas inferred from the last sync and a banner asks you to confirm it once (**Admin → Peers → Confirm**).
+
+### Peer status
+
+| Status | Badge (example) | Meaning |
+| --- | --- | --- |
+| `caught_up` | Caught up | every entry the upstream reported is verified and applied, nothing waits |
+| `caught_up_waiting` | Caught up · 4 changes waiting for their game | applied up to the head, but some entries wait for their game or could not be applied (see below) |
+| `catching_up` | Copying: 11 of 23 | the upstream has entries this node has not applied yet |
+| `empty` | Connected · nothing published | the chosen feed has no entries: often the wrong feed was chosen |
+| `not_contacted` | Not contacted yet | added, never synced (or the first pull did not answer in time) |
+| `unreachable` | Can't reach it | no successful sync for three sync intervals (`3 × ATLAS_SYNC_INTERVAL_SECONDS`) and the last attempt could not connect (DNS, TLS, timeout); a single failed attempt only adds "Last attempt failed" to the line under the badge |
+| `needs_you` | Blocked: needs you | refused, rewound, parked behind an upgrade, or too many open entries (`backlog_full`): open the peer for the reason |
+| `paused` | Paused | the peer is disabled |
+
+Under the badge a line gives the numbers: entries to go, how many games have not arrived from that peer yet, how
+many changes could not be applied, the position (`X of Y entries`) and, for a peer whose own feed you follow, how
+many of its records it publishes ("7 of 7 records published", or "Atlas Central has 2 records it does not
+publish", which turns the badge amber). An upstream of an older release does not report record counts: the line
+says "record count unknown". Entries that could not be applied (quarantined) retry on their own with backoff.
+
+`GET /api/v2/sync/status` → `peers[].status` is `{code, label, tone, detail, action}` (the code is one of the
+above), and `peers[].waiting[]` lists the waiting groups (`cause`, `subreason`, `label`, `title`,
+`title_provenance`, `count`, `canonical_id`, `kinds`, `seqs`, `since`, `retry`, `action`, `note`).
+
+### Looking a node up from a script
+
+`GET /api/v2/admin/peers/probe?url=<address>` (an admin token; the peer's token in the `Atlas-Peer-Token` header,
+never in the address) answers what the Look up screen shows, as JSON: `node` (id, fingerprint, name, role,
+protocol and whether this release can follow it), `token` (`read`, `sync`), `records` (the upstream's counts, or
+`null` for an older release or a mirror), `feeds[]` (`origin` `own` or `relayed`, `node_id`, `public_key`, `head`,
+`empty`, `trust`, `recommended`, `warnings` such as `empty_feed` or `smaller_than_own`) and `default_feed`. It
+changes nothing and pins nothing: adding a peer stays in Admin → Peers, where the choice is bound to the lookup.
+A bad address answers 400, a node that cannot be verified (for example the token was refused) 502, and one that
+does not answer 504. The 502 answer includes the error the node gave, for the admin who asked.
+
+Like the Look up form, this makes the server contact the address you give, and it accepts private and loopback
+addresses: peers often run on the same host or network, so the private-address rule that protects media fetches
+from provider URLs does not apply here. Only an admin token can call it, and it only makes the two read requests
+above.
 
 You can also configure a single upstream with environment variables (`ATLAS_UPSTREAM_URL`, `ATLAS_UPSTREAM_TOKEN`, `ATLAS_TRUSTED_KEYS`; see [Environment variables](reference-env.md)); use whichever you prefer, and you can follow several peers from the UI.
 
@@ -88,7 +161,8 @@ You can also configure a single upstream with environment variables (`ATLAS_UPST
 ## Operating it
 
 * **Position/lag:** Admin → Peers shows each peer's position; `GET /api/v2/status` (admin) shows the authority's feed head.
-* **Entries that fail to apply:** a mirror never drops one silently. An entry this release does not understand is *parked* and holds later entries back until an upgrade (see [Compatibility and upgrades](#compatibility-and-upgrades)). If a known feed entry cannot be applied it is rolled back, recorded as *quarantined*, and the rest of the page still applies. Each pull retries the recorded entries from the signed copy the mirror retains (up to 20 automatic attempts each; retries are idempotent, so they converge without duplicates). A retry never overwrites newer state: when a later entry of the same feed has already replaced what the failed entry would set (a source's artwork or achievement list, a lock, a relation that a later entry added or ended, the schema), the failed entry is resolved as superseded (`superseded_by` in its detail) without being applied, and a failed custom-values entry applies only the keys no later entry set. A failed merge is applied and then the later entries that already applied to either record (locks, artwork, achievements, custom values, relations) are re-applied in feed order (`replayed` in its detail); if a later merge of the same records already applied, the merge stays quarantined with reason `out_of_order` for an administrator, because the order of two merges decides what survives. `GET /api/v2/status` shows the open count as `sync_failures`, `GET /api/v2/sync/failures` lists them with the error and attempt count, and `POST /api/v2/sync/failures/retry` retries them immediately, including ones past the automatic limit.
+* **Entries that fail to apply:** a mirror never drops one silently. An entry this release does not understand is *parked* and holds later entries back until an upgrade (see [Compatibility and upgrades](#compatibility-and-upgrades)). If a known feed entry cannot be applied it is rolled back, recorded as *quarantined*, and the rest of the page still applies. The next pull retries it from the signed copy the mirror retains, then after 1, 2, 4 … minutes, at most every 6 hours, without giving up (retries are idempotent, so they converge without duplicates). A retry never overwrites newer state: when a later entry of the same feed has already replaced what the failed entry would set (a source's artwork or achievement list, a lock, a relation that a later entry added or ended, the schema), the failed entry is resolved as superseded (`superseded_by` in its detail) without being applied, and a failed custom-values entry applies only the keys no later entry set. A failed merge is applied and then the later entries that already applied to either record (locks, artwork, achievements, custom values, relations) are re-applied in feed order (`replayed` in its detail); if a later merge of the same records already applied, the merge stays quarantined with reason `out_of_order` for an administrator, because the order of two merges decides what survives. A waiting entry applied after later entries of its feed (the wake on each retry pass and at startup, or one woken by a record that arrived through a retried entry) follows the same rules, and every comparison treats a record merged here as its survivor. An entry that names a game this node does not hold yet is not a failure: it *waits* for that game (see [Changes waiting for their game](#changes-waiting-for-their-game)). `GET /api/v2/status` shows the open count as `sync_failures`, `GET /api/v2/sync/failures` lists them with the error, attempt count and next try, and `POST /api/v2/sync/failures/retry` retries them immediately. At `ATLAS_SYNC_MAX_OPEN_FAILURES` (10 000) open entries for one feed the follower stops applying that feed and reports `backlog_full`; nothing is lost.
+* **Images:** a follower fetches the bytes of a replicated image first from the peer whose feed delivered the artwork row (`GET /api/v2/sync/media/{sha256}`, `sync` scope; the peer serves only images it may federate, licensed `cc0` or owner uploads unless `ATLAS_FEDERATION_MEDIA_UNKNOWN_LICENCE` is on; the bytes must hash to the digest), then from the original address (`ATLAS_SYNC_MEDIA_PREFER_PEER`). The artwork view lists the last sources tried and why each failed. A tile without a cached cover falls back to another cached image of the game.
 * **Add a mirror:** nothing to do on the authority except issue a token.
 * **Remove a peer:** *Remove*; data already received stays.
 * **Disaster recovery:** a current verified database backup preserves identity. If that is unavailable, a mirror with complete retained signatures can build an [offline recovery candidate](recovery.md) under a fresh root; followers explicitly retire the old origin and pin the new one.
@@ -98,7 +172,7 @@ You can also configure a single upstream with environment variables (`ATLAS_UPST
 ## Compatibility and upgrades
 
 Nodes of different releases can follow each other. Each release speaks a federation **protocol**
-(`MAJOR.MINOR`); this release speaks **1.4**. Releases before protocol negotiation did not
+(`MAJOR.MINOR`); this release speaks **1.5**. Releases before protocol negotiation did not
 advertise one and count as **1.0**.
 
 | Protocol | Adds | A 1.0 follower | A 1.1, 1.2 or 1.3 follower |
@@ -107,9 +181,10 @@ advertise one and count as **1.0**.
 | 1.2 | the achievement tier `platinum` (an entry with it also lists the `_requires` token `tier-platinum`) | **drops the whole achievement list** of that game; after upgrading, `atlas sync replay --rescan` records it as `dropped_by_previous_release` and `--historical` applies it | a 1.1 follower **parks** it (`unsupported_capability`) and applies it after upgrading |
 | **1.3** | partial and regional release dates: `ext.release` on observations, a `release_date` lock that is a year or a month, and the `releases` lock field (each signed with the `_requires` token `dates-v1`, also advertised in `capabilities`) | **drops the observation or lock**; after upgrading, `--rescan` records both and `--historical` applies them | **parks** it (`unsupported_capability`) and applies it after upgrading; the record keeps its previous dates meanwhile, never a stripped or day-only copy |
 | **1.4** | the feed kind `relation`: relationships between works (DLC, expansions, ports, remakes, mods, series and collection membership; see [Relationships](relations.md)) | **drops the entry** (an unknown kind); after upgrading, `atlas sync replay --rescan` records it as `dropped_by_previous_release` and `--historical` applies it | **parks** it (`unsupported_kind`) and applies it after upgrading; the records keep their other data meanwhile |
-| 1.5 (reserved) | the price channel: a separate signed channel `/sync/price-changes` (capability `price-channel-v1`); see [Prices](prices.md). **Designed, not enabled in this release**: no capability, the endpoint answers 404, nothing is signed | never sees it (separate endpoint, not the feed) | never sees it; a `price` entry in the main feed would be **parked** (`unsupported_kind`) |
-| 1.6 (reserved) | undoing merges across the federation: the feed kinds `unmerge` and `distinct` ("these are different works"), and lock body version 2 for an explicit clear (`field-clear-v1`) and the merge guard (`merge-guard-v1`); see [Matching and provenance](matching.md). **Not signed by this release**: unmerges, distinct marks and clears stay on the node that made them; a merge is published as before, so an authority cannot undo a published merge until it emits 1.6 | would **drop the entry** (an unknown kind) | **parks** it (`unsupported_kind` or `unsupported_version`) and applies it after upgrading |
-| 1.7, 1.8 (reserved) | achievement body version 2 (`ach-v2`), artwork body version 2 (`art-v2`, artwork kind `trailer`) | — | **parks** it |
+| **1.5** | the feed kind `record`: a game introduced by identity only (id, type, display title, store ids), signed before any artwork, achievements, custom values, locks, merges or relations that name it, so no follower receives changes for a game it has never heard of (see [Changes waiting for their game](#changes-waiting-for-their-game)). Below 1.5 an authority can instead publish an ordinary observation of the source `atlas-record` (the bridge, off by default) | **drops the entry** and the changes behind it; keep the emit protocol at 1.1 or lower while a 1.0 follower remains, or turn the bridge on. After upgrading, `--rescan` recovers both | **parks** it (`unsupported_kind`), which holds that follower's applied head until it upgrades; with the bridge on, the authority sends the bridge observation instead while `min_follower_protocol` is below 1.5 |
+| 1.6 (reserved) | the price channel: a separate signed channel `/sync/price-changes` (capability `price-channel-v1`); see [Prices](prices.md). **Designed, not enabled in this release**: no capability, the endpoint answers 404, nothing is signed | never sees it (separate endpoint, not the feed) | never sees it; a `price` entry in the main feed would be **parked** (`unsupported_kind`) |
+| 1.7 (reserved) | undoing merges across the federation: the feed kinds `unmerge` and `distinct` ("these are different works"), and lock body version 2 for an explicit clear (`field-clear-v1`) and the merge guard (`merge-guard-v1`); see [Matching and provenance](matching.md). **Not signed by this release**: unmerges, distinct marks and clears stay on the node that made them; a merge is published as before, so an authority cannot undo a published merge until it emits 1.7 | would **drop the entry** (an unknown kind) | **parks** it (`unsupported_kind` or `unsupported_version`) and applies it after upgrading |
+| 1.8, 1.9 (reserved) | achievement body version 2 (`ach-v2`), artwork body version 2 (`art-v2`, artwork kind `trailer`) | — | **parks** it |
 
 ### What a follower does with entries it does not understand
 
@@ -209,6 +284,63 @@ appends nothing to its feed. A relation that was already published is not remove
 below 1.4 (HTTP 409 `emit_protocol`): its followers would keep it. As with dates, raising the protocol does
 **not** publish relations made before; re-save them (remove and add) to publish them.
 
+### Changes waiting for their game
+
+Provider data (a Steam or IGDB fetch) is never signed, so a game an authority knows only from providers was never
+in its feed. Before this release, a curator's artwork, achievements, custom values, locks, merges or relations on
+such a game still reached followers, which had never heard of the game: they quarantined the entry ("unknown or
+merged canonical"), retried it 20 times and gave up (a 1.0 follower dropped it without a trace).
+
+Now the authority **introduces** a game before it signs anything that names it:
+
+| Emit protocol | Bridge (`ATLAS_FEDERATION_BRIDGE_RECORD_OBS`) | What introduces the game |
+| --- | --- | --- |
+| 1.5 or higher | any (off once `min_follower_protocol` is 1.5) | a `record` entry: id, media type, display title and store ids, no provider content |
+| below 1.5 | **on** | an ordinary observation of the source `atlas-record` with the same fields, which every follower release applies |
+| below 1.5 | off (the default) | nothing: the entry is signed as before and the game is counted as not federated |
+
+What a `record` carries is limited by `ATLAS_FEDERATION_SNAPSHOT_FIELDS`. `ATLAS_FEDERATION_INTRODUCE=all` also
+introduces every game created from provider data alone; the default `referenced` introduces a game only when a
+signed entry first names it. `/api/v2/sync/info` → `records` shows how many live games the feed introduced and how
+many it did not (`not_federated`), and Admin → Peers shows the same numbers with a button to introduce them.
+
+Games named before the upgrade are introduced by **`atlas feed introduce --missing`** (try `--dry-run` first; it
+prints how many and in which mode). It works in resumable batches (`--batch`, `--limit`) and refuses (exit 2) while
+nothing can introduce a game (emit protocol below 1.5 and the bridge off). `--all` introduces every live game not
+introduced yet. Raising the emit protocol to 1.5 in Admin → Peers schedules `--missing` for the sync worker.
+
+On a follower of this release, an entry that names a game it does not hold **waits** for it instead of failing:
+it is recorded with the reason `waiting_for_record` and the game it waits for, no attempt is counted, the cursor
+moves on and the upstream's state is `waiting`. When the game arrives (a `record`, a bridge observation or any
+observation of it) the waiting entries are applied in feed order in the same pull, before the next entry of that
+feed (in batches of `ATLAS_SYNC_WAKE_BATCH`, each flushed before the next). Only the feed that introduced the game
+wakes its own entries: another feed's entries naming the same game keep waiting until that feed introduces it.
+Admin → Peers lists waiting entries grouped by peer and game, headed **Waiting for its game**, with the reason (the
+upstream has not published it yet; its feed is missing it although `/sync/info.introduced_through` says otherwise; or
+the entry that brings it did not apply) and **Copy a note** for the upstream's operator. Each group names the game
+when this node knows it: from its own copy ("this node already holds it from another source") or from the entry
+that brings it; otherwise it reads "A game … hasn't published yet". Removing a peer resolves its
+waiting entries as `abandoned` (`atlas sync replay --rescan` finds them again if you follow the feed again).
+
+An artwork, achievements, custom-field, lock, unlock or relation entry for a game that was merged on this node applies
+to the surviving record (merges and detaches never follow a redirect). A record whose store id already belongs to a
+record another upstream introduced is never merged into it: Review lists the pair as `cross_origin_duplicate`.
+
+**Filling a record in from this node's own providers (owner decision H56, off by default).** A `record` carries the
+game's store ids, not its provider data. With `ATLAS_SYNC_ENRICH_FROM_OWN_PROVIDERS=true` a follower queues a fetch
+from **its own** configured providers by those ids (Steam, IGDB, …: only providers this node has keys for), and the
+sync worker attaches what they return to the record: art, description and achievements arrive without anything
+being redistributed between nodes. A store id this node already maps to another record (a cross-origin duplicate) is
+never fetched; an id the provider would refuse is counted, not requested; at most
+`ATLAS_SYNC_ENRICH_PER_PEER_PER_HOUR` (200) fetches run per upstream feed each hour, and the rest wait. A follower
+signs nothing for it. Leave it off until the owner decides (it calls the providers' APIs on every follower).
+
+Older followers: a 1.1–1.4 follower quarantines such an entry and its own retry (at most 20 attempts) applies it
+once the bridge observation has arrived; the drill checks this against a real 1.1 release. A 1.0 follower drops it; after upgrading, `atlas sync replay --rescan` finds it (it waits
+if the game is still unknown, or is parked as `dropped_by_previous_release` if the game arrived later) and
+`--historical` applies it. `python -m tools.skew_drill --scenario records --previous-dir <release>` runs this
+against a real 1.0 or 1.1 release.
+
 ### Upgrading a network
 
 1. Upgrade followers (mirrors first, then local nodes). They keep following older authorities.
@@ -255,6 +387,7 @@ atlas sync replay --rescan [--node N]          # one-time recovery after upgradi
 atlas sync replay --historical [--node N] [--dry-run]  # re-apply retained entries from the oldest recovered one
 atlas sync skip --node N --seq S --reason TEXT # give up on one parked entry (quarantined, audited)
 atlas sync reconcile --node N --dry-run        # compare this node's view with the upstream's /sync/digest
+atlas feed introduce --missing|--all [--dry-run] [--batch B] [--limit L]  # authority: introduce games (exit 2 refused)
 ```
 
 `replay` exits 0 when converged, 3 while entries are still parked (the reason is printed), 4 when
@@ -280,9 +413,10 @@ node. The upstream caches its answer for up to 60 seconds (`cached_seconds`). Pl
 | `unlock` | 1.0 | 1 / 1 | `canonical_id`, `field` |
 | `key_rotation` | 1.0 | 1 / 1 | `key_id`, `public_key` |
 | `relation` | 1.4 | 1 / 1 | `from`, `op`, `source`, `to`, `type` |
-| `price` | 1.5 (reserved) | not in this release | parked by this release |
-| `unmerge` | 1.6 (reserved) | not in this release | parked by this release |
-| `distinct` | 1.6 (reserved) | not in this release | parked by this release |
+| `record` | 1.5 | 1 / 1 | `because`, `canonical_id`, `media_type`, `provider_ids`, `title` |
+| `price` | 1.6 (reserved) | not in this release | parked by this release |
+| `unmerge` | 1.7 (reserved) | not in this release | parked by this release |
+| `distinct` | 1.7 (reserved) | not in this release | parked by this release |
 
 Each entry body may carry `_v` (body version; absent means 1) and `_requires` (capability or
 vocabulary tokens a follower must know, at most 16 of up to 40 characters). Both are inside the

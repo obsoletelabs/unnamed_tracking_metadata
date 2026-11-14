@@ -41,6 +41,23 @@ def csrf(client, path="/me"):
     return re.search(r'name="csrf" value="([^"]+)"', response.text).group(1)
 
 
+def add_peer_form(admin, remote_url, token, node_id, public_key, name):
+    """Add a peer the way an operator does (C13 §7.1-§7.3): look the node up, then submit the choose-feed option
+    signed by `node_id`, with both acknowledgements ticked (lab addresses are plain http). A release without the
+    choose-feed screen (the skew drill's previous release) takes its plain add form."""
+    probe = admin.post("/admin/peers/probe", data={"csrf": csrf(admin, "/admin/peers"), "url": remote_url,
+                                                   "token": token, "name": name})
+    assert probe.status_code == 200, f"probe {remote_url}: {probe.status_code}"
+    if "data-feed-option" not in probe.text:
+        return admin.post("/admin/peers", data={"csrf": csrf(admin), "name": name, "url": remote_url,
+                                                "node_id": node_id, "public_key": public_key, "token": token})
+    block = re.search(rf'<form[^>]*data-feed-node="{node_id}".*?</form>', probe.text, re.S)
+    assert block is not None, f"{remote_url} does not offer the feed {node_id}"
+    fields = dict(re.findall(r'name="([a-z_]+)" value="([^"]*)"', block.group(0)))
+    fields.update(name=name, ack_relayed_fingerprint="on", ack_empty="on")
+    return admin.post("/admin/peers", data=fields)
+
+
 class Node:
     def __init__(self, root, name, role, database_url=None, *, password=PASSWORD, extra_env=None, python=None):
         self.root, self.name, self.role = root, name, role
@@ -154,9 +171,8 @@ class Node:
 
     def add_peer(self, remote, authority=None):
         identity = (authority or remote).identity
-        response = self.admin.post("/admin/peers", data={"csrf": csrf(self.admin), "name": (authority or remote).name,
-                    "url": remote.url, "node_id": identity.node_id, "public_key": identity.public_b64,
-                    "token": remote.follower})
+        response = add_peer_form(self.admin, remote.url, remote.follower, identity.node_id, identity.public_b64,
+                                 (authority or remote).name)
         assert response.status_code == 303, f"add peer on {self.name}: {response.status_code}"
         with self.state.maker() as session:
             return session.scalars(select(Peer.id).where(Peer.node_id == identity.node_id)).one()
@@ -275,8 +291,10 @@ def _run(folder, postgres_admin_url, report):
         checks.append("mirror combines two independently pinned authorities")
         probe = local.admin.post("/admin/peers/probe", data={"csrf": csrf(local.admin), "url": mirror.url,
                                                            "token": mirror.follower})
-        assert "Authority feeds available" in probe.text
-        assert a.identity.node_id in probe.text and b.identity.node_id in probe.text
+        # C13 §7.2: the choose-feed screen offers each feed the mirror relays (and its own) as its own form
+        assert "Confirm this node and choose its feed" in probe.text
+        for authority in (a, b):
+            assert f'data-feed-option="relayed" data-feed-node="{authority.identity.node_id}"' in probe.text
         la, lb = local.add_peer(mirror, a), local.add_peer(mirror, b)
         assert local.sync(la) is None and local.sync(lb) is None
         assert local.game(aid)["title"] == mirror.game(aid)["title"]

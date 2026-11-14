@@ -74,7 +74,7 @@ Each field is chosen by rank, compared in this order:
 List fields (genres, tags, platforms...) are the union of every source, best source first. A **pinned field** beats
 everything. A curator can also **clear** a field (`PUT /api/v2/games/{id}/locks/{field}` with `{"clear": true}`):
 it stays empty whatever the sources say. In this release a clear is kept on the node that made it; federating it
-needs protocol 1.6.
+needs protocol 1.7.
 
 !!! note "Changing the trust settings"
     When you change trust classes or preferences, run `atlas match explain-backfill` to recompute every record. It
@@ -132,13 +132,13 @@ points at the restored record. Pass the survivor's ETag as `If-Match` to be sure
 What cannot be undone in this release:
 
 * a merge this **authority published** in its signed feed (it is on every mirror): undoing it needs federation protocol
-  1.6 (`409 emit_protocol`);
+  1.7 (`409 emit_protocol`);
 * a merge a **mirror applied from its upstream** (`409 upstream_owned`): only the upstream can undo it;
 * a merge made before this release (`409 legacy_merge`): split its source records off instead.
 
 ## Federation
 
 Nothing in this page changes what an authority signs in this release. The constructs a later release will publish
-are reserved for protocol 1.6 (the feed kinds `unmerge` and `distinct`, lock body version 2 for clears and the merge
+are reserved for protocol 1.7 (the feed kinds `unmerge` and `distinct`, lock body version 2 for clears and the merge
 guard); followers of this and earlier releases park such entries instead of dropping them. See
 [Federation](federation.md#compatibility-and-upgrades).

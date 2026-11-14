@@ -5,9 +5,10 @@ import time
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .. import (
@@ -140,13 +141,19 @@ def sync_failures(session: Sess, _: Annotated[auth.Principal, Depends(require("a
     """Mirrored feed entries that could not be applied and still need attention."""
     rows = session.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))
                            .order_by(SyncFailure.node_id, SyncFailure.seq).limit(limit)).all()
+    def retry_at(f: SyncFailure) -> str | None:
+        when = sync.next_retry_at(f)
+        return when.isoformat() if when else None
+
     return {"open": sync.open_failures(session),
             "parked": sync.open_failures(session, feed_schema.PARK),
             "quarantined": sync.open_failures(session, feed_schema.QUARANTINE),
+            "waiting": sync.open_failures(session, sync.WAIT),  # C13 §5.2 (additive)
             "failures": [{"node_id": f.node_id, "seq": f.seq, "kind": f.kind, "error": f.error,
                           "disposition": f.disposition, "reason": f.reason, "detail": f.detail,
                           "attempts": f.attempts, "first_failed_at": f.first_failed_at.isoformat(),
-                          "last_attempt_at": f.last_attempt_at.isoformat()} for f in rows]}
+                          "last_attempt_at": f.last_attempt_at.isoformat(),
+                          "waiting_for": f.waiting_for, "next_try_at": retry_at(f)} for f in rows]}
 
 
 @router.get("/sync/status", tags=["admin"])
@@ -160,12 +167,39 @@ def sync_status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(requ
                                                    .limit(200))]}
 
 
+@router.get("/admin/peers/probe", tags=["admin"])
+def probe_peer(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))],
+               url: Annotated[str, Query(max_length=300)],
+               peer_token: Annotated[str | None, Header(alias="Atlas-Peer-Token", max_length=200)] = None
+               ) -> dict[str, Any]:
+    """Look a node up before following it (C13 §7.1), for scripts, tests and the CLI: what the admin form's
+    choose-feed screen shows, as JSON (`node`, `token`, `records`, `feeds[]` with `trust`, `warnings` and
+    `recommended`, `default_feed`). The token for the probed node goes in the `Atlas-Peer-Token` header (never the
+    URL). Nothing is pinned: `probe_token` is null, because adding a peer stays an admin-form action bound to a
+    session. 400 for a bad address, 502 when the node cannot be verified, 504 when it did not answer in time.
+
+    Private and loopback addresses are accepted on purpose (peers often share a host or network; the admin form
+    probes the same way): the call is admin-only and makes two read requests. The 502 detail echoes the error the
+    node gave, to the admin who asked."""
+    from .. import peer_probe
+
+    try:
+        target = peer_probe.clean_url(url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    try:
+        result = peer_probe.probe(session, st.http, target, (peer_token or "").strip() or None)
+    except peer_probe.ProbeError as exc:
+        raise HTTPException(504 if exc.unreachable else 502, f"could not verify that node: {exc}") from None
+    return {"url": target, **peer_probe.public(result)}
+
+
 @router.post("/sync/failures/retry", tags=["admin"])
 def retry_sync_failures(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))],
                         limit: Annotated[int, Query(ge=1, le=500)] = 100) -> dict[str, Any]:
     """Retry failed mirrored entries now, whatever the automatic attempt count."""
     service.write_lock(session)
-    result = sync.retry_failures(session, st.ctx, limit=limit, max_attempts=None)
+    result = sync.retry_failures(session, st.ctx, limit=limit, due_only=False)
     session.commit()
     return {**result, "open": sync.open_failures(session)}
 
@@ -583,7 +617,7 @@ def _mark_distinct(session: Session, a: str, b: str, *, actor: str, note: str = 
 @router.post("/distinct", tags=["curate"])
 def distinct_add(body: DistinctBody, session: Sess, p: Annotated[auth.Principal, Depends(require("curate"))]):
     """Mark two records as different works: matching never merges them and no review pairs them again. Local to
-    this node in this release (federated distinct needs emit protocol 1.6)."""
+    this node in this release (federated distinct needs emit protocol 1.7)."""
     return _mark_distinct(session, body.a, body.b, actor=p.name, note=body.note)
 
 
@@ -1223,7 +1257,7 @@ def post_prices(body: prices.PriceBatch, session: Sess,
 @router.get("/prices/status", tags=["admin"])
 def price_status(session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]):
     """How many price observations are stored, how many the next purge removes, and the price channel's state
-    (protocol 1.5, disabled in this release)."""
+    (protocol 1.6, disabled in this release)."""
     return prices.status(session)
 
 
@@ -1284,6 +1318,27 @@ def get_media(digest: str, st: St, session: Sess, _: Annotated[auth.Principal, D
     return media_response(st, digest)
 
 
+@router.get("/sync/media/{digest}", tags=["federation"])
+def sync_media(digest: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")], st: St, session: Sess,
+               _: Annotated[auth.Principal, Depends(require("sync"))]):
+    """C13 §6.2: the cached bytes of an image this node federates, for the followers that received its row. A blob is
+    served only when a row referencing it may federate (C12 §12.5.5 applied to bytes): redistributable, not local-only,
+    of a source whose policy federates, with the licence `cc0` or `owner_upload` (or `unknown` on a curated URL row
+    when `federation_media_unknown_licence` is on, H58). Anything else is 404, so this never discloses provider,
+    private or licence-withheld media. Content addressed: the follower checks the hash."""
+    settings = st.ctx.settings
+    rows = session.scalars(select(Artwork).where(
+        Artwork.blob_hash == digest, Artwork.redistributable.is_(True), Artwork.local_only.is_(False)).limit(20))
+    for row in rows:
+        pol = media_policy.policy(settings, row.source)
+        licence = row.licence or pol.licence or ("owner_upload" if media.is_upload(settings, row.url) else "unknown")
+        if pol.federate and (licence in facets.FEDERABLE_UPLOAD_LICENCES or (
+                licence == "unknown" and settings.federation_media_unknown_licence
+                and source_class(row.source) != "provider")):
+            return media_response(st, digest)
+    raise HTTPException(404, "no such image")
+
+
 # ---- federation ---------------------------------------------------------------------------------------
 
 ProtocolHeader = Annotated[str | None, Header(alias=feed_schema.PROTOCOL_HEADER, max_length=32)]
@@ -1337,7 +1392,21 @@ def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(requ
         seen = session.get(NodeState, "sync_protocol:" + row.node_id)
         if seen is not None and feed_schema.valid_protocol(seen.value):
             item["protocol"] = seen.value  # what the relayed authority was seen advertising; not re-signed
+        item["empty"] = item["head"] == 0  # C13 §3.4: known but nothing retained yet (a relay, not an origin)
         feeds.append(item)
+    # C13 §3.4 (additive): this node's own feed head, so a prober can tell an empty origin from a relay; what its
+    # authority feed introduced; and how much of its cached media it does not serve to peers.
+    extra: dict[str, Any] = {"own_head": feed.head_seq(session)}
+    try:  # additive: a schema still behind (a rolled-back database) answers without them, never with an error
+        with session.begin_nested():
+            extra["introduced_through"] = feed.introduced_through(session)
+            extra["media_withheld"] = session.scalar(select(func.count()).select_from(Artwork).where(
+                Artwork.blob_hash.is_not(None),
+                (Artwork.redistributable.is_(False)) | (Artwork.local_only.is_(True)))) or 0
+            if s.role == "authority":
+                extra["records"] = feed.records_summary(session)
+    except SQLAlchemyError:
+        extra = {"own_head": extra["own_head"]}
     return {"node_id": identity.node_id, "public_key": identity.trust_public_b64,
             "signing_key_id": identity.key_id, "rotations": key_rotation.own_history(session, identity.node_id),
             "role": s.role, "kind": s.kind(), "operator": s.node_operator,
@@ -1345,15 +1414,15 @@ def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(requ
             "protocol": feed_schema.PROTOCOL, "min_follower_protocol": s.min_follower_protocol,
             "emit_protocol": feed_schema.emit_protocol(s), "observation_schema": feed_schema.OBSERVATION_SCHEMA,
             "kinds": feed_schema.kinds_advertised(), "capabilities": feed_schema.capabilities(),
-            "feeds": feeds}
+            "feeds": feeds, **extra}
 
 
 @router.get("/sync/price-changes", tags=["federation"])
 def sync_price_changes(_: Annotated[auth.Principal, Depends(require("sync"))],
                        since: Annotated[int, Query(ge=0)] = 0):
-    """The price channel (C8.3, protocol 1.5): designed, not enabled in this release. It answers 404, and
+    """The price channel (C8.3, protocol 1.6): designed, not enabled in this release. It answers 404, and
     `/sync/info` does not list the `price-channel-v1` capability, so no follower ever reads prices from it."""
-    raise HTTPException(404, "the price channel (protocol 1.5) is not enabled on this node")
+    raise HTTPException(404, f"the price channel (protocol {feed_schema.PRICE_CHANNEL.since}) is not enabled on this node")
 
 
 @router.get("/sync/digest", tags=["federation"])

@@ -33,7 +33,7 @@ from atlas.models import (
 from .conftest import batch, build_settings
 
 # C11 (A17) reserved the merge-undo kinds for protocol 1.6.
-RESERVED_C11 = {"price": "1.5", "unmerge": "1.6", "distinct": "1.6"}
+RESERVED_C11 = {"price": "1.6", "unmerge": "1.7", "distinct": "1.7"}  # after the H52 shift (C13)
 
 # ---- a small two-node network ---------------------------------------------------------------------------
 
@@ -164,7 +164,7 @@ def test_registry_replaces_the_duplicated_kind_lists():
 
     assert promotion.KINDS == feed_schema.known_kinds()
     assert set(feed_schema.kinds_advertised()) == {"obs", "artwork", "achievements", "custom", "schema", "merge",
-                                                   "detach", "lock", "unlock", "key_rotation", "relation"}
+                                                   "detach", "lock", "unlock", "key_rotation", "relation", "record"}
     assert feed_schema.OBS_PAYLOAD == set(sync._OBS_FIELDS)
     assert "x_future" not in feed_schema.FEED_KINDS and feed_schema.RESERVED_KINDS == RESERVED_C11
     assert feed_schema.FEED_KINDS["relation"].since == "1.4"  # reserved in 1.1-1.3, shipped by A15 (C6.3)
@@ -296,16 +296,16 @@ def test_sync_info_advertises_versions_and_records_follower_protocol(net):
     authority.publish("Hello")
     info = authority.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {authority.token}"}).json()
     assert info["contract"] == 1  # kept for pre-1.1 readers
-    assert (info["protocol"], info["min_follower_protocol"], info["emit_protocol"]) == ("1.4", "1.0", "1.0")
+    assert (info["protocol"], info["min_follower_protocol"], info["emit_protocol"]) == ("1.5", "1.0", "1.0")
     assert info["observation_schema"] == 1 and info["capabilities"] == ["ext-v1", "dates-v1"]
     assert info["kinds"]["achievements"] == {"emit": 1, "apply": 1}
     with authority.st.maker() as session:
         assert session.get(FollowerSeen, authority.token_row.id) is None  # a plain reader is not a follower
 
     _, wire = pull(mirror, authority)
-    assert {protocol for _, protocol in wire.seen} == {"1.4"}
+    assert {protocol for _, protocol in wire.seen} == {"1.5"}
     with authority.st.maker() as session:
-        assert session.get(FollowerSeen, authority.token_row.id).protocol == "1.4"
+        assert session.get(FollowerSeen, authority.token_row.id).protocol == "1.5"
     # A pre-1.1 follower sends no header: recorded as 1.0 on /sync/changes.
     authority.client.get("/api/v2/sync/changes", headers={"Authorization": f"Bearer {authority.token}"})
     with authority.st.maker() as session:
@@ -313,7 +313,7 @@ def test_sync_info_advertises_versions_and_records_follower_protocol(net):
     # The relay advertises what it saw the relayed authority speak.
     relay = mirror.client.get("/api/v2/sync/info", headers={"Authorization": f"Bearer {mirror.token}"}).json()
     [relayed] = relay["feeds"]
-    assert relayed["node_id"] == authority.node_id and relayed["protocol"] == "1.4"
+    assert relayed["node_id"] == authority.node_id and relayed["protocol"] == "1.5"
 
 
 # ---- C1.11 (a)-(f): parking and quarantine --------------------------------------------------------------
@@ -386,17 +386,20 @@ def test_e_reserved_optional_achievement_key_applies(net):
         assert [a.name for a in session.scalars(select(Achievement))] == ["Keyed One"]
 
 
-def test_f_quarantine_does_not_block(net):
+def test_f_an_entry_for_an_unknown_record_does_not_block(net):
+    """An entry naming a record the feed never introduced waits for it (C13 §5.2; it was quarantined before A19)
+    and, like a quarantined entry, does not block the feed."""
     authority, mirror, _ = net
     authority.publish("First")
     bad = authority.emit("artwork", {"canonical_id": "atlas:" + "9" * 26, "source": "curator",
                                      "items": [{"kind": "key_art", "url": "https://example.test/a.png"}]})
     authority.publish("Last")
     pull(mirror, authority)
-    assert mirror.failures(authority) == [(bad, "artwork", "quarantined", "apply_error")]
+    assert mirror.failures(authority) == [(bad, "artwork", "wait", "waiting_for_record")]
     heads = mirror.heads(authority)
-    assert heads["applied_head"] == authority.head()  # quarantined entries count as passed (H6)
-    assert heads["quarantined"] == {"count": 1, "oldest_seq": bad} and heads["state"] == "degraded"
+    assert heads["applied_head"] == authority.head()  # waiting entries count as passed, as quarantined ones (H6)
+    assert heads["quarantined"] == {"count": 0, "oldest_seq": None} and heads["state"] == "waiting"
+    assert heads["waiting"]["count"] == 1 and heads["waiting"]["oldest_seq"] == bad
     assert {"First", "Last"} <= mirror.titles()
 
 
@@ -425,16 +428,16 @@ def test_ignorable_extension_member_applies_on_this_release(net):
 def test_g_refusal_when_this_node_is_older_than_the_upstream_minimum(net):
     authority, mirror, _ = net
     authority.publish("Hidden Behind A Refusal")
-    newer = {"protocol": "1.6", "min_follower_protocol": "1.5"}
-    with pytest.raises(sync.SyncRefused, match=r"needs protocol ≥ 1.5; this node speaks 1.4. Upgrade Atlas"):
+    newer = {"protocol": "1.7", "min_follower_protocol": "1.6"}
+    with pytest.raises(sync.SyncRefused, match=r"needs protocol ≥ 1.6; this node speaks 1.5. Upgrade Atlas"):
         _, wire = pull(mirror, authority, info=lambda body: {**body, **newer})
     with mirror.st.maker() as session:
         assert session.get(SyncCursor, authority.node_id) is None  # cursor untouched
         assert session.scalars(select(ReplicatedChange)).first() is None  # nothing downloaded
         refused = json.loads(session.get(NodeState, "sync_refused:" + authority.node_id).value)
-    assert refused["upstream_protocol"] == "1.6" and "Upgrade Atlas" in refused["reason"]
+    assert refused["upstream_protocol"] == "1.7" and "Upgrade Atlas" in refused["reason"]
     status = mirror.heads(authority)
-    assert status["state"] == "refused" and status["upstream_protocol"] == "1.6"
+    assert status["state"] == "refused" and status["upstream_protocol"] == "1.7"
     # Accepted again once the upstream allows this node: the refusal clears.
     pull(mirror, authority)
     assert mirror.heads(authority)["state"] == "in_sync"
@@ -906,9 +909,12 @@ def test_historical_replay_applies_skipped_entries_and_their_dependants_in_feed_
     assert mirror.heads(authority)["applied_head"] == authority.head() and mirror.failures() == []
 
     with mirror.st.maker() as session:
-        assert sync.rescan(session, authority.node_id)["parked"] == 1
+        counts = sync.rescan(session, authority.node_id)
         session.commit()
-    assert mirror.failures(authority) == [(source_seq, "obs", "parked", "dropped_by_previous_release")]
+    assert (counts["parked"], counts["waiting"]) == (1, 1)
+    # C13 §5.6: the merge the old release dropped (its source record never arrived) now waits for that record.
+    assert mirror.failures(authority) == [(source_seq, "obs", "parked", "dropped_by_previous_release"),
+                                          (merge_seq, "merge", "wait", "dropped_by_previous_release")]
 
     # The startup replay never applies rows below the cursor.
     with mirror.st.maker() as session:
@@ -994,7 +1000,7 @@ def test_cli_status_replay_and_skip_exit_codes(net, monkeypatch, capsys, future_
 def test_cli_reports_a_refused_upstream(net, monkeypatch, capsys):
     authority, mirror, _ = net
     with pytest.raises(sync.SyncRefused):
-        pull(mirror, authority, info=lambda body: {**body, "min_follower_protocol": "1.5"})
+        pull(mirror, authority, info=lambda body: {**body, "min_follower_protocol": "1.6"})
     _cli_env(monkeypatch, mirror)
     assert cli.main(["sync", "status"]) == cli.EXIT_REFUSED
     assert "refused: upstream needs protocol" in capsys.readouterr().out

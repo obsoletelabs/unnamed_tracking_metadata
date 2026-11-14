@@ -82,6 +82,34 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                               "(followers below it refuse). Default: the previous release's protocol."),
     "emit_protocol": ("Federation", "Newest federation protocol this node's own feed may use. Unset = "
                       "`min_follower_protocol`. Raise it in Admin → Peers once every follower is upgraded."),
+    "federation_bridge_record_obs": ("Federation", "Authority, emit protocol below 1.5: introduce a record its feed never "
+                                     "signed (only provider data) with an ordinary observation of the source "
+                                     "`atlas-record` (title and store ids), which every follower release applies. Off: "
+                                     "such records reach followers only once the emit protocol is 1.5 (`record` "
+                                     "entries). See [Changes waiting for their game]"
+                                     "(federation.md#changes-waiting-for-their-game)."),
+    "federation_introduce": ("Federation", "Authority: `referenced` introduces a record when a signed entry first names "
+                             "it; `all` also introduces every record made from provider data alone as it is created."),
+    "federation_snapshot_fields": ("Federation", "What a `record` (or bridge observation) carries besides the id and "
+                                   "media type: a JSON list, a subset of `title` and `provider_ids`."),
+    "sync_max_open_failures": ("Federation", "Follower: open waiting and quarantined entries per upstream feed before it "
+                               "stops applying that feed and reports `backlog_full` (nothing is lost; the entries stay "
+                               "retained)."),
+    "sync_wake_batch": ("Federation", "Follower: waiting entries applied per transaction when their record arrives "
+                        "(1-5000); the retry pass of the same pull applies the rest."),
+    "sync_enrich_from_own_providers": ("Federation", "Follower (owner decision H56, off by default): when a `record` "
+                                       "arrives, fetch the game from this node's own providers by the store ids it "
+                                       "carries, so art and achievements arrive without redistribution. See "
+                                       "[Changes waiting for their game](federation.md#changes-waiting-for-their-game)."),
+    "sync_enrich_per_peer_per_hour": ("Federation", "Follower: at most this many own-provider fetches per upstream "
+                                      "feed and hour (1-10000); the rest wait for the next hour."),
+    "sync_media_prefer_peer": ("Federation", "Follower: fetch an image first from the peer whose feed delivered its "
+                               "artwork row (`/api/v2/sync/media/{sha256}`, hash checked), then from the original "
+                               "address."),
+    "federation_media_unknown_licence": ("Federation", "Whether `/api/v2/sync/media` hands a pinned peer the cached bytes "
+                                         "of a curated image whose licence is unknown (none stated). Off: only `cc0` "
+                                         "and owner uploads are served; peers fetch the rest from the original "
+                                         "address."),
     "inherit_schema": ("Federation", "Adopt the upstream authority's media types and custom fields (yours always take "
                        "precedence). Editable in Admin → Settings."),
     "oidc_provider_enabled": ("Federation", "Let other nodes and the Tracking App sign users in with accounts on this node "
@@ -200,8 +228,9 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/games/{cid}/prices"): "The newest observed price of every offer of a record, one per provider, product, package, edition, platform, region and currency (optional `region`, `currency`, `provider`). Integer minor units with the ISO 4217 `exponent`, exact decimal strings, `sale`, `stale`. Non-redistributable prices only for curator tokens. Not part of the record's view; never in the feed. See [Prices](prices.md).",
     ("get", "/games/{cid}/prices/history"): "Retained price observations of a record in one `region` (required), newest first, filtered by `currency`, `provider`, `product_id`, `edition`, `platform`, `since`, `until`; at most 1000 per page, follow `next_cursor`. With `currency`, `lowest` is the lowest retained price (the historical low within retention). See [Prices](prices.md).",
     ("post", "/prices"): "Store up to 500 price observations (integer minor units; floats, unknown currencies or regions and inconsistent discounts are a 422). Per item: `stored`, `duplicate`, `conflict`, `unknown_record`, `expired` or `invalid`. Nothing is published. See [Prices](prices.md).",
-    ("get", "/prices/status"): "Stored price observations, how many the next purge removes, retention bounds, and the price channel's state (protocol 1.5, disabled in this release).",
-    ("get", "/sync/price-changes"): "The price channel (protocol 1.5, capability `price-channel-v1`). Designed but disabled in this release: always 404.",
+    ("get", "/admin/peers/probe"): "Look a node up before following it (read-only): its id and protocol, what the token can do, its record counts and the feeds it offers, with a recommended one. The peer's token goes in the `Atlas-Peer-Token` header. 400 bad address, 502 not verifiable, 504 no answer.",
+    ("get", "/prices/status"):"Stored price observations, how many the next purge removes, retention bounds, and the price channel's state (protocol 1.6, disabled in this release).",
+    ("get", "/sync/price-changes"): "The price channel (protocol 1.6, capability `price-channel-v1`). Designed but disabled in this release: always 404.",
     ("get", "/games/{cid}/achievements"): "Merged achievement list: name, description, kind, tier, points, icons, global percent, and a stable `key` (`ak1:…`) with `keys` and `key_identity`. Hidden ones are redacted unless `reveal=all` or `reveal=<id or key>,…` is sent with a signed-in user's token or a curator token. No per-user progress. See [Achievements](achievements.md).",
     ("get", "/games/{cid}/artwork"): ("Artwork in its long-standing order (community choice, trust, priority) with `primary`, the first image "
                                        "per kind in it, as before; `best`, the C12 quality pick per kind; `?order=quality` sorts the list (and "
@@ -225,7 +254,7 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("get", "/conflicts"): "Records whose `field` has disagreeing sources in the winning trust class.",
     ("get", "/merges"): "Merge records of a record (`canonical_id`).",
     ("get", "/merges/{merge_id}"): "One merge record with its item counts.",
-    ("post", "/merges/{merge_id}/unmerge"): "Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published needs `emit_protocol` 1.6 (409 `emit_protocol`).",
+    ("post", "/merges/{merge_id}/unmerge"): "Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published needs `emit_protocol` 1.7 (409 `emit_protocol`).",
     ("get", "/distinct"): "Active \"different works\" decisions of a record.",
     ("post", "/distinct"): "Mark two records as different works: never merged or paired for review again (local to this node).",
     ("delete", "/distinct/{rejection_id}"): "End a \"different works\" decision.",
@@ -241,12 +270,13 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("post", "/providers/{name}/fetch"): "Fetch full details from a provider (cached), merge, return the record.",
     ("get", "/providers/{name}/search"): "Lightweight provider search; nothing is stored.",
     ("get", "/sync/changes"): "Signed entries after `since`; optional `node_id` selects a retained original authority feed.",
-    ("get", "/sync/info"): "Stable trust root, current signer, signed successor proofs, available original feeds, and the federation protocol, feed kinds and capabilities this node speaks.",
+    ("get", "/sync/info"): "Stable trust root, current signer, signed successor proofs, available original feeds, and the federation protocol, feed kinds and capabilities this node speaks. Since protocol 1.5 also `own_head` (this node's own feed head), `introduced_through` (from that seq on, every game the feed names was introduced first; null until `atlas feed introduce` finished once), `media_withheld` and, per retained feed, `feeds[].empty`; an authority adds `records` (`live`, `introduced`, `not_federated`). Additive: older followers ignore them.",
     ("get", "/status"): "Role, feed head, replication cursors, the number of feed entries that failed to apply and the named heads per upstream.",
-    ("get", "/sync/status"): "Protocol versions, named heads (observed, downloaded, verified, applied), parked and quarantined entries per upstream, and the protocol each follower last spoke.",
+    ("get", "/sync/status"): "Protocol versions, named heads (observed, downloaded, verified, applied), parked, quarantined and waiting entries per upstream, the protocol each follower last spoke, and (additive) `peers[]`: each peer's id, name, what it follows, its status `{code, label, tone, detail, action}` and its waiting groups `waiting[]` (see [Peer status](federation.md#peer-status)).",
+    ("get", "/sync/media/{digest}"): "The bytes of a cached image this node may hand to peers, by its lowercase SHA-256: an artwork row that is redistributable, not local-only, of a source that federates, licensed `cc0` or `owner_upload` (or a curated row of unknown licence when `ATLAS_FEDERATION_MEDIA_UNKNOWN_LICENCE` is on). Followers fetch replicated images here first and check the hash. 404 otherwise.",
     ("get", "/sync/digest"): "Digest of the replicated observations of this node's feed (or a retained one with `node_id`), for `atlas sync reconcile`. Observations only; cached up to 60 s (`cached_seconds`).",
-    ("get", "/sync/failures"): "Mirrored feed entries that could not be applied and still need attention: parked (need a newer release) or quarantined.",
-    ("post", "/sync/failures/retry"): "Retry failed mirrored entries now, whatever the automatic attempt count.",
+    ("get", "/sync/failures"): "Mirrored feed entries that could not be applied and still need attention: parked (need a newer release), quarantined, or waiting for their game (`disposition` `wait`, `waiting_for`); `next_try_at` for quarantined ones.",
+    ("post", "/sync/failures/retry"): "Retry failed mirrored entries now, whatever their backoff.",
     ("get", "/tokens"): "List API tokens.",
     ("post", "/tokens"): "Create a token; the secret is returned once.",
     ("delete", "/tokens/{tid}"): "Revoke a token.",

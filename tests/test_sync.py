@@ -1,4 +1,5 @@
 import base64
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -215,20 +216,33 @@ def test_retry_converges_without_duplicates_once_the_cause_is_fixed(pair, flaky)
         assert sync.open_failures(s) == 0
 
 
-def test_automatic_retries_stop_but_an_administrator_can_still_retry(pair, flaky):
+def test_automatic_retries_back_off_but_an_administrator_can_retry_at_once(pair, flaky):
+    """C13 §5.4 (replaces the fixed 20-attempt limit): the first retry runs on the next pull, later ones after
+    1, 2, 4 ... minutes (at most every 6 hours), so a broken entry is neither re-run on every pull nor abandoned."""
     a_maker, a_ctx, m_maker, m_ctx, client = pair
     [first] = curate(a_maker, a_ctx, "curator", [{"external_id": "1", "title": "Failing"}])
     flaky.add(1)
-    for _ in range(sync.AUTO_RETRY_LIMIT + 3):
+    for _ in range(23):
         sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
     with m_maker() as s:
         failure = s.scalars(select(SyncFailure)).one()
-        assert failure.attempts == sync.AUTO_RETRY_LIMIT  # capped, not retried on every pull
+        assert failure.attempts == 2  # the first attempt and the immediate retry; the next is a minute away
+        assert sync.next_retry_at(failure) > datetime.now(UTC)
+        failure.last_attempt_at = datetime.now(UTC) - timedelta(minutes=2)  # a minute and more passes
+        s.commit()
+    sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
+    with m_maker() as s:
+        failure = s.scalars(select(SyncFailure)).one()
+        assert failure.attempts == 3 and failure.resolved_at is None
+        assert sync.next_retry_at(failure) - failure.last_attempt_at.replace(tzinfo=UTC) == timedelta(minutes=2)
+    assert [sync.retry_delay(n) for n in (1, 2, 3, 4)] == [timedelta(0), timedelta(minutes=1), timedelta(minutes=2),
+                                                           timedelta(minutes=4)]
+    assert sync.retry_delay(40) == timedelta(hours=6)
     flaky.clear()
     sync.pull_all(m_maker, m_ctx, client, "http://upstream", None)
     with m_maker() as s:
-        assert sync.open_failures(s) == 1  # automatic retries gave up
-        result = sync.retry_failures(s, m_ctx, max_attempts=None)
+        assert sync.open_failures(s) == 1  # not due yet
+        result = sync.retry_failures(s, m_ctx, due_only=False)
         s.commit()
         assert result == {"retried": 1, "resolved": 1, "still_failing": 0}
         assert s.get(Canonical, first.canonical_id) is not None
