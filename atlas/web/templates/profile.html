@@ -5,14 +5,14 @@
 <h1>{{ u.username }}</h1>
 {% if hidden %}<p class="badge warn">Private profile: only you and reviewers can see this page.</p>{% endif %}
 <p>{% for b in stats.badges %}<span class="badge ok">{{ b }}</span> {% endfor %}<span class="badge">{{ u.role }}</span> reputation <strong>{{ u.reputation }}</strong>
- · {{ stats.accepted }} accepted of {{ stats.total }} proposals · joined {{ u.created_at.strftime('%Y-%m-%d') }}</p>
+ · {{ stats.accepted }} accepted of {{ stats.total }} proposals · joined {{ day(u.created_at) }}</p>
 {% if u.bio %}<div class="card comment-body">{{ u.bio }}</div>{% endif %}
 {% if p.user and not mine and s.lists_enabled %}
 <form class="inline" method="post" action="/{{ 'unfollow' if following else 'follow' }}">{{ csrf(p.csrf) }}<input type="hidden" name="type" value="user"><input type="hidden" name="target" value="{{ u.id }}"><input type="hidden" name="to" value="/u/{{ u.username }}"><button class="secondary" type="submit">{{ 'Following' if following else 'Follow' }}</button></form>
 {% endif %}
 {% if mine %}<p><a class="btn secondary" href="/me">My account</a> <a class="btn secondary" href="/me/settings">Profile settings</a></p>{% endif %}
 <h2>Accepted contributions</h2>
-{% if accepted %}<ul>{% for a in accepted %}<li>{{ a.kind }} · {% if a.cid %}<a href="/game/{{ a.cid }}">{{ a.title }}</a>{% else %}{{ a.title }}{% endif %} <span class="muted small">{{ a.when }}</span></li>{% endfor %}</ul>
+{% if accepted %}<ul>{% for a in accepted %}<li>{{ a.kind }} · {% if a.cid %}<a href="/game/{{ a.cid }}">{{ a.title }}</a>{% else %}{{ a.title }}{% endif %} <span class="muted small">{{ when(a.when) }}</span></li>{% endfor %}</ul>
 {% else %}<p class="muted">Nothing yet.</p>{% endif %}
 {% if lists %}<h2>Lists</h2><ul>{% for l in lists %}<li><a href="/list/{{ l.id }}">{{ l.name }}</a> <span class="muted small">{{ counts[l.id] }} game{{ '' if counts[l.id] == 1 else 's' }}</span></li>{% endfor %}</ul>{% endif %}
 {% endblock %}

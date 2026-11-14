@@ -222,8 +222,11 @@ def test_unchanged_and_invalid_edits_show_errors(site):
     t = csrf_in(bob, f"/game/{site.gid}/edit")
     same = bob.post(f"/game/{site.gid}/edit", data={"csrf": t, "title": "Hades", "developer": "Wrong Dev"})
     assert same.status_code == 400 and "did not change anything" in same.text
-    bad = bob.post(f"/game/{site.gid}/edit", data={"csrf": t, "release_date": "17/09/2020"})
-    assert bad.status_code == 400 and "YYYY-MM-DD" in bad.text
+    # SPEC-UI-POLISH-PASS §7.2: dd/mm/yyyy is accepted now; the same day as stored is still "no change"
+    same_day = bob.post(f"/game/{site.gid}/edit", data={"csrf": t, "release_date": "17/09/2020"})
+    assert same_day.status_code == 400 and "did not change anything" in same_day.text
+    bad = bob.post(f"/game/{site.gid}/edit", data={"csrf": t, "release_date": "31/02/2020"})
+    assert bad.status_code == 400 and "not a calendar date" in bad.text
 
 
 def test_user_input_is_escaped(site):

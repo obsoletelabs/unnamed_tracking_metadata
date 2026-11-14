@@ -6,12 +6,13 @@
 {% if mtypes and mtypes|length > 1 %}<ul class="tabs"><li><a href="/search{% if q %}?q={{ q|urlencode }}{% endif %}"{% if not mtype %} aria-current="page"{% endif %}>All</a></li>{% for t in mtypes %}<li><a href="/search?{% if q %}q={{ q|urlencode }}&amp;{% endif %}type={{ t.key }}"{% if mtype == t.key %} aria-current="page"{% endif %}>{{ t.label }}</a></li>{% endfor %}</ul>{% endif %}
 <form class="release-filter" method="get" action="/search" role="search" aria-label="Filter by release date">
   {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}{% if mtype %}<input type="hidden" name="type" value="{{ mtype }}">{% endif %}
-  <div><label for="released_from">Released from <span class="hint">YYYY[-MM[-DD]]</span></label><input id="released_from" type="text" name="released_from" value="{{ filters.released_from or '' }}" maxlength="10" pattern="\d{4}(-\d{2}(-\d{2})?)?" placeholder="2011"></div>
-  <div><label for="released_to">to</label><input id="released_to" type="text" name="released_to" value="{{ filters.released_to or '' }}" maxlength="10" pattern="\d{4}(-\d{2}(-\d{2})?)?" placeholder="2011"></div>
+  <div><label for="released_from">Released from <span class="hint">a year, a month or a day</span></label><input id="released_from" type="text" name="released_from" value="{{ filters.released_from or '' }}" maxlength="40" inputmode="text" placeholder="{{ date_placeholder() }}" data-date-entry></div>
+  <div><label for="released_to">to</label><input id="released_to" type="text" name="released_to" value="{{ filters.released_to or '' }}" maxlength="40" inputmode="text" placeholder="{{ date_placeholder() }}" data-date-entry></div>
   <div><label for="sort">Order</label><select id="sort" name="sort">{% for o in sorts %}<option value="{{ o }}" {{ 'selected' if (filters.sort or 'relevance') == o }}>{{ {'relevance': 'Best match', 'title': 'Title', 'release': 'Oldest release first', '-release': 'Newest release first'}[o] }}</option>{% endfor %}</select></div>
   <button class="secondary" type="submit">Apply</button>
 </form>
 {% if filter_error %}<div class="card error" role="alert">{{ filter_error }}</div>{% endif %}
+{% for r in read_as or [] %}<p class="small muted" data-date-read-as="{{ r.key }}">“{{ r.typed }}” read as {{ day(r.value) }}{% if r.ambiguous %} (or did you mean <a href="/search?{{ keep|replace(r.key ~ '=' ~ r.value, r.key ~ '=' ~ r.other) }}">{{ day_text(r.other) }}</a>?){% endif %}</p>{% endfor %}
 {% if results %}
 <ul class="grid">{% for g in results %}
   <li class="tile"><a href="/game/{{ g.id }}"><div class="cover">{{ cover(g, art) }}</div>

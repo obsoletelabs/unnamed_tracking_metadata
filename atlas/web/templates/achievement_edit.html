@@ -5,7 +5,7 @@
 <p><a href="/game/{{ g.id }}#achievements">← Back to {{ title }}</a></p>
 <h1>Edit achievements</h1>
 <p>You are editing the list <strong>this community</strong> contributes for {{ title }}: what you save replaces that list, in the order shown. Other sources (for example Steam) keep their own entries; where they have a value, theirs wins and yours fills the gaps, so an empty field means <em>nothing is assigned by you</em>. Nothing changes until you press <strong>Submit proposal</strong>, and it is reviewed like other contributions.</p>
-<p class="small muted" data-tier-help>Tiers: bronze, silver, gold, and platinum for completing the whole list.{% if platinum_gated %} Platinum is not available on this node yet: its federation emit protocol is below 1.2.{% endif %}</p>
+<p class="small muted" data-tier-help>Tiers: bronze, silver, gold, and platinum for completing the whole list.{% if platinum_gated %} Platinum is not available on this node yet: it needs every follower on this Atlas release (Admin → Peers → Compatibility).{% endif %}</p>
 
 {% if diff %}
 <section class="card" aria-live="polite">
@@ -14,6 +14,7 @@
 <ul class="diff-list">
 {% for n in diff.added %}<li><ins>Add</ins> {{ n }}</li>{% endfor %}
 {% for n in diff.removed %}<li><del>Remove</del> {{ n }}</li>{% endfor %}
+{% if diff.added or diff.removed or diff.changed %}<li class="small muted" data-diff-counts>{{ diff.added|length }} added · {{ diff.changed|length }} changed · {{ diff.removed|length }} removed</li>{% endif %}
 {% for c in diff.changed %}<li><strong>{{ c.name }}</strong><ul>{% for f, old, new in c.deltas %}<li>{{ f }}: <del>{{ old }}</del> → <ins>{{ new }}</ins></li>{% endfor %}</ul></li>{% endfor %}
 {% if diff.reordered %}<li>The order changes.</li>{% endif %}
 </ul>{% endif %}
@@ -23,14 +24,19 @@
 {% if bad %}<p class="field-error" role="alert">{{ bad|length }} row{{ '' if bad|length == 1 else 's' }} need{{ 's' if bad|length == 1 }} fixing before you can preview.</p>{% endif %}
 
 <form method="post" action="/game/{{ g.id }}/achievements/edit" enctype="multipart/form-data" id="ach-form">{{ csrf(p.csrf) }}
+<div class="ach-toolbar" data-ach-toolbar hidden>
+<label for="ach-filter" class="visually-hidden">Filter rows by name</label><input id="ach-filter" type="search" placeholder="Filter by name" data-ach-filter maxlength="80">
+<button type="button" class="secondary small" data-ach-expand="open">Open all</button> <button type="button" class="secondary small" data-ach-expand="close">Close all</button>
+</div>
 <div id="ach-rows">
 {% for r in rows %}{% include "_ach_row.html" %}{% endfor %}
 </div>
 <p><button type="submit" name="action" value="add" class="secondary" data-add-row {{ 'disabled' if rows|length >= max_rows }}>+ Add a row</button>
 <span class="small muted">Up to {{ max_rows }} rows.</span></p>
 <label for="ach-note">Source / note for reviewers</label><textarea id="ach-note" name="note" maxlength="2000">{{ note or '' }}</textarea>
-<p><button type="submit" name="action" value="preview">Preview changes</button>
-{% if can_submit %}<button type="submit" name="action" value="submit">Submit proposal</button>{% endif %}</p>
+<div class="sticky-actions"><span class="small muted" data-ach-count aria-live="polite">{{ rows|length }} row{{ '' if rows|length == 1 else 's' }}</span>
+<button type="submit" name="action" value="preview">Preview changes</button>
+{% if can_submit %}<button type="submit" name="action" value="submit">Submit proposal</button>{% endif %}</div>
 {% if not can_submit %}<p class="small muted">Preview first: the proposal button appears once the changes have been checked.</p>{% endif %}
 </form>
 <template id="ach-row-template">{% set r = {'key': 'NEWKEY', 'name': '', 'description': '', 'kind': '', 'tier': '', 'points': '', 'hidden': False, 'icon_url': '', 'locked_icon_url': '', 'external_id': '', 'akey': '', 'global_percent': '', 'status': '', 'extra': '', 'errors': [], 'notes': [], 'inherited': {}, 'icon_blob': None, 'locked_blob': None} %}{% include "_ach_row.html" %}</template>
@@ -42,11 +48,12 @@
 <label for="anote2">Source / note</label><textarea id="anote2" name="note" maxlength="2000"></textarea>
 <p><button type="submit">Submit bulk import</button></p></form></details>
 
-<h2>From other sources</h2>
+<details class="ach-others" data-ach-others><summary><h2 class="inline">From other sources</h2> <span class="small muted">({{ others|length }})</span></summary>
 {% if others %}
 <div class="table-scroll"><table class="ach-sources"><caption class="sr">Achievements other sources provide</caption><thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Tier</th><th scope="col">Points</th><th scope="col">Sources</th></tr></thead><tbody>
 {% for m in others %}<tr><td>{{ m.name }}{% if m.hidden %} <span class="badge">hidden</span>{% endif %}</td><td>{{ (m.kind or '')|replace('_', ' ') }}</td><td>{{ m.tier or '' }}</td><td>{{ '' if m.points is none else m.points }}</td><td>{{ m.sources|join(', ') }}</td></tr>{% endfor %}
 </tbody></table></div>
 <p class="small muted">Read-only here. Hidden ones stay concealed; open them from the game page.</p>
 {% else %}<p class="muted">No other source has provided achievements for this game.</p>{% endif %}
+</details>
 {% endblock %}

@@ -13,13 +13,13 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 
-from .. import accounts, auth, feed, feed_schema, key_rotation, peer_probe, runtime, secrets_box, service, sync
+from .. import __version__, accounts, auth, feed, feed_schema, key_rotation, peer_probe, runtime, secrets_box, service, sync
 from ..models import FollowerSeen, NodeState, Peer, ReplicatedFeed, Setting, SyncCursor, SyncFailure, Token, User
 from ..service import AtlasError
 from ..signing import key_id_for, load_identity, signing_key_at_rest
 from .deps import LOCAL_ADMIN_ONLY, admin_form, admin_page, go, local_admin_form, throttle
 from .deps import Page as Ctx
-from .routes import render, when
+from .routes import render
 
 router = APIRouter()
 
@@ -163,7 +163,8 @@ def _records(p: Ctx) -> dict | None:
     out = feed.records_summary(p.session)
     out.update(missing=feed.unintroduced_count(p.session, "missing"), mode=feed.introduction_mode(p.st.ctx.settings),
                pending=p.session.get(NodeState, feed.INTRODUCE_PENDING) is not None,
-               introduced_through=feed.introduced_through(p.session))
+               introduced_through=feed.introduced_through(p.session),
+               bridge=bool(p.st.ctx.settings.federation_bridge_record_obs))
     return out
 
 
@@ -173,20 +174,40 @@ def introduce_records(p: Annotated[Ctx, Depends(admin_form)], scope: Annotated[s
     if scope not in ("missing", "all"):
         raise HTTPException(400, "Choose missing or all.")
     if p.st.ctx.settings.role != "authority" or feed.introduction_mode(p.st.ctx.settings) == feed.VIA_LEGACY:
-        return _peers_page(p, error="Could not publish records: raise the emit protocol to 1.5 first (or enable the "
-                                    "bridge, ATLAS_FEDERATION_BRIDGE_RECORD_OBS).", status=409)
+        return _peers_page(p, error="Could not publish records: followers on older releases cannot receive them; "
+                                    "turn on the compatibility bridge (ATLAS_FEDERATION_BRIDGE_RECORD_OBS) or ask "
+                                    "them to upgrade.", status=409)
     feed.schedule_introduce(p.session, scope)
     accounts.audit(p.session, p.me.id, "feed_introduce", "", {"scope": scope})
     return go("/admin/peers", "saved")
 
 
 @router.get("/admin/peers", response_class=HTMLResponse)
-def peers(p: Annotated[Ctx, Depends(admin_page)], probe: dict | None = None, error: str | None = None):
-    return _peers_page(p, probe, error)
+def peers(p: Annotated[Ctx, Depends(admin_page)], probe: dict | None = None, error: str | None = None,
+          tone: str | None = None):
+    return _peers_page(p, probe, error, tone=tone)
 
 
-def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, status: int = 200):
+def _flash_tone(error: str | None, status: int) -> str:
+    """PE7: the tone of the message line; routes pass it, and old call sites fall back to the status."""
+    if not error:
+        return "ok"
+    if status >= 400 or error.lower().startswith(("could not", "sync failed")):
+        return "error"
+    return "ok"
+
+
+def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, status: int = 200,
+                tone: str | None = None):
     rows = []
+    from .. import groups
+
+    members: set[str] = set()
+    group = groups.active(p.session)
+    if group is not None:  # PE5: a peer that is also a member of this node's group
+        from ..models import GroupMember
+
+        members = set(p.session.scalars(select(GroupMember.node_id).where(GroupMember.group_id == group.group_id)))
     cursors = {c.upstream: c for c in p.session.scalars(select(SyncCursor))}
     heads = sync.status(p.session, p.st.ctx)["upstreams"]
     for peer in p.session.scalars(select(Peer).order_by(Peer.created_at)):
@@ -194,6 +215,7 @@ def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, sta
         h = heads.get(peer.node_id)
         described = sync.describe_peer(p.session, p.st.ctx.settings, peer, h)
         rows.append({"peer": peer, "seq": cur.last_seq if cur else 0, "fp": fingerprint(peer.node_id),
+                     "group_member": peer.node_id in members,
                      "heads": h, "status": described["code"], "badge": described,
                      "inferred": sync.inferred_follow(p.session, peer.id) if peer.follow is None else None,
                      "via_fp": fingerprint(peer.via_node_id) if peer.via_node_id else None,
@@ -209,7 +231,10 @@ def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, sta
                   waiting=_waiting(p), failure_groups=_failure_groups(p), status_labels=STATUS_LABELS,
                   records=_records(p),
                   next_retry=sync.next_retry_at, own=p.st.ctx.identity, fp=fingerprint(p.st.ctx.identity.node_id),
-                  can_store=secrets_box.available(s), env_upstream=s.upstream_url, probe=probe, error=error, when=when,
+                  can_store=secrets_box.available(s), env_upstream=s.upstream_url, probe=probe, error=error,
+                  flash_tone=tone or _flash_tone(error, status), release=__version__,
+                  standalone=not rows and not p.session.scalar(select(func.count()).select_from(FollowerSeen))
+                  and not probe and not s.upstream_url,
                   inherit=s.inherit_schema, protocol=_protocol(p))
 
 
@@ -468,7 +493,7 @@ def sync_now(pid: str, p: Annotated[Ctx, Depends(admin_form)]):
     except Exception as exc:
         row.last_error = f"{type(exc).__name__}: {exc}"[:300]
         p.session.commit()
-        return peers(p, error=f"Sync failed: {row.last_error}")  # type: ignore[arg-type]
+        return peers(p, error=f"Sync failed: {row.last_error}", tone="error")  # type: ignore[arg-type]
 
 
 @router.post("/admin/peers/failures/retry", response_class=HTMLResponse)
@@ -479,11 +504,11 @@ def retry_failed_entries(p: Annotated[Ctx, Depends(admin_form)]):
     accounts.audit(p.session, p.me.id, "sync_failures_retry", "", result)
     p.session.flush()
     if not result["retried"]:
-        return peers(p, error="Nothing to retry.")  # type: ignore[arg-type]
+        return peers(p, error="Nothing to retry.", tone="ok")  # type: ignore[arg-type]
     note = f"Retried {result['retried']} entr{'y' if result['retried'] == 1 else 'ies'}: {result['resolved']} applied"
     if result["still_failing"]:
         note += f", {result['still_failing']} still failing (see the reasons below)"
-    return peers(p, error=note + ".")  # type: ignore[arg-type]
+    return peers(p, error=note + ".", tone="warn" if result["still_failing"] else "ok")  # type: ignore[arg-type]
 
 
 # ---- tokens -------------------------------------------------------------------------------------------
@@ -500,7 +525,7 @@ def _tokens_page(p: Ctx, new_token: str | None, status: int = 200, error: str | 
         rows.append({"t": t, "owner": owner.username if owner else None})
     return render(p, "admin_tokens.html", status=status, rows=rows, new_token=new_token, scopes=auth.SCOPES,
                   self_service=p.st.ctx.settings.self_service_sync_tokens,
-                  when=when, error=error)
+                  error=error)
 
 
 @router.post("/admin/tokens", response_class=HTMLResponse)

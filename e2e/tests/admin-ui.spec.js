@@ -81,7 +81,7 @@ test.describe('achievement editor (#97)', () => {
     const ids = seed();
     const editor = `/game/${enc(ids['Starlight Harbor'])}/achievements/edit`;
     await page.goto(editor);
-    const row = page.locator('fieldset[data-row]').first();
+    const row = page.locator('[data-row]').first();
     const name = row.getByLabel('Name', { exact: true });
     const points = row.getByLabel('Points');
 
@@ -103,7 +103,7 @@ test.describe('achievement editor (#97)', () => {
     // Add a row, fill it, preview, submit.
     const title = `E2E Trophy ${info.project.name} ${Date.now()}`;
     await page.getByRole('button', { name: '+ Add a row' }).click();
-    const added = page.locator('fieldset[data-row]').last();
+    const added = page.locator('[data-row]').last();
     await expect(added.getByLabel('Name', { exact: true })).toHaveAttribute('type', 'text'); // the template row too
     await added.getByLabel('Name', { exact: true }).fill(title);
     await added.getByLabel('Description').fill('Added by the end-to-end suite.');
@@ -114,13 +114,13 @@ test.describe('achievement editor (#97)', () => {
 
     // Stored: the editor shows it again after a fresh load, and a bad value is refused with the row marked.
     await page.goto(editor);
-    const saved = page.locator('fieldset[data-row]', { has: page.locator(`input[value="${title}"]`) });
+    const saved = page.locator('[data-row]', { has: page.locator(`input[value="${title}"]`) });
     await expect(saved).toHaveCount(1);
     await expect(saved.getByLabel('Points')).toHaveValue('42');
     await saved.getByLabel('Points').fill('999999');
     await page.getByRole('button', { name: 'Preview changes' }).click();
     await expect(page.getByRole('alert').first()).toBeVisible(); // the error is visible, not swallowed
-    await expect(page.locator('fieldset.has-errors')).toHaveCount(1);
+    await expect(page.locator('.ach-row.has-errors')).toHaveCount(1);
     await saved.getByLabel('Points').fill('43'); // and the retry works
     await page.getByRole('button', { name: 'Preview changes' }).click();
     await expect(page.locator('.diff-list')).toContainText('43');
@@ -136,6 +136,7 @@ test.describe('achievement editor, other sources (#97)', () => {
       data: { items: [{ name: 'Lighthouse Keeper of the Northern Shore', description: 'x', tier: 'bronze' }] } });
     expect(put.status()).toBe(200);
     await page.goto(`/game/${enc(gid)}/achievements/edit`);
+    await page.locator('[data-ach-others] > summary').click();  // U3: collapsed under the editor (§8.1)
     const table = page.locator('table.ach-sources');
     await expect(table).toBeVisible();
     const cell = table.locator('tbody tr').first().locator('td').first();

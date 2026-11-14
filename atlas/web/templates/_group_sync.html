@@ -1,0 +1,24 @@
+{# The "Group sync" strip (SPEC-UI-POLISH-PASS addendum item 3). `strip` from profile_pages.sync_strip; `admin` on the
+   admin group page. #}
+<section class="card group-sync" aria-labelledby="group-sync-h" data-group-sync="{{ 'admin' if admin else 'me' }}">
+  <div class="section-head"><h2 id="group-sync-h">Group sync</h2>
+  <p class="small muted">{% if strip.last %}Last heard from a member {{ when(strip.last, relative=True) }}{% else %}No member heard from yet{% endif %} · every {{ strip.interval // 60 if strip.interval >= 60 else strip.interval }} {{ 'min' if strip.interval >= 60 else 's' }}</p></div>
+  <ul class="sync-members" data-group-sync-members>
+  {% for m in strip.members %}<li data-sync-member="{{ m.node }}" data-sync-state="{{ 'error' if m.error else ('stale' if m.stale else 'ok') }}"><strong>{{ m.name }}</strong>
+    {% if m.error %}<span class="badge warn">not reached</span>{% elif m.stale %}<span class="badge warn">not seen lately</span>{% else %}<span class="badge ok">in step</span>{% endif %}
+    <span class="small muted">{% if m.seen %}last sync {{ when(m.seen, relative=True) }}{% else %}never synced{% endif %}</span>{% if admin %}{% set c = m.catalogue %}
+    <a class="chip small" href="/admin/peers" data-catalogue-sync="{{ c.state }}">Catalogue sync: {{ {'on': 'on', 'error': 'failing', 'paused': 'paused', 'off': 'off'}[c.state] }}</a>{% endif %}{% if admin and m.error %}<span class="small error block">{{ m.error }}</span>{% endif %}</li>
+  {% else %}<li class="muted">No other member yet.</li>{% endfor %}
+  </ul>
+  <dl class="facts small">
+  {% if admin %}
+    <dt>Shared</dt><dd data-group-sync-shared>{% if strip.sync_on %}{{ strip.shared|length }} preference{{ '' if strip.shared|length == 1 else 's' }} may be shared by people who link their account (<a href="#policy">policy</a>){% else %}Preference sync is off on this node{% endif %}</dd>
+    <dt>Catalogue</dt><dd class="small" data-group-sync-catalogue>{{ strip.members|selectattr('catalogue.state', 'equalto', 'on')|list|length }} of {{ strip.members|length }} member{{ '' if strip.members|length == 1 else 's' }} followed on <a href="/admin/peers">Peers</a>. Joining a group does not copy records by itself in this release; follow a member like any other peer.</dd>
+    <dt>Accounts</dt><dd data-group-sync-accounts="{{ strip.linked_n }}/{{ strip.people }}">{{ strip.linked_n }} of {{ strip.people }} linked</dd>
+    <dt>Decisions</dt><dd data-group-sync-conflicts="{{ strip.conflicts }}">{% if strip.conflicts %}<span class="badge warn">{{ strip.conflicts }}</span> preference conflict{{ '' if strip.conflicts == 1 else 's' }} waiting for their owners{% else %}none waiting{% endif %}</dd>
+  {% else %}
+    <dt>Shared</dt><dd data-group-sync-shared>{% if not strip.linked %}Nothing yet: this account is not linked{% elif strip.shared %}{{ strip.shared|join(', ') }}{% else %}Nothing: no preference is ticked below{% endif %}</dd>
+    <dt>Decisions</dt><dd data-group-sync-conflicts="{{ strip.conflicts }}">{% if strip.conflicts %}<a class="badge warn" href="/me/conflicts">{{ strip.conflicts }} need{{ 's' if strip.conflicts == 1 }} a decision</a>{% else %}none waiting{% endif %}</dd>
+  {% endif %}
+  </dl>
+</section>

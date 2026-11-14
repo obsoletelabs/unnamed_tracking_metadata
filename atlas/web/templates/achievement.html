@@ -1,11 +1,40 @@
 {% extends "base.html" %}
-{% block title %}{{ a.name }} · {{ title }} · {{ app_name }}{% endblock %}
+{% block title %}{{ 'Hidden achievement' if a.hidden else a.name }} · {{ title }} · {{ app_name }}{% endblock %}
 {% block content %}
+{# SPEC-UI-POLISH-PASS §8.2: icon pair, badges, rarity bar with its measured date, the set, sources, prev/next within
+   the game, and the game page's spoiler guard for hidden achievements. #}
 <p><a href="/game/{{ g.id }}#achievements">← Back to {{ title }}</a></p>
-<article class="card">
-<h1>{{ a.name }}</h1>
-<p>{{ a.description or 'No description.' }}</p>
-<p>{% if a.hidden %}<span class="badge">hidden</span> {% endif %}{% if a.kind %}<span class="badge">{{ a.kind|replace('_', ' ') }}</span> {% endif %}{% if a.tier %}<span class="badge tier-{{ a.tier }}">{{ a.tier }}</span> {% endif %}{% if a.points is not none %}{{ a.points }} points {% endif %}{% if a.global_percent is not none %}· {{ '%.1f'|format(a.global_percent) }}% of players{% endif %}</p>
-{% if a.icon_url %}<p><img src="{{ a.icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="64" height="64"></p>{% endif %}
+<article class="card ach-detail" data-ach-detail="{{ a.id }}">
+<div class="ach-detail-head">
+  <div class="ach-icon-pair" aria-hidden="true">
+    <figure>{% if a.icon_url %}<img src="{{ a.icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="96" height="96">{% else %}<span class="ach-ph big">–</span>{% endif %}<figcaption class="small muted">unlocked</figcaption></figure>
+    <figure>{% if a.locked_icon_url %}<img src="{{ a.locked_icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="96" height="96">{% elif a.icon_url %}<img class="locked" src="{{ a.icon_url|replace('/api/v2/media/', '/media/') }}" alt="" width="96" height="96">{% else %}<span class="ach-ph big">–</span>{% endif %}<figcaption class="small muted">locked</figcaption></figure>
+  </div>
+  <div>
+  {% if a.hidden %}
+  <h1>Hidden achievement</h1>
+  <details class="spoiler" data-ach-spoiler><summary>Show it (may spoil the game)</summary>
+    <h2>{{ a.name }}</h2><p>{{ a.description or 'No description.' }}</p></details>
+  {% else %}
+  <h1>{{ a.name }}</h1>
+  <p>{{ a.description or 'No description.' }}</p>
+  {% endif %}
+  <p class="badges">{% if a.hidden %}<span class="badge">hidden</span> {% endif %}{% if a.status == 'unobtainable' %}<span class="badge">unobtainable</span> {% endif %}{% if a.kind %}<span class="badge">{{ a.kind|replace('_', ' ') }}</span> {% endif %}{% if a.tier %}<span class="badge tier-{{ a.tier }}">{{ a.tier }}</span> {% endif %}{% if a.points is not none %}<span class="badge">{{ a.points }} points</span>{% endif %}</p>
+  </div>
+</div>
+{% if a.global_percent is not none %}{% set pc = a.global_percent %}
+<div class="rarity ach-detail-rarity" data-ach-rarity><div class="rarity-line"><strong>{{ '%.1f'|format(pc) }}%</strong> of players {% if pc < 5 %}<span class="badge bad">ultra rare</span>{% elif pc < 15 %}<span class="badge warn">rare</span>{% elif pc >= 50 %}<span class="badge ok">common</span>{% endif %}
+  <span class="small muted" data-ach-measured>{% if a.rarity and a.rarity.as_of %}measured {{ day(a.rarity.as_of) }}{% else %}measured at an unknown date{% endif %}{% if a.rarity and a.rarity.stale %} (old){% endif %}{% if a.rarity and a.rarity.source %} · {{ a.rarity.source }}{% endif %}</span></div>
+<svg class="rarity-bar {{ 'r-ultra' if pc < 5 else ('r-rare' if pc < 15 else ('r-common' if pc >= 50 else '')) }}" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true" focusable="false"><rect class="track" width="100" height="6"/><rect class="fill" width="{{ [[pc, 1.5]|max, 100]|min }}" height="6"/></svg></div>
+{% endif %}
+<dl class="facts small">
+  {% if many_sets and the_set %}<dt>Set</dt><dd data-ach-set>{{ the_set.name or the_set.key }}{% if the_set.kind and the_set.kind != 'base' %} <span class="badge">{{ the_set.kind }}</span>{% endif %}</dd>{% endif %}
+  {% if a.sources %}<dt>Sources</dt><dd data-ach-sources>{{ a.sources|unique|join(', ') }}</dd>{% endif %}
+  <dt>Position</dt><dd>{{ position }} of {{ total }} in {{ title }}</dd>
+</dl>
+<nav class="ach-nav" aria-label="Other achievements of {{ title }}">
+  {% if prev_e %}<a class="btn secondary small" href="/game/{{ g.id }}/achievements/{{ prev_e.id }}" data-nav="prev" rel="prev">← {{ 'Hidden achievement' if prev_e.hidden else prev_e.name }}</a>{% else %}<span></span>{% endif %}
+  {% if next_e %}<a class="btn secondary small" href="/game/{{ g.id }}/achievements/{{ next_e.id }}" data-nav="next" rel="next">{{ 'Hidden achievement' if next_e.hidden else next_e.name }} →</a>{% endif %}
+</nav>
 </article>
 {% endblock %}

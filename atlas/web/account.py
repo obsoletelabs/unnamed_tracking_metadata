@@ -24,7 +24,7 @@ from .deps import (
     user_form,
 )
 from .deps import Page as Ctx
-from .routes import render, when
+from .routes import render
 
 router = APIRouter()
 GENERIC = "If an account with that address exists, we have sent it a message."
@@ -155,7 +155,7 @@ def outbox(p: Annotated[Ctx, Depends(admin_page)]):
     s = p.st.ctx.settings
     rows = p.session.scalars(select(Outbox).order_by(Outbox.created_at.desc()).limit(50)).all()
     pending = p.session.scalar(select(func.count()).select_from(Outbox).where(Outbox.sent_at.is_(None))) or 0
-    return render(p, "admin_outbox.html", rows=rows, when=when, backend=s.mail_backend,
+    return render(p, "admin_outbox.html", rows=rows, backend=s.mail_backend,
                   smtp_ready=bool(s.smtp_host), pending=pending)
 
 

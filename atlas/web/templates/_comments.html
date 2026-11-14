@@ -6,7 +6,7 @@
   {% if c.status == 'deleted' %}<p class="muted small">[deleted]</p>
   {% elif not t.show %}<p class="muted small">[hidden by a moderator]</p>
   {% else %}
-  <p class="small"><strong>{% if t.deleted_author %}deleted user{% else %}<a href="/u/{{ t.author }}">{{ t.author }}</a>{% endif %}</strong> <span class="muted">{{ c.created_at.strftime('%Y-%m-%d %H:%M') }}{% if c.edited_at %} · edited{% endif %}{% if c.status == 'hidden' %} · <span class="badge warn">hidden</span>{% endif %}</span></p>
+  <p class="small"><strong>{% if t.deleted_author %}deleted user{% else %}<a href="/u/{{ t.author }}">{{ t.author }}</a>{% endif %}</strong> <span class="muted">{{ when(c.created_at) }}{% if c.edited_at %} · edited{% endif %}{% if c.status == 'hidden' %} · <span class="badge warn">hidden</span>{% endif %}</span></p>
   <div class="comment-body">{{ c.body }}</div>
   {% if p.user %}
   <div class="actions">

@@ -1272,6 +1272,9 @@ class GroupEnrolment(Base):
     created_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # U3 (migration 0037): the trust preset this side chose, applied to its own local policy on activation.
+    preset: Mapped[str | None] = mapped_column(String(16), nullable=True)  # same_owner|cautious|NULL (custom)
+    preset_admin: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     __table_args__ = (Index("ix_group_enrolment_expiry", "expires_at"),)
 
@@ -1461,7 +1464,7 @@ class GroupWebHandle(Base):
     __tablename__ = "group_web_handle"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256(handle)
-    kind: Mapped[str] = mapped_column(String(10))  # authorize|callback|start (+ consent|linkform, A11 amendment)
+    kind: Mapped[str] = mapped_column(String(10))  # authorize|callback|start (+ consent|linkform A11, linkpick U3)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

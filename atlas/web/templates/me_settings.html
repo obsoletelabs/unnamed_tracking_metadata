@@ -12,17 +12,18 @@
 </form>
 <h2 id="preferences">Preferences</h2>
 <form class="card prefs" method="post" action="/me/preferences">{{ csrf(p.csrf) }}
+  {% if prefs_unlinked %}<div class="offer" data-prefs-unlinked><p>This node is in a group with your other nodes, but your account is not linked to them yet, so these preferences stay here.</p><div class="offer-actions"><a class="btn small" href="/me/linked-nodes#link">Link now</a></div></div>{% endif %}
   <p class="small muted">{% if prefs_linked %}Marked preferences are kept in step with your <a href="/me/linked-nodes">linked nodes</a>; the others stay on this node.{% else %}Kept on this node. <a href="/me/linked-nodes">Linked nodes</a> can share them across your owner group.{% endif %}</p>
   {% for r in pref_rows if r.editable %}{% set f = r.spec %}
   <div class="pref{{ ' has-conflict' if r.conflict }}">
     <div class="pref-head">
       <label for="f-{{ loop.index }}">{{ f.label }}</label>
-      {% if r.synced %}<span class="badge ok" title="Shared with your linked nodes">synced</span>{% else %}<span class="badge" title="Not shared">this node only</span>{% endif %}
+      {% if r.synced %}<span class="badge ok" title="Shared with your linked nodes">synced</span>{% elif r.unlinked %}<a class="badge warn" href="/me/linked-nodes#link" data-pref-unlinked>Not linked to your other nodes · Link now</a>{% else %}<span class="badge" title="Not shared: {{ r.why }}">this node only</span>{% endif %}
       {% if r.origin %}<span class="small muted">set on {{ r.origin }}</span>{% endif %}
       {% if r.conflict %}<a class="badge warn" href="/me/conflicts">{% if r.competing %}also "{{ r.competing }}" on another node{% else %}needs a decision{% endif %}</a>{% endif %}
     </div>
     {% if f.kind == 'bool' %}<input type="hidden" name="present.{{ r.name }}" value="1"><label class="inline"><input id="f-{{ loop.index }}" type="checkbox" name="f.{{ r.name }}" {{ 'checked' if r.value }}> On</label>
-    {% elif f.kind == 'choice' %}<select id="f-{{ loop.index }}" name="f.{{ r.name }}"><option value="">Default</option>{% for c in f.choices %}<option value="{{ c }}" {{ 'selected' if r.value == c and r.stored }}>{{ c }}</option>{% endfor %}</select>
+    {% elif f.kind == 'choice' %}<select id="f-{{ loop.index }}" name="f.{{ r.name }}"><option value="">Default</option>{% for c in f.choices %}<option value="{{ c }}" {{ 'selected' if r.value == c and r.stored }}>{{ f.label_of(c) }}</option>{% endfor %}</select>
     {% elif f.kind == 'number' %}<input id="f-{{ loop.index }}" type="number" name="f.{{ r.name }}" min="0.8" max="2" step="0.05" value="{{ r.value if r.stored else '' }}" placeholder="1.0">
     {% elif f.kind == 'color' %}<input id="f-{{ loop.index }}" type="text" name="f.{{ r.name }}" maxlength="7" pattern="#[0-9a-fA-F]{6}" value="{{ r.value if r.stored else '' }}" placeholder="#3366ff">
     {% else %}<input id="f-{{ loop.index }}" type="text" name="f.{{ r.name }}" maxlength="64" value="{{ r.value if r.stored else '' }}">{% endif %}

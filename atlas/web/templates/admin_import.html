@@ -22,7 +22,7 @@
 <h2>Results</h2>
 {% if results %}
 <table><thead><tr><th>Title</th><th>Platform</th><th>Released</th><th>ID</th><th></th></tr></thead><tbody>
-{% for r in results %}<tr><td>{{ r.title }}</td><td>{{ r.platform or '' }}</td><td>{{ r.release_date or '' }}</td><td><code>{{ r.external_id }}</code></td>
+{% for r in results %}<tr><td>{{ r.title }}</td><td>{{ r.platform or '' }}</td><td>{{ day(r.release_date) }}</td><td><code>{{ r.external_id }}</code></td>
 <td><form method="post" action="{{ base }}">{{ csrf(p.csrf) }}<input type="hidden" name="provider" value="{{ provider }}"><input type="hidden" name="external_id" value="{{ r.external_id }}"><input type="hidden" name="q" value="{{ q }}"><button class="small" type="submit">Import</button></form></td></tr>{% endfor %}
 </tbody></table>
 {% else %}<p class="muted">No matches.</p>{% endif %}

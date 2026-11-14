@@ -47,7 +47,7 @@ test('evidence: the achievement editor with an existing community list (#97, #79
   expect(put.status()).toBe(200);
 
   await page.goto(`/game/${enc(gid)}/achievements/edit`);
-  const row = page.locator('fieldset[data-row]').first();
+  const row = page.locator('[data-row]').first();
   await row.locator('input[name^="name."]').fill('Harbour Pilot');
   await row.locator('textarea[name^="description."]').fill('Guide three ships into the harbour at night.');
   await row.locator('select[name^="tier."]').selectOption('gold');
@@ -59,7 +59,7 @@ test('evidence: the achievement editor with an existing community list (#97, #79
   await page.waitForURL(/\/game\//);
 
   await page.goto(`/game/${enc(gid)}/achievements/edit`);
-  const saved = page.locator('fieldset[data-row]').first();
+  const saved = page.locator('[data-row]').first();
   await expect(saved.locator('input[name^="name."]')).toHaveValue('Harbour Pilot');
   if (AFTER) {
     // #97: every control in a row has the same look, the description starts at its two rows, the Hidden box

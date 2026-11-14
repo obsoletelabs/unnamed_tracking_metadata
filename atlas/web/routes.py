@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import functools
 import hashlib
 import re
 import time
@@ -61,6 +60,7 @@ from .deps import (
     Page,
     admin_form,
     admin_page,
+    check_csrf,
     client_ip,
     csrf_form,
     form_dict,
@@ -106,18 +106,40 @@ def render(p: Page, name: str, status: int = 200, anon_csrf: bool = False, **ctx
 
         ctx["pref_rows"] = preference_rows(p)
         ctx["prefs_linked"] = any(r["synced"] for r in ctx["pref_rows"])
+        ctx["prefs_unlinked"] = bool(ctx["pref_rows"]) and ctx["pref_rows"][0]["unlinked"]
+    if name.startswith("admin") and "fed_optional" not in ctx:  # §3.7: "optional" on the Federation nav label
+        from . import setup_checklist
+
+        ctx["fed_optional"] = not setup_checklist.connected(p.session)
+    if p.user and "link_notice" not in ctx and not name.startswith(("me_linked_nodes", "group_", "admin_group")):
+        from .group import link_invite_banner
+
+        ctx["link_notice"] = link_invite_banner(p)  # addendum item 4: the administrator's "Invite users to link"
     unread = social.unread_count(p.session, p.user.id) if p.user else 0
-    prefs = profile.values(p.session, s, p.user) if p.user else {}
-    if p.user and "when" in ctx:  # dates in the viewer's own format and time zone (C10 §4.2)
-        ctx["when"] = functools.partial(when, prefs=prefs)
+    prefs = profile.values(p.session, s, p.user) if p.user else anonymous_prefs(p.request)
     resp = templates.TemplateResponse(p.request, name, {
         "p": p, "s": s, "app_name": s.app_name, "unread": unread, "registration_open": s.registration == "open",
         "pending_count": pending, "nav_pages": nav_pages, "prefs": prefs,
+        "date_offer": not dates.style_chosen(prefs),
         "conflicts_open": profile.open_count(p.session, p.user.id) if p.user else 0, **ctx}, status_code=status)
-    resp.headers["Cache-Control"] = "private, no-store" if p.user or anon_csrf else "public, max-age=30"
+    # An anonymous visitor who chose a date format gets pages in that format, so they are not shared-cacheable;
+    # every public page varies on the cookie so a browser never reuses its cookie-less copy (§7.4).
+    private = p.user or anon_csrf or bool(prefs)
+    resp.headers["Cache-Control"] = "private, no-store" if private else "public, max-age=30"
+    if not p.user:
+        resp.headers["Vary"] = "Cookie"
     if anon_csrf and p.new_cookie:
         set_anon_cookie(resp, p)
     return resp
+
+
+DATE_COOKIE = "atlas_date"
+
+
+def anonymous_prefs(request: Request) -> dict[str, str]:
+    """An anonymous visitor's date format, from the `atlas_date` cookie (an allowlisted value, or nothing)."""
+    value = request.cookies.get(DATE_COOKIE, "")
+    return {"date_format": value} if value in dates.STYLES else {}
 
 
 def safe_next(value: str | None) -> str:
@@ -265,30 +287,6 @@ def live_game(p: Page, cid: str) -> tuple[Canonical, str | None]:
     return service.get_canonical(p.session, cid)
 
 
-_DATE_FORMATS = {"iso": "%Y-%m-%d", "dmy": "%d.%m.%Y", "mdy": "%m/%d/%Y", "ymd": "%Y/%m/%d"}
-_TIME_FORMATS = {"24h": "%H:%M", "12h": "%I:%M %p"}
-
-
-def when(dt, prefs: dict | None = None) -> str:
-    """A timestamp for display: UTC ISO-like by default, or in the viewer's date format, time format and time zone
-    preferences ("locale" falls back to the default until the interface is translated, H18)."""
-    if dt is None:
-        return ""
-    dt = dt if dt.tzinfo else dt.replace(tzinfo=UTC)
-    prefs = prefs or {}
-    zone = prefs.get("time_zone")
-    if zone:
-        try:
-            from zoneinfo import ZoneInfo
-
-            dt = dt.astimezone(ZoneInfo(zone))
-        except Exception:  # noqa: BLE001 - no tz database on this platform: keep UTC
-            pass
-    date = _DATE_FORMATS.get(prefs.get("date_format") or "", "%Y-%m-%d")
-    clock = _TIME_FORMATS.get(prefs.get("time_format") or "", "%H:%M")
-    return dt.strftime(f"{date} {clock}")
-
-
 def title_of(p: Page, cid: str | None) -> str:
     row = p.session.get(Canonical, cid) if cid else None
     return (row.view.get("title") if row and row.view else None) or "(new record)"
@@ -321,13 +319,24 @@ def home(p: Annotated[Page, Depends(page)]):
 def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length=200)] = "",
            page_no: Annotated[int, Query(alias="page", ge=1, le=1000)] = 1,
            type: Annotated[str, Query(max_length=32)] = "",
-           released_from: Annotated[str, Query(max_length=10)] = "",
-           released_to: Annotated[str, Query(max_length=10)] = "",
+           released_from: Annotated[str, Query(max_length=40)] = "",
+           released_to: Annotated[str, Query(max_length=40)] = "",
            sort: Annotated[str, Query(max_length=16)] = ""):
     """Browse and search. `released_from`/`released_to` take a year, a month or a day (C5.2); `sort=release`
     orders by first release with year-only dates at the start of their year."""
     released_from, released_to = released_from.strip(), released_to.strip()
-    error = None
+    error, read_as = None, []
+    prefs = profile.values(p.session, p.st.ctx.settings, p.user) if p.user else anonymous_prefs(p.request)
+    bounds = {"released_from": released_from, "released_to": released_to}
+    for key, raw in bounds.items():
+        if raw and not dates.PARTIAL_RE.fullmatch(raw):  # typed in the viewer's format (§7.1)
+            entry = dates.parse_entry(raw, prefs, any_year=True)
+            chosen = entry.ok or (entry.ambiguous[0] if entry.ambiguous else None)
+            if chosen is not None:
+                bounds[key] = chosen.value
+                read_as.append({"typed": raw, "value": chosen.value, "ambiguous": bool(entry.ambiguous),
+                                "other": entry.ambiguous[1].value if entry.ambiguous else None, "key": key})
+    released_from, released_to = bounds["released_from"], bounds["released_to"]
     try:
         rows = service.search(p.session, q, PER_PAGE + 1, (page_no - 1) * PER_PAGE, media_type=type or None,
                               released_from=released_from, released_to=released_to, sort=sort or "relevance")
@@ -341,7 +350,7 @@ def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length
     keep = urlencode({**({"q": q} if q else {}), **({"type": type} if type else {}), **filters})
     return render(p, "search.html", status=400 if error else 200, q=q, results=rows, more=more, page=page_no,
                   art=primary_art(p, [g.id for g in rows]), mtypes=mtypes, mtype=type, mtype_label=type_label,
-                  filters=filters, keep=keep, filter_error=error, sorts=service.SORTS)
+                  filters=filters, keep=keep, filter_error=error, sorts=service.SORTS, read_as=read_as)
 
 
 @router.get("/media/{digest}")
@@ -355,8 +364,28 @@ def robots():
                         media_type="text/plain")
 
 
+ACH_FILTERS = ("all", "platinum", "rare", "hidden", "unobtainable")
+
+
+def ach_filter(rows: list[dict[str, Any]], sets: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    """SPEC-UI-POLISH-PASS §8.2: `?ach=all|platinum|rare|hidden|unobtainable|set:<key>`, filtered on the server
+    so the links work without JavaScript. An unknown value shows everything."""
+    if key == "platinum":
+        return [a for a in rows if a.get("tier") == "platinum"]
+    if key == "rare":
+        return [a for a in rows if a.get("global_percent") is not None and a["global_percent"] < 15]
+    if key == "hidden":
+        return [a for a in rows if a.get("hidden")]
+    if key == "unobtainable":
+        return [a for a in rows if a.get("status") == "unobtainable"]
+    if key.startswith("set:"):
+        ids = {s.get("id") for s in sets if s.get("key") == key[4:]}
+        return [a for a in rows if a.get("set") in ids]
+    return rows
+
+
 @router.get("/game/{cid}", response_class=HTMLResponse)
-def game(cid: str, p: Annotated[Page, Depends(page)]):
+def game(cid: str, p: Annotated[Page, Depends(page)], ach: Annotated[str, Query(max_length=80)] = "all"):
     try:
         g, redirected = live_game(p, cid)
     except AtlasError as exc:
@@ -375,7 +404,7 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     for pr in s.scalars(select(Proposal).where(Proposal.canonical_id == g.id, Proposal.status == "approved")
                         .order_by(Proposal.created_at.desc()).limit(10)):
         u = s.get(User, pr.proposer_id)
-        activity.append({"user": u.username if u else "?", "kind": pr.kind, "when": when(pr.decided_at or pr.created_at),
+        activity.append({"user": u.username if u else "?", "kind": pr.kind, "when": pr.decided_at or pr.created_at,
                          "note": pr.note[:200]})
     extra: dict[str, Any] = {}
     if p.can_review:
@@ -384,7 +413,7 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
                                            .order_by(Observation.observed_at.desc()).limit(100))),
             "locks": list(s.scalars(select(Lock).where(Lock.canonical_id == g.id))), "lockable": LOCKABLE,
             "can_split": ctx.settings.role == "authority" or True,
-            "revertable": [{"id": r.id, "kind": r.kind, "when": when(r.decided_at or r.created_at),
+            "revertable": [{"id": r.id, "kind": r.kind, "when": r.decided_at or r.created_at,
                             "user": (s.get(User, r.proposer_id).username if s.get(User, r.proposer_id) else "?")}
                            for r in s.scalars(select(Proposal).where(
                                Proposal.canonical_id == g.id, Proposal.status == "approved",
@@ -413,7 +442,9 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
                   pending_art=pending, caching=ctx.settings.media_cache_enabled, stores=integrations.STORES,
                   art_total=len(art), art_cached=len(cached),
                   art_kinds=facets.KINDS, activity=activity,
-                  achievements=listing["results"], ach_sets=listing["sets"],
+                  achievements=ach_filter(listing["results"], listing["sets"], ach),
+                  ach_all=listing["results"], ach_sets=listing["sets"], ach=ach if ach in ACH_FILTERS or
+                  ach.startswith("set:") else "all",
                   rel=relations.of(s, g.id, limit=RELATION_PREVIEW), rel_labels=relations.LABELS,
                   redirected_from=p.request.query_params.get("from"), **extra)
 
@@ -462,9 +493,48 @@ def login(p: Annotated[Page, Depends(csrf_form)], username: Annotated[str, Form(
                       error="Wrong username or password.")
     secret, row = accounts.create_session(p.session, p.st.ctx.settings, user)
     accounts.audit(p.session, user.id, "login", user.id)
+    adopt_date_cookie(p, user)
     resp = go(safe_next(next))
     resp.set_cookie(SESSION_COOKIE, secret, httponly=True, samesite="lax", secure=secure_cookies(p), path="/",
                     max_age=p.st.ctx.settings.session_ttl_days * 86400)
+    return resp
+
+
+def adopt_date_cookie(p: Page, user: User) -> None:
+    """§7.4: a date format chosen while signed out becomes the profile's, once, when the profile has none."""
+    chosen = anonymous_prefs(p.request)
+    if chosen and not dates.style_chosen(profile.values(p.session, p.st.ctx.settings, user)):
+        profile.set_local(p.session, p.st.ctx.settings, p.st.ctx.identity, user, "date_format", chosen["date_format"])
+
+
+def _same_origin(p: Page) -> bool:
+    """An anonymous date-format choice carries no CSRF token (anonymous pages stay shared-cacheable), so it is
+    accepted only from this site: the browser's Sec-Fetch-Site, else an Origin equal to this node's address."""
+    site = p.request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site == "same-origin"
+    origin = p.request.headers.get("origin")
+    return origin is not None and origin.rstrip("/") == p.st.ctx.settings.public_url.rstrip("/")
+
+
+@router.post("/prefs/date-format")
+def date_format_choice(p: Annotated[Page, Depends(page)], value: Annotated[str, Form(max_length=8)] = "",
+                       next: Annotated[str, Form(max_length=300)] = "/", csrf: Annotated[str, Form()] = ""):
+    """The one-time "month/day/year?" offer (SPEC-UI-POLISH-PASS §7.4). Signed in: the profile's `date_format`
+    (synced like any preference, so "Keep" stores `dmy` explicitly and the offer never returns). Signed out: the
+    `atlas_date` cookie, nothing else."""
+    if value not in dates.STYLES:
+        raise HTTPException(400, "Unknown date format.")
+    target = safe_next(next)
+    if p.user:
+        check_csrf(p, csrf)
+        profile.set_local(p.session, p.st.ctx.settings, p.st.ctx.identity, p.user, "date_format", value)
+        return go(target, "saved")
+    if not _same_origin(p):
+        raise HTTPException(403, "Choose the date format from this site.")
+    resp = go(target)
+    resp.set_cookie(DATE_COOKIE, value, max_age=31536000, path="/", samesite="lax", secure=secure_cookies(p),
+                    httponly=True)
     return resp
 
 
@@ -589,6 +659,41 @@ def _entry_value(e: dict[str, Any]) -> tuple[str, ...]:
     return (*dates.entry_key(e), e.get("date") or "")
 
 
+def _read_dates(p: Page, f: dict[str, str], media_type: str
+                ) -> tuple[dict[str, str], dict[str, list[dict]], list[str]]:
+    """Date fields as typed in the viewer's format (SPEC-UI-POLISH-PASS §7.2), read into ISO. Returns the form with
+    the readable values replaced, and the fields whose numeric entry has two readings ({name: [two options]}).
+    A `<name>.read` radio answers the question. An unreadable value is left as typed, so the proposal reports the
+    exact rule it breaks (release dates keep C5.1's year range; custom date fields are days of any year)."""
+    prefs = profile.values(p.session, p.st.ctx.settings, p.user) if p.user else {}
+    names = [("release_date", False), *((f"rel_date.{i}", False) for i in range(dates.MAX_RELEASES))]
+    names += [(f"cf_{c.key}", True) for c in custom.fields_for(p.session, media_type, editable=True)
+              if c.kind == "date"]
+    out, ambiguous, errors = dict(f), {}, []
+    for name, any_year in names:
+        raw = (f.get(name) or "").strip()
+        if not raw:
+            continue
+        result = dates.parse_entry(raw, prefs, any_year=any_year)
+        if result.ambiguous:
+            picked = (f.get(name + ".read") or "").strip()
+            if picked in {d.value for d in result.ambiguous}:
+                out[name] = picked
+                continue
+            ambiguous[name] = [{"value": d.value, "text": dates.format_day(d, None, {"date_format": "long"})}
+                               for d in result.ambiguous]
+        elif result.ok is not None:
+            if any_year and result.ok.precision != "day":
+                continue  # a custom date field takes a day: keep the text so validation names the rule
+            out[name] = result.ok.value
+        elif result.error and not any_year:
+            errors.append(result.error)  # in the viewer's own terms, instead of the stored ISO rule
+    return out, ambiguous, errors
+
+
+AMBIGUOUS = "Some dates can be read two ways. Choose what you meant under each one, then save again."
+
+
 def _edit_ctx(p: Page, mtype: str, **extra: Any) -> dict[str, Any]:
     media_type = p.session.get(MediaType, mtype)
     extra.setdefault("rel_rows", _release_rows(None))
@@ -610,6 +715,8 @@ def edit_form(cid: str, p: Annotated[Page, Depends(user_page)]):
 @router.post("/game/{cid}/edit")
 def edit_submit(cid: str, p: Annotated[Page, Depends(user_form)], f: Annotated[dict[str, str], Depends(form_dict)]):
     g, _ = live_game(p, cid)
+    typed = f
+    f, ambiguous, date_errors = _read_dates(p, f, g.media_type)
     new = _form_values(f.get("title", "").strip(), f.get("release_date", "").strip(), f.get("developer", "").strip(),
                        f.get("publisher", "").strip(), f.get("series", "").strip(), f.get("description", "").strip(),
                        f.get("platforms", ""), f.get("tags", ""), f.get("features", ""))
@@ -625,14 +732,21 @@ def edit_submit(cid: str, p: Annotated[Page, Depends(user_form)], f: Annotated[d
         payload["custom"] = extra
     note = f.get("note", "")
     try:
+        if date_errors:
+            raise AtlasError("; ".join(date_errors))
+        if ambiguous:
+            raise AtlasError(AMBIGUOUS)
         if not payload:
             raise AtlasError("You did not change anything.")
         pr = proposals.create(p.session, p.st.ctx, p.me, "edit", g.id, payload, note)
     except AtlasError as exc:
         p.session.rollback()
         shown = {**_form_view(g.view), **{k: v for k, v in new.items() if v}}
+        if ambiguous:  # show what was typed, with the question under it
+            shown["release_date"] = typed.get("release_date", "").strip() or shown.get("release_date", "")
+            rel_rows = _releases_from_form(typed)[0]
         return render(p, "edit.html", status=400, new=False, v=shown, action=f"/game/{g.id}/edit",
-                      cancel=f"/game/{g.id}", error=str(exc), note=note,
+                      cancel=f"/game/{g.id}", error=str(exc), note=note, ambiguous=ambiguous,
                       cfields=custom_inputs(p, g.media_type, {**cur, **{k: v for k, v in extra.items()}}),
                       **_edit_ctx(p, g.media_type, rel_rows=rel_rows))
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
@@ -651,6 +765,8 @@ def new_form(p: Annotated[Page, Depends(user_page)], title: Annotated[str, Query
 @router.post("/new")
 def new_submit(p: Annotated[Page, Depends(user_form)], f: Annotated[dict[str, str], Depends(form_dict)]):
     mtype = f.get("media_type", "game")
+    typed = f
+    f, ambiguous, date_errors = _read_dates(p, f, mtype)
     new = _form_values(f.get("title", "").strip(), f.get("release_date", "").strip(), f.get("developer", "").strip(),
                        f.get("publisher", "").strip(), f.get("series", "").strip(), f.get("description", "").strip(),
                        f.get("platforms", ""), f.get("tags", ""), f.get("features", ""))
@@ -671,11 +787,18 @@ def new_submit(p: Annotated[Page, Depends(user_form)], f: Annotated[dict[str, st
         payload["custom"] = extra
     note = f.get("note", "")
     try:
+        if date_errors:
+            raise AtlasError("; ".join(date_errors))
+        if ambiguous:
+            raise AtlasError(AMBIGUOUS)
         pr = proposals.create(p.session, p.st.ctx, p.me, "new_game", None, payload, note)
     except AtlasError as exc:
         p.session.rollback()
+        if ambiguous:
+            new["release_date"] = typed.get("release_date", "").strip()
+            rel_rows = _releases_from_form(typed)[0]
         return render(p, "edit.html", status=400, new=True, v=new, action="/new", cancel="/", error=str(exc),
-                      note=note, ids_text=f.get("provider_ids", ""),
+                      note=note, ids_text=f.get("provider_ids", ""), ambiguous=ambiguous,
                       mtypes=custom.types(p.session, enabled_only=True),
                       cfields=custom_inputs(p, mtype, extra), **_edit_ctx(p, mtype, rel_rows=rel_rows))
     if pr.auto_applied and pr.canonical_id:
@@ -955,9 +1078,9 @@ def _me_ctx(p: Page, **extra: Any) -> dict[str, Any]:
     mine = []
     for r in s.scalars(select(Proposal).where(Proposal.proposer_id == p.me.id)
                        .order_by(Proposal.created_at.desc()).limit(50)):
-        mine.append({"id": r.id, "when": when(r.created_at), "cid": r.canonical_id, "title": title_of(p, r.canonical_id),
+        mine.append({"id": r.id, "when": r.created_at, "cid": r.canonical_id, "title": title_of(p, r.canonical_id),
                      "kind": r.kind, "status": r.status, "decision_note": r.decision_note})
-    toks = [{"id": t.id, "name": t.name, "scopes": t.scopes, "last_used": when(t.last_used_at) or None}
+    toks = [{"id": t.id, "name": t.name, "scopes": t.scopes, "last_used": t.last_used_at}
             for t in s.scalars(select(Token).where(Token.user_id == p.me.id, Token.revoked_at.is_(None)))]
     st = p.st.ctx.settings
     return {"mine": mine, "tokens": toks, "min_len": st.password_min_length, "sync_refusal": sync_token_refusal(p),
@@ -1051,7 +1174,7 @@ def _proposal_card(p: Page, r: Proposal) -> dict[str, Any]:
     card: dict[str, Any] = {
         "id": r.id, "kind": r.kind, "cid": r.canonical_id, "title": title_of(p, r.canonical_id) if r.canonical_id
         else (r.payload.get("title") or "(new game)"), "user": u.username if u else "?", "rep": u.reputation if u else 0,
-        "when": when(r.created_at), "note": r.note, "own": r.proposer_id == p.me.id,
+        "when": r.created_at, "note": r.note, "own": r.proposer_id == p.me.id,
         "rows": [], "entries": []}
     if r.kind in ("edit", "new_game"):
         cur = (p.session.get(Canonical, r.canonical_id).view if r.canonical_id and p.session.get(Canonical, r.canonical_id)
@@ -1327,13 +1450,31 @@ def admin(p: Annotated[Page, Depends(admin_page)]):
         if d.get("via") == "group":  # C10 §6.4 provenance: the asserting node and the grant used
             via = {"origin": groups.gc_fp(d["origin_node"]) if d.get("origin_node") else None,
                    "grant": d.get("grant_serial"), "session": d.get("session")}
-        audit.append({"when": when(a.created_at), "who": who.username if who else "system", "action": a.action,
+        audit.append({"when": a.created_at, "who": who.username if who else "system", "action": a.action,
                       "target": a.target, "via": via})
-    return render(p, "admin.html", users=users, audit=audit, role=ctx.settings.role, node_id=ctx.identity.node_id,
+    from . import setup_checklist
+
+    setup = setup_checklist.card(s, ctx.settings, user_id=p.user.id if p.user else None,
+                                 providers=len(p.st.providers.providers))
+    return render(p, "admin.html", setup=setup, fed_optional=not setup["connected"], users=users, audit=audit,
+                  role=ctx.settings.role, node_id=ctx.identity.node_id,
                   public_key=ctx.identity.public_b64, feed_head=feed.head_seq(s), upstream=ctx.settings.upstream_url,
                   providers=sorted(p.st.providers.providers), registration=ctx.settings.registration,
-                  cursors=[{"upstream": c.upstream, "last_seq": c.last_seq, "updated": when(c.updated_at)}
+                  cursors=[{"upstream": c.upstream, "last_seq": c.last_seq, "updated": c.updated_at}
                            for c in s.scalars(select(SyncCursor))])
+
+
+@router.post("/admin/setup/{action}")
+def admin_setup_visibility(action: str, p: Annotated[Page, Depends(admin_form)]):
+    """Hide or show the Getting started card (§3.7). Stored per node in node_state."""
+    from . import setup_checklist
+
+    if action not in ("hide", "show"):
+        raise HTTPException(404)
+    setup_checklist.set_hidden(p.session, action == "hide")
+    accounts.audit(p.session, p.user.id, f"setup_{action}", "admin")
+    p.session.commit()
+    return go("/admin" + ("#getting-started" if action == "show" else ""), "saved")
 
 
 USER_ROLES = ("user", "curator", "admin")

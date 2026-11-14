@@ -15,7 +15,7 @@
 {% for o in c.options %}
   <button class="choice{{ '' if o.shown else ' secondary' }}" name="choice" value="{{ o.choice }}" type="submit">
     <span class="choice-value">{{ o.value }}</span>
-    <span class="small muted">{{ o.where }} · {{ o.at }}{% if o.shown %} · shown now{% endif %}</span>
+    <span class="small muted">{{ o.where }} · {{ when(o.at) }}{% if o.shown %} · shown now{% endif %}</span>
   </button>
 {% endfor %}
 </div>

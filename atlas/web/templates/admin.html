@@ -4,22 +4,34 @@
 {% block content %}
 <h1>Administration</h1>
 {% include "_adminnav.html" %}
+{% if setup %}{% if setup.show %}
+<section class="card setup" id="getting-started" aria-labelledby="setup-h" data-setup-checklist>
+  <h2 id="setup-h">Getting started</h2>
+  <p class="small muted" data-setup-remaining="{{ setup.remaining }}">{{ setup.total - setup.remaining }} of {{ setup.total }} done.</p>
+  <ul class="checklist">{% for i in setup['items'] %}
+    <li class="{{ 'done' if i.done else 'todo' }}" data-setup-item="{{ i.key }}" data-setup-done="{{ 'yes' if i.done else 'no' }}"><span class="check" aria-hidden="true">{{ '✓' if i.done else '○' }}</span> <span>{% if i.href and not i.done %}<a href="{{ i.href }}">{{ i.label }}</a>{% else %}{{ i.label }}{% endif %}<span class="visually-hidden">{{ ': done' if i.done else ': to do' }}</span><span class="small muted block">{{ i.why }}</span></span></li>{% endfor %}
+  </ul>
+  <h3 class="small">Optional: connect to other nodes</h3>
+  <p class="small muted" data-setup-optional>This node works on its own. <a href="/admin/peers#add-peer">Follow a catalogue</a> from another node, or <a href="/admin/group">group your own nodes</a> to share accounts and settings.</p>
+  <form method="post" action="/admin/setup/hide">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Hide this list</button></form>
+</section>
+{% elif setup.hidden and setup.remaining %}<form class="small muted" method="post" action="/admin/setup/show" data-setup-show>{{ csrf(p.csrf) }}<button class="link small" type="submit">Show the getting started list ({{ setup.remaining }} left)</button></form>{% endif %}{% endif %}
 <div class="cols">
 <div class="card"><h3>Node</h3>
   <dl class="facts"><dt>Role</dt><dd>{{ role }}</dd><dt>Node ID</dt><dd><code>{{ node_id }}</code></dd>
-  <dt>Feed head</dt><dd>{{ feed_head }}</dd><dt>Upstream</dt><dd>{{ upstream or 'none' }}</dd>
+  <dt>Feed head</dt><dd>{{ feed_head }}</dd><dt>Upstream</dt><dd data-node-upstream>{% if upstream %}{{ upstream }}{% elif role == 'local' and fed_optional %}Works on its own (no peers){% else %}none{% endif %}</dd>
   <dt>Providers</dt><dd>{{ providers|join(', ') or 'none configured' }}</dd><dt>Registration</dt><dd>{{ registration }}</dd></dl>
   <p class="small muted">Public key for mirrors:</p><textarea readonly rows="2" aria-label="public key">{{ public_key }}</textarea>
 </div>
 <div class="card"><h3>Upstream sync</h3>
-  {% for c in cursors %}<p>{{ c.upstream }}: position {{ c.last_seq }} <span class="muted small">({{ c.updated }})</span></p>{% else %}<p class="muted">Not replicating.</p>{% endfor %}
+  {% for c in cursors %}<p>{{ c.upstream }}: position {{ c.last_seq }} <span class="muted small">({{ when(c.updated) }})</span></p>{% else %}<p class="muted">Not following any other node.</p>{% endfor %}
 </div></div>
 <div class="card"><h3>Users</h3>
   <p>{{ users|length }} account{{ '' if users|length == 1 else 's' }}: {{ users|selectattr('role', 'equalto', 'admin')|list|length }} administrator{{ '' if users|selectattr('role', 'equalto', 'admin')|list|length == 1 else 's' }}, {{ users|selectattr('role', 'equalto', 'curator')|list|length }} curator{{ '' if users|selectattr('role', 'equalto', 'curator')|list|length == 1 else 's' }}, {{ users|selectattr('status', 'equalto', 'suspended')|list|length }} suspended.</p>
   <p><a class="btn small" href="/admin/users">Manage users</a> <span class="small muted">Roles, suspension, email confirmation and external sign-in.</span></p></div>
 <h2>Recent activity</h2>
-<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Via group</th></tr></thead><tbody>
-{% for a in audit %}<tr><td class="small">{{ a.when }}</td><td>{{ a.who }}</td><td>{{ a.action }}</td><td class="small">{{ a.target }}</td>
+<div class="table-scroll"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Via group</th></tr></thead><tbody>
+{% for a in audit %}<tr><td class="small">{{ when(a.when) }}</td><td>{{ a.who }}</td><td>{{ a.action }}</td><td class="small">{{ a.target }}</td>
 <td class="small">{% if a.via %}{% if a.via.origin %}<span class="mono">{{ a.via.origin }}</span>{% else %}local session{% endif %}{% if a.via.grant %} · grant <span class="mono">{{ a.via.grant }}</span>{% endif %}{% endif %}</td></tr>{% endfor %}
-</tbody></table>
+</tbody></table></div>
 {% endblock %}

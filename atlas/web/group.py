@@ -9,18 +9,22 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, Response
+from markupsafe import Markup
 from sqlalchemy import select
 
-from .. import accounts, group_enrol, groups, runtime
+from .. import accounts, group_enrol, group_presets, groups, qr, runtime
 from ..api import group_routes
 from ..models import GroupAccountLink, GroupEnrolment, GroupMember, GroupRevoked, User
 from .deps import LOCAL_ADMIN_ONLY, Page, admin_form, admin_page, go, local_admin_form, local_admin_page, throttle
-from .routes import render, when
+from .routes import render
 
 router = APIRouter()
 PW = Annotated[str, Form(max_length=256)]
 ROOT_LIMIT, ROOT_WINDOW = 5, 3600  # C10 §1.2: throttle(p, "group-root:<user>", 5, 3600)
 REAUTH = "Confirm your current account password for this group operation."
+PRESET = Annotated[str, Form(max_length=16)]
+#: SPEC-UI-POLISH-PASS §3.4: a member not heard from for this many sync intervals counts as "not seen lately".
+STALE_INTERVALS = 5
 ADMIN_CONFIRM = "grant administrator rights"  # §1.3 confused-deputy guard: `admin` in may_grant_roles is typed
 
 
@@ -41,7 +45,7 @@ def _ctx(p: Page) -> tuple:
 def _page(p: Page, error: str | None = None, status: int = 200, **extra):
     settings, identity = _ctx(p)
     group = groups.load(p.session)
-    ctx: dict = {"group": group, "error": error, "fp": groups.gc_fp, "when": when, "identity": identity,
+    ctx: dict = {"group": group, "error": error, "fp": groups.gc_fp, "identity": identity,
                  "settings": settings, "recovery_pending": groups.recovery_pending(p.session), **extra}
     if group is not None:
         tr = groups.refresh(p.session, group, identity.node_id, settings=settings)
@@ -57,14 +61,42 @@ def _page(p: Page, error: str | None = None, status: int = 200, **extra):
             enrolments=list(p.session.scalars(select(GroupEnrolment).where(GroupEnrolment.group_id == group.group_id)
                                               .order_by(GroupEnrolment.created_at.desc()).limit(10))),
             pending=groups.pending_successions(group), can_invite=_can_invite(p, group),
-            policy=_policy_rows(settings), address=groups.own_address(p.session, settings, group, identity),
+            policy=_policy_rows(settings), policy_groups=_policy_groups(settings),
+            address=groups.own_address(p.session, settings, group, identity),
+            health=_health(rows, settings), preset_now=group_presets.current(settings),
+            preset_diffs={k: group_presets.diff(settings, k) for k in (group_presets.SAME_OWNER,
+                                                                         group_presets.CAUTIOUS)},
+            invite_diff=group_presets.diff(settings, group_presets.SAME_OWNER,
+                                          keys=group_presets.activation_keys(group_presets.SAME_OWNER)),
+            preset_labels=group_presets.LABELS, admin_confirm=ADMIN_CONFIRM,
             held_updates=groups.held_member_updates(p.session, group, identity.node_id)
             if group.root_state == "holder" else [],
             enrollers=_enrollers(p, group, tr, identity.node_id), **_grants_ctx(p, group, tr))
+        from .profile_pages import sync_strip
+
+        ctx.update(strip=sync_strip(p, group), link_invite=link_invite_on(p.session))
     else:
         ctx["joins"] = list(p.session.scalars(select(GroupEnrolment).where(GroupEnrolment.side == "joiner")
                                               .order_by(GroupEnrolment.created_at.desc()).limit(5)))
     return render(p, "admin_group.html", status=status, **ctx)
+
+
+def _health(rows: list, settings) -> dict:
+    """§3.4: members by status, and those not seen for `STALE_INTERVALS` sync rounds (this node excluded)."""
+    from datetime import UTC, datetime, timedelta
+
+    counts: dict[str, int] = {}
+    for m in rows:
+        counts[m.status] = counts.get(m.status, 0) + 1
+    limit = datetime.now(UTC) - timedelta(seconds=STALE_INTERVALS * max(int(settings.group_sync_interval), 1))
+    stale = sum(1 for m in rows if m.status in ("active", "expiring") and m.last_seen_at is not None
+                and (m.last_seen_at if m.last_seen_at.tzinfo else m.last_seen_at.replace(tzinfo=UTC)) < limit)
+    worst = "bad" if counts.get("fork") or counts.get("expired") else (
+        "warn" if counts.get("expiring") or stale else "ok")
+    soon = datetime.now(UTC) + timedelta(days=14)
+    expiring = {m.node_id for m in rows if m.not_after is not None and m.status in ("active", "expiring")
+                and (m.not_after if m.not_after.tzinfo else m.not_after.replace(tzinfo=UTC)) < soon}
+    return {"counts": counts, "stale": stale, "tone": worst, "total": len(rows), "expiring_soon": expiring}
 
 
 def _can_invite(p: Page, group) -> bool:
@@ -96,6 +128,22 @@ def _status(exc: groups.GroupError) -> int:
 def _policy_rows(settings) -> list[dict]:
     return [{"spec": spec, "value": runtime.from_attr(spec, runtime.current_value(spec, settings))}
             for spec in runtime.REGISTRY if spec.group == runtime.GROUP_POLICY]
+
+
+#: §3.3 item 4: the policy rows in three fieldsets (any row not named here is shown under "Other").
+POLICY_GROUPS = (("Sign-in", ("group_signin", "group_signin_public", "group_auto_provision", "group_trust_remote_mfa")),
+                 ("Rights", ("group_max_delegated_role", "group_federated_privilege", "group_delegated_requires_mfa",
+                             "group_denied_accounts")),
+                 ("Sync", ("group_profile_sync", "group_profile_fields", "group_view_max_age_hours",
+                           "group_hold_timeout_days")))
+
+
+def _policy_groups(settings) -> list[tuple[str, list[dict]]]:
+    rows = {r["spec"].key: r for r in _policy_rows(settings)}
+    out = [(title, [rows.pop(k) for k in keys if k in rows]) for title, keys in POLICY_GROUPS]
+    if rows:
+        out.append(("Other", list(rows.values())))
+    return out
 
 
 def _group_admin_serial(p: Page) -> str | None:
@@ -132,10 +180,10 @@ def _grants_page(p: Page, error: str | None = None, status: int = 200):
     group = groups.active(p.session)
     if group is None:
         return render(p, "admin_group_grants.html", status=409 if error is None else status, group=None,
-                      error=error or "This node is not in an active group.", fp=groups.gc_fp, when=when)
+                      error=error or "This node is not in an active group.", fp=groups.gc_fp)
     tr = groups.refresh(p.session, group, identity.node_id, settings=settings)
     return render(p, "admin_group_grants.html", status=status, group=group, error=error, fp=groups.gc_fp,
-                  when=when, **_grants_ctx(p, group, tr))
+                  **_grants_ctx(p, group, tr))
 
 
 def _grants_gate(p: Page) -> None:
@@ -215,6 +263,18 @@ def grant_revoke(p: Annotated[Page, Depends(admin_form)], serial: Annotated[str,
 async def policy_save(p: Annotated[Page, Depends(local_admin_form)], request: Request):
     """The local policy form (§8.1): only a local administrator, never a delegated one (§6.3)."""
     form = await request.form()
+    preset = str(form.get("preset") or "")
+    if preset:  # §4.3: "Apply" on a preset ignores the other fields
+        with_admin = form.get("with_admin") == "on"
+        if preset not in (group_presets.SAME_OWNER, group_presets.CAUTIOUS):
+            return _page(p, "Choose a preset.", 400)
+        if with_admin and str(form.get("confirm_admin") or "").strip() != ADMIN_CONFIRM:
+            return _page(p, f"To let administrators of your other nodes act as administrators here, type: "
+                            f"{ADMIN_CONFIRM}", 400)
+        changed = group_presets.apply(p.session, p.st.ctx.settings, preset, with_admin and preset == "same_owner",
+                                      p.me.id)
+        p.st.refresh(p.session, force=True)
+        return go("/admin/group#policy", "saved" if changed else "nochange")
     values = {}
     for spec in runtime.REGISTRY:
         if spec.group != runtime.GROUP_POLICY:
@@ -284,59 +344,196 @@ def recovery_confirm(p: Annotated[Page, Depends(local_admin_form)], passphrase: 
 @router.post("/admin/group/invite", response_class=HTMLResponse)
 def invite(p: Annotated[Page, Depends(local_admin_form)], delegate_enrol: Annotated[int, Form(ge=0, le=32)] = 0,
            grant_roles: Annotated[list[str], Form()] = [], grant_nodes: Annotated[list[str], Form()] = [],  # noqa: B006
-           confirm_admin: Annotated[str, Form(max_length=40)] = ""):
+           confirm_admin: Annotated[str, Form(max_length=40)] = "", preset: PRESET = group_presets.CUSTOM,
+           with_admin: Annotated[str, Form(max_length=4)] = ""):
+    """§4.3: `preset` (same_owner | cautious | custom, the default and today's behaviour). A preset ignores the
+    delegate and grant fields: it never changes the invite's scopes, and it sets this node's own policy when the
+    enrolment becomes active. `with_admin` (same_owner only) needs the typed confirmation."""
     settings, identity = _ctx(p)
     group = groups.load(p.session)
-    roles = [r for r in groups.GRANT_ROLES if r in grant_roles]
-    if "admin" in roles and confirm_admin.strip() != ADMIN_CONFIRM:
-        return _page(p, f"To let the new node grant administrator rights, type: {ADMIN_CONFIRM}", 400)
+    if preset not in group_presets.PRESETS:
+        return _page(p, "Choose how much this node should trust the new one.", 400)
+    admin = with_admin == "on" and preset == group_presets.SAME_OWNER
+    if preset != group_presets.CUSTOM:
+        if admin and confirm_admin.strip() != ADMIN_CONFIRM:
+            return _page(p, f"To let administrators of your other nodes act as administrators here, type: "
+                            f"{ADMIN_CONFIRM}", 400)
+        roles, delegate_enrol, grant_nodes = [], 0, []
+    else:
+        roles = [r for r in groups.GRANT_ROLES if r in grant_roles]
+        if "admin" in roles and confirm_admin.strip() != ADMIN_CONFIRM:
+            return _page(p, f"To let the new node grant administrator rights, type: {ADMIN_CONFIRM}", 400)
     scopes = [*groups.DEFAULT_SCOPES, *(["group.enrol"] if delegate_enrol else []), *(["grant.issue"] if roles else [])]
     delegate = groups.default_delegate(delegate_enrol, roles, grant_nodes) if delegate_enrol or roles else None
     try:
         row, code = group_enrol.create_invite(p.session, settings, group, identity, scopes, delegate, p.me.id)
     except groups.GroupError as exc:
         return _page(p, str(exc), _status(exc))
-    qr = json.dumps(group_enrol.gc.qr_payload(settings.public_url, code))
-    return render(p, "admin_group_enrol.html", step="invite", code=code, address=settings.public_url, qr=qr,
-                  row=row, fp=groups.gc_fp, group=group)
+    if preset != group_presets.CUSTOM:
+        row.preset, row.preset_admin = preset, admin
+    return _invite_page(p, row, code, group)
+
+
+def invite_svg(payload: str) -> Markup | None:
+    """The invite as an inline SVG QR code (§5.1), or None when it cannot be drawn: the page then shows the
+    address and the code only. Inline markup, never a data: URI (img-src 'self') or a second URL holding the
+    secret."""
+    try:
+        return Markup(qr.svg(payload, label="QR code with this node's address and the invite code"))
+    except Exception:  # noqa: BLE001 - too long, or a broken build without segno: the code is always shown
+        return None
+
+
+def _invite_page(p: Page, row, code: str, group):
+    settings, _ = _ctx(p)
+    payload = json.dumps(group_enrol.gc.qr_payload(settings.public_url, code))
+    return render(p, "admin_group_enrol.html", step="invite", code=code, address=settings.public_url, qr=payload,
+                  qr_svg=invite_svg(payload), row=row, fp=groups.gc_fp, group=group,
+                  preset_label=group_presets.LABELS.get(row.preset or group_presets.CUSTOM))
+
+
+def _join_page(p: Page, error: str | None = None, status: int = 200, **form):
+    settings, _ = _ctx(p)
+    return render(p, "admin_group_enrol.html", step="join", fp=groups.gc_fp, error=error, status=status,
+                  form=form, preset_diffs={k: group_presets.diff(settings, k, keys=group_presets.activation_keys(k))
+                                           for k in (group_presets.SAME_OWNER, group_presets.CAUTIOUS)},
+                  preset_labels=group_presets.LABELS, admin_confirm=ADMIN_CONFIRM)
 
 
 @router.get("/admin/group/join", response_class=HTMLResponse)
 def join_form(p: Annotated[Page, Depends(local_admin_page)]):
-    return render(p, "admin_group_enrol.html", step="join", fp=groups.gc_fp, error=None)
+    return _join_page(p)
+
+
+def split_payload(url: str, code: str) -> tuple[str, str]:
+    """§5.3: the Address field also takes the pasted QR payload {"v":1,"type":"atlas-group-invite","url","code"};
+    its url and code then replace the fields. The url keeps the 300-character limit of the field it replaces."""
+    text = url.strip()
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and data.get("type") == "atlas-group-invite" and data.get("v") == 1:
+            url, code = str(data.get("url") or ""), str(data.get("code") or "")
+            if not url or not code:
+                raise groups.GroupError("the pasted invite has no address or no code")
+            if len(url) > 300 or len(code) > 120:
+                raise groups.GroupError("the pasted invite's address or code is too long")
+    return url.strip(), code
 
 
 @router.post("/admin/group/join", response_class=HTMLResponse)
-def join(p: Annotated[Page, Depends(local_admin_form)], url: Annotated[str, Form(max_length=300)],
-         code: Annotated[str, Form(max_length=120)], name: Annotated[str, Form(max_length=80)] = ""):
+def join(p: Annotated[Page, Depends(local_admin_form)], url: Annotated[str, Form(max_length=600)],
+         code: Annotated[str, Form(max_length=120)] = "", name: Annotated[str, Form(max_length=80)] = "",
+         preset: PRESET = group_presets.CUSTOM, with_admin: Annotated[str, Form(max_length=4)] = "",
+         confirm_admin: Annotated[str, Form(max_length=40)] = ""):
     settings, identity = _ctx(p)
     throttle(p, f"group-join:{p.me.id}", 10, 600)
+    keep = {"name": name, "preset": preset, "with_admin": with_admin == "on"}
+    if preset not in group_presets.PRESETS:
+        return _join_page(p, "Choose how much this node should trust the group.", 400, **keep)
+    admin = with_admin == "on" and preset == group_presets.SAME_OWNER
+    if admin and confirm_admin.strip() != ADMIN_CONFIRM:
+        return _join_page(p, f"To let administrators of your other nodes act as administrators here, type: "
+                             f"{ADMIN_CONFIRM}", 400, **keep)
     try:
+        url, code = split_payload(url, code)
+        if len(url) > 300:
+            raise groups.GroupError("the address is longer than 300 characters")
+        if not code.strip():
+            raise groups.GroupError("enter the invite code (or paste the whole invite into the address field)")
         row, _, _ = group_enrol.start_join(p.session, settings, identity, url, code, p.st.http, name=name or None,
                                            actor=p.me.id)
     except groups.GroupError as exc:
-        return render(p, "admin_group_enrol.html", step="join", fp=groups.gc_fp, error=str(exc),
-                      status=_status(exc))
+        return _join_page(p, str(exc), _status(exc), **keep)
+    if preset != group_presets.CUSTOM:
+        row.preset, row.preset_admin = preset, admin
     return go(f"/admin/group/enrolment/{row.id}")
 
 
+def _peer_of(row) -> dict | None:
+    if not row.transcript:
+        return None
+    if row.side == "inviter":
+        j = row.transcript["hello"]["joiner"]["member"]
+        return {"node_id": j["node_id"], "name": j["name"], "url": j["url"]}
+    i = row.transcript["reply"]["inviter"]
+    return {"node_id": i["node_id"], "name": i["name"], "url": i["url"]}
+
+
 def _enrolment(p: Page, eid: str, error: str | None = None, status: int = 200):
-    settings, _ = _ctx(p)
     row = p.session.get(GroupEnrolment, eid)
     if row is None:
         return _page(p, "No such enrolment.", 404)
-    peer = None
-    if row.transcript:
-        if row.side == "inviter":
-            j = row.transcript["hello"]["joiner"]["member"]
-            peer = {"node_id": j["node_id"], "name": j["name"], "url": j["url"]}
-        else:
-            i = row.transcript["reply"]["inviter"]
-            peer = {"node_id": i["node_id"], "name": i["name"], "url": i["url"]}
-    return render(p, "admin_group_enrol.html", step="sas", row=row, sas=group_enrol.sas_of(settings, row), peer=peer,
-                  fp=groups.gc_fp, error=error, status=status,
-                  needs_root=row.side == "inviter" and groups.load(p.session) is not None
-                  and groups.load(p.session).root_state == "holder")
+    if row.state == "active" and row.preset:
+        # the inviter's preset is applied when the joiner fetches its certificate (an API call), which does not
+        # refresh this process's settings: re-read them so the done step and its link offer show the new policy
+        p.st.refresh(p.session, force=True)
+    settings, _ = _ctx(p)
+    peer = _peer_of(row)
+    group = groups.load(p.session)
+    done = row.state == "active" or (row.side == "inviter" and row.state == "issued")
+    return render(p, "admin_group_enrol.html", step="done" if done else "sas", row=row,
+                  sas=group_enrol.sas_of(settings, row), peer=peer, fp=groups.gc_fp, error=error, status=status,
+                  needs_root=row.side == "inviter" and group is not None and group.root_state == "holder",
+                  group=group, preset_label=group_presets.LABELS.get(row.preset or group_presets.CUSTOM),
+                  preset_changes=group_presets.diff(settings, row.preset, bool(row.preset_admin),
+                                                    keys=group_presets.activation_keys(row.preset)),
+                  preset_applied=_applied(p, row) if done else [],
+                  preset_kept=group_presets.kept(settings, row.preset, bool(row.preset_admin)) if done else [],
+                  link_offer=_link_offer(p, row, peer) if done else None,
+                  catalogue=_catalogue_of(p, peer) if done else None)
+
+
+def _catalogue_of(p: Page, peer: dict | None) -> dict | None:
+    """J5's "Catalogue sync" chip for the member that just joined (§4.2 row [dep]: reported, never set up here)."""
+    from .profile_pages import catalogue_peers, catalogue_state
+
+    if peer is None:
+        return None
+    return catalogue_state(catalogue_peers(p.session), peer["node_id"], peer["url"])
+
+
+def _link_offer(p: Page, row, peer: dict | None) -> dict | None:
+    """SPEC-UI-POLISH-PASS addendum item 1: under "Same owner, full trust", the last step of the enrolment offers to
+    link the enroller's own account on both nodes (the explicit link of C10 §5.3, never a match by name or email).
+    None when there is nothing to offer: another preset, the join not active yet, the peer cannot confirm accounts.
+    {"linked": True} once this account is linked."""
+    from .. import group_channel, group_signin, profile, profile_schema
+
+    if row.preset != group_presets.SAME_OWNER or row.state != "active" or peer is None:
+        return None
+    group = groups.active(p.session)
+    if group is None:
+        return None
+    if group_channel.local_link(p.session, group.group_id, p.me.id) is not None:
+        return {"linked": True, "peer": peer}
+    identity = p.st.ctx.identity
+    tr = groups.trust(p.session, group, own_node=identity.node_id)
+    if group_signin.asserting_member(tr, peer["node_id"], identity.node_id) is None:
+        return None
+    policy = set(profile.policy_fields(p.st.ctx.settings))
+    fields = [{"name": n, "label": f.label, "ticked": f.consent, "sensitive": not f.consent}
+              for n, f in profile_schema.REGISTRY.items() if n in policy]
+    return {"linked": False, "peer": peer, "fields": fields, "username": p.me.username}
+
+
+def _applied(p: Page, row) -> list[str]:
+    """The policy rows the preset changed when this enrolment became active (from its audit line)."""
+    from sqlalchemy import desc
+
+    from ..models import AuditEntry
+
+    if not row.preset:
+        return []
+    # the audit line this enrolment's activation wrote (its target names the enrolment), never a later manual
+    # apply or another enrolment's
+    entry = p.session.scalars(select(AuditEntry).where(AuditEntry.action == "group_policy_preset")
+                              .where(AuditEntry.target == group_presets.activation_target(row))
+                              .order_by(desc(AuditEntry.created_at)).limit(1)).first()
+    changed = (entry.detail or {}).get("changed") if entry is not None else None
+    return [runtime.BY_KEY[k].label for k in changed or [] if k in runtime.BY_KEY]
 
 
 @router.get("/admin/group/enrolment/{eid}", response_class=HTMLResponse)
@@ -369,7 +566,30 @@ def enrolment_confirm(eid: str, p: Annotated[Page, Depends(local_admin_form)], m
                                   if outcome == "pending" else "The inviter aborted this enrolment.", 202)
     except groups.GroupError as exc:
         return _enrolment(p, eid, str(exc), _status(exc))
-    return go("/admin/group", "saved")
+    p.st.refresh(p.session, force=True)  # a preset applied on activation (joiner side)
+    return go(f"/admin/group/enrolment/{eid}", "saved")
+
+
+@router.post("/admin/group/enrolment/{eid}/link", response_class=HTMLResponse)
+async def enrolment_link(eid: str, p: Annotated[Page, Depends(local_admin_form)], request: Request):
+    """The enrolment's last step (addendum item 1): link the enroller's account with the peer node, with the same
+    checks as /me/linked-nodes (password here, sign-in and fingerprint on the other node, consent on both)."""
+    from .. import profile_schema
+    from .group_link import begin_link
+
+    throttle(p, f"group-link:{p.me.id}", 10, 3600)
+    form = await request.form()
+    row = p.session.get(GroupEnrolment, eid)
+    if row is None:
+        return _page(p, "No such enrolment.", 404)
+    peer = _peer_of(row)
+    offer = _link_offer(p, row, peer)
+    if offer is None or offer.get("linked"):
+        return go(f"/admin/group/enrolment/{eid}")
+    chosen = [n for n in profile_schema.REGISTRY if form.get(f"c.{n}") == "on"]
+    password = form.get("password")
+    return begin_link(p, peer["node_id"], password if isinstance(password, str) else "",
+                      lambda message: _enrolment(p, eid, message, 400), chosen=chosen, via="enrolment")
 
 
 @router.post("/admin/group/enrolment/{eid}/cancel")
@@ -502,6 +722,43 @@ def address_apply(node_id: str, p: Annotated[Page, Depends(local_admin_form)], r
 def address_dismiss(node_id: str, p: Annotated[Page, Depends(local_admin_form)]):
     groups.drop_member_update(p.session, node_id[:16], p.me.id)
     return go("/admin/group", "saved")
+
+
+LINK_INVITE_KEY = "group_link_invite"
+
+
+def link_invite_on(session) -> bool:
+    """Whether the administrator asked the people on this node to link their accounts (addendum item 4)."""
+    from ..models import NodeState
+
+    return session.get(NodeState, LINK_INVITE_KEY) is not None
+
+
+def link_invite_banner(p) -> bool:
+    """The "link your account" notice for one signed-in person: only while the invite is on, this node is in an
+    active group and this account is not linked. Accounts are never linked for anyone; each person links their own."""
+    from .. import group_channel
+
+    if p.user is None or not link_invite_on(p.session):
+        return False
+    group = groups.active(p.session)
+    return group is not None and group_channel.local_link(p.session, group.group_id, p.user.id) is None
+
+
+@router.post("/admin/group/link-invite")
+def link_invite(p: Annotated[Page, Depends(local_admin_form)], action: Annotated[str, Form(max_length=8)] = "on"):
+    """Show (or stop showing) the people on this node who have not linked their account a notice that offers to
+    link it. Never links an account itself (addendum item 4)."""
+    from ..models import NodeState
+
+    row = p.session.get(NodeState, LINK_INVITE_KEY)
+    if action == "on" and row is None:
+        p.session.add(NodeState(key=LINK_INVITE_KEY, value=groups.gc.stamp(groups.utcnow())))
+        groups.audit(p.session, p.me.id, "group_link_invite", "local", {"on": True})
+    elif action == "off" and row is not None:
+        p.session.delete(row)
+        groups.audit(p.session, p.me.id, "group_link_invite", "local", {"on": False})
+    return go("/admin/group#group-sync-h", "saved")
 
 
 @router.post("/admin/group/sync", response_class=HTMLResponse)

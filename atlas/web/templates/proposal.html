@@ -3,7 +3,7 @@
 {% block title %}Proposal · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>{{ card.kind|replace('_', ' ')|capitalize }}: {% if card.cid %}<a href="/game/{{ card.cid }}">{{ card.title }}</a>{% else %}{{ card.title }}{% endif %}</h1>
-<p class="small muted">by <strong>{{ card.user }}</strong> · {{ card.when }} · <span class="badge">{{ r.status }}</span>{% if r.decision_note %} · {{ r.decision_note }}{% endif %}</p>
+<p class="small muted">by <strong>{{ card.user }}</strong> · {{ when(card.when) }} · <span class="badge">{{ r.status }}</span>{% if r.decision_note %} · {{ r.decision_note }}{% endif %}</p>
 {% if card.rows %}<table class="diff"><thead><tr><th>Field</th><th>Now</th><th>Proposed</th></tr></thead><tbody>
 {% for f, old, new in card.rows %}<tr><td>{{ f }}</td><td>{% if old %}<del>{{ old }}</del>{% else %}<span class="muted">empty</span>{% endif %}</td><td><ins>{{ new }}</ins></td></tr>{% endfor %}</tbody></table>{% endif %}
 {% if card.entries %}<ul>{% for i in card.entries %}<li>{{ i }}</li>{% endfor %}</ul>{% endif %}

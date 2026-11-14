@@ -45,11 +45,52 @@ password and the root passphrase, and is limited to 5 attempts per hour per admi
 
 ## Add a node
 
-1. On a node that holds the root (or was delegated `group.enrol`): **Add a node → Create invite**, or
-   `atlas group invite`. You get the address of this node and a one-time code `AG1-…`, valid for 10 minutes.
-2. On the new node: **Node group → Join an existing group**, or `atlas group join --url URL --code CODE`.
+1. On a node that holds the root (or was delegated `group.enrol`): **Add a node**, choose how much this node
+   should trust the new one (below), then **Create invite**, or `atlas group invite`. You get a **QR code**, the
+   address of this node and a one-time code `AG1-…`, valid for 10 minutes. The QR code is drawn on the server as
+   inline SVG and holds only the address and the code (*Show what the QR code contains*); Copy buttons copy each.
+2. On the new node: **Node group → Join an existing group**, or `atlas group join --url URL --code CODE`. The
+   address field also takes the whole invite as text (what a phone's scanner app shows): pasting it fills both
+   fields.
 3. Both screens show a **12-digit number** and the other node's fingerprint. Compare them over a channel you
-   trust. Tick "The numbers match" on the inviting node (with the root passphrase) and then on the new node.
+   trust. Tick "The numbers match on both screens" on the inviting node (with the root passphrase) and then on
+   the new node.
+4. **Link my account on both nodes** (with "Same owner, full trust"). The done step offers to link *your own*
+   account right away: the non-sensitive preferences (display name, avatar, language, locale, date and time
+   format, theme, time zone, accessibility, density, list order, hidden achievements) are pre-ticked; *About you*,
+   *Public profile* and *Sign-in references* are one click away. Confirm your password, sign in on the other node
+   and check its fingerprint there, then choose which value to keep where the nodes differ. It is the same
+   explicit link as **Linked nodes** below, never a match by name or email, and nothing sensitive (password,
+   two-factor, sessions, tokens, email, role) is ever shared. With another preset the done step links to
+   **Linked nodes** instead.
+
+### How much the nodes trust each other
+
+Both the invite and the join form ask the same question, and each node applies its own answer to its **own**
+local policy, only when the join completes (a cancelled or expired join changes nothing):
+
+| | Cautious (this release's defaults) | **Same owner, full trust** (preselected) | + administrator checkbox |
+|---|---|---|---|
+| Create an account on first group sign-in (`group_auto_provision`) | off | **on** (only while registration is open) | on |
+| Accept the other node's two-factor step (`group_trust_remote_mfa`) | off | **on** | on |
+| Group administrators (`group_federated_privilege`) | deny | deny | **local_mfa** |
+| Highest delegated role (`group_max_delegated_role`) | none | none | **admin** |
+| Share preferences across the group (`group_profile_sync`) | left as set | **on** | on |
+| Sign in with the group (`group_signin`) | left as set | **on** | on |
+
+When the join completes, *Cautious* writes only the four rows that tell the presets apart, and *Same owner, full
+trust* also turns preference sharing and group sign-in on, so the group feels like one node even where you had
+turned them off. The SAS step lists each row that will change before you confirm. The public sign-in buttons and
+local two-factor for delegated rights are never changed by an enrolment; if they differ from the preset, the done
+step names them with a link to **Policy**. If this node's policy cannot be written at that moment, the join still
+completes, the failure is audited (`group_policy_preset_failed`) and you apply the preset under **Policy**.
+**Apply** on the Policy card writes every row of the preset.
+
+*Custom* leaves the policy as it is and shows the old delegation fields. The administrator checkbox needs the
+typed confirmation and never changes the invite's permissions: an administrator grant is still issued on the
+grants form by the root holder. The SAS step lists exactly what will change; **Policy** on the group page names
+the preset the current settings match and can apply one at any time. Catalogue sync between members is not set
+by the preset: follow the other node under **Peers**.
 
 If the numbers differ, cancel: someone who saw the code tried to join in place of your node. Five wrong
 attempts burn an invite, at most three invites are open at once, and enrolment endpoints are rate limited per IP.
@@ -134,7 +175,8 @@ for a replay: the resync pull alone ends `resyncing`.
 
 ## Linked accounts and synced preferences
 
-Accounts are never matched by email or username. A person links their accounts explicitly:
+Accounts are never matched by email or username, and no one links another person's account. A person links
+their accounts explicitly (the enroller can do it as the last step of enrolment, above):
 
 1. On the node where they want the link (say *Laptop*), **Linked nodes** (`/me/linked-nodes`) → choose the other
    node → confirm with the current password.
@@ -344,3 +386,17 @@ identity node appends for every assertion it signs) and a field (`mint_nonce` on
 older node parks them, which stops only that account's stream from that node, so upgrade every member together.
 An older node accepts the new view fields. Recovery files written now are v2, which an older release cannot open:
 keep a v1 file until every node runs this release if you may need to downgrade.
+
+## Group sync status
+
+**Linked nodes** and the **Node group** admin page show a **Group sync** strip: per member, when this node last
+heard from it (and the last error if it could not be reached), what is shared, and the preference conflicts that
+need a decision. On **Settings** a preference of an unlinked account in a group shows **Not linked to your other
+nodes · Link now** instead of "this node only"; "this node only" stays for preferences you or the administrator
+chose not to share. The admin page also counts the accounts on this node that are not linked yet; **Invite users
+to link** shows those people a notice with a **Link now** button until you stop it. It never links anyone.
+
+On the admin strip each member also carries a **Catalogue sync** chip (on, failing, paused or off) and the done
+step of an enrolment shows it for the new member. Joining a group does not copy records by itself in this release:
+the chip only reports whether this node follows that member on **Peers** (matched by node ID, or by address). To
+share catalogues, follow the member there like any other peer, from both nodes.
