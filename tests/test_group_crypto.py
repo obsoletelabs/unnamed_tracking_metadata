@@ -119,8 +119,9 @@ def test_database_dump_contains_no_root_key(w):
 
 def test_recovery_file_one_of_one_holds_root(w):
     keys = gc.open_recovery_file(w.files[0], REC_PW[0])
-    assert keys.group_id == w.gid and keys.root is not None
-    assert gc.key_id_of(gc.ed_public_b64(keys.root)) == w.gid
+    # v2 (C10 R1-5): G is wrapped under the root passphrase inside the file, never stored raw
+    assert keys.group_id == w.gid and keys.root is None and keys.holds_root and keys.version == 2
+    assert gc.key_id_of(gc.ed_public_b64(gc.recovery_root(keys, ROOT_PW))) == w.gid
     with pytest.raises(gc.WrongPassphrase):
         gc.open_recovery_file(w.files[0], REC_PW[1])
     assert REC_PW[0] not in json.dumps(w.files[0])

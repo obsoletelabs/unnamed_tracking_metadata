@@ -1,0 +1,91 @@
+[
+ {
+  "name": "ascii",
+  "body": {
+   "name": "Home",
+   "rev": 1
+  },
+  "canonical": true,
+  "body_hash": "04a79895560d622aed8fb04110d734e377d1b74382fc33eee390bbe6253a5952"
+ },
+ {
+  "name": "nfc_accent",
+  "body": {
+   "name": "Caf\u00e9"
+  },
+  "canonical": true,
+  "body_hash": "659906f125d844f7081786e4a1cba739414e49a9b9061d80ce09c691b5f56602"
+ },
+ {
+  "name": "nested",
+  "body": {
+   "a": [
+    1,
+    -2,
+    {
+     "b": null,
+     "c": true
+    }
+   ],
+   "z": "x"
+  },
+  "canonical": true,
+  "body_hash": "6579a4951c9c7b7e6f5d475001e59c976eba4af91024b293a2431267adec2221"
+ },
+ {
+  "name": "max_safe_int",
+  "body": {
+   "n": 9007199254740992
+  },
+  "canonical": true,
+  "body_hash": "66c87d9cb3014e05a11baa97df62282d89d425f22ee15816577c84534e2ef1bb"
+ },
+ {
+  "name": "min_safe_int",
+  "body": {
+   "n": -9007199254740992
+  },
+  "canonical": true,
+  "body_hash": "b05a958438727696a33ea9f819b69ca4ea39b5ee89f0f80a61d5f813875f9734"
+ },
+ {
+  "name": "unsafe_int",
+  "body": {
+   "n": 9007199254740993
+  },
+  "canonical": false,
+  "body_hash": null
+ },
+ {
+  "name": "float",
+  "body": {
+   "n": 1.5
+  },
+  "canonical": false,
+  "body_hash": null
+ },
+ {
+  "name": "integral_float",
+  "body": {
+   "n": 2.0
+  },
+  "canonical": false,
+  "body_hash": null
+ },
+ {
+  "name": "nfd_string",
+  "body": {
+   "name": "Cafe\u0301"
+  },
+  "canonical": false,
+  "body_hash": null
+ },
+ {
+  "name": "nfd_key",
+  "body": {
+   "e\u0301": 1
+  },
+  "canonical": false,
+  "body_hash": null
+ }
+]

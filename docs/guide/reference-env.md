@@ -54,6 +54,7 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_GROUP_PROFILE_SYNC` | `true` | Node groups: sync the preferences linked users chose over the private group channel. Off sends and applies nothing. **live** |
 | `ATLAS_GROUP_PROFILE_FIELDS` | — | Node groups: space-separated preference names that may be synced; empty means every registry field the user agrees to. **live** |
 | `ATLAS_GROUP_HOLD_TIMEOUT_DAYS` | `7` | Node groups: days a received preference waits for its missing history before it is applied with a review entry (1-90). **live** |
+| `ATLAS_GROUP_JOURNAL_DIR` | `./group-journal` | Node groups: the revocation journal directory. Every accepted CRL, succession and cancel is appended here so a restore cannot roll revocations back; keep it on persistent storage outside `media_dir` and `backup_dir`. Empty turns it off. |
 | `ATLAS_GROUP_MAX_DELEGATED_ROLE` | `none` | Node groups: the highest role a group grant may give here (`none`, `moderator`, `curator`, `admin`). The default `none` ignores every grant. **live** |
 | `ATLAS_GROUP_FEDERATED_PRIVILEGE` | `deny` | Node groups: what a session opened through another node may do with local reviewer or administrator rights: `deny` (default), `local_mfa` (after this node's own second factor) or `allow`. **live** |
 | `ATLAS_GROUP_TRUST_REMOTE_MFA` | `false` | Node groups: accept the other node's fresh (under 10 minutes) second factor in place of this node's own at a group sign-in. Off by default. **live** |

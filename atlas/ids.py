@@ -21,5 +21,12 @@ def ulid() -> str:
     return _encode(millis, 10) + _encode(int.from_bytes(os.urandom(10), "big"), 16)
 
 
+def ulid_bound(time_ms: int, rand80: bytes) -> str:
+    """A ULID whose 80 random bits are given (C10 R1-7: a group account uid derived from its minter's nonce)."""
+    if len(rand80) != 10 or not 0 <= time_ms < 2**48:
+        raise ValueError("ulid_bound needs a 48-bit time and 10 bytes")
+    return _encode(time_ms, 10) + _encode(int.from_bytes(rand80, "big"), 16)
+
+
 def canonical_id() -> str:
     return f"atlas:{ulid().lower()}"

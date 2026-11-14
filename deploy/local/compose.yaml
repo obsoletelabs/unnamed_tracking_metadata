@@ -11,6 +11,7 @@ services:
       ATLAS_ROLE: local
       ATLAS_DATABASE_URL: sqlite:////data/atlas.db
       ATLAS_MEDIA_DIR: /data/media
+      ATLAS_GROUP_JOURNAL_DIR: /data/group-journal   # node groups: outside media and backups (C10 R1-3)
     # 127.0.0.1 keeps it private to this machine. Use "8000:8000" (or "192.168.1.10:8000:8000") to share on your LAN.
     ports: ["${ATLAS_BIND:-127.0.0.1}:${ATLAS_PORT:-8000}:8000"]
     volumes: ["atlas-data:/data"]

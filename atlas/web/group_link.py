@@ -442,7 +442,8 @@ def verify_assertion(s, settings, identity, group, a: dict, binding_cookie: str 
     if cert is None or "identity.assert" not in cert["body"]["scopes"] or key is None \
             or a["signer"]["key_id"] != key[0] or not group_channel.verify_assertion_sig(a, key[1]):
         raise LinkRefused("The other node's confirmation could not be verified.")
-    fresh = groups.freshness(s, group, identity.node_id, b["iss_node"], settings.group_view_max_age_hours)
+    fresh = groups.freshness(s, group, identity.node_id, b["iss_node"], settings.group_view_max_age_hours,
+                             action="signin")
     if not fresh.ok:
         raise LinkRefused("This node has no recent view of the group; try again after the next sync.")
     now = groups.utcnow()

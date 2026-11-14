@@ -53,13 +53,18 @@ GROUP_KINDS: dict[str, KindSpec] = {s.name: s for s in (
     _spec("profile.field.set", {"account_uid", "field", "value", "hlc", "base", "cause"}, "a preference version"),
     _spec("profile.field.clear", {"account_uid", "field", "hlc", "base", "cause"}, "a preference reset to default"),
     _spec("profile.conflict.resolve", {"account_uid", "field", "chosen_hlc", "discarded"}, "a conflict decision"),
-    _spec("account.link", {"account_uid", "node_id", "minted", "evidence"}, "a node holds this account"),
+    _spec("account.link", {"account_uid", "node_id", "minted", "evidence", "mint_nonce"}, "a node holds this account"),
     _spec("account.unlink", {"account_uid", "node_id", "reason"}, "a node no longer holds this account"),
     _spec("account.signout_all", {"account_uid", "before"}, "end sessions created before `before`"),
     _spec("stream.epoch", {"epoch", "previous", "reason"}, "the first entry of an epoch"),
+    # C10 R1-6: the issuing node's witness of an assertion it signed (a 1.0 node of the a12 line parks it)
+    _spec("account.assert_issued", {"account_uid", "aud_node", "jti", "assertion_hash", "purpose"},
+          "this node issued an identity assertion"),
 )}
 PROFILE_KINDS = ("profile.field.set", "profile.field.clear", "profile.conflict.resolve")
-ACCOUNT_KINDS = (*PROFILE_KINDS, "account.link", "account.unlink", "account.signout_all")
+ACCOUNT_KINDS = (*PROFILE_KINDS, "account.link", "account.unlink", "account.signout_all", "account.assert_issued")
+MINT_NONCE = re.compile(r"^[0-9a-f]{32}\Z")
+HASH = re.compile(r"^[0-9a-f]{64}\Z")
 # Reserved for later minors (D10.24): a 1.0 node parks them, blocking only their own stream.
 RESERVED = ("profile.list.upsert", "profile.list_item.upsert", "profile.list_item.delete", "admin.setting.set",
             "profile.avatar.blob")
@@ -167,6 +172,16 @@ def _invalid_reason(kind: str, b: dict) -> str | None:
         minted, evidence = b.get("minted"), b.get("evidence")
         if not ((minted is True and evidence is None) or (minted in (None, False) and isinstance(evidence, dict))):
             return "a link is either minted or carries evidence"
+        nonce = b.get("mint_nonce")
+        if nonce is not None and (minted is not True or not (isinstance(nonce, str) and MINT_NONCE.match(nonce))):
+            return "mint_nonce is malformed or on a link that is not minted"
+    elif kind == "account.assert_issued":
+        if not (isinstance(b.get("aud_node"), str) and NODE.match(b["aud_node"])):
+            return "aud_node is malformed"
+        if not (isinstance(b.get("jti"), str) and ULID.match(b["jti"])) or b.get("purpose") not in ("link", "signin"):
+            return "jti or purpose is malformed"
+        if not (isinstance(b.get("assertion_hash"), str) and HASH.match(b["assertion_hash"])):
+            return "assertion_hash is malformed"
     elif kind == "account.unlink":
         if not (isinstance(b.get("node_id"), str) and NODE.match(b["node_id"])) or b.get("reason") not in UNLINK_REASONS:
             return "node_id or reason is malformed"

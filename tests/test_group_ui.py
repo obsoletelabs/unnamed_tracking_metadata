@@ -45,7 +45,7 @@ def create_via_ui(a, ca):
     assert 'data-group-recovery="pending"' in page
     download = ca.get("/admin/group/recovery.json")
     assert download.status_code == 200 and "attachment" in download.headers["content-disposition"]
-    assert download.json()["contains"] == ["recovery_key", "root_key"] and REC_PW[0] not in download.text
+    assert download.json()["contains"] == ["recovery_key", "root_key_wrapped"] and REC_PW[0] not in download.text
     r = ca.post("/admin/group/recovery/confirm", data={"csrf": csrf(ca, "/admin/group"), "downloaded": "on",
                                                        "passphrase": REC_PW[0]})
     assert r.status_code == 303

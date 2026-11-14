@@ -53,6 +53,9 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                              "means every registry field the user agrees to."),
     "group_hold_timeout_days": ("Federation", "Node groups: days a received preference waits for its missing history "
                                 "before it is applied with a review entry (1-90)."),
+    "group_journal_dir": ("Federation", "Node groups: the revocation journal directory. Every accepted CRL, "
+                          "succession and cancel is appended here so a restore cannot roll revocations back; keep it "
+                          "on persistent storage outside `media_dir` and `backup_dir`. Empty turns it off."),
     "group_max_delegated_role": ("Federation", "Node groups: the highest role a group grant may give here (`none`, "
                                  "`moderator`, `curator`, `admin`). The default `none` ignores every grant."),
     "group_federated_privilege": ("Federation", "Node groups: what a session opened through another node may do with "

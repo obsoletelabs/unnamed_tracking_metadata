@@ -354,6 +354,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     with maker() as s:
         custom.seed_multiplayer(s, ctx)
         s.commit()
+    try:  # C10 R1-3: revocations the journal holds and the database lacks (a restore) come back first
+        from . import group_journal
+
+        group_journal.startup_replay(maker, identity.node_id)
+    except Exception as exc:  # noqa: BLE001 - the next group round retries through `pull`
+        log.warning("group journal replay at startup failed: %s", exc)
     stop = threading.Event()
 
     @asynccontextmanager

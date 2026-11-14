@@ -376,14 +376,26 @@ def cmd_sync(_args) -> int:
 def cmd_resync(args) -> int:
     def run(session, settings, identity):
         group = _group(session)
+        if args.confirm_root:  # R1-3: the owner ends a skipped trust epoch (root passphrase, or recovery files)
+            if args.recovery_file:
+                groups.confirm_trust_epoch(session, settings, group, None, cli=True,
+                                           recovery_files=_open_files(args.recovery_file))
+                print("skipped resync confirmed with the recovery file(s) (audited)")
+            else:
+                groups.confirm_trust_epoch(session, settings, group, _ask("Root passphrase: "), cli=True)
+                print("skipped resync confirmed with the root passphrase (audited)")
+            return 0
         if group.status != "resyncing":
             print(f"the group is {group.status}; nothing to do")
             return 0
         if not args.skip:
             raise groups.GroupError("pull every member with `atlas group sync`; or --skip (audited)")
-        group.status = "active"
-        groups.audit(session, None, "group_resync_skipped", group.group_id, {}, cli=True)
-        print("resync skipped (audited)")
+        groups.skip_resync(session, group, cli=True)
+        how = "`atlas group resync --confirm-root`" if group.root_state == "holder" else \
+            "`atlas group resync --confirm-root --recovery-file FILE` (the group root is not on this node)"
+        print("resync skipped (audited): a new trust epoch starts. Privileged group actions need a fresh view from "
+              "a third member until a full `atlas group sync` succeeds. In a two-member group that sync ends it only "
+              f"when the revocation journal holds this group's lists; otherwise run {how}")
         return 0
 
     return _run(run)
@@ -407,6 +419,28 @@ def cmd_new_epoch(_args) -> int:
     return _run(run)
 
 
+def _crl_ref(text: str) -> dict:
+    seq, sep, digest = text.partition(":")
+    if not sep or not seq.isdigit() or not digest:
+        raise groups.GroupError("--last-crl is SEQ:HASH (see `atlas group root succession --show`)")
+    return {"crl_seq": int(seq), "body_hash": digest}
+
+
+def _print_crl_choice(last, entries: list[dict], confirmed: frozenset[str]) -> None:
+    """R1-1 step 4: the owner sees the old root's last revocation list the succession will name, with reasons."""
+    if last is None:
+        print("old root's last revocation list: none (the succession names no list; every old-root list is retired)")
+        return
+    print(f"old root's last revocation list: crl_seq {last.crl_seq}  {last.body_hash}  received "
+          f"{gc.stamp(groups.aware(last.received_at))}  {len(entries)} entries")
+    for e in entries:
+        mark = ""
+        if e.get("reason") == "key_compromise":
+            mark = "  (confirmed)" if e.get("serial") in confirmed else "  (needs --confirm-compromise)"
+        print(f"  {e.get('serial')}  {e.get('reason')}  node {e.get('node_id') or '-'}  revoked {e.get('revoked_at')}"
+              + (f"  suspect since {e['suspect_since']}" if e.get("suspect_since") else "") + mark)
+
+
 def _open_files(paths: list[str]) -> list[gc.RecoveryKeys]:
     opened = []
     for i, path in enumerate(paths, start=1):
@@ -422,21 +456,26 @@ def cmd_root(args) -> int:
     def run(session, settings, identity):
         group = _group(session)
         if args.root_cmd == "export-recovery":
-            root = groups.unlock_root(session, settings, group, _ask("Root passphrase: "))
+            root_phrase = _ask("Root passphrase: ")
+            root = groups.unlock_root(session, settings, group, root_phrase)
             phrase = _ask("Passphrase for the new recovery file (14+ characters): ", confirm=True)
             try:
                 gc.check_passphrase(phrase, groups._names(settings, None, group.name))
             except gc.WeakPassphrase as exc:
                 raise groups.GroupError(f"passphrase refused: {exc}") from None
+            if phrase == root_phrase:
+                raise groups.GroupError("use a recovery-file passphrase that differs from the root passphrase")
             recovery = None
             if args.recovery_file:
                 old = gc.open_recovery_file(json.loads(Path(args.recovery_file).read_text("utf-8")),
                                             _ask("Passphrase of that recovery file: "))
                 recovery = old.recovery
+            # v2 (R1-5): G is wrapped under the root passphrase inside the file, never stored raw
             data = gc.make_recovery_file(group.genesis, list(group.succession or []), recovery, root, phrase,
-                                         gc.stamp())
+                                         gc.stamp(), root_passphrase=root_phrase)
             Path(args.out).write_text(json.dumps(data, indent=1), encoding="utf-8")
-            groups.audit(session, None, "group_root_exported", group.group_id, {"out": "file"}, cli=True)
+            groups.audit(session, None, "group_root_exported", group.group_id, {"out": "file", "v": data["v"]},
+                         cli=True)
             print(f"wrote {args.out}; verify it with `atlas group root verify-recovery --recovery-file {args.out}`")
             return 0
         if args.root_cmd == "verify-recovery":
@@ -444,20 +483,64 @@ def cmd_root(args) -> int:
             keys = gc.open_recovery_file(data, _ask("Recovery-file passphrase: "))
             if keys.group_id != group.group_id:
                 raise groups.GroupError("that file belongs to another group")
-            holds_root = keys.root is not None and gc.key_id_of(gc.ed_public_b64(keys.root)) == group.root_key_id
+            holds_root = groups.verify_recovery_root(keys, group, _ask("Root passphrase (the file wraps the root key "
+                                                                       "under it): ") if keys.root_wrapped else None)
             if holds_root:
                 session.merge(groups.NodeState(key=groups.RECOVERY_VERIFIED, value=gc.stamp()))
             print("recovery file verified" + (" (holds the current root key)" if holds_root else " (no root key)"))
+            if keys.legacy_raw_root:
+                print("warning: this is a v1 file holding the root key unprotected; re-export it with "
+                      "`atlas group root export-recovery` (v2 wraps it under the root passphrase)")
             return 0
         if args.root_cmd == "import":
             keys = _open_files([args.recovery_file])[0]
-            phrase = _ask("New root passphrase for this node (14+ characters): ", confirm=True)
-            moved = groups.import_root(session, settings, group, identity, keys, phrase, args.old_root, cli=True)
+            root_phrase = new_phrase = reexport = None
+            if keys.root_wrapped is not None:
+                root_phrase = _ask("Root passphrase (the file wraps the root key under it): ")
+                if args.new_root_passphrase:
+                    new_phrase = _ask("New root passphrase for this node (14+ characters): ", confirm=True)
+                    reexport = _ask("Passphrase for the re-exported recovery file (14+ characters): ", confirm=True)
+            else:
+                print("warning: this v1 recovery file holds the root key unprotected; a v2 re-export is written")
+                new_phrase = _ask("New root passphrase for this node (14+ characters): ", confirm=True)
+                reexport = _ask("Passphrase for the re-exported recovery file (14+ characters): ", confirm=True)
+            if reexport and not args.recovery_out:
+                raise groups.GroupError("--recovery-out FILE is needed: the import writes a re-exported recovery file")
+            done = groups.import_root(session, settings, group, identity, keys, new_phrase, args.old_root,
+                                      root_passphrase=root_phrase, reexport_passphrase=reexport, cli=True)
+            if done.reexport is not None:  # written before the import commits (R1-5)
+                Path(args.recovery_out).write_text(json.dumps(done.reexport, indent=1), encoding="utf-8")
+                print(f"wrote the re-exported recovery file {args.recovery_out}; keep it offline, the old file is "
+                      "now out of date")
+            moved = done.moved
             print(f"the group root is now on this node; other members learn it from {moved['id']}")
             print("this node is resyncing: run `atlas group sync` (or `atlas group resync --skip` if the old root "
                   "node is gone for good) before any root operation")
             return 0
         if args.root_cmd == "succession":
+            suspect = gc.parse_time(args.suspect_since) if args.suspect_since else None
+            named = _crl_ref(args.last_crl) if args.last_crl else None
+            confirmed = frozenset(args.confirm_compromise or [])
+            last, entries = groups.succession_crl_choice(session, group, suspect, named)
+            _print_crl_choice(last, entries, confirmed)
+            if args.show:
+                print("revocation lists of the current root key on this node:")
+                for c in groups.succession_crl_candidates(session, group):
+                    print(f"  crl_seq {c['crl_seq']}  {c['body_hash']}  received {c['received_at']}  "
+                          f"issued_at {c['issued_at']} (signer-chosen)  {len(c['entries'])} entries"
+                          + ("  FORKED" if c["forked"] else ""))
+                print("nothing issued (--show)")
+                return 0
+            if args.reason == "compromised" and suspect is None and named is None and \
+                    groups.succession_crl_candidates(session, group):
+                raise groups.GroupError("a compromised root may have signed revocation lists you did not: give "
+                                        "--suspect-since TIME (the newest list received before it is named), or "
+                                        "--last-crl SEQ:HASH; see them with --show")
+            unconfirmed = sorted(e["serial"] for e in entries
+                                 if e.get("reason") == "key_compromise" and e["serial"] not in confirmed)
+            if unconfirmed:  # §1.2: a key_compromise entry bans a node identity for ever; the owner types each one
+                raise groups.GroupError("the chosen list bans these as key_compromise: " + ", ".join(unconfirmed)
+                                        + "; confirm each with --confirm-compromise SERIAL, or choose another list")
             out = Path(args.recovery_out) if args.recovery_out else None
             files = _open_files(args.recovery_file)
             one_of_one = group.recovery["threshold"] == 1 and len(group.recovery["keys"]) == 1
@@ -470,7 +553,8 @@ def cmd_root(args) -> int:
             obj, new_files = groups.issue_succession(session, settings, group, identity, files, root_phrase,
                                                      exclude_nodes=exclude, reason=args.reason,
                                                      delay_hours=args.delay_hours, new_recovery_passphrase=rec_phrase,
-                                                     cli=True)
+                                                     cli=True, suspect_since=suspect, last_crl=named,
+                                                     confirm_compromise=confirmed)
             body = obj["body"]
             print(f"succession {body['index']}: new root {groups.gc_fp(body['new_root_key_id'])}, "
                   f"{len(body['carry'])} members carried, activates in {body['activation_delay_hours']} h")
@@ -566,6 +650,10 @@ def register(sub) -> None:
     ga.add_parser("sync").set_defaults(fn=cmd_sync)
     rs = ga.add_parser("resync")
     rs.add_argument("--skip", action="store_true")
+    rs.add_argument("--confirm-root", action="store_true",
+                    help="end a skipped resync's trust epoch with the root passphrase, or with --recovery-file on "
+                         "a member that does not hold the root (C10 R1-3)")
+    rs.add_argument("--recovery-file", action="append", help="with --confirm-root; repeat for a 2-of-3 quorum")
     rs.set_defaults(fn=cmd_resync)
     ne = ga.add_parser("new-epoch", help="open a new epoch of this node's change streams (after a clone fork)")
     ne.set_defaults(fn=cmd_new_epoch)
@@ -582,6 +670,9 @@ def register(sub) -> None:
     im.add_argument("--recovery-file", required=True)
     im.add_argument("--old-root", required=True, choices=("decommissioned", "running"),
                     help="is the old root node destroyed, or still running?")
+    im.add_argument("--new-root-passphrase", action="store_true",
+                    help="choose a new root passphrase (default: keep the one the file wraps the root key under)")
+    im.add_argument("--recovery-out", help="file for the re-exported recovery file (needed with a new passphrase)")
     im.set_defaults(fn=cmd_root)
     sc = roa.add_parser("succession", help="replace a stolen or lost root key with a recovery quorum")
     sc.add_argument("--recovery-file", action="append", required=True, help="repeat for a 2-of-3 quorum")
@@ -589,6 +680,13 @@ def register(sub) -> None:
     sc.add_argument("--reason", choices=("compromised", "lost"), default="compromised")
     sc.add_argument("--delay-hours", type=int, help="activation delay (at least the genesis policy, 24 by default)")
     sc.add_argument("--recovery-out", help="directory for the new recovery file (1-of-1)")
+    sc.add_argument("--suspect-since", metavar="TIME",
+                    help="when the root key may have been taken (ISO time): the old root's last list is the newest "
+                         "one this node received before it (needed for --reason compromised)")
+    sc.add_argument("--last-crl", metavar="SEQ:HASH", help="name the old root's last honest revocation list")
+    sc.add_argument("--confirm-compromise", action="append", metavar="SERIAL",
+                    help="confirm one key_compromise entry of that list (repeat for each)")
+    sc.add_argument("--show", action="store_true", help="show the lists and the chosen one; issue nothing")
     sc.set_defaults(fn=cmd_root)
     cc = roa.add_parser("succession-cancel", help="cancel a pending root succession with a recovery quorum")
     cc.add_argument("--recovery-file", action="append", required=True)

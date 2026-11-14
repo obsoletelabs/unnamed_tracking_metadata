@@ -634,9 +634,18 @@ def test_root_import_moves_root_and_disables_old_holder(net):
     keys = gc.open_recovery_file(created.recovery_files[0], REC_PW[0])
     with b.session() as s:
         group = groups.load(s)
-        moved = groups.import_root(s, b.settings, group, b.identity, keys, NEW_ROOT_PW, "running")
+        # a v2 file (C10 R1-5) holds G under the root passphrase; a new one needs a re-exported file
+        with pytest.raises(groups.GroupError, match="wrong root passphrase"):
+            groups.import_root(s, b.settings, group, b.identity, keys, NEW_ROOT_PW, "running")
+        with pytest.raises(groups.GroupError, match="re-exported recovery file"):
+            groups.import_root(s, b.settings, group, b.identity, keys, NEW_ROOT_PW, "running", root_passphrase=ROOT_PW)
+        done = groups.import_root(s, b.settings, group, b.identity, keys, NEW_ROOT_PW, "running",
+                                  root_passphrase=ROOT_PW, reexport_passphrase=REC_PW[1])
         s.commit()
+        moved = done.moved
         assert moved["body"]["to_node"] == b.node_id
+        again = gc.open_recovery_file(done.reexport, REC_PW[1])
+        assert again.root is None and gc.recovery_root(again, NEW_ROOT_PW) is not None
         assert group.root_state == "holder" and group.status == "resyncing"
         with pytest.raises(groups.GroupError, match="resyncing"):
             groups.unlock_root(s, b.settings, group, NEW_ROOT_PW)
@@ -653,4 +662,5 @@ def test_root_import_moves_root_and_disables_old_holder(net):
     enrol(b, c, passphrase=NEW_ROOT_PW)  # the new holder issues
     assert c.node_id in members(b)
     with b.session() as s, pytest.raises(groups.GroupError, match="already holds"):
-        groups.import_root(s, b.settings, groups.load(s), b.identity, keys, NEW_ROOT_PW, "running")
+        groups.import_root(s, b.settings, groups.load(s), b.identity, keys, NEW_ROOT_PW, "running",
+                           root_passphrase=ROOT_PW, reexport_passphrase=REC_PW[1])

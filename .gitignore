@@ -10,3 +10,5 @@ __pycache__/
 # default artwork cache directory when running from a checkout
 /media/
 e2e/.run/
+# default group revocation journal directory when running from a checkout (C10 R1-3)
+/group-journal/

@@ -7,6 +7,7 @@ the same 404 body as an unknown route (`{"detail": "Not Found"}`), so the routes
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import time
 from typing import Any
@@ -22,6 +23,8 @@ from .. import group_crypto as gc
 from ..models import GroupNonce, OwnerGroup
 from ..signing import NodeIdentity, canonical_json
 from .deps import AppState
+
+log = logging.getLogger("atlas.groups")
 
 router = APIRouter(include_in_schema=False)
 CALL_CAP = 256 * 1024
@@ -270,10 +273,11 @@ def _op(session, st: AppState, group: OwnerGroup, identity: NodeIdentity, inner:
         return {"ok": True}
     if op == "push":
         # The same objects a `state` pull would fetch from this member, sent by it (a leave, a re-issued
-        # certificate). `ingest_state` verifies every object; nothing is trusted because of who pushed it.
+        # certificate). `ingest_state` verifies every object; nothing is trusted because of who pushed it, but a
+        # succession that first arrives here is attributed to the pusher, whose view never confirms it (R1-5).
         try:
             counts = groups.ingest_state(session, group, params.get("state"), identity.node_id,
-                                         settings=st.ctx.settings)
+                                         settings=st.ctx.settings, served_by=inner["n"])
         except groups.GroupError as exc:
             raise _OpError(str(exc)[:200]) from None
         return {"ok": True, "counts": counts}
@@ -408,7 +412,13 @@ def _learn_rotation(session, settings, identity: NodeIdentity, group: OwnerGroup
 
 def pull(session, settings, identity: NodeIdentity, group: OwnerGroup, http: Any) -> dict[str, str]:
     """Pull `state` from every reachable in-force member and ingest it (§3.8). Returns node -> outcome."""
+    from .. import group_journal
+
     outcomes: dict[str, str] = {}
+    try:  # R1-3: a restore's journal replay (or objects only the journal holds) come before anything else
+        group_journal.replay_if_needed(session, group, identity.node_id, settings)
+    except Exception as exc:  # noqa: BLE001 - a failed replay leaves REPLAY_DUE set, so the resync cannot finish
+        log.warning("group journal replay failed: %s", exc)
     tr = groups.trust(session, group, own_node=identity.node_id)
     for node, cert in tr.members().items():
         if node == identity.node_id:
@@ -421,7 +431,8 @@ def pull(session, settings, identity: NodeIdentity, group: OwnerGroup, http: Any
                 for view in state.get("views") or []:
                     groups.ingest_view(session, group, view, groups.utcnow())
             else:
-                groups.ingest_state(session, group, state, identity.node_id, settings=settings)
+                groups.ingest_state(session, group, state, identity.node_id, settings=settings, served_by=node)
+                groups.check_view_backed(session, group, node)  # R1-2: a view its own state does not back
             outcomes[node] = "ok"
             if row is not None:
                 row.last_error = None
@@ -429,12 +440,37 @@ def pull(session, settings, identity: NodeIdentity, group: OwnerGroup, http: Any
             outcomes[node] = str(exc)[:300]
             if row is not None:
                 row.last_error = str(exc)[:300]
-    if group.status == "resyncing" and outcomes and all(v == "ok" for v in outcomes.values()):
-        group.status = "active"
-        groups.audit(session, None, "group_resync_done", group.group_id, {"members": len(outcomes)})
+    _finish_resync(session, settings, identity, group, outcomes)
     groups.make_view(session, group, identity, force=True) if group.self_serial else None
     session.flush()
     return outcomes
+
+
+def _finish_resync(session, settings, identity: NodeIdentity, group: OwnerGroup, outcomes: dict[str, str]) -> None:
+    """R1-3: `resyncing` ends only after the journal replay, and only when every in-force member answered with at
+    least one answering member that is still in force after the union (a revoked-only peer never completes a
+    resync). With no other in-force member left after replay and union, the journal alone completes it. A skipped
+    trust epoch ends on a full pull, except in a two-member group whose journal holds nothing for the group (then
+    only `resync --confirm-root`)."""
+    from .. import group_journal
+
+    if session.get(groups.NodeState, group_journal.REPLAY_DUE) is not None:
+        return
+    others = set(groups.trust(session, group, own_node=identity.node_id).members()) - {identity.node_id}
+    full = bool(outcomes) and all(v == "ok" for v in outcomes.values())
+    if group.status == "resyncing":
+        if not others or (full and any(n in others for n in outcomes)):
+            group.status = "active"
+            groups.audit(session, None, "group_resync_done", group.group_id,
+                         {"members": len(outcomes), "journal_only": not others})
+        return
+    epoch = session.get(groups.NodeState, groups.TRUST_EPOCH)
+    if epoch is None or group.status != "active" or not full:
+        return
+    if len(others) == 1 and not group_journal.read(settings, group.group_id):
+        return  # nothing proves the one remaining member was not the one revoked after the backup
+    session.delete(epoch)
+    groups.audit(session, None, "group_trust_epoch_closed", group.group_id, {"members": len(outcomes)})
 
 
 def push_state(session, settings, identity: NodeIdentity, group: OwnerGroup, http: Any,

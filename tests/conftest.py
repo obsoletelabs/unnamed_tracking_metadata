@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+import tempfile
+import uuid
+from pathlib import Path
+
 import pytest
 from sqlalchemy.pool import StaticPool
 
@@ -9,10 +14,15 @@ from atlas.service import Ctx
 from atlas.settings import Settings
 from atlas.signing import load_identity
 
+_JOURNALS = Path(tempfile.gettempdir()) / f"atlas-test-group-journal-{os.getpid()}"
+
 
 def build_settings(**kw) -> Settings:
     # Most tests are not about email; the policy tests ask for "required" or None (by role) explicitly.
     base = dict(role="authority", database_url="sqlite://", environment="dev", email_verification="optional")
+    # every Settings gets its own revocation journal directory (C10 R1-3), created only when written, so tests never
+    # share one or write into the checkout
+    base["group_journal_dir"] = str(_JOURNALS / uuid.uuid4().hex)
     base.update(kw)
     return Settings(_env_file=None, **base)
 

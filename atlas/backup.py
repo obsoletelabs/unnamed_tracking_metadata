@@ -13,6 +13,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import tarfile
@@ -28,6 +29,8 @@ from sqlalchemy import BigInteger, Date, DateTime, Engine, Integer, LargeBinary,
 from . import __version__, client_changes, db
 from .models import Base
 from .settings import Settings
+
+log = logging.getLogger("atlas.backup")
 
 FORMAT = 1
 MANIFEST = "manifest.json"
@@ -282,7 +285,8 @@ def _has_rows(conn) -> list[str]:
     return occupied
 
 
-def restore(settings: Settings, engine: Engine, path: Path, *, force: bool = False, include_media: bool = True) -> dict[str, int]:  # noqa: E501
+def restore(settings: Settings, engine: Engine, path: Path, *, force: bool = False, include_media: bool = True,
+            replay_journal: bool = True) -> dict[str, int]:
     """Load an archive into a database migrated to the archive's revision. Refuses a non-empty database unless forced."""
     path = Path(path)
     manifest = verify(path)
@@ -351,12 +355,43 @@ def restore(settings: Settings, engine: Engine, path: Path, *, force: bool = Fal
                 # snapshot of every linked account to re-learn effects the backup lost. A node in no group has no
                 # stream to continue, so nothing is marked.
                 node_state = tables["node_state"]
-                for key, value in (("group_epoch_due", "restore"), ("group_snapshot_due", "1")):
+                # R1-3: the revocation journal (outside the database and the backups) is replayed before the
+                # resync may finish, so revocations newer than the backup are back at once
+                from . import group_journal
+
+                marks = [("group_epoch_due", "restore"), ("group_snapshot_due", "1")]
+                if group_journal.directory(settings) is not None:  # no journal: the resync pull alone protects
+                    marks.append(("group_journal_replay_due", "1"))
+                for key, value in marks:
                     conn.execute(delete(node_state).where(node_state.c.key == key))
                     conn.execute(node_state.insert().values(key=key, value=value))
     if include_media and manifest.get("media_included"):
         _restore_media(settings, path)
+    if replay_journal:
+        _replay_group_journal(settings, engine)
     return loaded
+
+
+def _replay_group_journal(settings: Settings, engine: Engine) -> None:
+    """Re-ingest the group revocation journal into the restored database, in its own transaction (C10 R1-3). A
+    failure is reported, never fatal: the node stays `resyncing`, and startup and the next pull retry the replay."""
+    from . import group_journal, groups
+    from .db import make_sessionmaker
+    from .signing import load_identity
+
+    if group_journal.directory(settings) is None:
+        return
+    maker = make_sessionmaker(engine, settings)
+    try:
+        with maker() as session:
+            group = groups.load(session)
+            if group is None:
+                return
+            own = load_identity(session, settings).node_id
+            group_journal.replay(session, group, own, settings=settings)
+            session.commit()
+    except Exception as exc:  # noqa: BLE001 - the restore itself succeeded
+        log.warning("group journal replay after restore failed: %s", exc)
 
 
 def _reset_sequences(conn, engine: Engine, tables: list[Table]) -> None:
@@ -478,7 +513,8 @@ def drill(settings: Settings, path: Path, *, record_to: Engine | None = None) ->
                               f"{type(exc).__name__}") from exc
         engine = db.make_engine(url)
         try:
-            loaded = restore(isolated, engine, path, include_media=bool(manifest.get("media_included")))
+            loaded = restore(isolated, engine, path, include_media=bool(manifest.get("media_included")),
+                             replay_journal=False)
         finally:
             engine.dispose()
     expected = manifest.get("tables", {})
