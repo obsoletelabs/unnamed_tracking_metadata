@@ -6,6 +6,8 @@
 <h1>Administration</h1>
 {% include "_adminnav.html" %}
 {% if error %}<div class="card {{ 'error' if flash_tone == 'error' else ('warn' if flash_tone == 'warn' else '') }}" role="status" data-flash-tone="{{ flash_tone }}">{{ error }}</div>{% endif %}
+{# C16 upgrade journal (6.3, Z2): shown until every stage is done or n/a; the same data as admin /status upgrade. #}
+{% if upgrade and not upgrade.complete %}<div class="card warn" role="status" data-banner="upgrade-journal"><p><strong>Finishing this release's upgrade.</strong> Working through <code>{{ upgrade.stage }}</code>{% if upgrade.left %} ({{ upgrade.left }} left){% endif %}. This node answers normally while it finishes (<code>/ready</code> shows <code>degraded</code>); nothing else is needed unless it is stuck.</p>{% if upgrade.last_error %}<p class="small error">Last error: {{ upgrade.last_error }}</p>{% endif %}</div>{% endif %}
 {# PE3: in-page chips; a chip with a count of 0 is left out #}
 {% if rows or waiting.count or failures_open %}<ul class="chips section-chips" aria-label="On this page"><li><a class="chip" href="#peer-list">Peers ({{ rows|length }})</a></li>{% if waiting.count %}<li><a class="chip" href="#waiting-entries">Waiting ({{ waiting.count }})</a></li>{% endif %}{% if failures_open %}<li><a class="chip" href="#failed-entries">Failed ({{ failures_open }})</a></li>{% endif %}<li><a class="chip" href="#add-peer">Add a peer</a></li><li><a class="chip" href="#this-node">This node</a></li></ul>{% endif %}
 {% if probe %}

@@ -13,7 +13,19 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy import delete, func, select
 
-from .. import __version__, accounts, auth, feed, feed_schema, key_rotation, peer_probe, secrets_box, service, sync
+from .. import (
+    __version__,
+    accounts,
+    auth,
+    feed,
+    feed_schema,
+    key_rotation,
+    peer_probe,
+    secrets_box,
+    service,
+    sync,
+    upgrade,
+)
 from ..models import FollowerWire, NodeState, Peer, ReplicatedFeed, SyncCursor, SyncFailure, Token, User
 from ..service import AtlasError
 from ..signing import id_matches, load_identity, signing_key_at_rest
@@ -274,6 +286,7 @@ def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, sta
                                                                 SyncFailure.disposition != sync.WAIT)
                                       .order_by(SyncFailure.node_id, SyncFailure.seq).limit(FAILURES_SHOWN)))
     return render(p, "admin_peers.html", status=status, rows=rows, failures=failures,
+                  upgrade=upgrade.status(p.session),
                   failures_open=sync.open_failures(p.session, feed_schema.QUARANTINE)
                   + sync.open_failures(p.session, feed_schema.PARK),
                   parked_open=sync.open_failures(p.session, feed_schema.PARK),

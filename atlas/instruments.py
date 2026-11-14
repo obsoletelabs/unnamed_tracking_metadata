@@ -22,8 +22,8 @@ from .vocab import MEDIA_ERRORS
 PROVIDER_CAP = 16
 
 # ---- scrape (#69) -------------------------------------------------------------------------------------------
-COLLECTOR_NAMES = ("readiness", "feed", "outbox", "peers", "sync_upstreams", "providers", "backup", "group",
-                   "database", "catalog", "media_storage")
+COLLECTOR_NAMES = ("readiness", "feed", "upgrade", "outbox", "peers", "sync_upstreams", "providers", "backup",
+                   "group", "database", "catalog", "media_storage")
 collector_refresh = REGISTRY.histogram(
     "atlas_collector_refresh_duration_seconds",
     "Time spent computing a scrape collector, by outcome (cached collectors only when they refresh)",

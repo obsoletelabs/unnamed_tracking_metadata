@@ -60,9 +60,13 @@ scrape_configs:
 | `atlas_ready` | One when `/api/v2/ready` would answer 200 (`ready` or `degraded`), zero when it would answer 503 |
 | `atlas_ready_check` | One series per dependency, `check` is `database`, `schema` or `media`; zero is the failing one. `media` at zero is `degraded`, not an outage |
 | `atlas_schema_state` | One-hot over `state` = `current`, `behind`, `unknown` |
-| `atlas_collector_success` | One per scrape collector (`collector` is `readiness`, `feed`, `outbox`, `peers`, `sync_upstreams`, `providers`, `backup`, `database`, `catalog` or `media_storage`, plus `group` on a node in an owner group); zero means that collector failed and its series are absent from this scrape (unavailable, not zero) |
+| `atlas_collector_success` | One per scrape collector (`collector` is `readiness`, `feed`, `upgrade`, `outbox`, `peers`, `sync_upstreams`, `providers`, `backup`, `database`, `catalog` or `media_storage`, plus `group` on a node in an owner group); zero means that collector failed and its series are absent from this scrape (unavailable, not zero) |
 | `atlas_collector_duration_seconds` | How long that collector took in this scrape (a gauge, not a histogram) |
 | `atlas_feed_head` | This node's own signed feed head |
+| `atlas_upgrade_complete` | One when the C16 upgrade journal is done (or there is none: a fresh database), zero while a stage is still pending |
+| `atlas_upgrade_stage` | One-hot over `stage` (`replay`, `rescan`, `introduce_missing`, `introduce_all`, `relations`): one on the stage this node is currently working through, zero on every other name |
+| `atlas_upgrade_stage_left` | Introduce-batch entries left to process in the current stage (0 once it is done, or outside an introduce stage) |
+| `atlas_upgrade_skipped_scope_ceiling` | Relations the upgrade journal skipped signing because they named a C14 scope-ceiling'd record |
 | `atlas_sync_cursor` | Applied position per independently trusted origin |
 | `atlas_sync_head` | Highest transport-reported head observed for an origin |
 | `atlas_peer_lag_entries` | Entries between that origin's observed head and applied cursor, labeled per peer |

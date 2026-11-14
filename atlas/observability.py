@@ -28,8 +28,8 @@ ERROR_CLASSES = ("client_error", "server_error", "unhandled_exception", "client_
 # Status recorded when the client went away before any response was started (nginx convention). Without
 # it a cancelled request would be counted as a server 500 and trip the error-rate alert.
 STATUS_CLIENT_DISCONNECT = 499
-COLLECTORS = ("readiness", "feed", "outbox", "peers", "sync_upstreams", "providers", "backup", "database", "catalog",
-              "media_storage")
+COLLECTORS = ("readiness", "feed", "upgrade", "outbox", "peers", "sync_upstreams", "providers", "backup", "database",
+              "catalog", "media_storage")
 #: Collectors whose result is cached for `ATLAS_METRICS_CACHE_SECONDS` (aggregate scans and a directory walk):
 #: a scrape never runs them more than once per period per process.
 CACHED = ("catalog", "media_storage")
@@ -185,6 +185,26 @@ class Stats:
 
     def _feed(self, state, session):
         return ["# TYPE atlas_feed_head gauge", f"atlas_feed_head {feed.head_seq(session)}"]
+
+    def _upgrade(self, state, session):
+        """C16 upgrade journal (§6.3, Z2): one gauge per stage, 1 while it is the first still-pending stage for
+        this node (so a scrape can alert on "stuck on introduce_missing for N minutes"), plus whether the whole
+        journal is done and how many introduce-batch entries are left in the current stage. Absent stage names
+        (`atlas.upgrade.STAGES`) never appear with value 0 only because this process has not run them yet: every
+        name is always emitted, one way or the other."""
+        from . import upgrade
+
+        info = upgrade.status(session)
+        lines = ["# TYPE atlas_upgrade_complete gauge", f"atlas_upgrade_complete {int(info is None or info['complete'])}"]
+        lines.append("# TYPE atlas_upgrade_stage gauge")
+        current = info["stage"] if info else None
+        for name in upgrade.STAGES:
+            lines.append(f'atlas_upgrade_stage{{stage="{name}"}} {int(name == current)}')
+        lines.append("# TYPE atlas_upgrade_stage_left gauge")
+        lines.append(f"atlas_upgrade_stage_left {(info or {}).get('left') or 0}")
+        lines.append("# TYPE atlas_upgrade_skipped_scope_ceiling gauge")
+        lines.append(f"atlas_upgrade_skipped_scope_ceiling {(info or {}).get('skipped_scope_ceiling') or 0}")
+        return lines
 
     def _outbox(self, state, session):
         lines = ["# TYPE atlas_outbox_messages gauge"]
