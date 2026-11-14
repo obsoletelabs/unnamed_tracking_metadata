@@ -1067,6 +1067,72 @@ def provider_fetch(name: str, body: FetchBody, st: St, session: Sess,
             "game": game_out(got.row, None, session, st.ctx)}
 
 
+# ---- asking the owner group (CONTRACT-C14 Part A) -----------------------------------------------------
+
+class AssistAskBody(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=100)
+
+
+@router.post("/group/assist/ask", tags=["group"])
+def group_assist_ask(body: AssistAskBody, st: St, session: Sess,
+                     principal: Annotated[auth.Principal, Depends(require("read"))]):
+    """Ask this node's owner group for records it lacks ("Ask my nodes", C14 §3.2), also ones it gave up on. The
+    answer arrives in a later group round; nothing is fetched in this request. Reading a record is the right this
+    needs (§3.9). 409 when the node is in no group or asking is off; 429 past `ASK_PER_HOUR` forced asks per token
+    (a forced ask skips the backoff and wakes the group round). Audited as `group_assist_ask`."""
+    from .. import assist, group_channel, ratelimit
+
+    if any(not assist.ID_RE.match(cid) for cid in body.ids):
+        raise AtlasError("ids must be atlas record ids", "invalid")
+    ok, retry = ratelimit.hit(st.maker, f"assist-ask:{principal.token_id}", assist.ASK_PER_HOUR, 3600)
+    if not ok:
+        raise HTTPException(429, "too many group asks from this token; try later",
+                            headers={"Retry-After": str(max(1, int(retry)))})
+    queued = [cid for cid in dict.fromkeys(body.ids) if assist.note_missing(session, st.ctx.settings, cid, "user",
+                                                                             force=True)]
+    if not queued:
+        raise HTTPException(409, "this node is not asking an owner group (no group, or group_assist_ask is off)")
+    accounts.audit(session, None, "group_assist_ask", queued[0],
+                   {"via": "api", "by_token": principal.token_id, "ids": queued})
+    group_channel.WAKE.set()
+    return {"queued": queued}
+
+
+@router.get("/group/assist", tags=["group"])
+def group_assist_status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]):
+    """Counts of the group question queue: due, backing off, given up, dropped (queue full), evidence items."""
+    from .. import assist
+
+    return assist.counts(session)
+
+
+class AssistLookupBody(BaseModel):
+    provider: str = Field(min_length=1, max_length=32)
+    external_id: str = Field(min_length=1, max_length=64)
+    record: str | None = Field(default=None, max_length=40)
+
+
+@router.post("/group/assist/lookup", tags=["group"])
+def group_assist_lookup(body: AssistLookupBody, st: St, session: Sess,
+                        principal: Annotated[auth.Principal, Depends(require("contribute"))]):
+    """Fetch from a provider through a member of the owner group (C14 §4): for a provider this node has no key
+    for, or no budget left. With `record`, the result is kept on that record as group data (never public, never
+    in this node's feed). Needs `group_assist_lookups = answer+ask`; the same right as `POST
+    /providers/{name}/fetch`."""
+    from .. import assist, assist_lookup
+
+    if body.record is not None and session.get(Canonical, body.record) is None:
+        raise AtlasError("unknown record", "not_found")
+    session.commit()  # no transaction is held while the member answers
+    try:
+        got = assist_lookup.lookup_via_group(st.maker, st.ctx, st.http, body.provider, "fetch",
+                                             external_id=body.external_id, cid=body.record)
+    except assist.AssistError as exc:
+        status = {"forbidden": 409, "invalid_id": 400, "not_configured": 400}.get(exc.code, 502)
+        raise HTTPException(status, f"no member could answer: {exc.code}") from None
+    return {"results": got["results"], "kept": got["ingested"]}
+
+
 # ---- schema and custom values -------------------------------------------------------------------------
 
 @router.get("/schema", tags=["ops"])

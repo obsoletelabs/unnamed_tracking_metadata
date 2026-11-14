@@ -127,15 +127,23 @@ def _failure_groups(p: Ctx) -> list[dict]:
 def _waiting(p: Ctx) -> dict:
     """C13 §8.1: entries waiting for a record, grouped by peer feed and by the record they wait for, each with its
     sub-reason and the note to copy for the upstream's operator."""
+    from .. import assist, scope
+    from .. import groups as owner_groups
+
     names = {n: name for n, name in p.session.execute(select(Peer.node_id, Peer.name))}
+    group = owner_groups.active(p.session) if scope.in_group(p.session) else None
     groups = []
     for g in sync.waiting_groups(p.session):
         g["peer"] = names.get(g["node_id"])
         g["since_dt"] = datetime.fromisoformat(g["since"]) if g["since"] else None
         if g["subreason"] == sync.UPSTREAM_DEFECT and g["peer"]:
             g["label"] = f"Waiting for its game: {g['peer']}'s feed is missing it"
+        # C14 §3.2/§3.5: what the owner group said about it (admin page: member names are fine here)
+        g["assist"] = (assist.waiting_line(p.session, g["canonical_id"], g["node_id"], group.group_id)
+                       if group is not None else None)
         groups.append(g)
-    return {**sync.open_waiting(p.session), "groups": groups}
+    return {**sync.open_waiting(p.session), "groups": groups, "in_group": group is not None,
+            "asking": bool(getattr(p.st.ctx.settings, "group_assist_ask", True))}
 
 
 def _media_line(p: Ctx, peer: Peer) -> dict | None:
@@ -166,6 +174,34 @@ def _records(p: Ctx) -> dict | None:
                introduced_through=feed.introduced_through(p.session),
                bridge=bool(p.st.ctx.settings.federation_bridge_record_obs))
     return out
+
+
+@router.post("/admin/peers/assist/ask")
+def assist_ask(p: Annotated[Ctx, Depends(admin_form)], cid: Annotated[str, Form(max_length=40)]):
+    """"Ask my nodes" (C14 §3.2): (re)open the record's job now, also after it gave up. Reading a record is the
+    right this needs (§3.9); the page is for administrators."""
+    from .. import assist, group_channel
+
+    if not assist.ID_RE.match(cid):
+        raise HTTPException(400, "Unknown record.")
+    if not assist.note_missing(p.session, p.st.ctx.settings, cid, "user", force=True):
+        return _peers_page(p, error="This node is not asking its group: it is in no group, or asking is off on "
+                                    "Admin → Group.", status=409)
+    accounts.audit(p.session, p.me.id, "group_assist_ask", cid, {})
+    group_channel.WAKE.set()
+    return go("/admin/peers#waiting-entries", "saved")
+
+
+@router.post("/admin/peers/assist/adopt")
+def assist_adopt(p: Annotated[Ctx, Depends(admin_form)], item: Annotated[str, Form(max_length=40)]):
+    """"Use what <member> has" (C14 §3.5 class 2): wake the entries that wait, reversibly (`forget`)."""
+    from .. import assist
+
+    try:
+        assist.adopt(p.session, p.st.ctx, item, p.me.id)
+    except assist.AssistError:
+        return _peers_page(p, error="That answer is no longer on offer.", status=409)
+    return go("/admin/peers#waiting-entries", "saved")
 
 
 @router.post("/admin/peers/introduce")

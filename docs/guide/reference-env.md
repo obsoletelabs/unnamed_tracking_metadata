@@ -65,6 +65,18 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_GROUP_DENIED_ACCOUNTS` | — | Node groups: space-separated group account ids whose grants are ignored here. **live** |
 | `ATLAS_GROUP_DATA_PUBLIC_PAGES` | `false` | Scopes (C14): show data received from your other nodes to visitors, read-only tokens and accounts without `scope.detail`, in the public field categories only. Off by default. Also on Admin → Sharing. **live** |
 | `ATLAS_GROUP_PUBLIC_CATEGORIES` | `identity release platforms classification credits series external_ids cover_art` | Scopes (C14): space-separated field categories visitors may see of data from your nodes while `group_data_public_pages` is on (`identity release platforms classification credits series external_ids cover_art` by default). **live** |
+| `ATLAS_GROUP_ASSIST_ASK` | `true` | Asking your nodes (C14): ask the other members of the owner group for games this node waits for and images it cannot fetch. Also on Admin → Group. **live** |
+| `ATLAS_GROUP_ASSIST_ANSWER` | `public` | Asking your nodes: what this node answers members with: `off`, `public` (published data only, the default) or `group` (also its own provider data, as `group_assist_share_provider_data` allows). **live** |
+| `ATLAS_GROUP_ASSIST_SHARE_PROVIDER_DATA` | `none` | Asking your nodes: which of this node's provider data it shares in the group with `group_assist_answer = group`: `none`, `fields`, `fields+media` or `fields+media+achievements`. **live** |
+| `ATLAS_GROUP_ASSIST_LOOKUPS` | `off` | Asking your nodes: provider lookups for members: `off`, `answer` (run them from this node's keys) or `answer+ask` (also ask members). **live** |
+| `ATLAS_GROUP_ASSIST_LOOKUP_RESERVE` | `50` | Asking your nodes: percent of each provider budget kept for this node's own lookups (0-95, default 50). **live** |
+| `ATLAS_GROUP_ASSIST_AUTO_ADOPT` | `false` | Asking your nodes: apply waiting changes a member reports it applied without the "Use what <member> has" click (same-owner preset). **live** |
+| `ATLAS_GROUP_ASSIST_GROUP_BEFORE_ORIGIN` | `false` | Asking your nodes: fetch images from a member before their origin (same-owner preset); otherwise only when the origin fails. **live** |
+| `ATLAS_GROUP_SHARE_CONTRIBUTION_STATE` | `true` | Share the state of this node's proposals to a main Atlas with the other members of the owner group, and show theirs (on by default). **live** |
+| `ATLAS_GROUP_ASSIST_MAX_JOBS` | `5000` | Asking your nodes: the most games queued at once (5000). |
+| `ATLAS_GROUP_ASSIST_RUN_LIMIT` | `50` | Asking your nodes: games asked for per group round (50). |
+| `ATLAS_GROUP_ASSIST_GIVE_UP_DAYS` | `30` | Asking your nodes: days after which a game nobody has is no longer asked for automatically (30). |
+| `ATLAS_GROUP_ASSIST_MAX_ANSWER` | `524288` | Asking your nodes: largest answer this node sends, in bytes (512 KiB). |
 | `ATLAS_INHERIT_SCHEMA` | `true` | Adopt the upstream authority's media types and custom fields (yours always take precedence). Editable in Admin → Settings. **live** |
 | `ATLAS_OIDC_PROVIDER_ENABLED` | `false` | Let other nodes and the Tracking App sign users in with accounts on this node (OpenID Connect). Editable in Admin → Settings. **live** |
 | `ATLAS_SELF_SERVICE_SYNC_TOKENS` | `false` | Let members create their own read-only tokens with the `sync` scope (Profile → API tokens), to follow this node from their own node or app. Off by default; turning it off stops those tokens' sync access at once. Editable in Admin → Settings. **live** |

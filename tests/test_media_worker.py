@@ -19,7 +19,7 @@ class StopAfterWaits:
 def test_media_worker_drains_full_batches_and_waits_when_idle(monkeypatch, maker, ctx):
     stop = StopAfterWaits(3)
     results = iter([ctx.settings.media_cache_batch, 1, 0])
-    monkeypatch.setattr(media, "cache_pending", lambda *_: next(results))
+    monkeypatch.setattr(media, "cache_pending", lambda *_, **__: next(results))
 
     main._cache_media(maker, ctx, stop)
 
@@ -31,7 +31,7 @@ def test_media_worker_recovers_after_failure_without_logging_secrets(monkeypatch
     stop = StopAfterWaits(2)
     attempts = []
 
-    def cache(*_):
+    def cache(*_, **__):
         attempts.append(True)
         if len(attempts) == 1:
             raise RuntimeError("https://example.test/image?secret=private")
@@ -52,7 +52,7 @@ def test_media_worker_respects_disabled_caching_and_live_setting_changes(monkeyp
         ctx.settings = ctx.settings.model_copy(update={"media_cache_enabled": len(stop.waits) == 1})
 
     stop = StopAfterWaits(3, change_setting)
-    monkeypatch.setattr(media, "cache_pending", lambda *_: downloads.append(True) or 0)
+    monkeypatch.setattr(media, "cache_pending", lambda *_, **__: downloads.append(True) or 0)
     main._cache_media(maker, ctx, stop)
 
     assert downloads == [True] and all(0 < delay <= 5 for delay in stop.waits)

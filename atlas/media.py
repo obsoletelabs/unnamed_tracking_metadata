@@ -552,19 +552,64 @@ def _store_measured(kind: str, settings: Settings, data: bytes, ext: str) -> str
         m.media_duration.observe(time.monotonic() - started, kind=kind, operation="store")
 
 
-def cache_one(session: Session, settings: Settings, art: Artwork, client: httpx.Client) -> bool:
+def _from_group(session: Session, settings: Settings, art: Artwork, group_fetch: Any) -> bytes | None:
+    """CONTRACT-C14 §3.6: the bytes from a member of this node's owner group (`assist.blob`), already checked
+    against the row's digest; an answer that is not a valid image marks that member suspect."""
+    if group_fetch is None:
+        return None
+    from . import assist
+
+    try:
+        data = group_fetch(session, art)
+    except Exception as exc:  # noqa: BLE001 - the group is a fallback; a failure leaves the other sources
+        log.info("artwork %s %s: no image from the group (%s)", art.canonical_id, art.kind, type(exc).__name__)
+        return None
+    if data is None:
+        return None
+    try:
+        validate_image(data, settings)
+    except MediaError as exc:
+        helper = (art.fetched_from or "")[len(assist.GROUP_PREFIX):]
+        if helper:
+            assist.suspect(session, helper, "bad_image")
+        _tried(art, "group", exc.code)
+        return None
+    return data
+
+
+def cache_one(session: Session, settings: Settings, art: Artwork, client: httpx.Client,
+              group_fetch: Any = None) -> bool:
+    """Peer first (C13 §6.2), then the origin; the owner group (`group_fetch`, C14 §3.6) before the origin only
+    with `group_assist_group_before_origin` (the full-trust preset), otherwise when the origin fails. A row that
+    came from the group keeps its `group:<helper>` label wherever its bytes came from (it is group data)."""
+    got_from: dict[str, str | None] = {"source": None}
+    group_row = (art.fetched_from or "").startswith("group:")
+    early = bool(getattr(settings, "group_assist_group_before_origin", False))
+
     def fetch() -> tuple[bytes, str]:
         got = _from_peer(session, settings, art, client)
         if got is not None:
+            got_from["source"] = "peer"
             return got, "peer"
-        got = _request(client, art.url, settings)
-        art.fetched_from = "origin"
+        if early and (got := _from_group(session, settings, art, group_fetch)) is not None:
+            got_from["source"] = "group"
+            return got, "group"
+        try:
+            got = _request(client, art.url, settings)
+        except MediaError as exc:
+            if exc.deferred or early or (fallback := _from_group(session, settings, art, group_fetch)) is None:
+                raise
+            got_from["source"] = "group"
+            return fallback, "group"
+        if not group_row:
+            art.fetched_from = "origin"
+        got_from["source"] = "origin"
         return got, "origin"
 
     try:
         data, (ext, ctype, w, h) = _fetch_measured("artwork", fetch, settings)
         digest = _store_measured("artwork", settings, data, ext)
-        if art.fetched_from == "origin" and art.peer_digest and art.peer_digest != digest \
+        if got_from["source"] == "origin" and art.peer_digest and art.peer_digest != digest \
                 and art.digest_provenance != "signed":
             # C13 §6.2 step 3: a digest a peer reported (unsigned) is a hint only. The origin's bytes differ (the
             # image was updated, or the peer is stale): keep them, and record that the digest is the origin's.
@@ -594,7 +639,8 @@ def _proxied_sources(settings: Settings, sources: list[str]) -> list[str]:
     return [s for s in sources if policy(settings, s).fetch == "proxy"]
 
 
-def cache_pending(maker: sessionmaker[Session], settings: Settings, client: httpx.Client | None = None) -> int:
+def cache_pending(maker: sessionmaker[Session], settings: Settings, client: httpx.Client | None = None,
+                  group_fetch: Any = None) -> int:
     """Cache a bounded batch of uncached artwork; safe to call from several workers.
 
     Only rows whose source policy is `proxy` are downloaded (§12.5.5); uploads are already stored. Cached rows
@@ -612,7 +658,7 @@ def cache_pending(maker: sessionmaker[Session], settings: Settings, client: http
                 ).order_by(Artwork.priority, Artwork.created_at).limit(settings.media_cache_batch)
             ).all() if proxied else []
             for art in rows:
-                done += cache_one(session, settings, art, own)
+                done += cache_one(session, settings, art, own, group_fetch)
                 session.commit()
         done += cache_pending_achievement_icons(maker, settings, own)
         backfill(maker, settings, limit=settings.media_cache_batch)

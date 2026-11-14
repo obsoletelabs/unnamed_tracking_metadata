@@ -79,6 +79,30 @@ ENV_HELP: dict[str, tuple[str, str]] = {
     "group_public_categories": ("Federation", "Scopes (C14): space-separated field categories visitors may see of "
                                 "data from your nodes while `group_data_public_pages` is on (`identity release "
                                 "platforms classification credits series external_ids cover_art` by default)."),
+    "group_assist_ask": ("Federation", "Asking your nodes (C14): ask the other members of the owner group for "
+                         "games this node waits for and images it cannot fetch. Also on Admin → Group."),
+    "group_assist_answer": ("Federation", "Asking your nodes: what this node answers members with: `off`, "
+                            "`public` (published data only, the default) or `group` (also its own provider data, "
+                            "as `group_assist_share_provider_data` allows)."),
+    "group_assist_share_provider_data": ("Federation", "Asking your nodes: which of this node's provider data it "
+                                         "shares in the group with `group_assist_answer = group`: `none`, `fields`, "
+                                         "`fields+media` or `fields+media+achievements`."),
+    "group_assist_lookups": ("Federation", "Asking your nodes: provider lookups for members: `off`, `answer` (run "
+                             "them from this node's keys) or `answer+ask` (also ask members)."),
+    "group_assist_lookup_reserve": ("Federation", "Asking your nodes: percent of each provider budget kept for this "
+                                    "node's own lookups (0-95, default 50)."),
+    "group_assist_auto_adopt": ("Federation", "Asking your nodes: apply waiting changes a member reports it applied "
+                                "without the \"Use what <member> has\" click (same-owner preset)."),
+    "group_assist_group_before_origin": ("Federation", "Asking your nodes: fetch images from a member before their "
+                                         "origin (same-owner preset); otherwise only when the origin fails."),
+    "group_share_contribution_state": ("Federation", "Share the state of this node's proposals to a main Atlas with "
+                                       "the other members of the owner group, and show theirs (on by default)."),
+    "group_assist_max_jobs": ("Federation", "Asking your nodes: the most games queued at once (5000)."),
+    "group_assist_run_limit": ("Federation", "Asking your nodes: games asked for per group round (50)."),
+    "group_assist_give_up_days": ("Federation", "Asking your nodes: days after which a game nobody has is no longer "
+                                  "asked for automatically (30)."),
+    "group_assist_max_answer": ("Federation", "Asking your nodes: largest answer this node sends, in bytes "
+                                "(512 KiB)."),
     "sync_batch_size": ("Federation", "Feed entries fetched per request."),
     "sync_max_parked_backlog": ("Federation", "Entries a follower keeps downloading, verifying and relaying after the "
                                 "first entry it had to park (it needs a newer release). Above this it pauses downloading "
@@ -291,6 +315,9 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("post", "/review/{rid}/merge"): "Resolve a review item by merging into one of its candidates.",
     ("get", "/providers"): "Providers configured on this node and their request budgets.",
     ("post", "/providers/{name}/fetch"): "Fetch full details from a provider (cached), merge, return the record.",
+    ("get", "/group/assist"): "Counts of this node's questions to its owner group (CONTRACT-C14 §3): due, backing off, given up, dropped because the queue was full, and kept evidence items. See [Node groups](node-groups.md#asking-your-nodes).",
+    ("post", "/group/assist/ask"): "Ask the owner group now for records this node lacks (`{ids: [...]}`, \"Ask my nodes\"), also ones it gave up on. Answers arrive in a later group round. 409 when the node is in no group or asking is off; 429 past 60 forced asks per token per hour. Audited as `group_assist_ask`.",
+    ("post", "/group/assist/lookup"): "A provider lookup through a member of the owner group (CONTRACT-C14 §4), for a provider this node has no key or budget for. With `record`, the result is kept on that record as group data (never public, never in this node's feed). Needs `group_assist_lookups = answer+ask`.",
     ("get", "/providers/{name}/search"): "Lightweight provider search; nothing is stored.",
     ("get", "/sync/changes"): "Signed entries after `since`; optional `node_id` selects a retained original authority feed.",
     ("get", "/sync/info"): "Stable trust root, current signer, signed successor proofs, available original feeds, and the federation protocol, feed kinds and capabilities this node speaks. Since protocol 1.5 also `own_head` (this node's own feed head), `introduced_through` (from that seq on, every game the feed names was introduced first; null until `atlas feed introduce` finished once), `media_withheld` and, per retained feed, `feeds[].empty`; an authority adds `records` (`live`, `introduced`, `not_federated`). Additive: older followers ignore them.",

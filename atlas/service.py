@@ -19,7 +19,7 @@ from .merge import merge
 from .models import AuditEntry, Canonical, Crosswalk, Lock, Observation, ReviewItem, now
 from .normalize import norm_namespace, norm_title
 from .resolve import follow
-from .settings import PROVIDER_SOURCES, Settings
+from .settings import GROUP_SOURCE, PROVIDER_SOURCES, Settings
 from .signing import NodeIdentity, canonical_json
 
 
@@ -211,7 +211,11 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
         raise AtlasError(f"source {ns!r} is reserved; it needs a token with the curate scope", "forbidden")
     if ns == feed_schema.RECORD_SOURCE:  # C13 §3.2: only a feed's own `record` entries write this source
         raise AtlasError(f"source {ns!r} is reserved for record identities", "forbidden")
-    horizon = int(now().timestamp()) + 86400
+    if ns == GROUP_SOURCE or (conn.source_scope.startswith("group:") and not system):
+        # C14 §3.4: group data is written only by the assist code (a bundle or an attested lookup), never by a
+        # client, a curator or an import: a group scope written from outside would bypass the ceiling and evidence
+        raise AtlasError("data from the owner group is written only by this node's assist code", "forbidden")
+    horizon =int(now().timestamp()) + 86400
     results: list[IngestResult] = []
     touched: dict[str, str] = {}  # record -> client change cause, rebuilt once at the end
     cause = "provider" if system else None

@@ -78,7 +78,7 @@ scrape_configs:
 | `atlas_sync_waiting_entries` | Entries waiting for a game this node does not hold yet, per origin (not failures; applied when the game arrives) |
 | `atlas_sync_waiting_records` | Games those waiting entries wait for, per origin |
 | `atlas_sync_open_failures` | Open entries per origin that are not applied: waiting plus quarantined |
-| `atlas_sync_woken_total` | Arrivals of a game that applied waiting entries, per origin and `trigger` (`record`, `obs`, `bridge` for an `atlas-record` observation, `detach`) |
+| `atlas_sync_woken_total` | Arrivals of a game that applied waiting entries, per origin and `trigger` (`record`, `obs`, `bridge` for an `atlas-record` observation, `detach`, `group` for an answer from the owner group) |
 | `atlas_peer_status` | One for the peer's current status (`status` is `paused`, `not_contacted`, `needs_you`, `unreachable`, `empty`, `catching_up`, `caught_up_waiting` or `caught_up`), zero for the others, per peer |
 | `atlas_feed_records` | Authority only: live games by `state`: `introduced` to followers, `not_federated` (never introduced), `missing` (named by a signed entry but never introduced: `atlas feed introduce --missing` would publish them) |
 | `atlas_outbox_messages` | Pending, failed and sent email counts; failed deliveries may be retried |
@@ -159,7 +159,11 @@ measured: this release has no structured description to count. No player identit
 | --- | --- | --- | --- |
 | `atlas_media_operations_total` | counter | `kind` = `artwork achievement_icon`, `operation` = `fetch store`, `outcome` = `ok deferred storage_error error` or a C12 `media_error` code | `fetch` downloads (from the delivering peer first, then the origin) and decode-validates; `deferred` is this node's own per-host limit, not a failure |
 | `atlas_media_operation_duration_seconds` | histogram (s) | `kind`, `operation` | Fetch and store latency |
-| `atlas_media_transfer_bytes_total` | counter (bytes) | `source` = `origin peer` | Image bytes downloaded, valid or not |
+| `atlas_media_transfer_bytes_total` | counter (bytes) | `source` = `origin peer group` | Image bytes downloaded, valid or not (`group`: from a member of this node's owner group, `assist.blob`) |
+| `atlas_group_assist_jobs_total` | counter | `result` = `applied none_has_it merge_hint rejected error media_type_not_adopted` | Records this node asked its owner group for, by result (see [node groups](node-groups.md#asking-your-nodes)) |
+| `atlas_group_assist_rejected_total` | counter | `reason` = `bad_signature wrong_requester hash_mismatch bad_image too_large` | Group answers refused before anything applied; the helper is suspect for an hour |
+| `atlas_group_assist_bytes_total` | counter (bytes) | `role` = `served asked` | Image bytes moved by the group media fallback |
+| `atlas_group_assist_lookups_total` | counter | `role` = `asked answered`, `outcome` = `ok not_found throttled refused error` | Provider lookups made through the group, or for a member |
 | `atlas_media_cache_requests_total` | counter | `route` = `image media`, `result` = `hit redirect miss refused` | `image`: `/api/v2/artwork/{id}/image`; `media`: `/media/{digest}` on the API and the site. `refused`: the source's policy does not serve it here |
 | `atlas_media_cache_evictions_total` | counter | `reason` = `manual` | Images forgotten by *Clear cache*; Atlas has no automatic expiry or size-based eviction |
 | `atlas_media_storage_present` | gauge (collector) | none | 1 when `ATLAS_MEDIA_DIR` exists; when 0 the usage series below are absent (unknown, not zero) |

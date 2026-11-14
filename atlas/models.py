@@ -215,6 +215,9 @@ class Observation(Base):
     # lazily on the next re-ingest of the chain). An identical re-ingest only refreshes `last_seen_at`.
     payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # CONTRACT-C14 §3.4 (migration 0039): the `group_assist_item` (helper-signed bundle or lookup attestation) this
+    # observation was written from; NULL for everything else.
+    assist_item_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     __table_args__ = (
         Index("ix_obs_key", "source", "source_scope", "external_id", "is_current"),
@@ -1555,3 +1558,64 @@ def _sync_review_candidates(session: Session, _ctx: Any, _instances: Any) -> Non
                     session.delete(row)
             for cid in sorted(want - set(have)):
                 session.add(ReviewCandidate(review_id=item.id, canonical_id=cid))
+
+
+# ---- asking the group (CONTRACT-C14 Part A, migration 0039) ---------------------------------------------------
+
+class GroupAssistItem(Base):
+    """Evidence kept for everything an answer from another member of the owner group changed here (§3.4, §3.5).
+
+    `kind`: `bundle` (a helper-signed record bundle), `entry` (a feed entry signed by feed F that a helper carried,
+    verified against this node's own pin for F: class 1(a)), `vouch` (a bundle signed by F's own pinned feed key,
+    class 1(b)), `wake` (rows of feed F woken on a helper's word that it applied F: class 2, reversible),
+    `offer` (a class 2 wake waiting for the "Use what <helper> has" click), `merge_hint` (a helper says the record
+    was merged; never applied as a redirect) or `lookup` (a provider lookup attestation, §4.5). `body` holds the
+    small facts the item stands for (feed, seqs, survivor); `envelope` the signed object; `signed_entries` the
+    entries a bundle carried. Kept 90 days after `superseded_at` (D14.9)."""
+
+    __tablename__ = "group_assist_item"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=ulid)
+    helper: Mapped[str] = mapped_column(String(64))
+    cid: Mapped[str] = mapped_column(String(40))
+    kind: Mapped[str] = mapped_column(String(16))
+    body_hash: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    body: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    envelope: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    signed_entries: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (Index("ix_group_assist_item_cid", "cid", "superseded_at"),
+                      Index("ix_group_assist_item_helper", "helper", "kind"))
+
+
+class AssistLookupOp(Base):
+    """On a helper: one provider lookup an asker requested, by its stable `op_id` (§4.3 step 8, Review #1 C14-9).
+    A retry of a completed op gets the stored result re-signed for the new nonce without a second budget take; a
+    reuse of the op id for a different request (`request_hash`) is refused."""
+
+    __tablename__ = "assist_lookup_op"
+
+    asker: Mapped[str] = mapped_column(String(64), primary_key=True)
+    op_id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(10))  # claimed | completed
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class GroupContribState(Base):
+    """Contribution state shared inside the owner group (owner decision H67, §7.7). A row whose `origin_node` is
+    this node is its own item (served to members); every other row was received from that member, signed by it,
+    and is shown only. No payload values, reviewer notes or account data are ever stored here."""
+
+    __tablename__ = "group_contrib_state"
+
+    origin_node: Mapped[str] = mapped_column(String(64), primary_key=True)
+    contribution_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    envelope: Mapped[dict[str, Any]] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

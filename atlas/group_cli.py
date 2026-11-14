@@ -578,6 +578,44 @@ def cmd_root(args) -> int:
         return _err(str(exc))
 
 
+def cmd_assist(args) -> int:
+    """`atlas group assist status|run|forget` (CONTRACT-C14 Part A, §14)."""
+    from . import assist
+    from .service import Ctx
+
+    if args.assist_cmd == "run":
+        settings, maker = _maker()
+        with maker() as session:
+            identity = load_identity(session, settings)
+        with _http() as http:
+            out = assist.run(maker, Ctx(settings, identity), http)
+        print(json.dumps(out, indent=1, sort_keys=True, default=str))
+        return 0
+
+    def run(session, settings, identity):
+        if args.assist_cmd == "status":
+            data = assist.counts(session)
+            if args.json:
+                print(json.dumps(data, indent=1, sort_keys=True))
+            else:
+                print(f"asked: {data['due']} due, {data['backoff']} backing off; gave up on {data['given_up']}; "
+                      f"dropped (queue full): {data['dropped']}; evidence items: {data['items']}")
+            return 0
+        node = args.node.strip().lower()
+        if not assist.NODE_RE.match(node):
+            raise groups.GroupError("a member node id is 16 hex characters", "invalid")
+        counts = assist.forget(session, Ctx(settings, identity), node, dry_run=args.dry_run)
+        verb = "would" if args.dry_run else "did"
+        print(f"{verb} put {counts['rewaited']} entries back to waiting, retire {counts['observations']} "
+              f"observations, {counts['artwork']} artwork rows and {counts['items']} evidence items, and remove "
+              f"{counts['records']} records only that member's answers had created")
+        if args.dry_run:
+            session.rollback()
+        return 0
+
+    return _run(run)
+
+
 def register(sub) -> None:
     g = sub.add_parser("group", help="owner federation group: create, invite, join, members, revoke, leave")
     ga = g.add_subparsers(dest="group_cmd", required=True)
@@ -648,6 +686,16 @@ def register(sub) -> None:
     cr.add_argument("--json", action="store_true")
     cr.set_defaults(fn=cmd_crl)
     ga.add_parser("sync").set_defaults(fn=cmd_sync)
+    asst = ga.add_parser("assist", help="asking the group for missing records and images (C14)")
+    asa = asst.add_subparsers(dest="assist_cmd", required=True)
+    ast = asa.add_parser("status", help="the question queue: due, backing off, given up, dropped")
+    ast.add_argument("--json", action="store_true")
+    ast.set_defaults(fn=cmd_assist)
+    asa.add_parser("run", help="ask now (the group round does this on its own)").set_defaults(fn=cmd_assist)
+    af = asa.add_parser("forget", help="drop everything a member's answers changed here (reversible by asking again)")
+    af.add_argument("node", help="the member's node id")
+    af.add_argument("--dry-run", action="store_true", help="count what would change; change nothing")
+    af.set_defaults(fn=cmd_assist)
     rs = ga.add_parser("resync")
     rs.add_argument("--skip", action="store_true")
     rs.add_argument("--confirm-root", action="store_true",

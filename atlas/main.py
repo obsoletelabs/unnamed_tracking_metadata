@@ -169,24 +169,31 @@ def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event)
 
 
 def _cache_media(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
-    while not stop.is_set():
-        settings = ctx.settings
-        try:
-            if settings.media_cache_enabled:
-                with background.operation("media_cache"):
-                    cached = media.cache_pending(maker, settings)
-            else:
-                background.skipped("media_cache")
+    from . import assist
+
+    group_http = httpx.Client(trust_env=False)  # sealed member calls for images (C14 §3.6), never via a proxy
+    group_fetch = assist.blob_fetcher(ctx, group_http)
+    try:
+        while not stop.is_set():
+            settings = ctx.settings
+            try:
+                if settings.media_cache_enabled:
+                    with background.operation("media_cache"):
+                        cached = media.cache_pending(maker, settings, group_fetch=group_fetch)
+                else:
+                    background.skipped("media_cache")
+                    cached = 0
+            except media.MediaStorageError as exc:
+                log.warning("artwork cache cannot store images: %s", exc)
                 cached = 0
-        except media.MediaStorageError as exc:
-            log.warning("artwork cache cannot store images: %s", exc)
-            cached = 0
-        except Exception as exc:
-            log.warning("artwork cache failed: %s", type(exc).__name__)
-            cached = 0
-        # Drain full successful batches, but avoid a busy loop on an empty or failing queue.
-        if background.wait(stop, "media_cache", 0 if cached >= settings.media_cache_batch else 5):
-            break
+            except Exception as exc:
+                log.warning("artwork cache failed: %s", type(exc).__name__)
+                cached = 0
+            # Drain full successful batches, but avoid a busy loop on an empty or failing queue.
+            if background.wait(stop, "media_cache", 0 if cached >= settings.media_cache_batch else 5):
+                break
+    finally:
+        group_http.close()
 
 
 def _backups(engine, ctx: Ctx, stop: threading.Event) -> None:
@@ -301,6 +308,30 @@ def group_round(maker: sessionmaker[Session], ctx: Ctx, client) -> dict[str, str
                 if outcome != "ok":
                     outcomes[node] = outcomes.get(node, "ok") + f"; {outcome}"
         profile.prune(session)
+        session.commit()
+    # CONTRACT-C14 Part A and §7.7: ask the group for what this node waits for, learn the members' provider
+    # headroom, and pull the members' shared contribution state. Each step is its own transaction; a failing step
+    # never stops the round (the next round retries).
+    from . import assist, assist_lookup, contrib_state
+
+    try:
+        summary = assist.run(maker, ctx, client)
+        if summary.get("applied") or summary.get("rejected"):
+            log.info("asked the group: %s", {k: v for k, v in summary.items() if k != "backfill"})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("asking the group failed: %s", type(exc).__name__)
+    with maker() as session:
+        group = groups.active(session)
+        if group is not None:
+            tr = groups.trust(session, group, own_node=ctx.identity.node_id)
+            for step in (assist_lookup.poll_status, contrib_state.pull):
+                try:
+                    with session.begin_nested():
+                        step(session, ctx.settings, ctx.identity, group, tr, client, group_routes.call)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("group step %s failed: %s", step.__module__, type(exc).__name__)
+            assist.purge(session)
+            assist_lookup.purge(session)
         session.commit()
     return outcomes
 

@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 from starlette.concurrency import run_in_threadpool
 
-from .. import group_channel, group_enrol, groups, key_rotation, ratelimit
+from .. import assist, group_channel, group_enrol, groups, key_rotation, ratelimit
 from .. import group_crypto as gc
 from ..models import GroupNonce, OwnerGroup
 from ..signing import NodeIdentity, canonical_json
@@ -29,7 +29,12 @@ log = logging.getLogger("atlas.groups")
 router = APIRouter(include_in_schema=False)
 CALL_CAP = 256 * 1024
 CALL_OPS = ("hello", "state", "rotations", "heads", "changes", "snapshot", "notify",  # A10 + A11 (§3.3)
-            "push", "member_update")  # P7 (#122): push signed state to a member; send this node's member update
+            "push", "member_update",  # P7 (#122): push signed state to a member; send this node's member update
+            "assist.find", "assist.fetch", "assist.blob",  # C14 §3.3, §3.6: ask the group for records and images
+            "assist.lookup", "assist.status",  # C14 §4.2, §4.4: provider lookups on behalf, shared headroom
+            "link.state")  # C14 §7.7 (H67): shared contribution state
+#: Ops whose answer depends on this node's local policy; a member with the policy off answers `forbidden`.
+ASSIST_OPS = ("assist.find", "assist.fetch", "assist.blob", "assist.lookup", "assist.status")
 #: Client-side caps on a member's sealed answer (CONTRACT-C14 §3.10, fixes V2: `call()` used to read any answer
 #: whole). Per op: a full `changes` page (500 signed entries) or the `state`/`snapshot` of a large group must
 #: still fit, so the existing ops keep a generous cap until real sizes are measured; the C14 `assist.*` ops get
@@ -209,6 +214,17 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
         # The per-node throttle (step 11) is counted in its own transaction before this one writes, so the
         # SQLite write lock is never held across two sessions.
         throttled = not ratelimit.hit(st.maker, f"group-node:{inner['n']}", 600, 60)[0]
+        retry_after = None
+        fresh = abs(now - inner["t"]) <= gc.SKEW and \
+            session.get(GroupNonce, (inner["n"], inner["r"][:32])) is None
+        if not throttled and fresh and inner["op"] in ASSIST_OPS:
+            # C14 §3.10: the per-asker assist limits, counted before this transaction writes (a refused take
+            # counts nothing); `throttled` carries `retry_after` so the asker backs off this helper only. Only a
+            # fresh request (in the skew window, nonce not seen; read without a write lock) takes from the asker's
+            # budget, so an observer replaying a captured sealed request cannot spend it.
+            ok, retry = assist.limit_call(st.maker, inner["n"], inner["op"])
+            if not ok:
+                throttled, retry_after = True, retry
         if abs(now - inner["t"]) > gc.SKEW:
             error = "clock_skew"
         else:
@@ -224,11 +240,14 @@ def serve_call(st: AppState, body: Any, now: float | None = None) -> JSONRespons
             error = "not_found"
         if error is None and throttled:
             error = "throttled"
+            if retry_after is not None:
+                result = {"retry_after": max(1, int(retry_after))}
         if error is None:
             try:
                 result = _op(session, st, group, identity, inner, cert)
             except _OpError as exc:
                 error = str(exc)
+                result = exc.result
         server_time = gc.stamp(nowdt)
         outcome = {"result": result, "error": error, "server_time": server_time}
         parts = gc.response_parts(group.group_id, identity.node_id, identity.key_id, inner["n"], inner["r"],
@@ -287,11 +306,45 @@ def _op(session, st: AppState, group: OwnerGroup, identity: NodeIdentity, inner:
                                                         params.get("update"), inner["n"])}
         except groups.GroupError as exc:
             raise _OpError(str(exc)[:200]) from None
+    if op in ASSIST_OPS:
+        return _assist_op(session, st, group, identity, inner, tr)
+    if op == "link.state":
+        from .. import contrib_state
+
+        try:
+            return contrib_state.serve(session, st.ctx.settings, identity, params)
+        except contrib_state.StateError as exc:
+            raise _OpError(exc.code) from None
     return None
 
 
+def _assist_op(session, st: AppState, group: OwnerGroup, identity: NodeIdentity, inner: dict, tr: Any) -> Any:
+    """C14 Part A, answered only from what this node holds; the only writes are rate counters (and, for a lookup,
+    its provider cache row and idempotency row, §4.3)."""
+    from .. import assist_lookup
+
+    op, params, asker = inner["op"], inner["params"], inner["n"]
+    settings = st.ctx.settings
+    try:
+        if op == "assist.find":
+            return assist.serve_find(session, settings, params)
+        if op == "assist.fetch":
+            return assist.serve_fetch(session, settings, identity, group, asker, inner["r"], params)
+        if op == "assist.blob":
+            return assist.serve_blob(session, settings, asker, params)
+        if op == "assist.status":
+            return assist_lookup.serve_status(session, settings, group, st.providers)
+        return assist_lookup.serve_lookup(session, st, group, identity, asker, inner["r"], params)
+    except assist.Throttled as exc:
+        raise _OpError("throttled", {"retry_after": exc.retry_after}) from None
+    except assist.AssistError as exc:
+        raise _OpError(exc.code, getattr(exc, "result", None)) from None
+
+
 class _OpError(Exception):
-    pass
+    def __init__(self, message: str, result: Any = None):
+        super().__init__(message)
+        self.result = result
 
 
 def _or_error(result: Any) -> Any:
@@ -318,7 +371,12 @@ async def group_call(request: Request):
 # ---- client ------------------------------------------------------------------------------------------------
 
 class CallError(Exception):
-    pass
+    """A failed member call. `result` is the signed `result` that came with a signed `error` (for `throttled`,
+    `{"retry_after": seconds}`), None otherwise."""
+
+    def __init__(self, message: str, result: Any = None):
+        super().__init__(message)
+        self.result = result
 
 
 def response_cap(op: str) -> int:
@@ -349,9 +407,10 @@ def _post_capped(http: Any, url: str, content: bytes, cap: int) -> tuple[int, by
 
 
 def call(session, settings, identity: NodeIdentity, group: OwnerGroup, member: dict, op: str, params: dict,
-         http: Any, now: float | None = None) -> Any:
-    """One sealed, signed request to a member (its in-force certificate's `member`), verifying the signed answer."""
-    nonce = secrets.token_bytes(16)
+         http: Any, now: float | None = None, nonce: bytes | None = None) -> Any:
+    """One sealed, signed request to a member (its in-force certificate's `member`), verifying the signed answer.
+    `nonce` (16 bytes) lets a caller bind what the answer signs to the request (an `assist.fetch` bundle names it)."""
+    nonce = nonce if nonce is not None and len(nonce) == 16 else secrets.token_bytes(16)
     inner = {"v": 1, "g": group.group_id, "n": identity.node_id, "aud": member["node_id"], "k": identity.key_id,
              "t": int(now if now is not None else time.time()), "r": gc.b64(nonce), "proto": groups.GROUP_PROTOCOL,
              "op": op, "params": params}
@@ -383,7 +442,7 @@ def call(session, settings, identity: NodeIdentity, group: OwnerGroup, member: d
             rs.get("sig", "")):
         raise CallError("the answer is not signed by that member's current key")
     if plain.get("error"):
-        raise CallError(plain["error"])
+        raise CallError(plain["error"], plain.get("result"))
     return plain.get("result")
 
 
