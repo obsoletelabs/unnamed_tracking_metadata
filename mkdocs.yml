@@ -55,6 +55,7 @@ nav:
   - Running a node:
       - Administering: administering.md
       - Federation: federation.md
+      - Node groups: node-groups.md
       - Sign-in sharing (OIDC): sso.md
       - Security: security.md
   - Integrations:
