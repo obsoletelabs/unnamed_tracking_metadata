@@ -113,3 +113,14 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `GET` | `/group/assist` | admin | Counts of this node's questions to its owner group (CONTRACT-C14 §3): due, backing off, given up, dropped because the queue was full, and kept evidence items. See [Node groups](node-groups.md#asking-your-nodes). |
 | `POST` | `/group/assist/ask` | read | Ask the owner group now for records this node lacks (`{ids: [...]}`, "Ask my nodes"), also ones it gave up on. Answers arrive in a later group round. 409 when the node is in no group or asking is off; 429 past 60 forced asks per token per hour. Audited as `group_assist_ask`. |
 | `POST` | `/group/assist/lookup` | contribute | A provider lookup through a member of the owner group (CONTRACT-C14 §4), for a provider this node has no key or budget for. With `record`, the result is kept on that record as group data (never public, never in this node's feed). Needs `group_assist_lookups = answer+ask`. |
+
+## link
+
+| Method | Path | Scope | What it does |
+| --- | --- | --- | --- |
+| `DELETE` | `/link` | link (DPoP) | The linked node unlinks itself (`?reason=compromised` when it reports its own key as possibly stolen: pending proposals are then flagged for a careful review). |
+| `GET` | `/link` | link (DPoP) | A linked node's view of its link (CONTRACT-C14 §7.3): link id, pairwise subject, limits, use today, pending count, review mode, trust (`probation` until the link earns it) and key epoch. See [Linking to a main Atlas](linking-to-a-main-atlas.md). |
+| `GET` | `/link/contributions` | link (DPoP) | Decisions on this link's contributions since a cursor (`since`), in the order they happened. |
+| `POST` | `/link/contributions` | link (DPoP) | Up to 20 node-signed contribution envelopes; each becomes a proposal under this node's review rules, or is refused with a reason (`retry_after` for limits). Replays get their stored answer. |
+| `POST` | `/link/contributions/{contribution_id}/withdraw` | link (DPoP) | Withdraw one pending contribution. |
+| `POST` | `/link/rotation` | link (DPoP) | Rotate the link key: the new append-only key history and a proof by the new key, with a DPoP proof by the current key. A diverging history freezes the link. |

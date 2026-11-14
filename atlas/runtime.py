@@ -165,6 +165,24 @@ REGISTRY: tuple[Spec, ...] = (
     S("group_share_contribution_state", "Share contribution state with your other nodes", GROUP_POLICY, "bool",
       "Edits proposed to a main Atlas show as waiting or applied on every node of your group. Only the state "
       "travels: never the values, reviewer notes or account details."),
+    # CONTRACT-C14 Part C (C14-3, H73): linking local nodes to this node (authorities only).
+    S("link_enabled", "Let local nodes link and propose edits", "Federation", "bool",
+      "On an authority, people can link their own Atlas node to their account here (device code, QR and a "
+      "confirmation code from their node's screen) and send edits as proposals. Every new link starts on "
+      "probation: its proposals are reviewed until it earns trust under the normal reputation rules. Turning it "
+      "off stops every link at once. Has no effect on mirror and local nodes."),
+    S("link_review_default", "Review of proposals from linked nodes", "Federation", "choice",
+      "'standard': the normal auto-apply rules (reputation only, never reviewer rights, and only after the "
+      "link's probation). 'always': every proposal from a linked node waits for a reviewer.",
+      choices=("standard", "always")),
+    S("link_main_daily", "Proposals from all linked nodes per day", "Federation", "int",
+      "A ceiling across every link of this node.", lo=1, hi=10_000_000),
+    S("link_main_new_daily", "New links per day", "Federation", "int", "0 accepts no new links.", lo=0, hi=100_000),
+    S("link_federated_approval", "Approve links in a session opened through another node", "Federation", "bool",
+      "Off: approving a link needs a session signed in on this node."),
+    S("link_push", "Send approved local proposals to the main Atlas", "Federation", "choice",
+      "On a linked node: 'manual' sends only what you choose to propose; 'auto' also queues proposals approved "
+      "on this node, under your linked account.", choices=("manual", "auto")),
     S("inherit_schema", "Adopt the upstream media types and fields", "Federation", "bool",
       "Mirrors and local nodes copy the authority's custom fields; yours always take precedence."),
     S("media_cache_enabled", "Download and cache artwork", "Artwork", "bool"),

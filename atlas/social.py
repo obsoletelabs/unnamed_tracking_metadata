@@ -533,6 +533,10 @@ def delete_account(session: Session, user: User, ctx: Ctx | None = None) -> None
     from . import group_channel
 
     group_channel.on_account_deleted(session, ctx.settings if ctx else None, ctx.identity if ctx else None, user)
+    if ctx is not None:  # CONTRACT-C14 §6.7: a deleted account's node links are revoked
+        from . import link
+
+        link.revoke_for_account(session, ctx, user.id, "account_deleted")
     user.username = "deleted-" + secrets.token_hex(4)
     user.email, user.email_verified_at, user.bio = None, None, ""
     user.password_hash, user.status, user.role = "!", "suspended", "user"

@@ -10,6 +10,9 @@ Atlas nodes can follow each other. There is **no central server in the code**: a
 | `mirror` | provider cache and local-only overlays | an authority | can't rewrite records the upstream owns |
 | `local` | everything on its own data | optionally an authority | SQLite; private overlays win locally |
 
+Following is one direction: records flow from the authority to its followers. To send your own node's edits the
+other way, as proposals for the authority's reviewers, [link it to a main Atlas](linking-to-a-main-atlas.md).
+
 ## Telling nodes apart
 
 Every node shows a **kind** badge next to its name, in `/api/v2/site`, and on the peer page when you add it. Set it in

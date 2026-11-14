@@ -10,4 +10,5 @@
 <td><form method="post" action="/me/apps/{{ a.id }}/revoke">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Sign out of {{ a.name }}?" type="submit">Sign out</button></form></td></tr>{% endfor %}
 </tbody></table>
 {% else %}<p class="muted">No app is signed in with this account right now.</p>{% endif %}
+{% if s.role == 'authority' and s.link_enabled %}<p class="small muted">Your own Atlas nodes linked to this account are on <a href="/me/links">Linked local nodes</a>.</p>{% endif %}
 {% endblock %}

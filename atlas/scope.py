@@ -55,9 +55,11 @@ WIDTH = {"public": 0, "group": 1, "private": 2, "local": 3}
 GROUP_SOURCE = "atlas-group"
 GROUP_SCOPE_PREFIX = "group:"
 HOST_KINDS = ("host", "plugin")
-#: The `user_permission` values this release knows (C14 §9). `feed.access` follows with C14-3m.
+#: The `user_permission` values this release knows (C14 §9): `scope.detail` (C14-1 §5.7) and `feed.access`
+#: (C14-3m §7.6, owner decision H68: the holder may create their own read-only feed tokens).
 DETAIL = "scope.detail"
-PERMISSIONS = (DETAIL,)
+FEED = "feed.access"
+PERMISSIONS = (DETAIL, FEED)
 #: Non-personal API tokens with one of these scopes act for the operator and see what an administrator sees.
 OPERATOR_TOKEN_SCOPES = frozenset({"contribute", "curate", "admin"})
 

@@ -66,6 +66,17 @@ PERSONAL_SCOPES = frozenset({"read"})
 PERSONAL_SYNC_SCOPES = frozenset({"read", "sync"})  # only while `self_service_sync_tokens` is on (#84)
 
 
+FEED_TOKEN_DAYS = 365  # default expiry of a feed token a `feed.access` holder creates (§7.6)
+
+
+def holds_feed_access(session: Session, user_id: str) -> bool:
+    """The `feed.access` right (CONTRACT-C14 §7.6, owner decision H68): granted per account by a local admin; never
+    carried by a C10 grant, a federated session or a node link."""
+    from .models import UserPermission
+
+    return session.get(UserPermission, (user_id, "feed.access")) is not None
+
+
 def authenticate(session: Session, header: str | None, personal_sync: bool = False) -> Principal | None:
     if not header or not header.lower().startswith("bearer "):
         return None
@@ -86,9 +97,11 @@ def authenticate(session: Session, header: str | None, personal_sync: bool = Fal
         if owner is None or owner.status != "active":
             return None
         # Personal tokens never write: contributions go through proposals and review. `sync` (reading the change
-        # feed) is honoured only while the node allows self-service sync tokens, checked on every request, so
-        # turning the setting off leaves no standing access behind (#84).
-        scopes &= PERSONAL_SYNC_SCOPES if personal_sync else PERSONAL_SCOPES
+        # feed) is honoured only while the node allows self-service sync tokens (#84) OR the owner currently holds
+        # the `feed.access` right (CONTRACT-C14 §7.6, H68), checked on every request, so turning the setting off or
+        # revoking the right leaves no standing access behind.
+        allowed = personal_sync or ("sync" in scopes and holds_feed_access(session, owner.id))
+        scopes &= PERSONAL_SYNC_SCOPES if allowed else PERSONAL_SCOPES
     last = row.last_used_at
     if last is None or (current - (last if last.tzinfo else last.replace(tzinfo=current.tzinfo))).total_seconds() > 60:
         row.last_used_at = current

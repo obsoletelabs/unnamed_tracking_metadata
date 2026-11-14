@@ -77,6 +77,12 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_GROUP_ASSIST_RUN_LIMIT` | `50` | Asking your nodes: games asked for per group round (50). |
 | `ATLAS_GROUP_ASSIST_GIVE_UP_DAYS` | `30` | Asking your nodes: days after which a game nobody has is no longer asked for automatically (30). |
 | `ATLAS_GROUP_ASSIST_MAX_ANSWER` | `524288` | Asking your nodes: largest answer this node sends, in bytes (512 KiB). |
+| `ATLAS_LINK_ENABLED` | `true` | Node links (authority only): let local nodes link to accounts here with the device grant and send edits as proposals. On by default; every new link starts on probation. **live** |
+| `ATLAS_LINK_REVIEW_DEFAULT` | `standard` | Node links: `standard` follows the normal auto-apply rules after the link's probation; `always` reviews every proposal from a linked node. **live** |
+| `ATLAS_LINK_MAIN_DAILY` | `5000` | Node links: proposals accepted from all linked nodes together per day (5000). **live** |
+| `ATLAS_LINK_MAIN_NEW_DAILY` | `50` | Node links: new links accepted per day across this node (50). **live** |
+| `ATLAS_LINK_FEDERATED_APPROVAL` | `false` | Node links: a session opened through another node of the group may approve a link (off). **live** |
+| `ATLAS_LINK_PUSH` | `manual` | On a linked node: `manual` sends only the edits you propose to the main Atlas; `auto` also queues local proposals approved here. **live** |
 | `ATLAS_INHERIT_SCHEMA` | `true` | Adopt the upstream authority's media types and custom fields (yours always take precedence). Editable in Admin → Settings. **live** |
 | `ATLAS_OIDC_PROVIDER_ENABLED` | `false` | Let other nodes and the Tracking App sign users in with accounts on this node (OpenID Connect). Editable in Admin → Settings. **live** |
 | `ATLAS_SELF_SERVICE_SYNC_TOKENS` | `false` | Let members create their own read-only tokens with the `sync` scope (Profile → API tokens), to follow this node from their own node or app. Off by default; turning it off stops those tokens' sync access at once. Editable in Admin → Settings. **live** |

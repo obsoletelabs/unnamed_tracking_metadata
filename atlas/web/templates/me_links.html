@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Linked local nodes · {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Linked local nodes</h1>
+<p class="muted">Your own Atlas nodes that may propose changes to {{ app_name }} under your account. Their proposals go through review here; a new link (and every relink) starts on probation until reviewers have approved enough of its work. <a href="/link">Link a node</a></p>
+{% if links %}
+{% for x in links %}{% set l = x.l %}
+<section class="card" data-node-link="{{ l.id }}">
+  <h2>{{ l.name or 'A removed node' }} <span class="badge{% if l.status == 'active' %} ok{% elif l.status in ('frozen', 'banned') %} danger{% endif %}">{{ {'active': 'linked', 'frozen': 'frozen', 'revoked': 'unlinked', 'banned': 'banned'}[l.status] }}</span>{% if l.status == 'active' %} <span class="badge{% if l.trust == 'probation' %} warn{% else %} ok{% endif %}">{{ 'on probation' if l.trust == 'probation' else 'trusted' }}</span>{% endif %}</h2>
+  <dl class="facts link-facts">
+    <dt>Fingerprint</dt><dd><code class="mono">{{ x.fp }}</code></dd>
+    <dt>Linked</dt><dd>{{ when(l.created_at) }}{% if l.last_used_at %}, last used {{ when(l.last_used_at, true) }}{% endif %}</dd>
+    <dt>Waiting for review</dt><dd>{{ x.pending }}</dd>
+    <dt>Reviewers see</dt><dd>{{ x.label }}</dd>
+  </dl>
+  {% if l.status == 'frozen' %}<p class="error" role="alert">This link is frozen: its key may have been stolen. Its waiting proposals are marked for a careful review. Relink it from the node (Admin → Main Atlas → Link again) to continue.</p>{% endif %}
+  {% if l.status == 'active' %}
+  <form class="inline" method="post" action="/me/links/{{ l.id }}/name">{{ csrf(p.csrf) }}
+    <label><input type="checkbox" name="show" {{ 'checked' if l.show_name }}> Show my display name on its proposals</label> <button class="secondary small" type="submit">Save</button></form>
+  {% endif %}
+  <p>{% if x.pending %}<form class="inline" method="post" action="/me/links/{{ l.id }}/withdraw">{{ csrf(p.csrf) }}<button class="secondary small" data-confirm="Withdraw all {{ x.pending }} waiting proposals from this node?" type="submit">Withdraw all pending</button></form>{% endif %}
+  {% if l.status in ('active', 'frozen') %}<form class="inline" method="post" action="/me/links/{{ l.id }}/unlink">{{ csrf(p.csrf) }}<button class="danger small" data-confirm="Unlink {{ l.name }}? It can no longer propose anything. Waiting proposals stay for review." type="submit">Unlink</button></form>{% endif %}</p>
+</section>
+{% endfor %}
+{% else %}<p class="card muted">No node is linked to this account.</p>{% endif %}
+{% endblock %}

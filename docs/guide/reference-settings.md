@@ -50,6 +50,12 @@ These can be changed live in **Admin → Settings** without restarting. Each cha
 | --- | --- | --- | --- |
 | **Act as a sign-in provider (OIDC)** (`oidc_provider_enabled`) | on/off | `False` | Lets other nodes you register under Admin → Sign-in sharing let your users sign in with their account here. |
 | **Members may create their own sync tokens** (`self_service_sync_tokens`) | on/off | `False` | Lets signed-in members with a verified account create personal read-only tokens that can also follow this node's change feed (scope sync), for their own Atlas node or the Tracking App, without asking an administrator. Turning it off stops the sync access of those tokens at once. |
+| **Let local nodes link and propose edits** (`link_enabled`) | on/off | `True` | On an authority, people can link their own Atlas node to their account here (device code, QR and a confirmation code from their node's screen) and send edits as proposals. Every new link starts on probation: its proposals are reviewed until it earns trust under the normal reputation rules. Turning it off stops every link at once. Has no effect on mirror and local nodes. |
+| **Review of proposals from linked nodes** (`link_review_default`) | standard / always | `standard` | 'standard': the normal auto-apply rules (reputation only, never reviewer rights, and only after the link's probation). 'always': every proposal from a linked node waits for a reviewer. |
+| **Proposals from all linked nodes per day** (`link_main_daily`) | number (1–10000000) | `5000` | A ceiling across every link of this node. |
+| **New links per day** (`link_main_new_daily`) | number (0–100000) | `50` | 0 accepts no new links. |
+| **Approve links in a session opened through another node** (`link_federated_approval`) | on/off | `False` | Off: approving a link needs a session signed in on this node. |
+| **Send approved local proposals to the main Atlas** (`link_push`) | manual / auto | `manual` | On a linked node: 'manual' sends only what you choose to propose; 'auto' also queues proposals approved on this node, under your linked account. |
 | **Adopt the upstream media types and fields** (`inherit_schema`) | on/off | `True` | Mirrors and local nodes copy the authority's custom fields; yours always take precedence. |
 
 ## Security

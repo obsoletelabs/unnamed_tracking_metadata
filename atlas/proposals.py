@@ -26,10 +26,19 @@ SCALAR = {"title": 500, "description": 20000, "developer": 200, "publisher": 200
 LISTS = ("genres", "themes", "tags", "features", "platforms", "languages", "aliases")
 
 
-def adjust_reputation(session: Session, user: User, delta: int, reason: str, proposal_id: str | None = None) -> None:
+def adjust_reputation(session: Session, user: User, delta: int, reason: str, proposal_id: str | None = None,
+                      ctx: Ctx | None = None) -> None:
+    """Move an account's reputation; a proposal that came through a node link also moves that link's own
+    reputation by the same amount (CONTRACT-C14 §7.4 step 3, Review #1 C14-8)."""
     if delta:
         user.reputation += delta
         session.add(ReputationEvent(user_id=user.id, delta=delta, reason=reason, proposal_id=proposal_id))
+        if proposal_id and ctx is not None:
+            p = session.get(Proposal, proposal_id)
+            if p is not None and p.via_link_id:
+                from . import link
+
+                link.adjust_reputation(session, ctx, p.via_link_id, delta)
 
 
 # ---- validation ---------------------------------------------------------------------------------------
@@ -354,10 +363,13 @@ def revert_applied(session: Session, ctx: Ctx, p: Proposal) -> None:
 
 # ---- workflow -----------------------------------------------------------------------------------------
 
-def can_auto_apply(ctx: Ctx, user: User) -> bool:
+def reputation_trusted(ctx: Ctx, user: User) -> bool:
     s = ctx.settings
-    trusted = s.auto_approve_reputation > 0 and user.reputation >= s.auto_approve_reputation
-    return accounts.can_review(s, user) or trusted
+    return s.auto_approve_reputation > 0 and user.reputation >= s.auto_approve_reputation
+
+
+def can_auto_apply(ctx: Ctx, user: User) -> bool:
+    return accounts.can_review(ctx.settings, user) or reputation_trusted(ctx, user)
 
 
 def _check_capacity(session: Session, settings, kind: str, cid: str, items: list[dict[str, Any]],
@@ -378,41 +390,63 @@ def _check_capacity(session: Session, settings, kind: str, cid: str, items: list
 
 
 def create(session: Session, ctx: Ctx, user: User, kind: str, canonical_id: str | None, payload: dict[str, Any],
-           note: str = "") -> Proposal:
+           note: str = "", *, auto_apply: bool = True, via_link: Any = None, contribution_id: str | None = None,
+           stale_base: bool = False) -> Proposal:
+    """Create a proposal, applied at once when its proposer may auto-apply.
+
+    Refusals carry a closed `reason` in `AtlasError.detail` (CONTRACT-C14 §7.3): `suspended`, `email_unverified`,
+    `invalid`, `unknown_game`, `too_many_pending`, `daily_limit`. Web callers keep the defaults. A node link
+    (`via_link`, C14 §7.4) passes `auto_apply` from its own trust: through a link, auto-apply follows the account's
+    reputation only, never its reviewer rights (critic 5), and only when the link itself may auto-apply."""
     s = ctx.settings
     write_lock(session)  # the limits below are counted in SQL; serialise with reviewers
     session.flush()
     if user.status != "active":
-        raise AtlasError("account suspended", "forbidden")
+        raise AtlasError("account suspended", "forbidden", reason="suspended")
     if not mail.is_verified(s, user):
-        raise AtlasError("confirm your email address before contributing (see your profile)", "forbidden")
-    payload = _validate(session, kind, canonical_id, payload)
-    if kind == "achievements":  # refused at submission, not only when a reviewer approves it (C1.6)
-        facets.check_platinum_gate(ctx, payload["items"])
+        raise AtlasError("confirm your email address before contributing (see your profile)", "forbidden",
+                         reason="email_unverified")
+    try:
+        payload = _validate(session, kind, canonical_id, payload)
+        if kind == "achievements":  # refused at submission, not only when a reviewer approves it (C1.6)
+            facets.check_platinum_gate(ctx, payload["items"])
+    except AtlasError as exc:
+        exc.detail.setdefault("reason", "unknown_game" if exc.code == "not_found" else "invalid")
+        raise
     if kind != "new_game":
         row = session.get(Canonical, canonical_id) if canonical_id else None
         if row is None or row.merged_into:
-            raise AtlasError("unknown game", "not_found")
+            raise AtlasError("unknown game", "not_found", reason="unknown_game")
     else:
         canonical_id = None
     note = (note or "").strip()[:2000]
     if kind in ("artwork", "achievements"):
-        _check_capacity(session, s, kind, canonical_id, payload["items"],  # type: ignore[arg-type]
-                        replace=payload.get("mode") == "replace")
+        try:
+            _check_capacity(session, s, kind, canonical_id, payload["items"],  # type: ignore[arg-type]
+                            replace=payload.get("mode") == "replace")
+        except AtlasError as exc:
+            exc.detail.setdefault("reason", "invalid")
+            raise
     pending = session.scalar(select(func.count()).select_from(Proposal).where(
         Proposal.proposer_id == user.id, Proposal.status == "pending"))
     if pending >= s.max_pending_proposals:
-        raise AtlasError("too many pending proposals; wait for review", "conflict")
+        raise AtlasError("too many pending proposals; wait for review", "conflict", reason="too_many_pending")
     if not accounts.can_review(s, user):  # reviewers are bounded by the audit trail instead
         today = session.scalar(select(func.count()).select_from(Proposal).where(
             Proposal.proposer_id == user.id, Proposal.created_at >= now() - timedelta(days=1)))
         limit = s.trusted_daily_proposals if can_auto_apply(ctx, user) else s.new_user_daily_proposals
         if today >= limit:
-            raise AtlasError("daily proposal limit reached", "conflict")
-    p = Proposal(kind=kind, canonical_id=canonical_id, proposer_id=user.id, payload=payload, note=note)
+            raise AtlasError("daily proposal limit reached", "conflict", reason="daily_limit")
+    p = Proposal(kind=kind, canonical_id=canonical_id, proposer_id=user.id, payload=payload, note=note,
+                 via_link_id=via_link.id if via_link is not None else None, contribution_id=contribution_id,
+                 stale_base=stale_base)
     session.add(p)
     session.flush()
-    if can_auto_apply(ctx, user):
+    if via_link is not None:
+        allowed = auto_apply and reputation_trusted(ctx, user)
+    else:
+        allowed = auto_apply and can_auto_apply(ctx, user)
+    if allowed:
         apply(session, ctx, p)
         # No reputation for self-approved changes: it is earned when a reviewer confirms work.
         p.status, p.auto_applied, p.decided_at = "approved", True, now()
@@ -431,28 +465,37 @@ def _decidable(session: Session, ctx: Ctx, reviewer: User, pid: str, *, statuses
         raise AtlasError("unknown proposal", "not_found")
     if p.status not in statuses:
         raise AtlasError(f"proposal is {p.status}", "conflict")
-    if p.proposer_id == reviewer.id and reviewer.role != "admin":
+    if p.proposer_id == reviewer.id and (reviewer.role != "admin" or p.via_link_id):
+        # C14 §7.4 (critic 5): a contribution from the reviewer's own linked node is never self-approved
         raise AtlasError("you cannot review your own proposal", "forbidden")
     return p
 
 
-def review(session: Session, ctx: Ctx, reviewer: User, pid: str, *, approve: bool, note: str = "") -> Proposal:
+def review(session: Session, ctx: Ctx, reviewer: User, pid: str, *, approve: bool, note: str = "",
+           checked: bool = False) -> Proposal:
     p = _decidable(session, ctx, reviewer, pid, statuses=("pending",))
+    if approve and p.link_flag == "link_compromised" and not checked:
+        # C14 §6.7 (Review #1 C14-10): the linked node's key may have been stolen; a human looks first
+        raise AtlasError("this proposal came from a linked node whose key may have been stolen: tick "
+                         "'I checked this change' to approve it", "conflict")
     proposer = session.get(User, p.proposer_id)
     if approve:
         apply(session, ctx, p)
         p.status = "approved"
         if proposer:
-            adjust_reputation(session, proposer, REWARD[p.kind], "approved:" + p.kind, p.id)
+            adjust_reputation(session, proposer, REWARD[p.kind], "approved:" + p.kind, p.id, ctx)
     else:
         p.status = "rejected"
         if proposer:
-            adjust_reputation(session, proposer, REJECT_PENALTY, "rejected:" + p.kind, p.id)
+            adjust_reputation(session, proposer, REJECT_PENALTY, "rejected:" + p.kind, p.id, ctx)
     p.decided_by, p.decided_at, p.decision_note = reviewer.id, now(), (note or "").strip()[:2000]
     accounts.audit(session, reviewer.id, "proposal_" + p.status, p.id)
     social.on_proposal_decided(session, ctx, p, p.status, reviewer)
     if p.status == "approved":
         social.on_proposal_applied(session, ctx, p, proposer)
+        from . import link_client
+
+        link_client.on_local_approved(session, ctx, p)  # C14 §7.2: queued for the main when `link_push = auto`
     return p
 
 
@@ -471,10 +514,36 @@ def revert(session: Session, ctx: Ctx, reviewer: User, pid: str, note: str = "")
     if proposer:
         earned = session.scalar(select(func.coalesce(func.sum(ReputationEvent.delta), 0)).where(
             ReputationEvent.proposal_id == p.id, ReputationEvent.delta > 0)) or 0
-        adjust_reputation(session, proposer, REVERT_PENALTY - earned, "reverted:" + p.kind, p.id)
+        adjust_reputation(session, proposer, REVERT_PENALTY - earned, "reverted:" + p.kind, p.id, ctx)
     accounts.audit(session, reviewer.id, "proposal_reverted", p.id)
     social.on_proposal_decided(session, ctx, p, "reverted", reviewer)
     return p
+
+
+def revert_link(session: Session, ctx: Ctx, reviewer: User, link_id: str, note: str = "") -> dict[str, Any]:
+    """C14 §6.7 (Review #1 C14-10): revert everything a node link applied here, newest first, one proposal at a
+    time through `revert` (same rights, same order rule). A proposal that cannot be reverted automatically (a
+    newer change from outside the link sits on top, a kind with no revert, the reviewer's own) is left applied and
+    listed, so a human reverts it by hand. Entries already signed into the public feed are not recalled."""
+    if not accounts.can_review(ctx.settings, reviewer):
+        raise AtlasError("review rights required", "forbidden")
+    write_lock(session)  # taken before the per-proposal savepoints
+    session.flush()
+    ids = list(session.scalars(select(Proposal.id).where(Proposal.via_link_id == link_id,
+                                                         Proposal.status == "approved")
+                               .order_by(Proposal.decided_at.desc(), Proposal.created_at.desc())))
+    done: list[str] = []
+    left: list[dict[str, str]] = []
+    for pid in ids:
+        try:
+            with session.begin_nested():
+                revert(session, ctx, reviewer, pid, note or "Reverted with everything from this node link.")
+            done.append(pid)
+        except AtlasError as exc:
+            left.append({"id": pid, "reason": str(exc)})
+    accounts.audit(session, reviewer.id, "link_bulk_revert", link_id[:64],
+                   {"reverted": len(done), "left": len(left)})
+    return {"reverted": done, "left": left}
 
 
 def withdraw(session: Session, user: User, pid: str) -> Proposal:

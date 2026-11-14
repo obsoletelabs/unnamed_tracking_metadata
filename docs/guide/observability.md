@@ -164,6 +164,8 @@ measured: this release has no structured description to count. No player identit
 | `atlas_group_assist_rejected_total` | counter | `reason` = `bad_signature wrong_requester hash_mismatch bad_image too_large` | Group answers refused before anything applied; the helper is suspect for an hour |
 | `atlas_group_assist_bytes_total` | counter (bytes) | `role` = `served asked` | Image bytes moved by the group media fallback |
 | `atlas_group_assist_lookups_total` | counter | `role` = `asked answered`, `outcome` = `ok not_found throttled refused error` | Provider lookups made through the group, or for a member |
+| `atlas_link_requests_total` | counter | `endpoint` = `challenge device approve token link contributions status withdraw rotation unlink revoke`, `result` = `ok invalid invalid_request invalid_scope invalid_client invalid_grant invalid_dpop_proof authorization_pending slow_down access_denied expired_token unsupported_grant_type unauthorized refused rate_limited frozen off retry` | Node link requests on a main Atlas (see [linking to a main Atlas](linking-to-a-main-atlas.md)). `retry`: a node repeated a key rotation whose answer it never received, and got fresh tokens for its new key |
+| `atlas_link_contributions_sent_total` | counter | `result` = `accepted duplicate refused retry unauthorized error` | Contributions a linked node sent to its main Atlas, by the main's answer |
 | `atlas_media_cache_requests_total` | counter | `route` = `image media`, `result` = `hit redirect miss refused` | `image`: `/api/v2/artwork/{id}/image`; `media`: `/media/{digest}` on the API and the site. `refused`: the source's policy does not serve it here |
 | `atlas_media_cache_evictions_total` | counter | `reason` = `manual` | Images forgotten by *Clear cache*; Atlas has no automatic expiry or size-based eviction |
 | `atlas_media_storage_present` | gauge (collector) | none | 1 when `ATLAS_MEDIA_DIR` exists; when 0 the usage series below are absent (unknown, not zero) |
@@ -197,9 +199,9 @@ two `perf_counter()` calls and one histogram update).
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `atlas_background_operations_total` | counter | `operation` = `housekeeping price_purge decision_prune retired_purge media_cache mail_delivery mail_purge backup sync_round scheduled_introduce group_round`, `outcome` = `ok error skipped` | Runs of each task in this process. `skipped`: `backup` not due yet, `media_cache` with caching off |
+| `atlas_background_operations_total` | counter | `operation` = `housekeeping price_purge decision_prune retired_purge media_cache mail_delivery mail_purge backup sync_round scheduled_introduce group_round link_round`, `outcome` = `ok error skipped` | Runs of each task in this process. `skipped`: `backup` not due yet, `media_cache` with caching off |
 | `atlas_background_operation_duration_seconds` | histogram (s) | `operation` | Run time. Buckets 0.05 … 900 |
-| `atlas_background_schedule_delay_seconds` | histogram (s) | `loop` = `housekeeping media_cache mail backup sync` | How much later than planned a loop woke up (thread and CPU contention). The owner-group loop wakes on events and is not measured |
+| `atlas_background_schedule_delay_seconds` | histogram (s) | `loop` = `housekeeping media_cache mail backup sync link` | How much later than planned a loop woke up (thread and CPU contention). The owner-group loop wakes on events and is not measured |
 | `atlas_mail_deliveries_total` | counter | `outcome` = `sent failed`, `class` = `none transient permanent auth connection protocol invalid` | SMTP attempts. Retries are separate attempts; `atlas_outbox_messages` stays the durable state |
 | `atlas_mail_oldest_pending_timestamp_seconds` | gauge (Unix s, collector) | none | Creation time of the oldest unsent message (including failed ones still retried). **Absent when the queue is empty** |
 | `atlas_backup_last_verified_timestamp_seconds` | gauge (Unix s, collector) | none | Last archive verified against its manifest (scheduled backups, `atlas backup drill`); zero if never. Stored in the database, so every worker reports it |
