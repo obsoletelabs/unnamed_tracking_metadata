@@ -9,7 +9,8 @@
 <dl class="facts"><dt>Node ID / trust fingerprint</dt><dd><code>{{ identity.node_id }}</code></dd>
 <dt>Trust anchor public key</dt><dd><code>{{ identity.trust_public_b64 }}</code></dd>
 <dt>Current signing key</dt><dd><code>{{ identity.key_id }}</code></dd>
-<dt>Current public key</dt><dd><code>{{ identity.public_b64 }}</code></dd></dl></section>
+<dt>Current public key</dt><dd><code>{{ identity.public_b64 }}</code></dd>
+<dt>Private key at rest</dt><dd>{% if at_rest == "encrypted" %}Encrypted with ATLAS_SECRET_KEY{% else %}<strong>Not encrypted.</strong> Every database backup contains it. Set ATLAS_SECRET_KEY (see <code>atlas secret-key</code>) and restart to encrypt it.{% endif %}</dd></dl></section>
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 <section class="card"><h2>Rotate the signing key</h2>
 <p>Upgrade every follower first. Older clients reject successor keys and will stop syncing after rotation. Back up this node before continuing. This does not rotate OIDC keys or ATLAS_SECRET_KEY.</p>

@@ -13,8 +13,15 @@ whole story: what to back up, how to restore, how to rehearse it, and how to upg
 
 !!! warning "Archives are secrets"
     They contain password hashes, session records and **this node's signing key**. Anyone holding the key can publish a feed
-    that mirrors will accept. Files are written readable by their owner only. Encrypt them before they leave the machine
-    (for example `age -p`, `gpg -c` or your backup tool's encryption) and never put one in a public place.
+    that mirrors will accept. With `ATLAS_SECRET_KEY` set the key is stored, and archived, only encrypted (`enc:v1:`);
+    without it the key is in every archive in plaintext. Files are written readable by their owner only. Encrypt them before
+    they leave the machine (for example `age -p`, `gpg -c` or your backup tool's encryption) and never put one in a public
+    place.
+
+!!! danger "Keep ATLAS_SECRET_KEY apart from the archives, and never lose it"
+    The archive does not contain `ATLAS_SECRET_KEY`. Store it separately (a password manager, your secrets store). A backup
+    whose secret is lost **cannot restore this node's identity**: the signing key in it cannot be decrypted, and Atlas refuses
+    to start rather than invent a new key. The way out is then a [mirror recovery](recovery.md) to a new trust anchor.
 
 The archive is taken from a single consistent snapshot while Atlas keeps serving. It restores on **either** database, so it is
 also how you move a local SQLite node to PostgreSQL.
@@ -63,12 +70,21 @@ atlas backup verify manual.tar.gz
 
 This re-reads the whole archive and compares every checksum. A backup you have never verified is a hope, not a backup.
 
+Add `--secret-check` to also decrypt the archive's signing key and stored credentials with this machine's `ATLAS_SECRET_KEY`
+(and `ATLAS_SECRET_KEY_PREVIOUS`), without restoring anything. It fails when the secret is missing or wrong, and warns when
+the archive holds a plaintext key:
+
+```sh
+atlas backup verify manual.tar.gz --secret-check
+```
+
 ## Restore
 
 Restore into a **fresh, empty** database of the same Atlas version:
 
 1. Start with the same software version that made the backup (the manifest shows it; `atlas backup verify` prints it). Point
-   `ATLAS_DATABASE_URL` at the new, empty database and set `ATLAS_MEDIA_DIR`.
+   `ATLAS_DATABASE_URL` at the new, empty database and set `ATLAS_MEDIA_DIR`. Set the same `ATLAS_SECRET_KEY` the backed-up
+   node used.
 2. Bring the schema to the backup's revision, then restore, then bring it to the latest:
 
     ```sh
@@ -94,7 +110,40 @@ you mean it. It runs in one transaction: if anything fails the database is left 
 * **An authority** should be restored from a current verified backup. If that is unavailable, use the
   [mirror recovery runbook](recovery.md) to recover only the retained public feed under a **new root**.
   Accounts/private data still need a backup. Never run two copies of the same identity at once.
-* Keep the **node signing key** safe independently: it is in every archive, but `atlas node` shows the public id you published.
+* Keep the **node signing key** safe: it is in every archive (encrypted when `ATLAS_SECRET_KEY` is set), and
+  `atlas node` shows the public id you published. Keep `ATLAS_SECRET_KEY` with your recovery records, not with the archives.
+
+## The signing key at rest
+
+`ATLAS_SECRET_KEY` encrypts the node's Ed25519 signing key in the database (`node_state.signing_key` holds
+`enc:v1:<token>`), together with peer tokens, OIDC client secrets, stored provider credentials and authenticator secrets.
+**Admin → Signing keys** and `GET /api/v2/status` (`"signing_key_at_rest": "encrypted"` or `"plaintext"`) show which form
+this node has.
+
+* **Upgrading an existing node (migration 0024).** If `ATLAS_SECRET_KEY` is set when `atlas migrate` runs (the compose
+  `migrate` service reads the same `.env`), the existing key is encrypted in place. Otherwise the first start with a secret
+  does it and records `signing_key_encrypted` in the audit log. The key itself never changes: same node id, same key id,
+  nothing for followers to re-pin.
+* **Several replicas: stop every old one first.** A replica still on the release before 0024 cannot read an `enc:v1:` key.
+  As soon as the key is encrypted (by `atlas migrate` with the secret, or by the first new replica that starts with
+  `ATLAS_SECRET_KEY`), every old replica fails its next feed write or key load. It fails closed: it never generates a new
+  key and loses no data, but every write it handles fails until it is replaced. So do not roll this upgrade one replica at
+  a time: stop all replicas on the old release, run `atlas migrate` once, then start the new release everywhere.
+* **Restoring an encrypted backup.** `atlas backup restore` checks that this node's `ATLAS_SECRET_KEY` (or
+  `ATLAS_SECRET_KEY_PREVIOUS`) decrypts the archive's signing key before it deletes anything, and refuses otherwise.
+* **No secret.** The key stays plaintext and Atlas warns on every start. **A production authority without
+  `ATLAS_SECRET_KEY` will refuse to start in a future release** (after signed updates ship); this release only warns.
+  Set the secret now: `atlas secret-key` prints one.
+* **A missing or wrong secret** for an encrypted key stops Atlas with `signing key is encrypted; ATLAS_SECRET_KEY is missing
+  or wrong`. It never generates a replacement identity.
+* **Rotating the secret.** Put the new value in `ATLAS_SECRET_KEY` and the old one in `ATLAS_SECRET_KEY_PREVIOUS`
+  (comma-separated for several), restart, and run `atlas secrets rewrap`. That re-encrypts the signing key and every stored
+  secret with the new value. It changes nothing if any value does not decrypt. Then remove the old value. Archives made
+  before the rotation still need the old secret.
+* **Rolling back to a release before 0024.** Older releases cannot read an `enc:v1:` key. The supported way back is the
+  one under [Upgrading](#upgrading): restore the pre-upgrade backup, which holds the key as it was then. A schema downgrade in
+  place (migration 0024's downgrade, for example `alembic downgrade 0023`) decrypts the key back to plaintext when
+  `ATLAS_SECRET_KEY` is set, and refuses, changing nothing, without it.
 
 ## Upgrading
 
@@ -124,7 +173,7 @@ Old custom input names remain aliases, but output uses the new names; update cli
 one request is rejected, including when one is empty. Core fields remain separate. The rename
 is deliberately not reversed on downgrade, since clients may already use the new key.
 
-Keep `ATLAS_SECRET_KEY` with the backup configuration: it decrypts MFA, peer tokens and OIDC
-client secrets. The archive contains encrypted values, not that external encryption key.
+Keep `ATLAS_SECRET_KEY` with the backup configuration: it decrypts the node signing key, MFA, peer tokens and
+OIDC client secrets. The archive contains encrypted values, not that external encryption key.
 Use [Release verification](release-verification.md) to rehearse full-table and artwork restore
 with both SQLite and PostgreSQL before an upgrade.
