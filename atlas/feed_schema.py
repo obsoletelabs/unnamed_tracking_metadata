@@ -28,6 +28,13 @@ Protocol 1.4 (C6.3) adds the feed kind `relation` (`{op: add|end, from, to, type
 relation between two works with a type from `vocab.RELATION_TYPES`. A 1.1-1.3 follower does not know the kind
 and parks it (`unsupported_kind`); an unknown type or op parks a 1.4 follower (`unsupported_value`). Below
 emit protocol 1.4 an authority keeps relations local (C1.6, H13): nothing is appended.
+
+Protocol 1.5 (C8.3) is the price channel: a *separate* signed channel (`/api/v2/sync/price-changes`, its own
+sequence, domain `atlas-price-v1`), never entries in this feed, announced by the capability `price-channel-v1`.
+This release designs and registers it (`PRICE_CHANNEL`) but does not emit it: `CHANNEL_ENABLED` is False, the
+capability is not advertised, the endpoint answers 404 and `PROTOCOL` stays 1.4. The feed kind `price` is
+reserved, so a follower of this release parks a `price` entry that ever appears in the main feed
+(`unsupported_kind`), and this node refuses to sign one at any emit protocol.
 """
 
 from __future__ import annotations
@@ -178,8 +185,58 @@ FEED_KINDS: dict[str, KindSpec] = {spec.name: spec for spec in (
 )}
 
 #: Kinds reserved by later protocols. A follower of this release parks them; this node never emits them.
-#: (`relation` was reserved for 1.4 and ships in this release.)
-RESERVED_KINDS: dict[str, str] = {}
+#: (`relation` was reserved for 1.4 and shipped in A15.) `price` is reserved so that a price that reaches the main
+#: feed by mistake parks instead of being dropped: prices belong to their own channel (C8.3, `PRICE_CHANNEL`).
+RESERVED_KINDS: dict[str, str] = {"price": "1.5"}
+
+
+# ---- the price channel (C8.3, protocol 1.5; designed, emission disabled) --------------------------------
+
+@dataclass(frozen=True)
+class ChannelSpec:
+    """A signed channel separate from the main feed: its own endpoint, sequence, signature domain and cursor.
+
+    Unlike the main feed (contiguous, retained forever) a channel is prunable: a follower whose cursor is below
+    the oldest retained entry gets `{"reset": true, "snapshot_url": ...}` and re-reads the snapshot."""
+
+    name: str
+    since: str  # protocol that ships it
+    capability: str  # advertised in /sync/info.capabilities only while CHANNEL_ENABLED
+    endpoint: str
+    snapshot: str
+    sequence: str  # node_state key of the channel's head
+    domain: bytes  # signature domain (`signing.PRICE_DOMAIN`)
+    cursor_suffix: str  # SyncCursor.upstream = "<node>" + cursor_suffix
+    fields: frozenset[str]  # the entry body
+    nested: dict[str, frozenset[str]]
+    values: dict[str, str]  # path -> closed vocabulary
+    summary: str
+
+
+#: The C8.1 shape of one price channel entry body.
+PRICE_FIELDS = frozenset({"id", "canonical_id", "provider", "product_id", "package_id", "edition", "platform",
+                          "region", "currency", "amount_minor", "base_amount_minor", "discount_pct", "availability",
+                          "observed_at", "valid_until", "source_kind", "provenance", "license", "retention_days"})
+#: Whether this release emits the price channel. False in Release 0 (C8.3): no capability, endpoint 404, nothing
+#: signed. It is a constant, not a setting: turning it on needs the release that implements the channel.
+CHANNEL_ENABLED = False
+
+PRICE_CHANNEL = ChannelSpec(
+    name="price", since="1.5", capability="price-channel-v1", endpoint="/api/v2/sync/price-changes",
+    snapshot="/api/v2/sync/price-snapshot", sequence="price_feed_seq", domain=b"atlas-price-v1\n",
+    cursor_suffix="#price", fields=PRICE_FIELDS,
+    nested={"provenance": frozenset({"node", "method", "fetch_id"}),
+            "license": frozenset({"redistributable", "terms"})},
+    values={"availability": "price_availability", "source_kind": "price_source_kind"},
+    summary="Redistributable price observations (C8): latest per offer, prunable, never in the main feed.")
+
+
+def capabilities() -> list[str]:
+    """`/sync/info.capabilities`: the main feed's capabilities, plus a channel's only while it is enabled."""
+    out = list(CAPABILITIES)
+    if CHANNEL_ENABLED:  # read at call time
+        out.append(PRICE_CHANNEL.capability)
+    return out
 
 
 @cache
@@ -201,6 +258,8 @@ def vocabularies() -> dict[str, Any]:
         "release_region": OpenVocabulary(dates.REGION_RE),
         "relation_type": frozenset(vocab.RELATION_TYPES),
         "relation_op": frozenset(vocab.RELATION_OPS),
+        "price_availability": frozenset(vocab.PRICE_AVAILABILITY),
+        "price_source_kind": frozenset(vocab.PRICE_SOURCE_KINDS),
     }
 
 

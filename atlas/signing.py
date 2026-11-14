@@ -21,6 +21,12 @@ from .models import AuditEntry, NodeState
 from .settings import Settings
 
 DOMAIN = b"atlas-feed-v2\n"
+#: The price channel's domain (CONTRACTS-v1 C8.3, protocol 1.5): the feed's message layout under a different
+#: prefix, so a price signature never verifies as a feed entry or the other way round. The channel is designed
+#: but disabled in this release (`feed_schema.CHANNEL_ENABLED`); nothing is signed with it outside tests.
+PRICE_DOMAIN = b"atlas-price-v1\n"
+#: The `kind` part of a price channel message.
+PRICE_KIND = "price"
 SIGNING_KEY = "signing_key"
 # Stored form of an encrypted private key (CONTRACTS-v1 C9.1); a value without it is legacy plaintext base64.
 ENC_PREFIX = "enc:v1:"
@@ -41,8 +47,8 @@ def key_id_for(public_raw: bytes) -> str:
     return hashlib.sha256(public_raw).hexdigest()[:16]
 
 
-def _message(node_id: str, seq: int, kind: str, digest: str) -> bytes:
-    return DOMAIN + f"{node_id}\n{seq}\n{kind}\n{digest}".encode()
+def _message(node_id: str, seq: int, kind: str, digest: str, domain: bytes = DOMAIN) -> bytes:
+    return domain + f"{node_id}\n{seq}\n{kind}\n{digest}".encode()
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,11 @@ class NodeIdentity:
 
     def sign(self, seq: int, kind: str, digest: str) -> str:
         return base64.b64encode(self.private.sign(_message(self.node_id, seq, kind, digest))).decode()
+
+    def sign_price(self, seq: int, digest: str) -> str:
+        """Sign one price channel entry (`price_feed_seq` = `seq`) under `PRICE_DOMAIN` (C8.3)."""
+        return base64.b64encode(self.private.sign(
+            _message(self.node_id, seq, PRICE_KIND, digest, PRICE_DOMAIN))).decode()
 
 
 def at_rest(value: str) -> str:
@@ -189,13 +200,18 @@ def verify_message(public_b64: str, domain: bytes, parts: list[str], signature_b
 
 
 def verify(public_b64: str, node_id: str, seq: int, kind: str, body: Any, claimed_hash: str,
-           signature_b64: str) -> bool:
+           signature_b64: str, *, domain: bytes = DOMAIN) -> bool:
     try:
         digest = body_hash(body)
         if digest != claimed_hash:
             return False
         pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_b64))
-        pub.verify(base64.b64decode(signature_b64), _message(node_id, seq, kind, digest))
+        pub.verify(base64.b64decode(signature_b64), _message(node_id, seq, kind, digest, domain))
         return True
     except (InvalidSignature, ValueError):
         return False
+
+
+def verify_price(public_b64: str, node_id: str, seq: int, body: Any, claimed_hash: str, signature_b64: str) -> bool:
+    """Verify one price channel entry (C8.3). A main-feed signature over the same body and seq fails here."""
+    return verify(public_b64, node_id, seq, PRICE_KIND, body, claimed_hash, signature_b64, domain=PRICE_DOMAIN)
