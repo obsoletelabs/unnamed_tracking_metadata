@@ -10,12 +10,30 @@ Atlas keeps the **list** of achievements for a game: what exists, how rare it is
 | `name`, `description` | Text. Up to 200 / 2000 characters. |
 | `hidden` | A secret achievement. See [Hidden achievements](#hidden-achievements). |
 | `kind` | `progression`, `missable` or `win_condition`; absent when unknown. |
-| `tier` | `bronze`, `silver`, `gold`; absent when the source has none. |
+| `tier` | `bronze`, `silver`, `gold` or `platinum`; absent when the source has none (absent means unknown, never "no tier"). See [Platinum](#platinum). |
 | `points` | Whole number 0–100000 (Steam has none, RetroAchievements and Xbox use them). |
 | `global_percent` | Share of all players who have it, 0–100. |
 | `icon_url`, `locked_icon_url` | Atlas's own verified copy of the unlocked / locked image (`/api/v2/media/<sha256>`), or `null` while it is not cached yet. |
 | `external_ids` | The achievement's id at each source, for example `{"steam": "ACH_WIN_1"}`. Clients use this to match their own unlock data. |
 | `sources` | Which sources contributed. |
+
+### Platinum
+
+`platinum` marks a whole-catalogue completion trophy: unlocking it means having the rest of the list. A
+game may have more than one (some games give one per campaign), so Atlas does not refuse a second one;
+the editor shows a warning on the second platinum row instead.
+
+Platinum needs federation protocol **1.2**: followers of older releases cannot read it. On an
+**authority** whose emit protocol is still below 1.2, every way of writing a list that includes
+platinum is refused before anything is stored: the curator API (`PUT /games/{id}/achievements`,
+HTTP 409 with `"code": "emit_protocol"` and "Raise federation emit protocol to 1.2 first"), the
+editor (the option is shown disabled, and a submitted platinum row is reported on the row), proposals
+and the bulk import (HTTP 409). Lists that are not signed into the feed, for example a provider's own
+non-redistributable list, keep platinum regardless. Mirrors and local nodes accept platinum
+without any setting. See [Federation: emitting newer features](federation.md#emitting-newer-features).
+
+The value list is shared with the Tracking App and the metadata-atlas plugin through
+`contracts/vocab-v1.json`; see [Shared vocabularies](tracking-app.md#shared-vocabularies).
 
 Achievements from different sources are merged by normalised name. The highest-trust source wins each field; lower ones only fill gaps. A provider id is never assumed to match another provider's achievement with a different name.
 
@@ -36,7 +54,7 @@ Signed-in members use **Edit achievements** on the game page. Each achievement i
 * **Preview before proposing.** *Preview changes* shows exactly what will be added, removed, changed (field by field, old and new) and whether the order changes. Only then does *Submit proposal* appear. Saving **replaces** the community list with the rows shown (removals included); it goes through the normal review, can be reverted, and is applied at once for reviewers and trusted members.
 ![Preview of what will change](img/achievement-editor-preview.png)
 
-* **Bulk import.** The old one-per-line format (`Name | Description | extras`; extras in any order: `progression` / `missable` / `win condition`, `bronze` / `silver` / `gold`, a number, `hidden`, icon addresses) is still available under *Bulk import* in the editor. It only **adds** entries.
+* **Bulk import.** The old one-per-line format (`Name | Description | extras`; extras in any order: `progression` / `missable` / `win condition`, `bronze` / `silver` / `gold` / `platinum`, a number, `hidden`, icon addresses) is still available under *Bulk import* in the editor. It only **adds** entries.
 
 ## Reading
 

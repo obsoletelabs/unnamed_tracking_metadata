@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import feed
+from . import feed, vocab
 from .models import Canonical, CustomValue, FieldDef, MediaType, Setting
 from .service import AtlasError, Ctx, touch_version, write_lock
 
@@ -92,8 +92,9 @@ def seed(session: Session) -> None:
 MULTIPLAYER_FIELDS = (
     ("players_min", "Minimum players", "number", None, "Fewest players needed to play (1 for single-player)."),
     ("players_max", "Maximum players", "number", None, "Most players in one session, local or online."),
-    ("crossplay", "Crossplay", "choice", ["yes", "no", "partial"],
-     "Can players on different platforms play together? 'partial' means only some platforms or modes."),
+    ("crossplay", "Crossplay", "choice", list(vocab.CROSSPLAY),  # C7.2; empty = unknown
+     "Can players on different platforms play together? 'partial' means only some platforms or modes. "
+     "Leave it empty when nobody has said; a single-player game shows 'single-player' by itself."),
 )
 _MULTIPLAYER_SEEDED = "defaults.multiplayer_fields"
 
@@ -391,6 +392,10 @@ def validate_value(f: FieldDef, raw: Any) -> Any:
             return False
         raise AtlasError(f"{f.label}: yes or no")
     if f.kind == "choice":
+        if raw == vocab.NOT_APPLICABLE and f.media_type == "game" and f.key == "crossplay":
+            # C7.2/C7.3: derived from players_max == 1 when shown, never stored, even if a choice says so
+            raise AtlasError(f"{f.label}: 'not applicable' is worked out from the maximum players and is never "
+                             "stored; leave the field empty")
         if raw not in (f.choices or []):
             raise AtlasError(f"{f.label}: choose one of {', '.join(f.choices or [])}")
         return raw
