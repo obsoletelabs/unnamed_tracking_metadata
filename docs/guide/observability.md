@@ -46,6 +46,13 @@ scrape_configs:
 | `atlas_sync_cursor` | Applied position per independently trusted origin |
 | `atlas_sync_head` | Highest transport-reported head observed for an origin |
 | `atlas_peer_lag_entries` | Entries between that origin's observed head and applied cursor, labeled per peer |
+| `atlas_sync_upstream_head` | Named heads per origin: `head` is `observed`, `downloaded`, `verified` or `applied` |
+| `atlas_sync_parked_entries` | Entries held back behind a parked one (they need a newer release) per origin |
+| `atlas_sync_quarantined_entries` | Known entries that failed to apply and are retried, per origin |
+| `atlas_sync_refused` | One when this node refused the origin's protocol |
+| `atlas_sync_rewound` | One when the origin advertised fewer signed entries than this node verified, or changed one (rewind or fork); never reported in sync while set |
+| `atlas_sync_backlog_full` | One when parked backlog reached `ATLAS_SYNC_MAX_PARKED_BACKLOG` and downloading paused |
+| `atlas_sync_in_sync` | One only when every head the origin reported is verified and applied, with nothing parked, quarantined or refused |
 | `atlas_peer_last_success_timestamp_seconds` | Last successful pull per enabled peer; zero before first success |
 | `atlas_peer_error` | One when the last peer pull failed |
 | `atlas_outbox_messages` | Pending, failed and sent email counts; failed deliveries may be retried |

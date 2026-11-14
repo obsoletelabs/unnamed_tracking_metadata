@@ -19,6 +19,8 @@ on:
       - tools/federation_lab/**
       - tools/multinode_drill.py
       - tools/drill_support.py
+      - tools/skew_drill.py
+      - atlas/feed_schema.py
       - tests/federation_lab/**
       - .github/workflows/federation-lab.yml
 permissions: { contents: read }
@@ -38,6 +40,7 @@ jobs:
           --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }  # the skew-1.0 drill unpacks the pinned previous release commit from git
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --frozen --extra dev
       - name: Federation scenarios (PostgreSQL authorities)
@@ -45,6 +48,9 @@ jobs:
           uv run python -m tools.federation_lab
           --postgres-admin-url postgresql+psycopg://postgres:pw@localhost:5432/postgres
           --logs lab-logs --junit lab-junit.xml
+      - name: skew-1.0 drill (previous release against this one)
+        if: always()
+        run: mkdir -p lab-logs && uv run python -m tools.skew_drill --previous-ref 62c73f36e7de4a0bd6b814a7dd992eacc7a670e1 --output lab-logs/skew-1.0.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -33,6 +33,7 @@ from sqlalchemy import select
 from atlas import feed, secrets_box, sync
 from atlas.ids import canonical_id, ulid
 from atlas.models import (
+    AuditEntry,
     Canonical,
     ChangeLog,
     Crosswalk,
@@ -126,6 +127,21 @@ class LabNode(Node):
             }
         return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
 
+    def sync_status(self, origin: LabNode | str) -> dict[str, Any]:
+        """The follower's named heads for one upstream feed (observed, verified, applied, parked...)."""
+        with self.state.maker() as session:
+            return sync.upstream_status(session, self.state.ctx, _id(origin))
+
+    def skip(self, origin: LabNode | str, seq: int, reason: str) -> None:
+        """What `atlas sync skip` does, against this node's database."""
+        with self.state.maker() as session:
+            sync.skip(session, self.state.ctx, _id(origin), seq, reason)
+            session.commit()
+
+    def audit(self, action: str) -> list[str]:
+        with self.state.maker() as session:
+            return [a.target for a in session.scalars(select(AuditEntry).where(AuditEntry.action == action))]
+
     def peer_error(self, peer_id: str) -> str | None:
         with self.state.maker() as session:
             return session.get(Peer, peer_id).last_error
@@ -148,7 +164,7 @@ class LabNode(Node):
         code under test does not know. The node keeps running; it is a legitimate signed entry as far
         as every follower can tell."""
         with self.state.maker() as session:
-            seq = feed.append(session, load_identity(session), kind, body)
+            seq = feed.append_unchecked(session, load_identity(session), kind, body)
             session.commit()
         return seq
 
@@ -259,12 +275,9 @@ def disposition(follower: LabNode, origin: LabNode, seq: int, observation_id: st
     """What became of feed entry `seq` of `origin` on `follower`. One of:
 
     * "applied"   the observation it carried is stored (only knowable for observation entries)
-    * "blocked"   the cursor stayed before it, so it will be offered again (nothing was lost)
-    * "recorded"  an open sync failure names it, so an operator can see and retry it
-    * "dropped"   the cursor moved past it and nothing records that it was not applied: silent loss
-
-    If the compatibility gate (#33) later reports unsupported entries through some other record,
-    teach this one function about it; the scenarios themselves stay unchanged."""
+    * "blocked"   the cursor stayed before it (a parked entry), so it will be applied after an upgrade
+    * "recorded"  an open sync failure names it (parked or quarantined), so an operator can see it
+    * "dropped"   the cursor moved past it and nothing records that it was not applied: silent loss"""
     if observation_id is not None:
         with follower.state.maker() as session:
             if session.get(Observation, observation_id) is not None:

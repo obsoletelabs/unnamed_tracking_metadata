@@ -1,19 +1,37 @@
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import __version__, accounts, auth, custom, db, facets, feed, importer, key_rotation, media, service, sync
+from .. import (
+    __version__,
+    accounts,
+    auth,
+    custom,
+    db,
+    facets,
+    feed,
+    feed_schema,
+    importer,
+    key_rotation,
+    media,
+    service,
+    sync,
+)
 from ..contract import ObservationBatchV1, ProviderIdentity, ProviderKey
 from ..models import (
     Artwork,
     Canonical,
+    FollowerSeen,
     Lock,
+    NodeState,
     Observation,
     ReplicatedChange,
     ReplicatedFeed,
@@ -89,6 +107,8 @@ def status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("
     cursors = {c.upstream: c.last_seq for c in session.scalars(select(SyncCursor))}
     return {"role": st.ctx.settings.role, "feed_head": feed.head_seq(session),
             "upstream_cursors": cursors, "sync_failures": sync.open_failures(session),
+            # named heads per upstream (observed, downloaded, verified, applied, parked, quarantined)
+            "upstreams": sync.status(session, st.ctx)["upstreams"],
             # the detail the public /ready deliberately leaves out
             "checks": {"database": "ok", "schema": db.schema_state(session, st.ctx.settings.database_url),
                        "media": "ok" if media.storage_problem(st.ctx.settings) is None else "unwritable",
@@ -102,9 +122,23 @@ def sync_failures(session: Sess, _: Annotated[auth.Principal, Depends(require("a
     rows = session.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))
                            .order_by(SyncFailure.node_id, SyncFailure.seq).limit(limit)).all()
     return {"open": sync.open_failures(session),
+            "parked": sync.open_failures(session, feed_schema.PARK),
+            "quarantined": sync.open_failures(session, feed_schema.QUARANTINE),
             "failures": [{"node_id": f.node_id, "seq": f.seq, "kind": f.kind, "error": f.error,
+                          "disposition": f.disposition, "reason": f.reason, "detail": f.detail,
                           "attempts": f.attempts, "first_failed_at": f.first_failed_at.isoformat(),
                           "last_attempt_at": f.last_attempt_at.isoformat()} for f in rows]}
+
+
+@router.get("/sync/status", tags=["admin"])
+def sync_status(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("admin"))]) -> dict[str, Any]:
+    """Federation compatibility and replication heads of every upstream feed (C1.7)."""
+    s = st.ctx.settings
+    return {"own_protocol": feed_schema.PROTOCOL, "min_follower_protocol": s.min_follower_protocol,
+            "emit_protocol": feed_schema.emit_protocol(s), **sync.status(session, st.ctx),
+            "followers": [{"token_id": f.token_id, "protocol": f.protocol, "last_seen_at": _iso(f.last_seen_at)}
+                          for f in session.scalars(select(FollowerSeen).order_by(FollowerSeen.last_seen_at.desc())
+                                                   .limit(200))]}
 
 
 @router.post("/sync/failures/retry", tags=["admin"])
@@ -603,26 +637,107 @@ def get_media(digest: str, st: St, _: Annotated[auth.Principal, Depends(require(
 
 # ---- federation ---------------------------------------------------------------------------------------
 
+ProtocolHeader = Annotated[str | None, Header(alias=feed_schema.PROTOCOL_HEADER, max_length=32)]
+
+
+def _note_follower(session: Session, who: auth.Principal, protocol: str | None, *, default: str | None) -> None:
+    """Remember which protocol a follower credential speaks (token id only), at most once a minute."""
+    value = protocol if feed_schema.valid_protocol(protocol) else default
+    if value is None or not who.token_id:
+        return
+    row = session.get(FollowerSeen, who.token_id)
+    now = datetime.now(UTC)
+    if row is not None:
+        seen = row.last_seen_at if row.last_seen_at.tzinfo else row.last_seen_at.replace(tzinfo=UTC)
+        if row.protocol == value and (now - seen).total_seconds() <= 60:
+            return  # fresh enough: a read request takes no write lock
+    upsert_follower_seen(session, who.token_id, value, now)
+
+
+def upsert_follower_seen(session: Session, token_id: str, protocol: str, now: datetime) -> None:
+    """Insert or update in one statement, so two concurrent requests with the same token cannot both
+    insert the primary key (an IntegrityError and a failed sync request on PostgreSQL)."""
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    elif dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert
+    else:  # pragma: no cover - Atlas supports SQLite and PostgreSQL only
+        raise RuntimeError(f"unsupported database dialect {dialect}")
+    stmt = insert(FollowerSeen).values(token_id=token_id, protocol=protocol, last_seen_at=now)
+    session.execute(stmt.on_conflict_do_update(index_elements=[FollowerSeen.token_id],
+                                               set_={"protocol": protocol, "last_seen_at": now}))
+    cached = session.identity_map.get(session.identity_key(FollowerSeen, token_id))
+    if cached is not None:
+        session.expire(cached)  # the statement bypassed the ORM; reload on next access
+
+
 @router.get("/sync/info", tags=["federation"])
-def sync_info(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("read"))]):
+def sync_info(st: St, session: Sess, who: Annotated[auth.Principal, Depends(require("read"))],
+              atlas_protocol: ProtocolHeader = None):
     identity = load_identity(session)
-    feeds = [{"node_id": row.node_id, "public_key": row.public_key,
-              "rotations": key_rotation.trusted_history(session, row.node_id),
-              "signing_key_id": key_rotation.expected_key(row.node_id,
-                                key_rotation.trusted_history(session, row.node_id), 2**63 - 1),
-              "head": session.scalar(select(func.max(ReplicatedChange.seq))
-                                     .where(ReplicatedChange.node_id == row.node_id)) or 0}
-             for row in session.scalars(select(ReplicatedFeed).order_by(ReplicatedFeed.node_id))]
+    s = st.ctx.settings
+    _note_follower(session, who, atlas_protocol, default=None)
+    feeds = []
+    for row in session.scalars(select(ReplicatedFeed).order_by(ReplicatedFeed.node_id)):
+        history = key_rotation.trusted_history(session, row.node_id)
+        item = {"node_id": row.node_id, "public_key": row.public_key, "rotations": history,
+                "signing_key_id": key_rotation.expected_key(row.node_id, history, 2**63 - 1),
+                "head": session.scalar(select(func.max(ReplicatedChange.seq))
+                                       .where(ReplicatedChange.node_id == row.node_id)) or 0}
+        seen = session.get(NodeState, "sync_protocol:" + row.node_id)
+        if seen is not None and feed_schema.valid_protocol(seen.value):
+            item["protocol"] = seen.value  # what the relayed authority was seen advertising; not re-signed
+        feeds.append(item)
     return {"node_id": identity.node_id, "public_key": identity.trust_public_b64,
             "signing_key_id": identity.key_id, "rotations": key_rotation.own_history(session, identity.node_id),
-            "role": st.ctx.settings.role, "kind": st.ctx.settings.kind(), "operator": st.ctx.settings.node_operator,
-            "contract": 1, "name": st.ctx.settings.app_name, "feeds": feeds}
+            "role": s.role, "kind": s.kind(), "operator": s.node_operator,
+            "contract": 1, "name": s.app_name,
+            "protocol": feed_schema.PROTOCOL, "min_follower_protocol": s.min_follower_protocol,
+            "emit_protocol": feed_schema.emit_protocol(s), "observation_schema": feed_schema.OBSERVATION_SCHEMA,
+            "kinds": feed_schema.kinds_advertised(), "capabilities": list(feed_schema.CAPABILITIES),
+            "feeds": feeds}
+
+
+@router.get("/sync/digest", tags=["federation"])
+def sync_digest(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("sync"))],
+                node_id: Annotated[str | None, Query(max_length=64)] = None):
+    """Digest of the replicated observations of this node's feed, or of a retained authority feed with
+    `node_id`. It hashes every observation, so answers are cached per feed for DIGEST_TTL seconds."""
+    if node_id and node_id != st.ctx.identity.node_id:
+        if session.get(ReplicatedFeed, node_id) is None:
+            raise HTTPException(404, "This node does not retain that authority's feed.")
+        return {"node_id": node_id, **_cached_digest(st, session, node_id)}
+    return {"node_id": st.ctx.identity.node_id, **_cached_digest(st, session, None)}
+
+
+DIGEST_TTL = 60.0
+_digest_lock = threading.Lock()
+
+
+def _cached_digest(st: AppState, session: Session, node_id: str | None) -> dict[str, Any]:
+    """Per app instance (stored on its state), so one sync token cannot make the node hash the whole
+    table on every request."""
+    clock = time.monotonic()
+    with _digest_lock:
+        cache: dict[str | None, tuple[float, dict[str, Any]]] = st.__dict__.setdefault("_digest_cache", {})
+        hit = cache.get(node_id)
+        if hit is not None and clock - hit[0] < DIGEST_TTL:
+            return {**hit[1], "cached_seconds": round(clock - hit[0], 1)}
+    result = sync.view_digest(session, node_id)
+    with _digest_lock:
+        if len(cache) > 256:
+            cache.clear()
+        cache[node_id] = (clock, result)
+    return {**result, "cached_seconds": 0.0}
 
 
 @router.get("/sync/changes", tags=["federation"])
-def sync_changes(st: St, session: Sess, _: Annotated[auth.Principal, Depends(require("sync"))],
+def sync_changes(st: St, session: Sess, who: Annotated[auth.Principal, Depends(require("sync"))],
                  since: Annotated[int, Query(ge=0)] = 0, limit: Annotated[int, Query(ge=1, le=5000)] = 500,
-                 node_id: Annotated[str | None, Query(max_length=64)] = None):
+                 node_id: Annotated[str | None, Query(max_length=64)] = None, atlas_protocol: ProtocolHeader = None):
+    # A follower that sends no Atlas-Protocol header is a pre-1.1 release.
+    _note_follower(session, who, atlas_protocol, default=feed_schema.LEGACY_PROTOCOL)
     origin = node_id or st.ctx.identity.node_id
     if origin == st.ctx.identity.node_id:
         rows = feed.read(session, since, limit)

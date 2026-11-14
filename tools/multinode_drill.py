@@ -45,7 +45,8 @@ class Node:
         self.root, self.name, self.role = root, name, role
         # `password` and `extra_env` let other harnesses (tools.federation_lab) generate per-run
         # credentials and tune a node; `python` runs the server from another interpreter, for
-        # example a virtualenv holding an older release, to build a real mixed-version network.
+        # example a virtualenv holding an older release, to build a real mixed-version network
+        # (tools.skew_drill, which also sets `cwd` so `python -m uvicorn` imports that release).
         self.password, self.extra_env, self.python = password, dict(extra_env or {}), python or sys.executable
         self.url = f"http://127.0.0.1:{free_port()}"
         self.database_url = database_url or f"sqlite:///{root}/{name}.db"
@@ -77,7 +78,7 @@ class Node:
         env.update(self.extra_env)
         self.process = subprocess.Popen([self.python, "-m", "uvicorn", "atlas.main:app_factory", "--factory",
                                         "--host", "127.0.0.1", "--port", self.url.rsplit(":", 1)[1]],
-                                       env=env, stdout=self.log, stderr=self.log)
+                                       env=env, stdout=self.log, stderr=self.log, cwd=getattr(self, "cwd", None))
         self.client = httpx.Client(base_url=self.url, timeout=20, follow_redirects=False, trust_env=False)
         for _ in range(100):
             if self.process.poll() is not None:

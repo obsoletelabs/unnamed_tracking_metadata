@@ -115,18 +115,150 @@ def cmd_secret_key(_) -> int:
     return 0
 
 
-def cmd_sync(_) -> int:
-    settings, maker = _maker()
-    if not settings.upstream_url:
-        print("ATLAS_UPSTREAM_URL is not set", file=sys.stderr)
-        return 2
+# `atlas sync status|replay` exit codes (CONTRACTS-v1 C1.9)
+EXIT_CONVERGED, EXIT_PARKED, EXIT_REFUSED = 0, 3, 4
+# The authority's signed history no longer matches what this node verified (CONTRACT-AMENDMENTS A3 #11).
+EXIT_REWOUND = 5
+
+
+def _ctx(settings, maker):
+    from . import runtime
+
     with maker() as session:
-        ctx = Ctx(settings, load_identity(session))
+        ctx = Ctx(runtime.effective(settings, runtime.load(session)), load_identity(session))
         session.commit()
-    with httpx.Client() as client:
-        n = sync.pull_all(maker, ctx, client, settings.upstream_url, settings.upstream_token)
-    print(f"applied {n} entries")
-    return 0
+    return ctx
+
+
+def _exit_for(upstreams: dict) -> int:
+    if any(u.get("refused") for u in upstreams.values()):
+        return EXIT_REFUSED
+    if any(u.get("rewound") for u in upstreams.values()):
+        return EXIT_REWOUND
+    if any(u.get("parked") for u in upstreams.values()):
+        return EXIT_PARKED
+    return EXIT_CONVERGED
+
+
+def _describe(node: str, u: dict) -> str:
+    lines = [f"{node}: {u['state']}  (this node speaks {u['own_protocol']}, upstream {u['upstream_protocol'] or 'unknown'})",
+             f"  heads: observed {u['observed_head']}  downloaded {u['downloaded_head']}  verified {u['verified_head']}"
+             f"  applied {u['applied_head']}"]
+    if u.get("parked"):
+        p = u["parked"]
+        lines.append(f"  parked: {p['count']} entries from seq {p['first_seq']} ({p['first_reason']}, kind "
+                     f"{p['first_kind']!r}){'; backlog full, downloading paused' if p['backlog_full'] else ''}")
+        lines.append(f"    {p['first_error']}")
+        lines.append("    upgrade Atlas and run `atlas sync replay`, or `atlas sync skip` it if you accept the loss")
+    if u["quarantined"]["count"]:
+        q = u["quarantined"]
+        lines.append(f"  quarantined: {q['count']} entries (oldest seq {q['oldest_seq']}); retried automatically")
+    if u.get("refused"):
+        lines.append(f"  refused: {u['refused'].get('reason')}")
+    if u.get("rewound"):
+        lines.append(f"  rewound: {u['rewound'].get('reason')}")
+        lines.append("    nothing from it is applied until it serves the entries this node verified again (#15 / #24)")
+    return "\n".join(lines)
+
+
+def cmd_sync(args) -> int:
+    settings, maker = _maker()
+    action = getattr(args, "action", None)
+    if action is None:
+        if not settings.upstream_url:
+            print("ATLAS_UPSTREAM_URL is not set", file=sys.stderr)
+            return 2
+        ctx = _ctx(settings, maker)
+        with httpx.Client() as client:
+            n = sync.pull_all(maker, ctx, client, settings.upstream_url, settings.upstream_token)
+        print(f"applied {n} entries")
+        return 0
+    ctx = _ctx(settings, maker)
+    if action == "status":
+        with maker() as session:
+            upstreams = sync.status(session, ctx)["upstreams"]
+        if args.node:
+            upstreams = {k: v for k, v in upstreams.items() if k == args.node}
+            if not upstreams:
+                print(f"no upstream feed {args.node}", file=sys.stderr)
+                return 2
+        if args.json:
+            print(json.dumps({"upstreams": upstreams}, indent=2, sort_keys=True))
+        else:
+            print("\n".join(_describe(n, u) for n, u in upstreams.items()) or "no upstream feeds")
+        return _exit_for(upstreams)
+    if action == "replay":
+        with maker() as session:
+            if args.rescan:
+                nodes = [args.node] if args.node else sync.upstream_nodes(session)
+                counts = {n: sync.rescan(session, n) for n in nodes}
+                session.commit()
+                for n, c in counts.items():
+                    print(f"{n}: scanned {c['scanned']} applied entries; recorded {c['parked']} parked and "
+                          f"{c['quarantined']} quarantined that earlier releases skipped. Nothing was re-applied; "
+                          "run `atlas sync replay --historical` to re-apply them in feed order.")
+                upstreams = sync.status(session, ctx)["upstreams"]
+                return _exit_for({n: upstreams[n] for n in nodes if n in upstreams})
+            result = sync.replay(session, ctx, args.node, limit=args.limit, historical=args.historical)
+            if args.dry_run:
+                session.rollback()
+            else:
+                session.commit()
+        for n, r in result.items():
+            verb = "would apply" if args.dry_run else "applied"
+            print(f"{n}: {verb} {r['applied']} entries ({r['applied_before']} -> {r['applied_head']} of "
+                  f"{r['verified_head']} verified); state {r['state']}")
+            if args.historical:
+                print(f"  re-applied {r['reapplied']} retained entries in feed order; {r['recovered_parked']} "
+                      "entries earlier releases skipped are now applied")
+            if r["historical_parked"] is not None:
+                print(f"  entries earlier releases skipped are parked from seq {r['historical_parked']}; "
+                      "`atlas sync replay --historical` re-applies them in feed order")
+            if r["parked"]:
+                p = r["parked"]
+                print(f"  still parked at seq {p['first_seq']}: {p['first_error']}")
+            if r["refused"]:
+                print(f"  upstream refused: {r['refused'].get('reason')}")
+            if r["rewound"]:
+                print(f"  upstream rewound: {r['rewound'].get('reason')}")
+        return _exit_for(result)
+    if action == "skip":
+        with maker() as session:
+            try:
+                result = sync.skip(session, ctx, args.node, args.seq, args.reason)
+            except ValueError as exc:
+                print(f"sync skip: {exc}", file=sys.stderr)
+                return 1
+            session.commit()
+        print(f"entry {args.seq} of {args.node} is now quarantined (skipped, audited); applied head is "
+              f"{result['applied_head']}")
+        return 0
+    if action == "reconcile":
+        if not args.dry_run:
+            print("sync reconcile: only --dry-run (compare) is available in this release", file=sys.stderr)
+            return 2
+        from . import secrets_box
+        from .models import Peer
+
+        with maker() as session:
+            from sqlalchemy import select
+
+            peer = session.scalars(select(Peer).where(Peer.node_id == args.node, Peer.enabled.is_(True))).first()
+            if peer is not None:
+                url = peer.url
+                token = secrets_box.decrypt(settings, peer.token_enc) if peer.token_enc else None
+            elif settings.upstream_url and args.node in settings.trusted_keys:
+                url, token = settings.upstream_url, settings.upstream_token
+            else:
+                print(f"sync reconcile: no enabled peer or ATLAS_UPSTREAM_URL serves {args.node}", file=sys.stderr)
+                return 2
+            with httpx.Client() as client:
+                result = sync.reconcile(session, client, url, token, args.node)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        if result["match"] is None:
+            return 2
+        return 0 if result["match"] else 1
+    raise AssertionError(action)  # pragma: no cover
 
 
 def cmd_make_admin(args) -> int:
@@ -203,7 +335,28 @@ def main(argv: list[str] | None = None) -> int:
     t.set_defaults(fn=cmd_token)
     sub.add_parser("node").set_defaults(fn=cmd_node)
     sub.add_parser("secret-key").set_defaults(fn=cmd_secret_key)
-    sub.add_parser("sync").set_defaults(fn=cmd_sync)
+    sy = sub.add_parser("sync", help="pull from ATLAS_UPSTREAM_URL now; or status, replay, skip, reconcile")
+    sy.set_defaults(fn=cmd_sync, action=None)
+    sya = sy.add_subparsers(dest="action")
+    st = sya.add_parser("status", help="heads, parked and quarantined entries per upstream "
+                                         "(exit 3 parked, 4 refused, 5 rewound)")
+    st.add_argument("--node", help="one upstream node id")
+    st.add_argument("--json", action="store_true")
+    rp = sya.add_parser("replay", help="re-classify parked entries and apply in order until the next park")
+    rp.add_argument("--node", help="one upstream node id (default: all)")
+    rp.add_argument("--dry-run", action="store_true", help="report what would apply, change nothing")
+    rp.add_argument("--limit", type=int, help="apply at most this many entries per upstream")
+    rp.add_argument("--rescan", action="store_true",
+                    help="one-time recovery: record entries earlier releases silently skipped (classification only)")
+    rp.add_argument("--historical", action="store_true",
+                    help="re-apply the retained entries from the oldest one an earlier release skipped, in feed order")
+    sk = sya.add_parser("skip", help="admin escape hatch: mark one parked entry quarantined (audited)")
+    sk.add_argument("--node", required=True)
+    sk.add_argument("--seq", type=int, required=True)
+    sk.add_argument("--reason", required=True, help="written to the audit log")
+    rc = sya.add_parser("reconcile", help="compare this node's view with the upstream's /sync/digest")
+    rc.add_argument("--node", required=True)
+    rc.add_argument("--dry-run", action="store_true", help="compare only (the only mode in this release)")
     a = sub.add_parser("make-admin")
     a.add_argument("username")
     a.set_defaults(fn=cmd_make_admin)

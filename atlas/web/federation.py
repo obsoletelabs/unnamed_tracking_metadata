@@ -12,8 +12,8 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
-from .. import accounts, auth, key_rotation, secrets_box, service, sync
-from ..models import Peer, SyncCursor, SyncFailure, Token, User
+from .. import accounts, auth, feed_schema, key_rotation, runtime, secrets_box, service, sync
+from ..models import FollowerSeen, Peer, Setting, SyncCursor, SyncFailure, Token, User
 from ..service import AtlasError
 from ..signing import key_id_for, load_identity
 from .deps import Page as Ctx
@@ -70,20 +70,81 @@ def fingerprint(node_id: str) -> str:
 FAILURES_SHOWN = 50
 
 
+def _protocol(p: Ctx) -> dict:
+    """This node's federation protocol and the protocols its followers were last seen speaking (C1.6)."""
+    s = p.st.ctx.settings
+    emit = feed_schema.emit_protocol(s)
+    names = {t.id: t.name for t in p.session.scalars(select(Token))}
+    followers = []
+    for row in p.session.scalars(select(FollowerSeen).order_by(FollowerSeen.last_seen_at.desc()).limit(100)):
+        try:
+            behind = feed_schema.parse_protocol(row.protocol) < feed_schema.parse_protocol(emit)
+        except ValueError:
+            behind = True
+        followers.append({"name": names.get(row.token_id, "(deleted token)"), "protocol": row.protocol,
+                          "seen": row.last_seen_at, "behind": behind})
+    return {"own": feed_schema.PROTOCOL, "min": s.min_follower_protocol, "emit": emit, "followers": followers,
+            "choices": feed_schema.protocol_choices(s.min_follower_protocol, feed_schema.PROTOCOL),
+            "has_password": p.me.password_hash != "!"}
+
+
 @router.get("/admin/peers", response_class=HTMLResponse)
 def peers(p: Annotated[Ctx, Depends(admin_page)], probe: dict | None = None, error: str | None = None):
+    return _peers_page(p, probe, error)
+
+
+def _peers_page(p: Ctx, probe: dict | None = None, error: str | None = None, status: int = 200):
     rows = []
     cursors = {c.upstream: c for c in p.session.scalars(select(SyncCursor))}
+    heads = sync.status(p.session, p.st.ctx)["upstreams"]
     for peer in p.session.scalars(select(Peer).order_by(Peer.created_at)):
         cur = cursors.get(peer.node_id)
-        rows.append({"peer": peer, "seq": cur.last_seq if cur else 0, "fp": fingerprint(peer.node_id)})
+        rows.append({"peer": peer, "seq": cur.last_seq if cur else 0, "fp": fingerprint(peer.node_id),
+                     "heads": heads.get(peer.node_id)})
     s = p.st.ctx.settings
     failures = list(p.session.scalars(select(SyncFailure).where(SyncFailure.resolved_at.is_(None))
                                       .order_by(SyncFailure.node_id, SyncFailure.seq).limit(FAILURES_SHOWN)))
-    return render(p, "admin_peers.html", rows=rows, failures=failures, failures_open=sync.open_failures(p.session),
+    return render(p, "admin_peers.html", status=status, rows=rows, failures=failures,
+                  failures_open=sync.open_failures(p.session),
+                  parked_open=sync.open_failures(p.session, feed_schema.PARK),
                   auto_limit=sync.AUTO_RETRY_LIMIT, own=p.st.ctx.identity, fp=fingerprint(p.st.ctx.identity.node_id),
                   can_store=secrets_box.available(s), env_upstream=s.upstream_url, probe=probe, error=error, when=when,
-                  inherit=s.inherit_schema)
+                  inherit=s.inherit_schema, protocol=_protocol(p))
+
+
+@router.post("/admin/peers/protocol", response_class=HTMLResponse)
+def set_emit_protocol(p: Annotated[Ctx, Depends(admin_form)], emit_protocol: Annotated[str, Form(max_length=16)],
+                      password: Annotated[str, Form(max_length=256)] = "",
+                      followers_upgraded: Annotated[str, Form()] = ""):
+    """Change the protocol this node's own feed may use. Raising it lets newer constructs reach followers,
+    so it asks for the same confirmation as a key rotation (re-authentication + followers upgraded)."""
+    throttle(p, f"emit-protocol:{p.me.id}", 5, 3600)
+    s = p.st.ctx.settings
+    current = feed_schema.emit_protocol(s)
+    choices = feed_schema.protocol_choices(s.min_follower_protocol, feed_schema.PROTOCOL)
+    if emit_protocol not in choices:
+        return _peers_page(p, error=f"Choose one of {', '.join(choices)}.", status=400)
+    if emit_protocol == current:
+        return _peers_page(p, error=f"This node already emits protocol {current}.")
+    raising = feed_schema.parse_protocol(emit_protocol) > feed_schema.parse_protocol(current)
+    if raising and followers_upgraded != "on":
+        return _peers_page(p, error="Could not raise the emit protocol: upgrade every follower first and confirm it.",
+                           status=400)
+    if not accounts.reauthenticated(p.me, password, p.login):
+        return _peers_page(p, error="Could not change the emit protocol: confirm your current password or sign in "
+                           "again with your linked provider.", status=400)
+    row = p.session.get(Setting, "emit_protocol")
+    if row is None:
+        p.session.add(Setting(key="emit_protocol", value=emit_protocol, updated_by=p.me.id))
+    else:
+        row.value, row.updated_by = emit_protocol, p.me.id
+    behind = [f["name"] for f in _protocol(p)["followers"]
+              if feed_schema.parse_protocol(f["protocol"]) < feed_schema.parse_protocol(emit_protocol)]
+    accounts.audit(p.session, p.me.id, "emit_protocol", "", {"from": current, "to": emit_protocol,
+                                                              "followers_behind": behind[:20]})
+    p.session.flush()
+    p.st.ctx.settings = runtime.effective(p.st.base or s, runtime.load(p.session))
+    return go("/admin/peers", "saved")
 
 
 @router.post("/admin/peers/probe", response_class=HTMLResponse)

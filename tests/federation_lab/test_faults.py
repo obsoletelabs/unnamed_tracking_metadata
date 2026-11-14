@@ -147,13 +147,9 @@ def test_rewound_authority_is_refused_when_a_follower_rereads_its_feed(lab):
     assert mirror.digest() == settled
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="atlas#15 / #24: a follower whose cursor is ahead of a rewound authority neither notices nor "
-           "recovers. It asks for entries after its own cursor, so the authority's replacement entries "
-           "below that cursor are never fetched and the fork check never runs. Remove this marker when "
-           "followers compare the advertised head with their cursor and report or reconcile.")
 def test_rewound_authority_is_not_silently_ignored_by_an_up_to_date_follower(lab):
+    """The follower compares the advertised head with what it already verified (atlas#33 C1.7) and
+    reports the rewind instead of claiming success. Recovery itself is #15 / #24."""
     official, mirror = lab.nodes["official"], lab.nodes["mirror"]
     _seed(lab, count=4)
     forked, _ = _rewind_official(lab)
@@ -163,6 +159,10 @@ def test_rewound_authority_is_not_silently_ignored_by_an_up_to_date_follower(lab
     assert error is not None or forked in mirror.canonicals(), (
         f"mirror reports success but holds a different history than the authority: cursor "
         f"{mirror.cursor(official)}, authority head {official.head()}, no error recorded")
+    assert "fork or rewind" in error and forked not in mirror.canonicals()
+    status = mirror.sync_status(official)
+    assert not status["in_sync"] and status["state"] == "rewound", status
+    assert status["rewound"]["advertised_head"] < status["verified_head"]
 
 
 # ---- forged, rotated and revoked identities ------------------------------------------------------------
