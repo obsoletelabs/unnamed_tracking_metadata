@@ -36,6 +36,9 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_TRUSTED_KEYS` | — | JSON object `{"<node id>": "<base64 public key>"}` of upstream nodes whose signed feed you trust. Required when `upstream_url` is set. Get the values from `atlas node` on the upstream. |
 | `ATLAS_SYNC_INTERVAL_SECONDS` | `60` | How often to pull from peers (minimum 5). |
 | `ATLAS_SYNC_BATCH_SIZE` | `500` | Feed entries fetched per request. |
+| `ATLAS_SYNC_MAX_PARKED_BACKLOG` | `50000` | Entries a follower keeps downloading, verifying and relaying after the first entry it had to park (it needs a newer release). Above this it pauses downloading and reports `backlog_full`. |
+| `ATLAS_MIN_FOLLOWER_PROTOCOL` | `1.0` | Lowest federation protocol a follower must speak to sync from this node (followers below it refuse). Default: the previous release's protocol. |
+| `ATLAS_EMIT_PROTOCOL` | — | Newest federation protocol this node's own feed may use. Unset = `min_follower_protocol`. Raise it in Admin → Peers once every follower is upgraded. **live** |
 | `ATLAS_INHERIT_SCHEMA` | `true` | Adopt the upstream authority's media types and custom fields (yours always take precedence). Editable in Admin → Settings. **live** |
 | `ATLAS_OIDC_PROVIDER_ENABLED` | `false` | Let other nodes and the Tracking App sign users in with accounts on this node (OpenID Connect). Editable in Admin → Settings. **live** |
 

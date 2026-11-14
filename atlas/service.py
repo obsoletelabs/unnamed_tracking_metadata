@@ -230,7 +230,7 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
             ) or review
 
         if obs.redistributable:
-            feed.append(session, ctx.identity, "obs", {
+            feed.emit(session, ctx, "obs", {
                 "canonical_id": cid, "media_type": session.get(Canonical, cid).media_type,
                 "observation": {
                     "id": obs.id, "source_kind": obs.source_kind, "source": obs.source,
@@ -295,7 +295,7 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
     session.flush()
     rebuild(session, ctx, dst)
     if log and ctx.settings.role == "authority":
-        feed.append(session, ctx.identity, "merge", {"src": src, "dst": dst})
+        feed.emit(session, ctx, "merge", {"src": src, "dst": dst})
     return d
 
 
@@ -341,7 +341,7 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
     rebuild(session, ctx, old)
     new = rebuild(session, ctx, cid)
     if log and ctx.settings.role == "authority":
-        feed.append(session, ctx.identity, "detach", {
+        feed.emit(session, ctx, "detach", {
             "observation_id": observation_id, "canonical_id": old, "new_canonical_id": cid,
         })
     return new
@@ -369,7 +369,7 @@ def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, ac
     session.flush()
     rebuild(session, ctx, cid)
     if log and not local_only and ctx.settings.role == "authority":
-        feed.append(session, ctx.identity, "lock", {"canonical_id": cid, "field": field, "value": value})
+        feed.emit(session, ctx, "lock", {"canonical_id": cid, "field": field, "value": value})
     return row
 
 
@@ -383,7 +383,7 @@ def clear_lock(session: Session, ctx: Ctx, cid: str, field: str, *, log: bool = 
     session.flush()
     row = rebuild(session, ctx, cid)
     if log and not local_only and ctx.settings.role == "authority":
-        feed.append(session, ctx.identity, "unlock", {"canonical_id": cid, "field": field})
+        feed.emit(session, ctx, "unlock", {"canonical_id": cid, "field": field})
     return row
 
 

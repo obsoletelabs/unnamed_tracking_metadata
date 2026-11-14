@@ -8,14 +8,13 @@ from pathlib import Path
 
 from sqlalchemy import func, select, text
 
-from . import backup, custom, db, feed, key_rotation, sync
-from .models import FieldDef, MediaType, NodeState, ReplicatedChange, ReplicatedFeed, SyncCursor
-from .service import Ctx
+from . import backup, custom, db, feed, feed_schema, key_rotation, sync
+from .models import FieldDef, MediaType, NodeState, ReplicatedChange, ReplicatedFeed, SyncCursor, SyncFailure
+from .service import AtlasError, Ctx
 from .settings import Settings
 from .signing import load_identity
 
-KINDS = frozenset({"obs", "artwork", "achievements", "schema", "custom", "merge", "detach", "lock", "unlock",
-                   "key_rotation"})
+KINDS = feed_schema.known_kinds()
 
 
 class PromotionError(ValueError):
@@ -47,6 +46,13 @@ def candidate(settings: Settings, source_engine, authority: str, confirm_mirror:
         head = source.scalar(select(func.max(ReplicatedChange.seq)).where(ReplicatedChange.node_id == authority)) or 0
         if root is None or cursor is None or not head or cursor.last_seq != head:
             raise PromotionError("the selected authority has no complete retained feed; backfill it before recovery")
+        parked = source.scalar(select(func.count()).select_from(SyncFailure).where(
+            SyncFailure.node_id == authority, SyncFailure.disposition == feed_schema.PARK,
+            SyncFailure.resolved_at.is_(None))) or 0
+        if parked:
+            # applied == verified is not enough: a parked entry was never applied (C1.7).
+            raise PromotionError(f"{parked} retained entries of that authority are parked (they need a newer "
+                                 "release); upgrade and run `atlas sync replay` before recovery")
         history = key_rotation.trusted_history(source, authority)
         tip = history[-1]["body"]["key_id"] if history else authority
         try:
@@ -80,6 +86,10 @@ def candidate(settings: Settings, source_engine, authority: str, confirm_mirror:
                             raise PromotionError(f"invalid signature, gap or fork at retained sequence {expected}")
                         if row.kind not in KINDS:
                             raise PromotionError(f"unsupported feed kind {row.kind!r}; upgrade before recovery")
+                        outcome = feed_schema.classify(row.kind, row.body)
+                        if outcome.action == feed_schema.PARK:
+                            raise PromotionError(f"retained entry {row.seq} is not supported by this release "
+                                                 f"({outcome.message}); upgrade before recovery")
                         target.add(ReplicatedChange(node_id=authority, seq=row.seq, kind=row.kind, body=row.body,
                                                     body_hash=row.body_hash, signature=row.signature, key_id=row.key_id))
                         target.flush()
@@ -87,7 +97,12 @@ def candidate(settings: Settings, source_engine, authority: str, confirm_mirror:
                             # Use the same replay contract as a follower, then sign the original public payload
                             # under the new independent identity. Local/private state is never copied.
                             seq = feed.append(target, identity, row.kind, row.body)
-                            sync._apply(target, ctx, identity.node_id, seq, row.kind, row.body)
+                            if outcome.action == feed_schema.APPLY:
+                                try:
+                                    with target.begin_nested():
+                                        sync._apply(target, ctx, identity.node_id, seq, row.kind, outcome.body)
+                                except (sync.InvalidEntry, AtlasError):
+                                    pass  # as on the source mirror: an entry it could not apply stays unapplied
                         expected += 1
                         tail = row.body_hash
                     if expected != head + 1:

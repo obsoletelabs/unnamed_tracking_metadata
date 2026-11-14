@@ -155,6 +155,10 @@ def _mailer(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> No
 
 def _sync_loop(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
     delay = ctx.settings.sync_interval_seconds
+    try:  # once after an upgrade: entries parked by the previous release may apply now (C1.9)
+        sync.startup_replay(maker, ctx)
+    except Exception as exc:
+        log.warning("startup replay failed: %s", exc)
     with httpx.Client() as client:
         while not stop.is_set():
             wait = delay

@@ -43,6 +43,13 @@ ENV_HELP: dict[str, tuple[str, str]] = {
                      "you trust. Required when `upstream_url` is set. Get the values from `atlas node` on the upstream."),
     "sync_interval_seconds": ("Federation", "How often to pull from peers (minimum 5)."),
     "sync_batch_size": ("Federation", "Feed entries fetched per request."),
+    "sync_max_parked_backlog": ("Federation", "Entries a follower keeps downloading, verifying and relaying after the "
+                                "first entry it had to park (it needs a newer release). Above this it pauses downloading "
+                                "and reports `backlog_full`."),
+    "min_follower_protocol": ("Federation", "Lowest federation protocol a follower must speak to sync from this node "
+                              "(followers below it refuse). Default: the previous release's protocol."),
+    "emit_protocol": ("Federation", "Newest federation protocol this node's own feed may use. Unset = "
+                      "`min_follower_protocol`. Raise it in Admin → Peers once every follower is upgraded."),
     "inherit_schema": ("Federation", "Adopt the upstream authority's media types and custom fields (yours always take "
                        "precedence). Editable in Admin → Settings."),
     "oidc_provider_enabled": ("Federation", "Let other nodes and the Tracking App sign users in with accounts on this node "
@@ -150,9 +157,11 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("post", "/providers/{name}/fetch"): "Fetch full details from a provider (cached), merge, return the record.",
     ("get", "/providers/{name}/search"): "Lightweight provider search; nothing is stored.",
     ("get", "/sync/changes"): "Signed entries after `since`; optional `node_id` selects a retained original authority feed.",
-    ("get", "/sync/info"): "Stable trust root, current signer, signed successor proofs and available original feeds.",
-    ("get", "/status"): "Role, feed head, replication cursors and the number of feed entries that failed to apply.",
-    ("get", "/sync/failures"): "Mirrored feed entries that could not be applied and still need attention.",
+    ("get", "/sync/info"): "Stable trust root, current signer, signed successor proofs, available original feeds, and the federation protocol, feed kinds and capabilities this node speaks.",
+    ("get", "/status"): "Role, feed head, replication cursors, the number of feed entries that failed to apply and the named heads per upstream.",
+    ("get", "/sync/status"): "Protocol versions, named heads (observed, downloaded, verified, applied), parked and quarantined entries per upstream, and the protocol each follower last spoke.",
+    ("get", "/sync/digest"): "Digest of the replicated observations of this node's feed (or a retained one with `node_id`), for `atlas sync reconcile`. Observations only; cached up to 60 s (`cached_seconds`).",
+    ("get", "/sync/failures"): "Mirrored feed entries that could not be applied and still need attention: parked (need a newer release) or quarantined.",
     ("post", "/sync/failures/retry"): "Retry failed mirrored entries now, whatever the automatic attempt count.",
     ("get", "/tokens"): "List API tokens.",
     ("post", "/tokens"): "Create a token; the secret is returned once.",

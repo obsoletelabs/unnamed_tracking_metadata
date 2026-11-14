@@ -149,8 +149,15 @@ class SyncFailure(Base):
     first_failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     last_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # parked: needs a newer release; blocks the applied head (C1.4). quarantined: a known entry that
+    # failed validation or apply; does not block, retried automatically.
+    disposition: Mapped[str] = mapped_column(String(16), default="quarantined", server_default="quarantined")
+    # unsupported_kind|_version|_capability|_field|_value, or invalid|apply_error|skipped
+    reason: Mapped[str] = mapped_column(String(32), default="apply_error", server_default="apply_error")
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)  # {kind, _v, unknown, requires}
 
-    __table_args__ = (Index("ix_sync_failure_open", "resolved_at", "node_id", "seq"),)
+    __table_args__ = (Index("ix_sync_failure_open", "resolved_at", "node_id", "seq"),
+                      Index("ix_sync_failure_parked", "node_id", "disposition", "seq"))
 
 
 class ReplicatedFeed(Base):
@@ -167,7 +174,7 @@ class ReplicatedChange(Base):
 
     node_id: Mapped[str] = mapped_column(ForeignKey("replicated_feed.node_id"), primary_key=True)
     seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    kind: Mapped[str] = mapped_column(String(16))
+    kind: Mapped[str] = mapped_column(String(32))  # wide enough to retain (and park) a newer release's kind
     body: Mapped[dict[str, Any]] = mapped_column(JSON)
     body_hash: Mapped[str] = mapped_column(String(64))
     signature: Mapped[str] = mapped_column(String(128))
@@ -562,6 +569,20 @@ class Peer(Base):
     last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    remote_protocol: Mapped[str | None] = mapped_column(String(16), nullable=True)  # last advertised by the peer
+
+
+class FollowerSeen(Base):
+    """Which federation protocol each follower credential last spoke (its `Atlas-Protocol` header).
+
+    Lets an authority see who still needs an upgrade before raising its emit protocol. Holds the
+    token id only: no address, user agent or other personal data."""
+
+    __tablename__ = "follower_seen"
+
+    token_id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    protocol: Mapped[str] = mapped_column(String(16))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class OidcClient(Base):

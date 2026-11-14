@@ -129,7 +129,7 @@ def snapshot(session: Session) -> dict[str, Any]:
 def publish(session: Session, ctx: Ctx) -> None:
     """Replicate the current schema to mirrors (authority only)."""
     if ctx.settings.role == "authority":
-        feed.append(session, ctx.identity, "schema", snapshot(session))
+        feed.emit(session, ctx, "schema", snapshot(session))
 
 
 def apply_snapshot(session: Session, snap: dict[str, Any], node_id: str | None = None) -> None:
@@ -455,7 +455,7 @@ def set_values(session: Session, ctx: Ctx, cid: str, source: str, values: dict[s
     if redistributable:
         touch_version(session, cid)
     if log and redistributable and ctx.settings.role == "authority":
-        feed.append(session, ctx.identity, "custom", {"canonical_id": cid, "source": source, "values": values,
+        feed.emit(session, ctx, "custom", {"canonical_id": cid, "source": source, "values": values,
                                                       "clear": list(clear)})
 
 
