@@ -76,7 +76,17 @@ def settings_save(p: Annotated[Ctx, Depends(user_form)], bio: Annotated[str, For
     if any(ord(c) < 32 and c not in "\n\r" for c in bio):
         raise HTTPException(400, "The bio contains characters that are not allowed.")
     u = p.me
-    u.bio, u.profile_public = bio.strip(), profile_public == "on"
+    # Versioned (CONTRACT-C10 §4): `profile.set_local` dual-writes app_user.bio / profile_public, removes followers
+    # when the profile turns private, and sends the change to linked nodes when the user consented to that.
+    from .. import profile
+
+    for field, value in (("bio", bio.strip()), ("privacy.profile_public", profile_public == "on")):
+        current = u.bio or "" if field == "bio" else bool(u.profile_public)
+        if value != current:
+            try:
+                profile.set_local(p.session, p.st.ctx.settings, p.st.ctx.identity, u, field, value)
+            except profile.ProfileError as exc:
+                raise HTTPException(400, str(exc)) from None
     if not u.profile_public:  # a private profile has no followers and sends no activity to anyone
         p.session.execute(Follow.__table__.delete().where(Follow.target_type == "user", Follow.target_id == u.id))
     u.email_notifications = email_notifications == "on"
@@ -98,7 +108,7 @@ def delete_account(p: Annotated[Ctx, Depends(user_form)], confirm: Annotated[str
     if confirm.strip().lower() != p.me.username or not accounts.reauthenticated(p.me, password, p.login):
         raise HTTPException(400, "Type your username and your current password to confirm.")
     try:
-        social.delete_account(p.session, p.me)
+        social.delete_account(p.session, p.me, p.st.ctx)
     except AtlasError as exc:
         raise fail(exc) from exc
     resp = go("/", "bye")

@@ -343,6 +343,15 @@ def restore(settings: Settings, engine: Engine, path: Path, *, force: bool = Fal
             # before any privileged group action (CONTRACT-C10 §3.6).
             owner_group = tables["owner_group"]
             conn.execute(update(owner_group).where(owner_group.c.status == "active").values(status="resyncing"))
+            in_group = conn.execute(select(func.count()).select_from(owner_group)).scalar_one() > 0
+            if in_group and "node_state" in tables:
+                # The private channel (§3.6): this node's next entries open a `restore` epoch, and it fetches a
+                # snapshot of every linked account to re-learn effects the backup lost. A node in no group has no
+                # stream to continue, so nothing is marked.
+                node_state = tables["node_state"]
+                for key, value in (("group_epoch_due", "restore"), ("group_snapshot_due", "1")):
+                    conn.execute(delete(node_state).where(node_state.c.key == key))
+                    conn.execute(node_state.insert().values(key=key, value=value))
     if include_media and manifest.get("media_included"):
         _restore_media(settings, path)
     return loaded

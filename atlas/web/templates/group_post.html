@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · {{ app_name }}{% endblock %}
+{% block content %}
+<div class="narrow card">
+<h1>{{ title }}</h1>
+<p>{{ text }}</p>
+<form method="post" action="{{ action }}" data-autosubmit>
+  <input type="hidden" name="{{ field }}" value="{{ value }}">
+  <button type="submit">Continue</button>
+</form>
+<p class="small muted">The request is encrypted for that node; nothing about your account is in the address.</p>
+</div>
+{% endblock %}

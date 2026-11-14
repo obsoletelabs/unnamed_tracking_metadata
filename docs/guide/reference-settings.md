@@ -49,6 +49,8 @@ These can be changed live in **Admin → Settings** without restarting. Each cha
 | Setting | Type | Default | Notes |
 | --- | --- | --- | --- |
 | **Act as a sign-in provider (OIDC)** (`oidc_provider_enabled`) | on/off | `False` | Lets other nodes you register under Admin → Sign-in sharing let your users sign in with their account here. |
+| **Sync user preferences in the owner group** (`group_profile_sync`) | on/off | `True` | Linked accounts may share the preferences each user chose with the other nodes of your group. Off: nothing is sent or applied; local preferences keep working. |
+| **Preferences that may be synced** (`group_profile_fields`) | text | — | Space-separated preference names, for example 'theme language a11y.font_scale'. Empty = every preference the user agrees to. |
 | **Adopt the upstream media types and fields** (`inherit_schema`) | on/off | `True` | Mirrors and local nodes copy the authority's custom fields; yours always take precedence. |
 
 ## Security

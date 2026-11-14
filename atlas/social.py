@@ -464,8 +464,9 @@ def export_data(session: Session, user: User) -> dict[str, Any]:
     }
 
 
-def delete_account(session: Session, user: User) -> None:
-    """Remove personal data. Contributions stay (CC0) but are detached from the person."""
+def delete_account(session: Session, user: User, ctx: Ctx | None = None) -> None:
+    """Remove personal data. Contributions stay (CC0) but are detached from the person. In an owner group the
+    other nodes are told `account.unlink {reason: deleted}`; deletion itself never propagates (CONTRACT-C10 §4.5)."""
     if user.role == "admin":
         others = session.scalar(select(func.count()).select_from(User).where(
             User.role == "admin", User.id != user.id, User.deleted_at.is_(None), User.status == "active")) or 0
@@ -503,6 +504,9 @@ def delete_account(session: Session, user: User) -> None:
     session.execute(delete(ArtworkVote).where(ArtworkVote.user_id == user.id))
 
     session.execute(delete(EmailToken).where(EmailToken.user_id == user.id))
+    from . import group_channel
+
+    group_channel.on_account_deleted(session, ctx.settings if ctx else None, ctx.identity if ctx else None, user)
     user.username = "deleted-" + secrets.token_hex(4)
     user.email, user.email_verified_at, user.bio = None, None, ""
     user.password_hash, user.status, user.role = "!", "suspended", "user"
