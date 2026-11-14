@@ -1,0 +1,39 @@
+{
+  "started_at": "2026-11-08T08:20:29.187935+00:00",
+  "image": "atlas-p7b:test",
+  "project": "atlasdrill0d8cf9",
+  "checks": [
+    "authority stack up (PostgreSQL, migrate job, Atlas, backup service); seeded and probed",
+    "Atlas archive created and verified with --secret-check; pg_dump -Fc written by the backup service",
+    "after down -v, migrate + `atlas backup restore` gave the same node id, key, record, token, password, cached image and feed head; the key is still encrypted at rest; `atlas check` is clean",
+    "restore.sh replaced a drifted database (tokens deleted) from the pg_dump file; the same checks pass"
+  ],
+  "status": "passed",
+  "fingerprint": {
+    "node_id": "34f3c99b69bd76ff",
+    "feed_head": 1,
+    "title": "Compose Drill Game"
+  },
+  "commands": [
+    "$ docker compose up -d atlas backup",
+    "$ docker compose exec -T atlas python -",
+    "$ docker compose exec -T atlas python - atlas:01m6x3y26sq0ej1zyqm8yz7qvq *** 1a343b2b8e3208f0e27e152f5d8f868a1e14f0ceb7453739f7b75fb93dc8e53a",
+    "$ docker compose exec -T atlas atlas backup create /data/drill.tar.gz",
+    "$ docker compose exec -T atlas atlas backup verify /data/drill.tar.gz --secret-check",
+    "$ docker compose cp atlas:/data/drill.tar.gz C:\\Users\\BOEING~1\\AppData\\Local\\Temp\\atlas-compose-drill-t5b9tvpn\\backups\\drill.tar.gz",
+    "$ docker compose exec -T backup pg_dump -Fc -f /backups/drill.dump",
+    "$ docker compose down -v",
+    "$ docker compose up -d db",
+    "$ docker compose run --rm migrate",
+    "$ docker compose run --rm -v C:/Users/BOEING~1/AppData/Local/Temp/atlas-compose-drill-t5b9tvpn/backups:/restore:ro migrate atlas backup restore /restore/drill.tar.gz",
+    "$ docker compose up -d atlas",
+    "$ docker compose exec -T atlas python - atlas:01m6x3y26sq0ej1zyqm8yz7qvq *** 1a343b2b8e3208f0e27e152f5d8f868a1e14f0ceb7453739f7b75fb93dc8e53a",
+    "$ docker compose exec -T atlas atlas check",
+    "$ docker compose exec -T db psql -U atlas -d atlas -c DELETE FROM api_token",
+    "$ docker compose exec -T atlas python - atlas:01m6x3y26sq0ej1zyqm8yz7qvq *** 1a343b2b8e3208f0e27e152f5d8f868a1e14f0ceb7453739f7b75fb93dc8e53a",
+    "$ sh restore.sh backups/drill.dump -> 0",
+    "$ docker compose exec -T atlas python - atlas:01m6x3y26sq0ej1zyqm8yz7qvq *** 1a343b2b8e3208f0e27e152f5d8f868a1e14f0ceb7453739f7b75fb93dc8e53a",
+    "$ docker compose --profile never down -v --remove-orphans"
+  ],
+  "finished_at": "2026-11-08T08:22:25.112245+00:00"
+}

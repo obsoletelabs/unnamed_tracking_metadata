@@ -55,7 +55,7 @@ Custom values appear on the page, in the contributor form and the API (`custom`)
 
 ### Standard multiplayer fields
 
-Every authority and local node starts with three fields on `game`: `players_min` and `players_max` (numbers) and `crossplay` (`yes`, `partial` or `no`; empty means **unknown**, never "no"). They are added once, on first start after upgrading; delete or relabel them freely and they will not come back. Mirrors receive them from their upstream. Steam imports set `crossplay` to `yes` when the store lists *Cross-Platform Multiplayer* (Steam never states `no`, so nothing is guessed). Curators set the rest with `PUT /games/{cid}/custom`; clients such as a game-night plugin read them from `custom` in `GET /games` and `GET /games/{id}`. Other providers can fill these fields by returning `custom` values from their adapter; undefined fields are skipped. A game whose maximum players is 1 and whose crossplay is empty shows **Single-player** on its page; that answer is worked out when the page is shown (contract C7.2), so it is never stored, never sent in the API or the feed, and never counted as "no". `not_applicable` cannot be stored in `crossplay`, even if you add it as a choice.
+Every authority and local node starts with three fields on `game`: `players_min` and `players_max` (numbers) and `crossplay` (`yes`, `partial` or `no`; empty means **unknown**, never "no"). They are added once, on first start after upgrading; delete or relabel them freely and they will not come back. Mirrors receive them from their upstream: an authority publishes its schema just before its first signed multiplayer value (issue #78; earlier releases did not, so a mirror quarantined those values as *unknown field 'players_min'*). After upgrading such an authority, the next multiplayer edit publishes the schema and mirrors retry what they quarantined on their own; `atlas sync replay` on the mirror does it at once. Steam imports set `crossplay` to `yes` when the store lists *Cross-Platform Multiplayer* (Steam never states `no`, so nothing is guessed). Curators set the rest with `PUT /games/{cid}/custom`; clients such as a game-night plugin read them from `custom` in `GET /games` and `GET /games/{id}`. Other providers can fill these fields by returning `custom` values from their adapter; undefined fields are skipped. A game whose maximum players is 1 and whose crossplay is empty shows **Single-player** on its page; that answer is worked out when the page is shown (contract C7.2), so it is never stored, never sent in the API or the feed, and never counted as "no". `not_applicable` cannot be stored in `crossplay`, even if you add it as a choice.
 
 
 Authorities **replicate** their types and fields to mirrors and local nodes (Settings → *Adopt the upstream media types and fields*); a node's own definitions always win over an upstream one of the same name.
@@ -102,6 +102,29 @@ Reviewers handle proposals, duplicates and reported comments ([Reviewing](review
   process does it (the others start without waiting), and it keeps its own progress, so an `atlas dates rebuild`
   you had running is not reset.
 * Review the activity log occasionally; it is your audit trail.
+* Run `atlas check` now and then (and after a restore). It only reads: it looks for crosswalk rows or
+  values left on merged records, redirects that point nowhere, merge loops, active relations to merged records,
+  cached images whose file is gone, media files no row references and unresolved sync entries. Each finding has
+  a count, a few example ids and a hint. `--json` for scripts, `--only <check>` to run one; it exits 1 when a
+  check found something (unreferenced files and unresolved sync entries are notes and do not fail it).
+
+### Maintenance commands (issue #19)
+
+| Job | Command | Dry run / bounds | Resumable |
+|---|---|---|---|
+| Consistency check | `atlas check [--json] [--only NAME]` | read-only; examples capped by `--sample` | n/a |
+| Failed-job replay | `atlas sync replay` (`--historical`, `--rescan`), `atlas sync skip` | `atlas sync status` shows what would run | yes, in feed order |
+| Identity / feed reconciliation | `atlas sync reconcile --dry-run` (compare with the upstream digest), `atlas match explain-backfill`, `atlas match prune` | reconcile only compares in this release | backfill: yes (`--restart`) |
+| Image backfill / re-download | `atlas cache-media`, `atlas media backfill --batch N --limit N`, `atlas media stats` | batches | yes |
+| Derivative regeneration | `atlas dates rebuild --batch N --limit N [--restart]` | batches | yes |
+| Cache invalidation | **Admin → Integrations → clear the artwork cache** (type `clear`; images download again), `atlas prices purge` | the admin action is written to the activity log | n/a |
+| Introduce records to followers | `atlas feed introduce` | see `--help` | yes |
+| Disaster recovery | `atlas backup create/verify/restore`, `atlas recover-mirror` | `verify --secret-check` | n/a |
+
+Not provided as commands (deliberately, until an owner decides retention and audit rules): deleting
+unreferenced media files (some belong to uploads waiting in a proposal) and a bulk provider re-sync (a provider
+refresh is per record, through the site's import page, so provider rate limits stay respected).
+Search needs no reindex: it reads the normalized titles kept with every record.
 
 ## Artwork quality (C12)
 

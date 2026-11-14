@@ -112,12 +112,48 @@ Restore into a **fresh, empty** database of the same Atlas version:
 3. Start Atlas. Your accounts, records, tokens, settings, pages and **node identity** are back. Mirrors that follow you carry on
    from the same feed position with the same key; nobody has to re-pin anything.
 
+With Docker, run the restore in a one-off container that mounts the folder holding the archive, for example
+`docker compose run --rm -v "$PWD/backups:/restore:ro" migrate atlas backup restore /restore/manual.tar.gz`. The image runs
+as uid 10001, and an archive copied out with `docker compose cp` keeps its private `0600` mode but now belongs to you. On
+Linux the container then gets *Permission denied*: make the file readable first (`chmod 0644`, in a folder only you can
+open) or `chown 10001` it.
+
 `restore` refuses a database that already has data. `--force` replaces it (it deletes everything first), so use it only when
 you mean it. It runs in one transaction: if anything fails the database is left as it was.
 
 !!! tip "Rehearse it"
     Once, on a spare machine or a throwaway LXC: restore your latest archive, sign in, open a few records, and confirm the
     node id (`atlas node`) matches production. That rehearsal is worth more than any amount of reading.
+
+### The scripted drills
+
+| Drill | What it runs | Where it runs |
+|---|---|---|
+| `tools/restore_drill.py` | archive create, verify, restore in-process (SQLite and PostgreSQL), encrypted key, MFA, tokens | every CI run |
+| `tools/compose_restore_drill.py` | the shipped `deploy/authority/compose.yaml` with real containers: seed, `atlas backup create` + `verify --secret-check`, the `backup` service's `pg_dump`, then **`down -v`** (every volume gone), `migrate` + `atlas backup restore`, and finally `restore.sh` with the `pg_dump` file onto a drifted database | the *Compose restore drill* workflow (weekly, on demand, and on PRs touching the image, the stack or backups) |
+
+Run the compose drill yourself against the image you deploy:
+
+```sh
+docker build -t atlas-drill:local .        # or use the image tag you run
+python tools/compose_restore_drill.py --image atlas-drill:local --output compose-restore.json
+```
+
+It uses a random compose project name, leaves Caddy out (no DNS, ports or certificates), and removes every container and
+volume it created, also when a check fails. After each restore it compares the node id and public key, a record, an API token,
+an account password, a cached image on `/media/<sha256>`, the feed head and that the signing key is still encrypted at rest.
+
+### Proxmox LXC (manual part)
+
+The drill cannot create a Proxmox container from CI. On the Proxmox host, rehearse the OCI/LXC install the same way:
+
+1. Create a throwaway LXC from the Atlas OCI image (or a Debian LXC with Docker), with **no** route to production and a new
+   `ATLAS_PUBLIC_URL`, but the **same** `ATLAS_SECRET_KEY` as the node you are rehearsing.
+2. Copy in the latest archive, then `atlas migrate --revision <rev>`, `atlas backup restore <archive>`, `atlas migrate`.
+3. Start Atlas and check: `atlas node` prints the production node id; `atlas backup verify <archive> --secret-check` passes;
+   an API token and an admin sign-in work; a record and its cover image open.
+4. Record the date, the archive name, the node id and anything that failed in your operations log. Destroy the LXC
+   (`pct destroy <vmid> --purge`) so a second copy of the identity never starts.
 
 ## When the node is lost entirely
 
