@@ -170,7 +170,7 @@ def test_rate_counters_are_purged(app_factory):
     ratelimit.purge(maker, clock=lambda: 10_000.0)
     from atlas.models import RateCounter
     with maker() as s:
-        assert s.get(RateCounter, ("old", 0)) is None
+        assert s.get(RateCounter, ("old", 60)) is None  # window = the end of the window (C14-0)
 
 
 def test_bootstrap_token_rotation_and_removal(tmp_path):

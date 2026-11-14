@@ -8,6 +8,7 @@ import hmac
 import json
 import re
 import secrets
+import uuid
 from datetime import timedelta
 from typing import Any
 from urllib.parse import urlencode, urlsplit
@@ -20,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import accounts, secrets_box
+from . import accounts, key_rotation, secrets_box
 from .models import (
     NodeState,
     OidcAccess,
@@ -33,7 +34,7 @@ from .models import (
     now,
 )
 from .service import AtlasError, Ctx
-from .signing import NodeIdentity, key_id_for
+from .signing import NodeIdentity, key_id_for, load_identity
 
 CODE_TTL = timedelta(minutes=5)
 ACCESS_TTL = timedelta(hours=1)
@@ -41,6 +42,8 @@ ID_TTL = timedelta(minutes=10)
 STATE_TTL = timedelta(minutes=10)
 SCOPES = {"openid", "profile", "email"}
 _USERNAME_CLEAN = re.compile(r"[^a-z0-9_-]")
+#: Domain of the pairwise subject derivation (CONTRACT-C14 §6.4). An HMAC input, never signed.
+PAIRWISE_DOMAIN = b"atlas-link-sub-v1\n"
 
 
 def b64u(data: bytes) -> str:
@@ -69,7 +72,9 @@ def _refusal(message: str, reason: str) -> AtlasError:
 
 
 def sign_jwt(identity: NodeIdentity, claims: dict[str, Any]) -> str:
-    header = b64u(json.dumps({"alg": "EdDSA", "typ": "JWT", "kid": identity.node_id}, separators=(",", ":")).encode())
+    """An EdDSA id token signed by `identity`'s current key, `kid` = that key's id (F-C10-1: before any rotation
+    the key id is the node id, so nothing changes for an unrotated node)."""
+    header = b64u(json.dumps({"alg": "EdDSA", "typ": "JWT", "kid": identity.key_id}, separators=(",", ":")).encode())
     body = b64u(json.dumps(claims, separators=(",", ":"), default=str).encode())
     sig = identity.private.sign(f"{header}.{body}".encode())
     return f"{header}.{body}.{b64u(sig)}"
@@ -77,6 +82,30 @@ def sign_jwt(identity: NodeIdentity, claims: dict[str, Any]) -> str:
 
 class TokenError(Exception):
     pass
+
+
+def unverified_kid(token: str) -> str | None:
+    """The `kid` of a token's header, read before verification only to choose the key to verify it with."""
+    try:
+        header = json.loads(b64u_dec(token.split(".")[0]))
+    except (ValueError, TypeError, IndexError):
+        return None
+    kid = header.get("kid") if isinstance(header, dict) else None
+    return kid if isinstance(kid, str) and re.fullmatch(r"[0-9a-f]{16}", kid) else None
+
+
+def pairwise_subject(key: bytes, user_id: str, node_id: str) -> str:
+    """The pseudonymous subject of `user_id` towards `node_id` (CONTRACT-C14 §6.4): UUIDv8 of the first 16 bytes
+    of HMAC-SHA256(key, "atlas-link-sub-v1\\n" + user_id + "\\n" + node_id), with the RFC 9562 version and
+    variant bits. Stable for the same user and node, unrelated across nodes, and it never reveals `user_id`."""
+    if not isinstance(key, bytes) or len(key) != 32:
+        raise ValueError("the pairwise key is 32 bytes")
+    if not user_id or not node_id or any(c in part for part in (user_id, node_id) for c in "\n\r"):
+        raise ValueError("user id and node id are non-empty single-line strings")
+    raw = bytearray(hmac.new(key, PAIRWISE_DOMAIN + f"{user_id}\n{node_id}".encode(), hashlib.sha256).digest()[:16])
+    raw[6] = (raw[6] & 0x0F) | 0x80  # version 8
+    raw[8] = (raw[8] & 0x3F) | 0x80  # RFC 9562 variant
+    return str(uuid.UUID(bytes=bytes(raw)))
 
 
 def verify_jwt(token: str, *, public_key_b64: str, kid: str, issuer: str, audience: str, nonce: str | None,
@@ -148,9 +177,19 @@ def sign_jwt_rs256(session: Session, ctx: Ctx, claims: dict[str, Any]) -> str:
 
 # ---- provider -----------------------------------------------------------------------------------------
 
-def discovery(ctx: Ctx) -> dict[str, Any]:
+def node_keys(session: Session, ctx: Ctx) -> dict[str, Any]:
+    """This node's root key and the signed history of its signing keys (additive discovery member `atlas_node`).
+
+    A relying party that pinned the root verifies an id token whose `kid` is a later key by validating this
+    history from its pinned root (`key_rotation.validate_history`), as followers do for the feed (F-C10-1)."""
+    identity = load_identity(session, ctx.settings)
+    return {"node_id": identity.node_id, "root_public_key": identity.trust_public_b64,
+            "signing_key_id": identity.key_id, "rotations": key_rotation.own_history(session, identity.node_id)}
+
+
+def discovery(ctx: Ctx, session: Session | None = None) -> dict[str, Any]:
     base = ctx.settings.public_url
-    return {
+    doc = {
         "issuer": base, "authorization_endpoint": f"{base}/oidc/authorize", "token_endpoint": f"{base}/oidc/token",
         "userinfo_endpoint": f"{base}/oidc/userinfo", "jwks_uri": f"{base}/oidc/jwks",
         "response_types_supported": ["code"], "subject_types_supported": ["public"],
@@ -160,11 +199,18 @@ def discovery(ctx: Ctx) -> dict[str, Any]:
         "grant_types_supported": ["authorization_code"],
         "claims_supported": ["sub", "preferred_username", "email", "email_verified", "atlas_reputation"],
     }
+    if session is not None:
+        doc["atlas_node"] = node_keys(session, ctx)
+    return doc
 
 
 def jwks(session: Session, ctx: Ctx) -> dict[str, Any]:
-    raw = base64.b64decode(ctx.identity.public_b64)
-    ed = {"kty": "OKP", "crv": "Ed25519", "x": b64u(raw), "kid": ctx.identity.node_id, "use": "sig", "alg": "EdDSA"}
+    """The RSA key and the **current** Ed25519 key under `kid = key_id` (F-C10-1). A rotated-away key is never
+    listed: it may be the reason for the rotation. The key is read from the database, not from this worker's
+    cached identity, so a worker that did not perform a rotation still publishes the current key."""
+    identity = load_identity(session, ctx.settings)
+    raw = base64.b64decode(identity.public_b64)
+    ed = {"kty": "OKP", "crv": "Ed25519", "x": b64u(raw), "kid": identity.key_id, "use": "sig", "alg": "EdDSA"}
     return {"keys": [rsa_key(session, ctx)[2], ed]}
 
 
@@ -266,7 +312,8 @@ def exchange_code(session: Session, ctx: Ctx, client: OidcClient, code: str, red
               "exp": int((t + ID_TTL).timestamp()), **claims_for(user, row.scope)}
     if row.nonce:
         claims["nonce"] = row.nonce
-    id_token = sign_jwt_rs256(session, ctx, claims) if client.id_token_alg == "RS256" else sign_jwt(ctx.identity, claims)
+    id_token = (sign_jwt_rs256(session, ctx, claims) if client.id_token_alg == "RS256"
+                else sign_jwt(load_identity(session, ctx.settings), claims))  # the current key, in every worker
     return {"access_token": access, "token_type": "Bearer", "expires_in": int(ACCESS_TTL.total_seconds()),
             "scope": row.scope, "id_token": id_token}
 
@@ -323,10 +370,61 @@ def probe_issuer(http: Any, issuer_url: str) -> dict[str, Any]:
         pub = base64.b64encode(raw).decode()
         if key_id_for(raw) != key.get("kid"):
             raise AtlasError("the key id does not match the key")
+        node_id, pinned = key["kid"], pub
+        node = disc.get("atlas_node")
+        if node is not None:  # an Atlas provider: pin its root, vouched for the current key by its key history
+            _, chain = key_rotation.validate_history(node["node_id"], node["root_public_key"], node["rotations"],
+                                                     key["kid"])
+            if node.get("signing_key_id") != key["kid"] or chain[key["kid"]] != pub:
+                raise AtlasError("the provider's key history does not end at its published key")
+            node_id, pinned = node["node_id"], node["root_public_key"]
     except (httpx.HTTPError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as exc:
         raise AtlasError(f"could not read that provider: {type(exc).__name__}") from exc
-    return {"issuer_url": base, "node_id": key["kid"], "public_key": pub,
+    return {"issuer_url": base, "node_id": node_id, "public_key": pinned,
             "authorization_endpoint": disc["authorization_endpoint"], "token_endpoint": disc["token_endpoint"]}
+
+
+def issuer_key(session: Session, http: Any, issuer: OidcIssuer, kid: str | None) -> str:
+    """The public key (base64) that must have signed an id token from `issuer` whose header names `kid`.
+
+    `issuer.node_id`/`public_key` stay the pinned root. The token's key must be the **current** key of a history
+    validated from that root (CONTRACT-C14 §6.2, F-C10-1): the root itself while the provider never rotated, or
+    the last successor of the history this node remembers or fetches from the provider's discovery. A remembered
+    history may only grow (`key_rotation.remember` refuses a rewound or forked one), so a superseded key can
+    never become current again; a token signed by one is refused."""
+    root = issuer.node_id
+    known = key_rotation.trusted_history(session, root)
+    try:
+        current = key_rotation.expected_key(root, known, 2**63 - 1)
+        if kid is not None and kid == current:
+            if kid == root:
+                return issuer.public_key
+            _, keys = key_rotation.validate_history(root, issuer.public_key, known, current)
+            return keys[kid]
+        doc = http.get(f"{issuer.issuer_url}/.well-known/openid-configuration").json()
+        node = doc.get("atlas_node") if isinstance(doc, dict) else None
+        if not isinstance(node, dict) or node.get("node_id") != root \
+                or node.get("root_public_key") != issuer.public_key:
+            raise TokenError("superseded or unknown key id")
+        history, keys = key_rotation.validate_history(root, issuer.public_key, node.get("rotations"),
+                                                      node.get("signing_key_id"))
+        key_rotation.remember(session, root, history)
+    except key_rotation.RotationError as exc:
+        raise TokenError(f"provider key history refused: {exc}") from exc
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise TokenError(f"could not read the provider's key history ({type(exc).__name__})") from exc
+    if kid is None or kid != node["signing_key_id"]:
+        raise TokenError("superseded or unknown key id")
+    return keys[kid]
+
+
+def verify_issuer_token(session: Session, http: Any, issuer: OidcIssuer, token: str, *, audience: str,
+                        nonce: str | None) -> dict[str, Any]:
+    """Verify an EdDSA id token from a pinned Atlas provider, across its key rotations (F-C10-1)."""
+    kid = unverified_kid(token)
+    key = issuer_key(session, http, issuer, kid)
+    return verify_jwt(token, public_key_b64=key, kid=kid or "", issuer=issuer.issuer_url, audience=audience,
+                      nonce=nonce)
 
 
 def start_login(session: Session, ctx: Ctx, issuer: OidcIssuer, next_url: str, link_user: User | None
@@ -369,8 +467,7 @@ def finish_login(session: Session, ctx: Ctx, http: Any, issuer: OidcIssuer, code
         if resp.status_code != 200:
             raise _refusal("The provider refused the sign-in.", "provider_refused")
         id_token = resp.json()["id_token"]
-        claims = verify_jwt(id_token, public_key_b64=issuer.public_key, kid=issuer.node_id, issuer=issuer.issuer_url,
-                            audience=issuer.client_id, nonce=row.nonce)
+        claims = verify_issuer_token(session, http, issuer, id_token, audience=issuer.client_id, nonce=row.nonce)
     except (secrets_box.SecretsError, httpx.HTTPError, KeyError, ValueError, TokenError) as exc:
         raise _refusal(f"Could not verify the provider's answer ({type(exc).__name__}).",
                        "verification_failed") from exc

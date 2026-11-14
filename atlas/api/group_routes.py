@@ -27,6 +27,12 @@ router = APIRouter(include_in_schema=False)
 CALL_CAP = 256 * 1024
 CALL_OPS = ("hello", "state", "rotations", "heads", "changes", "snapshot", "notify",  # A10 + A11 (§3.3)
             "push", "member_update")  # P7 (#122): push signed state to a member; send this node's member update
+#: Client-side caps on a member's sealed answer (CONTRACT-C14 §3.10, fixes V2: `call()` used to read any answer
+#: whole). Per op: a full `changes` page (500 signed entries) or the `state`/`snapshot` of a large group must
+#: still fit, so the existing ops keep a generous cap until real sizes are measured; the C14 `assist.*` ops get
+#: 1 MiB. A larger answer is `CallError("answer too large")`, and reading stops at the cap.
+RESPONSE_CAP = 8 * 1024 * 1024
+ASSIST_RESPONSE_CAP = 1024 * 1024
 LEFT_OPS = ("hello", "state")  # a node that left keeps answering these, so members still learn its `left` CRL
 NOT_FOUND = {"detail": "Not Found"}
 
@@ -311,6 +317,33 @@ class CallError(Exception):
     pass
 
 
+def response_cap(op: str) -> int:
+    """The most bytes `call()` reads of the answer to `op`."""
+    return ASSIST_RESPONSE_CAP if op.startswith("assist.") else RESPONSE_CAP
+
+
+def _post_capped(http: Any, url: str, content: bytes, cap: int) -> tuple[int, bytes]:
+    """POST and read the answer by streaming, refusing one longer than `cap` bytes (declared or actual)."""
+    headers = {"Content-Type": "application/json"}
+    stream = getattr(http, "stream", None)
+    if stream is None:  # a transport without streaming (a test double): read, then check
+        resp = http.post(url, content=content, headers=headers, timeout=15)
+        data = resp.content
+        if len(data) > cap:
+            raise CallError("answer too large")
+        return resp.status_code, data
+    with stream("POST", url, content=content, headers=headers, timeout=15) as resp:
+        declared = resp.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > cap:
+            raise CallError("answer too large")
+        data = bytearray()
+        for chunk in resp.iter_bytes():
+            data.extend(chunk)
+            if len(data) > cap:
+                raise CallError("answer too large")
+        return resp.status_code, bytes(data)
+
+
 def call(session, settings, identity: NodeIdentity, group: OwnerGroup, member: dict, op: str, params: dict,
          http: Any, now: float | None = None) -> Any:
     """One sealed, signed request to a member (its in-force certificate's `member`), verifying the signed answer."""
@@ -321,15 +354,17 @@ def call(session, settings, identity: NodeIdentity, group: OwnerGroup, member: d
     sealed = gc.seal_request(member["box_public_key"], group.group_id, member["node_id"],
                              gc.sign_request(identity.private, inner))
     try:
-        resp = http.post(member["url"].rstrip("/") + gc.CALL_PATH, content=canonical_json(sealed),
-                         headers={"Content-Type": "application/json"}, timeout=15)
+        status, answer = _post_capped(http, member["url"].rstrip("/") + gc.CALL_PATH, canonical_json(sealed),
+                                      response_cap(op))
+    except CallError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise CallError(f"unreachable: {type(exc).__name__}") from None
-    if resp.status_code != 200:
-        raise CallError(f"HTTP {resp.status_code}")
+    if status != 200:
+        raise CallError(f"HTTP {status}")
     try:
         plain = gc.open_response(groups.box_keys(settings, group), nonce, group.group_id, member["node_id"],
-                                 identity.node_id, resp.json())
+                                 identity.node_id, json.loads(answer))
     except (gc.GroupCryptoError, ValueError) as exc:
         raise CallError(f"the answer is not sealed to this node: {exc}") from None
     tr = groups.trust(session, group, own_node=identity.node_id)

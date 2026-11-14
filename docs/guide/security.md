@@ -6,7 +6,7 @@
 | --- | --- |
 | Accounts | scrypt password hashing; server-side sessions stored hashed; `HttpOnly`, `SameSite=Lax` (and `Secure` over HTTPS) cookies; per-address and per-account throttling on sign-in, registration, reset and verification; identical answers for known and unknown accounts |
 | Forms | a CSRF token on every state-changing form; strict Content-Security-Policy with **no inline script or style**; clickjacking and sniffing headers; user text is always escaped; Markdown pages cannot contain HTML |
-| API | tokens stored only as hashes, scoped, expiring, revocable, fail-closed; personal tokens are read-only and die with the account; rate limits; body size caps; bounded batches |
+| API | tokens stored only as hashes, scoped, expiring, revocable, fail-closed; personal tokens are read-only and die with the account; rate limits (fixed windows of a minute to a day, counted in the database across workers; a window is purged only once it has ended; during a rolling upgrade to this release the older workers' limits are not enforced until every worker is upgraded); body size caps; bounded batches |
 | Trust model | reserved source names need `curate`; uncurated claims can match but cannot register identifiers in someone else's namespace; far-future timestamps ignored; personal facts discarded on arrival |
 | Artwork | downloads only from public addresses (pinned address, every redirect re-checked, tunnelled IPv6 refused, environment proxies ignored), size and pixel limits, full image decode, content-hash storage, served with `nosniff` and a restrictive CSP |
 | Federation | Ed25519-signed feed (sequence, kind, content), pinned trust, gap/rewind/tamper rejection, provider data never republished; even from a trusted peer, observations, schema and values are validated like local input and a malformed entry is skipped instead of stalling replication |
@@ -81,6 +81,10 @@ transition from that independently pinned root, enforce the key appropriate for 
 sequence and remember the verified prefix, refusing rewind, tampering or re-use of retired
 keys. Relays retain original signatures and proofs. Stale workers load the current signer
 under the feed lock. The rotation limit is 128 transitions per root.
+
+OIDC is covered too: after a rotation the provider signs EdDSA ID tokens with the new key and
+publishes only that key in its JWKS; nodes that accept sign-ins from it keep the pinned root and
+verify the new key through the same rotation history (published in its discovery document).
 
 Take a new verified backup after rotation. Never restore a stale archive as a live second
 writer: it would bring back an old signer/feed head. A missing signing key fails startup
