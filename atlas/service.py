@@ -2,32 +2,35 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import case, select, text, update
 from sqlalchemy.orm import Session
 
-from . import client_changes, dates, feed, feed_schema
+from . import client_changes, dates, feed, feed_schema, matching, provenance
 from .contract import ObservationBatchV1
 from .db import sqlite_write_lock
 from .ids import canonical_id as new_canonical_id
 from .ids import ulid
-from .merge import Obs, merge
-from .models import Canonical, Crosswalk, Lock, Observation, ReviewItem, now
+from .merge import merge
+from .models import AuditEntry, Canonical, Crosswalk, Lock, Observation, ReviewItem, now
 from .normalize import norm_namespace, norm_title
-from .resolve import Match, find, follow
+from .resolve import follow
 from .settings import Settings
-from .signing import NodeIdentity
+from .signing import NodeIdentity, canonical_json
 
 
 class AtlasError(Exception):
-    """Client-visible domain error; `code` maps to an HTTP status in the API layer."""
+    """Client-visible domain error; `code` maps to an HTTP status in the API layer. `detail` is added to the
+    error body (for example `blocked_by` of an unmerge)."""
 
-    def __init__(self, message: str, code: str = "invalid") -> None:
+    def __init__(self, message: str, code: str = "invalid", **detail: Any) -> None:
         super().__init__(message)
         self.code = code
+        self.detail = detail
 
 
 @dataclass
@@ -42,9 +45,11 @@ class IngestResult:
     canonical_id: str | None
     method: str
     confidence: float
-    status: str  # created | updated | stale
+    status: str  # created | updated | stale | unchanged (C11 §11.9.1)
     candidates: list[tuple[str, float]]
     review: bool = False
+    reason: str | None = None  # the matcher's reason (C11 §11.1)
+    decision_id: str | None = None
 
 
 def _epoch(dt: datetime) -> int:
@@ -80,27 +85,28 @@ def keys_of(obs: Observation) -> list[tuple[str, str]]:
     return list(dict.fromkeys(keys))  # a source may list its own namespace in provider_ids; register each key once
 
 
+def payload_hash(payload: dict[str, Any]) -> str:
+    """C11 §11.9.1: sha256 of the canonical JSON of the full stored payload."""
+    return hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+def derive(session: Session, ctx: Ctx, cid: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A record's view and explain from its current observations, locks and this node's trust configuration."""
+    session.flush()  # the merge reads observations and locks with SQL
+    authorities = provenance.authority_origins(session, ctx.settings)
+    obs, locks = provenance.merge_inputs(session, ctx.settings, cid, authorities)
+    return merge(obs, locks, prefs=ctx.settings.field_source_preference,
+                 meta=provenance.meta(ctx.settings, authorities))
+
+
 def rebuild(session: Session, ctx: Ctx, cid: str, *, cause: str = "local", only_if_changed: bool = False) -> Canonical:
     """Re-derive a record's view and bump its version. `cause` is the client change cause when no
     `client_changes.cause` scope is active (a scope, such as a provider import or a sync apply, wins).
     `only_if_changed`: leave the record and its version alone when the derived data is the same."""
-    session.flush()  # the merge reads observations and locks with SQL
     row = session.get(Canonical, cid)
     if row is None:
         raise AtlasError(f"unknown canonical {cid}", "not_found")
-    rows = session.scalars(
-        select(Observation).where(Observation.canonical_id == cid, Observation.is_current.is_(True))
-    ).all()
-    obs = [
-        Obs(
-            id=o.id, source=o.source, source_kind=o.source_kind, external_id=o.external_id, payload=o.payload,
-            trust=ctx.settings.trust(norm_namespace(o.source)),
-            stamp=o.source_updated_at or _epoch(o.observed_at),
-        )
-        for o in rows
-    ]
-    locks = {lk.field: lk.value for lk in session.scalars(select(Lock).where(Lock.canonical_id == cid))}
-    view, explain = merge(obs, locks)
+    view, explain = derive(session, ctx, cid)
     columns = dates.columns(view.get("first_release"))  # C5.2: year-only dates sort and filter too
     if only_if_changed and row.view == view and row.explain == explain and \
             all(getattr(row, k) == v for k, v in columns.items()):
@@ -109,7 +115,22 @@ def rebuild(session: Session, ctx: Ctx, cid: str, *, cause: str = "local", only_
     row.norm_title = norm_title(view.get("title"))
     for column, value in columns.items():
         setattr(row, column, value)
+    provenance.index_conflicts(session, cid, explain)
     return bump_version(session, cid, cause)
+
+
+def index_update(session: Session, ctx: Ctx, cid: str) -> None:
+    """C11 §11.9.2: keep the matching columns (title, year, view facts) fresh for later items of the same batch,
+    without explain, version bump or client change. The batch rebuilds every touched record once at its end."""
+    row = session.get(Canonical, cid)
+    if row is None:
+        return
+    view, _explain = derive(session, ctx, cid)
+    row.view = view
+    row.norm_title = norm_title(view.get("title"))
+    for column, value in dates.columns(view.get("first_release")).items():
+        setattr(row, column, value)
+    session.flush()
 
 
 def bump_version(session: Session, cid: str, cause: str = "local",
@@ -141,27 +162,30 @@ def _redistributable(ctx: Ctx, source: str, curator: bool) -> bool:
     )
 
 
-def _open_review(session: Session, kind: str, cid: str, candidates: list[tuple[str, float]], conf: float) -> bool:
-    cands = [[c, s] for c, s in candidates if c != cid]
-    if not cands:
-        return False
-    session.flush()  # sessions do not autoflush: one ingest item may open the same review twice
-    existing = session.scalars(
-        select(ReviewItem).where(
-            ReviewItem.canonical_id == cid, ReviewItem.kind == kind, ReviewItem.status == "open"
-        )
-    ).first()
-    if existing:
-        existing.candidates, existing.confidence = cands, conf
-    else:
-        session.add(ReviewItem(kind=kind, canonical_id=cid, candidates=cands, confidence=conf))
-    return True
+def _open_review(session: Session, ctx: Ctx, kind: str, cid: str, candidates: list[tuple[str, float]], conf: float,
+                 *, reason: str | None = None, evidence: list[dict[str, Any]] | None = None,
+                 decision_id: str | None = None, tier: str | None = None) -> ReviewItem | None:
+    return matching.open_review(session, ctx.settings, kind, cid, candidates, conf, reason=reason, evidence=evidence,
+                                decision_id=decision_id, tier=tier)
+
+
+#: An unchanged re-ingest refreshes `last_seen_at` at most this often per chain.
+LAST_SEEN_EVERY = timedelta(hours=1)
+_CAUSE_ORDER = ("feed", "provider", "local")
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    return None if dt is None else (dt if dt.tzinfo else dt.replace(tzinfo=UTC))
 
 
 def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bool = False,
            system: bool = False, force_canonical: str | None = None,
            media_type: str | None = None) -> list[IngestResult]:
-    """`curator`: token holds the curate scope. `system`: the node itself (provider fetches, imports)."""
+    """`curator`: token holds the curate scope. `system`: the node itself (provider fetches, imports).
+
+    C11: every item goes through the one matcher (`matching.match`) and leaves a decision record; an item whose
+    chain's current observation carries the same payload on the same live record is `unchanged` (no row, no
+    rebuild, no version, §11.9.1); each touched record is rebuilt once, at the end of the batch (§11.9.2)."""
     trusted = curator or system
     write_lock(session)
     media_type = _valid_type(session, media_type)
@@ -172,7 +196,8 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
         raise AtlasError(f"source {ns!r} is reserved; it needs a token with the curate scope", "forbidden")
     horizon = int(now().timestamp()) + 86400
     results: list[IngestResult] = []
-    touched: set[str] = set()
+    touched: dict[str, str] = {}  # record -> client change cause, rebuilt once at the end
+    cause = "provider" if system else None
 
     for item in batch.observations:
         payload = item.reported()
@@ -187,25 +212,40 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
         ).first()
         if prior and stamp is not None and prior.source_updated_at is not None \
                 and stamp < prior.source_updated_at:
-            results.append(IngestResult(item.external_id, prior.canonical_id, "crosswalk", 1.0, "stale", []))
+            d = matching.record_decision(session, source=ns, scope=conn.source_scope, external_id=item.external_id,
+                                         observation_id=prior.id, canonical_id=prior.canonical_id, outcome="stale",
+                                         reason="stale")
+            results.append(IngestResult(item.external_id, prior.canonical_id, "crosswalk", 1.0, "stale", [],
+                                        reason="stale", decision_id=d.id))
             continue
 
+        digest = payload_hash(payload)
+        if prior is not None and force_canonical is None:
+            if prior.payload_hash is None:  # written before migration 0034: computed once, lazily
+                prior.payload_hash = payload_hash(prior.payload)
+            live = session.get(Canonical, prior.canonical_id) if prior.canonical_id else None
+            if prior.payload_hash == digest and live is not None and live.merged_into is None:
+                seen = _aware(prior.last_seen_at)
+                if seen is None or now() - seen >= LAST_SEEN_EVERY:
+                    prior.last_seen_at = now()
+                results.append(IngestResult(item.external_id, prior.canonical_id, "crosswalk", 1.0, "unchanged", [],
+                                            reason="unchanged"))
+                continue
+
+        chain = matching.chain_hash(ns, conn.source_scope, item.external_id)
         if force_canonical:
             target = follow(session, force_canonical)
             if session.get(Canonical, target) is None:
                 raise AtlasError(f"unknown canonical {force_canonical}", "not_found")
-            match: Match = Match(target, "forced", 1.0, [(target, 1.0)])
+            decision = matching.Decision(tier="id", reason="forced", canonical_id=target, score=1.0,
+                                         evidence=[matching.ev("forced", target, 1.0)])
         else:
-            match = find(
-                session, ctx.settings, namespace=ns, external_id=item.external_id,
-                provider_ids=item.provider_ids, title=item.title,
-                release_date=payload.get("release_date"), platform=item.platform,
-                developer=(payload.get("facts") or {}).get("developer"),
-                media_type=media_type,
-            )
-        status = "updated" if match.assigned else "created"
-        if match.assigned:
-            cid = match.canonical_id  # type: ignore[assignment]
+            facts = matching.Facts.of_payload(ns, item.external_id, payload, media_type)
+            decision = matching.match(session, ctx.settings, facts, chain=chain,
+                                      chain_record=prior.canonical_id if prior else None)
+        status = "updated" if decision.assigned else "created"
+        if decision.assigned:
+            cid = decision.canonical_id  # type: ignore[assignment]
         else:
             cid = new_canonical_id()
             session.add(Canonical(id=cid, view={}, explain={}, media_type=media_type))
@@ -219,38 +259,72 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
         obs = Observation(
             id=ulid(), canonical_id=cid, source_kind=conn.source_kind, source=ns,
             source_scope=conn.source_scope, external_id=item.external_id, payload=payload,
-            source_updated_at=stamp,
+            source_updated_at=stamp, payload_hash=digest,
             redistributable=_redistributable(ctx, conn.source, curator),
         )
         session.add(obs)
         session.flush()
 
+        own_variant = matching.variant_of(ns, payload.get("title"), payload.get("edition"), payload.get("platform"),
+                                          payload.get("platforms"))
+        held = matching.record_keys(session, cid)
         conflicts: list[tuple[str, float]] = []
         for key in keys_of(obs):
+            if key in decision.blocked:
+                continue  # §11.2.1 step 4: a key that contradicts the record is never registered
             existing = session.get(Crosswalk, key)
+            variant = own_variant if key == (ns, item.external_id) else ""
             if existing is None:
                 if not trusted and key[0] in reserved and key[0] != ns:
                     continue  # an uncurated claim about someone else's namespace may match, never register
-                session.add(Crosswalk(namespace=key[0], external_id=key[1], canonical_id=cid))
+                if key[0] == matching.ATLAS_NAMESPACE:
+                    continue  # Atlas ids are record ids, never crosswalk keys
+                have = held.get((key[0], variant))
+                if have and key[1] not in have:
+                    continue  # the record already holds another key of this namespace and variant (V4 at registration)
+                session.add(Crosswalk(namespace=key[0], external_id=key[1], canonical_id=cid, variant=variant))
+                held.setdefault((key[0], variant), set()).add(key[1])
             elif follow(session, existing.canonical_id) != cid:
                 conflicts.append((follow(session, existing.canonical_id), 1.0))
         session.flush()
-        cause = "provider" if system else ("feed" if obs.redistributable else "local")
-        rebuild(session, ctx, cid, cause=cause)
-        touched.add(cid)
-        left_row = session.get(Canonical, left) if left else None
-        if left_row is not None and left_row.merged_into is None:
-            rebuild(session, ctx, left, cause=cause)
+        item_cause = cause or ("feed" if obs.redistributable else "local")
+        for rec in (cid, left):
+            if rec is None:
+                continue
+            if rec not in touched or _CAUSE_ORDER.index(item_cause) < _CAUSE_ORDER.index(touched[rec]):
+                touched[rec] = item_cause
+        index_update(session, ctx, cid)
+        if left:
+            left_row = session.get(Canonical, left)
+            if left_row is not None and left_row.merged_into is None:
+                index_update(session, ctx, left)
 
-        review = False
+        review_row = None
+        evidence = decision.evidence
         if conflicts:
-            review = _open_review(session, "id_conflict", cid, conflicts, 1.0)
-        if not match.assigned and match.candidates:
-            review = _open_review(session, "possible_duplicate", cid, match.candidates, match.confidence) or review
-        if match.assigned and match.conflict:
-            review = _open_review(
-                session, "id_conflict", cid, [(c, s) for c, s in match.candidates if c != cid], 0.9
-            ) or review
+            review_row = _open_review(session, ctx, "id_conflict", cid, conflicts, 1.0, reason="conflict",
+                                      evidence=evidence, tier="id")
+        if decision.review and decision.reason != "conflict" and not decision.assigned and decision.candidates:
+            review_row = _open_review(session, ctx, decision.review, cid, decision.pairs(), decision.score,
+                                      reason=decision.reason, evidence=evidence, tier=decision.tier) or review_row
+        if decision.reason == "conflict" and decision.conflict:
+            review_row = _open_review(session, ctx, "id_conflict", cid, [(c, s) for c, s in decision.pairs() if c != cid],
+                                      0.9, reason="conflict", evidence=evidence, tier="id") or review_row
+        if decision.reason == "forced":
+            outcome = "forced"
+        elif review_row is not None:
+            outcome = "review"
+        elif decision.reason == "rejected":
+            outcome = "rejected"
+        else:
+            outcome = "assigned" if decision.assigned else "created"
+        drow = matching.record_decision(session, source=ns, scope=conn.source_scope, external_id=item.external_id,
+                                        observation_id=obs.id, canonical_id=cid, outcome=outcome, decision=decision,
+                                        actor="curator" if force_canonical else "auto",
+                                        review_id=review_row.id if review_row else None)
+        session.flush()
+        if review_row is not None and review_row.decision_id is None:
+            review_row.decision_id = drow.id
 
         if obs.redistributable:
             feed.emit(session, ctx, "obs", {
@@ -261,10 +335,17 @@ def ingest(session: Session, ctx: Ctx, batch: ObservationBatchV1, *, curator: bo
                     "source_updated_at": obs.source_updated_at, "observed_at": obs.observed_at.isoformat(),
                 },
             })
+        method = "forced" if decision.reason == "forced" else \
+            ({"exact": "exact", "fuzzy": "fuzzy"}.get(decision.reason, "crosswalk") if decision.assigned else "none")
         results.append(IngestResult(
-            item.external_id, cid, match.method if match.assigned else "none",
-            match.confidence, status, match.candidates, review,
+            item.external_id, cid, method, round(decision.score, 3), status, decision.pairs(), review_row is not None,
+            reason=decision.reason, decision_id=drow.id,
         ))
+
+    for rec, why in touched.items():  # one full rebuild per touched record per batch (C11 §11.9.2)
+        row = session.get(Canonical, rec)
+        if row is not None and row.merged_into is None:
+            rebuild(session, ctx, rec, cause=why)
     return results
 
 
@@ -281,7 +362,16 @@ def get_canonical(session: Session, cid: str) -> tuple[Canonical, str | None]:
     return live, cid
 
 
-def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: str = "", log: bool = True) -> Canonical:
+def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: str = "", log: bool = True,
+                     cause: str = "curator", decision_id: str | None = None, review_id: str | None = None,
+                     override_distinct: bool = False, origin: tuple[str, int] | None = None) -> Canonical:
+    """Merge `src` into `dst`, recording it (C11 §11.10.1) so it can be undone.
+
+    `cause`: `curator`, `review`, `proposal`, `bridge` or `sync` (an upstream decision, never refused). An active
+    "different works" rejection between the two blocks every merge except an explicit curator merge with
+    `override_distinct` (which ends it) and an upstream merge (which ends it with `upstream_merge`)."""
+    from . import merges
+
     write_lock(session)
     if src == dst:
         raise AtlasError("cannot merge a record into itself")
@@ -290,6 +380,21 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
         raise AtlasError("unknown canonical", "not_found")
     if s.merged_into or d.merged_into:
         raise AtlasError("one of the records is already merged; use the live record", "conflict")
+    ended: list[str] = []
+    while (rej := matching.active_rejection(session, src, dst)) is not None:
+        if cause == "sync":
+            matching.end_rejection(session, rej, reason="upstream_merge", actor=actor or "sync")
+        elif override_distinct and cause in ("curator", "review", "proposal"):
+            matching.end_rejection(session, rej, reason="overridden_by_merge", actor=actor)
+        else:
+            raise AtlasError("these records are marked as different works; merge with override_distinct to "
+                             "end that decision", "distinct", rejection_id=rej.id)
+        ended.append(rej.id)
+    try:
+        record, pre = merges.begin(session, s, d, cause=cause, actor=actor, decision_id=decision_id,
+                                   review_id=review_id, origin=origin)
+    except merges.MergeError as exc:
+        raise AtlasError(str(exc), exc.code, **exc.detail) from exc
     session.execute(update(Observation).where(Observation.canonical_id == src).values(canonical_id=dst))
     session.execute(update(Crosswalk).where(Crosswalk.canonical_id == src).values(canonical_id=dst))
     dst_fields = {lk.field for lk in session.scalars(select(Lock).where(Lock.canonical_id == dst))}
@@ -298,10 +403,10 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
             session.delete(lk)
         else:
             lk.canonical_id = dst
-    for item in session.scalars(select(ReviewItem).where(ReviewItem.status == "open")).all():
+    for item in matching.reviews_touching(session, {src, dst}):  # indexed: never the whole queue (§11.9.2)
         involved = {item.canonical_id, *(c for c, _ in item.candidates)}
         if involved <= {src, dst} and src in involved:
-            item.status, item.decided_by = "merged", actor
+            item.status, item.decided_by, item.resolved_at = "merged", actor or None, now()
         elif item.canonical_id == src:
             item.canonical_id = dst
     from .custom import move_values
@@ -317,19 +422,60 @@ def merge_canonicals(session: Session, ctx: Ctx, src: str, dst: str, *, actor: s
     neighbours = move_relations(session, src, dst)  # C6.3: no active relation names a merged record
     s.merged_into = dst
     s.view, s.explain = {}, {}
+    session.flush()
+    matching.reevaluate_reviews(session, {src, dst}, actor=actor)
+    # The snapshot is written after the re-evaluation, so it holds every review item this merge closed, superseded
+    # or re-pointed, and an unmerge can give each one back.
+    merges.finish(session, record, pre, ended)
     with client_changes.cause(session, "merge"):  # both ids reach clients: the redirect and the survivor
         bump_version(session, src, "merge")
         rebuild(session, ctx, dst, cause="merge")
         for other in sorted(neighbours):  # their `relations` now name the survivor
             bump_version(session, other, "merge")
+    session.add(AuditEntry(actor_id=None, action="match_merge", target=record.id,
+                           detail={"actor": actor[:128], "src": src, "dst": dst, "cause": cause,
+                                   "items": record.item_count}))
     if log and ctx.settings.role == "authority":
-        feed.emit(session, ctx, "merge", {"src": src, "dst": dst})
+        record.feed_seq = feed.emit(session, ctx, "merge", {"src": src, "dst": dst})
     return d
 
 
+def merge_preview(session: Session, ctx: Ctx, src: str, dst: str) -> dict[str, Any]:
+    """`POST /games/{cid}/merge?dry_run=1` (C11 §11.10.4): the survivor's view and explain as they would be, and
+    the field changes, without changing anything. Locks of `dst` win over those of `src`, as in a merge."""
+    s, d = session.get(Canonical, src), session.get(Canonical, dst)
+    if s is None or d is None:
+        raise AtlasError("unknown canonical", "not_found")
+    if src == dst or s.merged_into or d.merged_into:
+        raise AtlasError("one of the records is already merged; use the live record", "conflict")
+    authorities = provenance.authority_origins(session, ctx.settings)
+    obs_s, locks_s = provenance.merge_inputs(session, ctx.settings, src, authorities)
+    obs_d, locks_d = provenance.merge_inputs(session, ctx.settings, dst, authorities)
+    view, explain = merge(obs_s + obs_d, {**locks_s, **locks_d}, prefs=ctx.settings.field_source_preference,
+                          meta=provenance.meta(ctx.settings, authorities))
+    before = d.view or {}
+    changes = []
+    for key in sorted(set(before) | set(view)):
+        if key == "sources" or before.get(key) == view.get(key):
+            continue
+        changes.append({"field": key, "before": before.get(key), "after": view.get(key),
+                        "winner_source": (explain.get(key) or {}).get("source")})
+    rejection = matching.active_rejection(session, src, dst)
+    signed = ctx.settings.role == "authority"
+    out: dict[str, Any] = {"src": src, "dst": dst, "status": "preview", "view": view, "explain": explain,
+                           "changes": changes, "distinct": rejection.id if rejection else None,
+                           "dropped_locks": sorted(f for f in locks_s if f in locks_d),
+                           "undoable": not signed}
+    if signed:
+        out["undo_note"] = "this merge cannot be undone until federation emit protocol 1.6 (feed kind 'unmerge')"
+    return out
+
+
 def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_id: str | None = None,
-                       log: bool = True) -> Canonical:
-    """Split one observation (a wrongly merged source record) onto its own canonical."""
+                       log: bool = True, actor: str = "") -> Canonical:
+    """Split one observation (a wrongly merged source record) onto its own canonical. C11 §11.10.6: the chain
+    is remembered as "not that record" (a `chain` rejection), so a re-ingest never title-matches it back, and
+    the split is recorded as a decision."""
     write_lock(session)
     obs = session.get(Observation, observation_id)
     if obs is None or obs.canonical_id is None:
@@ -366,6 +512,12 @@ def detach_observation(session: Session, ctx: Ctx, observation_id: str, *, new_i
             for row in session.scalars(select(model).where(model.canonical_id == old, model.source == obs.source)):
                 row.canonical_id = cid
     session.flush()
+    who = actor or ("sync" if not log else "curator")
+    matching.add_rejection(session, "chain", matching.chain_hash(obs.source, obs.source_scope, obs.external_id), old,
+                           reason="detach", actor=who)
+    matching.record_decision(session, source=obs.source, scope=obs.source_scope, external_id=obs.external_id,
+                             observation_id=obs.id, canonical_id=cid, outcome="forced", reason="forced",
+                             actor=f"curator:{actor}"[:128] if actor else who)
     with client_changes.cause(session, "detach"):
         rebuild(session, ctx, old, cause="detach")
         new = rebuild(session, ctx, cid, cause="detach")
@@ -430,10 +582,31 @@ def lock_needs_dates_protocol(field: str, value: Any) -> bool:
     return field == "release_date" and isinstance(value, str) and dates.precision_of(value) != "day"
 
 
+#: C11 §11.8: a federated explicit clear is a lock body version 2 (`field-clear-v1`, protocol 1.6).
+CLEAR_PROTOCOL = feed_schema.TOKEN_SINCE["field-clear-v1"]
+
+
 def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, actor: str = "",
-             local_only: bool = False, log: bool = True) -> Canonical:
-    value = clean_lock(field, value, replicated=not log)
+             local_only: bool = False, log: bool = True, clear: bool = False) -> Canonical:
+    """Pin a field, or with `clear` mark it deliberately empty (C11 §11.8; `value` must then be None). JSON null
+    never clears anything. A clear that would enter the signed feed needs protocol 1.6 and is refused; a
+    `local_only` clear is always allowed."""
     signed = log and not local_only and ctx.settings.role == "authority"
+    if clear:
+        if value is not None:
+            raise AtlasError("give either a value or clear, not both", "invalid_lock")
+        from .merge import LOCK_FIELDS
+
+        if field not in LOCK_FIELDS:
+            raise AtlasError(f"field {field!r} cannot be locked")
+        if signed:
+            gate = feed_schema.EmitGateError("an explicitly cleared field (lock version 2)", CLEAR_PROTOCOL,
+                                             feed_schema.emit_protocol(ctx.settings))
+            raise AtlasError(f"{gate} Until then, clear it on this node only (local_only).", "emit_protocol")
+    else:
+        if value is None:
+            raise AtlasError('a lock needs a value; use {"clear": true} to clear a field', "invalid_lock")
+        value = clean_lock(field, value, replicated=not log)
     if signed and lock_needs_dates_protocol(field, value) and dates_gated(ctx):
         what = "a release-dates lock" if field == "releases" else "a partial release date lock"
         raise AtlasError(dates_gate_message(ctx, what), "emit_protocol")
@@ -443,9 +616,15 @@ def set_lock(session: Session, ctx: Ctx, cid: str, field: str, value: Any, *, ac
         raise AtlasError("unknown or merged canonical", "not_found")
     lock = session.get(Lock, (cid, field))
     if lock:
-        lock.value, lock.set_by, lock.local_only = value, actor, local_only
+        if not log and lock.cleared:
+            return row  # this node's own clear wins over a replicated pin (it is always local)
+        lock.value, lock.set_by, lock.local_only, lock.cleared = value, actor, local_only, clear
     else:
-        session.add(Lock(canonical_id=cid, field=field, value=value, set_by=actor, local_only=local_only))
+        session.add(Lock(canonical_id=cid, field=field, value=value, set_by=actor, local_only=local_only,
+                         cleared=clear))
+    if clear:
+        session.add(AuditEntry(actor_id=None, action="lock_clear", target=cid[:128],
+                               detail={"actor": actor[:128], "field": field, "local_only": local_only}))
     session.flush()
     rebuild(session, ctx, cid, cause="feed" if signed else "local")
     if signed:

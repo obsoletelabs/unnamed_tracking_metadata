@@ -346,6 +346,28 @@ def cmd_dates(args) -> int:
     return 0
 
 
+def cmd_match(args) -> int:
+    """`atlas match explain-backfill`: rewrite every live record's explain to version 2 (trust class, reason,
+    runners-up, conflicts; C11 §11.7) and fill the `field_conflict` index, in batches under the writer lock.
+    Resumable like `atlas dates rebuild`. A record whose view the trust classes change is rebuilt (H34).
+    `atlas match prune`: apply match decision retention now (the server also does it daily)."""
+    from . import matching, provenance
+
+    settings, maker = _maker()
+    if args.action == "prune":
+        with maker() as session:
+            result = {"pruned": matching.prune_decisions(session, settings)}
+            session.commit()
+        print(json.dumps(result))
+        return 0
+    for warning in provenance.class_warning(settings):
+        print(warning, file=sys.stderr)
+    with maker() as session:
+        ctx = Ctx(settings, load_identity(session, settings))
+    print(json.dumps(provenance.backfill(maker, ctx, batch=args.batch, restart=args.restart, limit=args.limit)))
+    return 0
+
+
 def cmd_prices(args) -> int:
     """`atlas prices purge`: delete price observations past their retention now (the server also does it
     hourly). `atlas prices status`: counts, what the next purge removes, and the price channel's state."""
@@ -431,6 +453,12 @@ def main(argv: list[str] | None = None) -> int:
     dt.add_argument("--limit", type=int, help="stop after this many records (the next run continues)")
     dt.add_argument("--restart", action="store_true", help="start from the first record again")
     dt.set_defaults(fn=cmd_dates)
+    mt = sub.add_parser("match", help="matching and provenance (C11): explain v2 backfill, decision retention")
+    mt.add_argument("action", choices=["explain-backfill", "prune"])
+    mt.add_argument("--batch", type=int, default=500, help="records per transaction (default 500)")
+    mt.add_argument("--limit", type=int, help="stop after this many records (the next run continues)")
+    mt.add_argument("--restart", action="store_true", help="start from the first record again")
+    mt.set_defaults(fn=cmd_match)
     pr = sub.add_parser("prices", help="price observations (C8): purge expired rows now, or show status")
     pr.add_argument("action", choices=["purge", "status"])
     pr.set_defaults(fn=cmd_prices)

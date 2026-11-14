@@ -24,6 +24,9 @@ from atlas.models import Canonical, ChangeLog, PriceObservation
 from .conftest import batch
 from .test_sync_compat import Node, pull
 
+# C11 (A17) reserved the merge-undo kinds for protocol 1.6.
+RESERVED_C11 = {"price": "1.5", "unmerge": "1.6", "distinct": "1.6"}
+
 NOW = datetime.now(UTC).replace(microsecond=0)
 
 
@@ -84,7 +87,7 @@ def test_price_channel_is_registered_reserved_and_disabled():
     assert (channel.sequence, channel.cursor_suffix) == ("price_feed_seq", "#price")
     assert feed_schema.CHANNEL_ENABLED is False
     assert feed_schema.PROTOCOL == "1.4"  # 1.5 ships with the release that enables the channel
-    assert feed_schema.RESERVED_KINDS == {"price": "1.5"} and "price" not in feed_schema.FEED_KINDS
+    assert feed_schema.RESERVED_KINDS == RESERVED_C11 and "price" not in feed_schema.FEED_KINDS
     assert feed_schema.RESERVED_TOKENS["price-channel-v1"] == "1.5"
     assert "price-channel-v1" not in feed_schema.capabilities()
     assert "price-channel-v1" not in feed_schema.known_tokens()

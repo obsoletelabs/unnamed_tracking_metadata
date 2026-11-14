@@ -65,6 +65,10 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_SOURCE_TRUST` | `{'curator': 100, 'manual': 90, 'community': 85, 'igdb': 70, 'steam': 65, 'gog': 60, 'rawg': 50}` | JSON object of source name → trust weight used to choose between conflicting values (higher wins). Reserved names need the `curate` scope to submit. |
 | `ATLAS_DEFAULT_TRUST` | `40` | Trust for sources not listed in `source_trust` (apps and plugins submitting data). |
 | `ATLAS_REDISTRIBUTABLE_SOURCES` | `['community', 'curator', 'manual']` | Sources whose curated observations are published on the change feed. Provider data (Steam, IGDB…) is never federated. |
+| `ATLAS_FIELD_SOURCE_PREFERENCE` | — | JSON object of field → list of sources, best first, for example `{"description": ["igdb", "steam"]}`. It reorders sources of the `provider` trust class only: it never lifts a provider above community or curator data (see Matching and provenance). |
+| `ATLAS_SYNC_ORIGIN_CLASS_CAP` | — | JSON object of node id → highest trust class (`curator`, `publisher`, `community`, `provider`) its replicated observations may have. Unlisted nodes: a configured upstream authority (a node in `ATLAS_TRUSTED_KEYS` or under Admin → Peers) is `curator`, every other origin `provider`. |
+| `ATLAS_REVIEW_DISMISS_DAYS` | `30` | Days a dismissed review pair stays closed: the same pair is not reopened within this window unless its evidence gets stronger. |
+| `ATLAS_MATCH_DECISION_RETAIN_DAYS` | `180` | Days match decisions are kept. The newest decision of each source record and every decision an open review or a live merge refers to are always kept. |
 
 ## Limits
 

@@ -108,6 +108,8 @@ advertise one and count as **1.0**.
 | **1.3** | partial and regional release dates: `ext.release` on observations, a `release_date` lock that is a year or a month, and the `releases` lock field (each signed with the `_requires` token `dates-v1`, also advertised in `capabilities`) | **drops the observation or lock** | **parks** it (`unsupported_capability`) and applies it after upgrading; the record keeps its previous dates meanwhile, never a stripped or day-only copy |
 | **1.4** | the feed kind `relation`: relationships between works (DLC, expansions, ports, remakes, mods, series and collection membership; see [Relationships](relations.md)) | **drops the entry** (an unknown kind); after upgrading, `atlas sync replay --rescan` records it as `dropped_by_previous_release` and `--historical` applies it | **parks** it (`unsupported_kind`) and applies it after upgrading; the records keep their other data meanwhile |
 | 1.5 (reserved) | the price channel: a separate signed channel `/sync/price-changes` (capability `price-channel-v1`); see [Prices](prices.md). **Designed, not enabled in this release**: no capability, the endpoint answers 404, nothing is signed | never sees it (separate endpoint, not the feed) | never sees it; a `price` entry in the main feed would be **parked** (`unsupported_kind`) |
+| 1.6 (reserved) | undoing merges across the federation: the feed kinds `unmerge` and `distinct` ("these are different works"), and lock body version 2 for an explicit clear (`field-clear-v1`) and the merge guard (`merge-guard-v1`); see [Matching and provenance](matching.md). **Not signed by this release**: unmerges, distinct marks and clears stay on the node that made them; a merge is published as before, so an authority cannot undo a published merge until it emits 1.6 | would **drop the entry** (an unknown kind) | **parks** it (`unsupported_kind` or `unsupported_version`) and applies it after upgrading |
+| 1.7, 1.8 (reserved) | achievement body version 2 (`ach-v2`), artwork body version 2 (`art-v2`, artwork kind `trailer`) | — | **parks** it |
 
 ### What a follower does with entries it does not understand
 
@@ -270,6 +272,8 @@ node. The upstream caches its answer for up to 60 seconds (`cached_seconds`). Pl
 | `key_rotation` | 1.0 | 1 / 1 | `key_id`, `public_key` |
 | `relation` | 1.4 | 1 / 1 | `from`, `op`, `source`, `to`, `type` |
 | `price` | 1.5 (reserved) | not in this release | parked by this release |
+| `unmerge` | 1.6 (reserved) | not in this release | parked by this release |
+| `distinct` | 1.6 (reserved) | not in this release | parked by this release |
 
 Each entry body may carry `_v` (body version; absent means 1) and `_requires` (capability or
 vocabulary tokens a follower must know, at most 16 of up to 40 characters). Both are inside the

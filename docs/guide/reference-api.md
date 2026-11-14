@@ -25,6 +25,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `GET` | `/games/{cid}/explain` | read | Which source and rule produced each field (provenance). |
 | `GET` | `/games/{cid}/prices` | read | The newest observed price of every offer of a record, one per provider, product, package, edition, platform, region and currency (optional `region`, `currency`, `provider`). Integer minor units with the ISO 4217 `exponent`, exact decimal strings, `sale`, `stale`. Non-redistributable prices only for curator tokens. Not part of the record's view; never in the feed. See [Prices](prices.md). |
 | `GET` | `/games/{cid}/prices/history` | read | Retained price observations of a record in one `region` (required), newest first, filtered by `currency`, `provider`, `product_id`, `edition`, `platform`, `since`, `until`; at most 1000 per page, follow `next_cursor`. With `currency`, `lowest` is the lowest retained price (the historical low within retention). See [Prices](prices.md). |
+| `GET` | `/games/{cid}/provenance` | read | Why each field has its value: winning source, trust class, reason, runners-up, conflicts, plus recent decisions, merges and distinct marks. `detail=values` (curate) adds candidate values. |
 | `GET` | `/games/{cid}/relations` | read | The relation graph around a record: `depth` hops (1-4) in both directions, at most `limit` (200) records, deterministic order, `truncated` when more exists; plus the record's `editions`. See [Relationships](relations.md). |
 | `GET` | `/media/{digest}` | read | A cached, verified image. Immutable; `nosniff`. |
 | `POST` | `/resolve` | read | Batch (max `max_resolve`): Atlas ids, provider ids and titles to canonical ids, with `reason` (id, redirect, crosswalk, conflict, type_mismatch, exact, fuzzy, ambiguous, none), `tier`, `matched_keys`, `conflict` and `redirected_from`. A conflict returns no id. Read-only. See [Tracking App](tracking-app.md#resolving-ids-post-resolve). |
@@ -39,18 +40,30 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
+| `GET` | `/conflicts` | curate | Records whose `field` has disagreeing sources in the winning trust class. |
+| `GET` | `/distinct` | curate | Active "different works" decisions of a record. |
+| `POST` | `/distinct` | curate | Mark two records as different works: never merged or paired for review again (local to this node). |
+| `DELETE` | `/distinct/{rejection_id}` | curate | End a "different works" decision. |
 | `PUT` | `/games/{cid}/achievements` | curate | Replace the curated achievement set for a record. |
 | `PUT` | `/games/{cid}/artwork` | curate | Replace the curated artwork set for a record. |
 | `PUT` | `/games/{cid}/custom` | curate | Set or clear curated custom-field values. |
+| `GET` | `/games/{cid}/decisions` | curate | Match decisions for a record and the records merged into it, newest first. |
 | `DELETE` | `/games/{cid}/locks/{field}` | curate | Remove a pinned field value. |
-| `PUT` | `/games/{cid}/locks/{field}` | curate | Pin a field value; it beats every merged value. `release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; `releases` takes a list of up to five release entries. A year/month `release_date` lock or a `releases` lock needs `emit_protocol` 1.3 on an authority (else 409 `emit_protocol`). |
-| `POST` | `/games/{cid}/merge` | curate | Merge a record into another (leaves a redirect). |
+| `PUT` | `/games/{cid}/locks/{field}` | curate | Pin a field value; it beats every merged value. `release_date` takes `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; `releases` takes a list of up to five release entries. A year/month `release_date` lock or a `releases` lock needs `emit_protocol` 1.3 on an authority (else 409 `emit_protocol`). `{"clear": true}` marks the field deliberately empty on this node. |
+| `POST` | `/games/{cid}/merge` | curate | Merge a record into another (leaves a redirect and a merge record that can be undone). `dry_run=1` previews the survivor's view and every field change; `override_distinct` merges records marked as different works. |
 | `GET` | `/games/{cid}/observations` | curate | Raw source records behind a record (current and superseded). |
+| `GET` | `/games/{cid}/provenance/observations` | curate | Every observation of a record, newest first, paged. |
 | `PUT` | `/games/{cid}/relations` | curate | Replace the record's own outgoing relations (`{relations: [{to, type}]}`, at most 200). Self relations, cycles, a second parent of the same kind and memberships that do not point at a series or collection are refused and nothing changes. Published at `emit_protocol` 1.4, kept local below. |
+| `GET` | `/merges` | curate | Merge records of a record (`canonical_id`). |
+| `GET` | `/merges/{merge_id}` | curate | One merge record with its item counts. |
+| `POST` | `/merges/{merge_id}/unmerge` | curate | Undo a recorded merge (last in, first out; `If-Match` takes the survivor's ETag; `dry_run` previews). A merge this authority published needs `emit_protocol` 1.6 (409 `emit_protocol`). |
+| `GET` | `/observations/{oid}/decision` | curate | The newest match decision recorded for one observation. |
 | `POST` | `/observations/{oid}/detach` | curate | Split one source record off onto its own record. |
 | `POST` | `/prices` | curate | Store up to 500 price observations (integer minor units; floats, unknown currencies or regions and inconsistent discounts are a 422). Per item: `stored`, `duplicate`, `conflict`, `unknown_record`, `expired` or `invalid`. Nothing is published. See [Prices](prices.md). |
-| `GET` | `/review` | curate | Open possible-duplicate and id-conflict items. |
+| `GET` | `/review` | curate | Open possible-duplicate and id-conflict items with reason, evidence and priority (`order=priority`, `kind`). |
+| `POST` | `/review/{rid}/detach` | curate | Resolve a review item by splitting one observation off its record. |
 | `POST` | `/review/{rid}/dismiss` | curate | Mark a review item as not a duplicate. |
+| `POST` | `/review/{rid}/distinct` | curate | Resolve a review item as different works. |
 | `POST` | `/review/{rid}/merge` | curate | Resolve a review item by merging into one of its candidates. |
 
 ## providers

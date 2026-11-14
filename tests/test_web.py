@@ -905,3 +905,35 @@ def test_hidden_achievements_are_revealed_on_click_for_signed_in_members_only(si
     html = site.get(f"/game/{site.gid}/achievements/{hid}")
     assert "Spoiler text" in html.text and "no-store" in html.headers["cache-control"]
     assert site.get(f"/game/{site.gid}/achievements/nope?json=1").status_code == 404
+
+
+def test_duplicates_queue_offers_no_merge_for_an_unmerge_check(site):
+    """C11 §11.10.3: an `unmerge_check` names the survivor and the record an unmerge split off it. Merging them
+    would redo the undone merge, so the queue shows the rows to check and a dismiss button, and the merge
+    route refuses it."""
+    from atlas import matching
+    from atlas.models import Canonical, ReviewItem
+
+    signup(site, "alice")
+    with site.st.maker() as s:
+        [r] = service.ingest(s, site.st.ctx, batch("gog", [{"external_id": "split", "title": "Split Off Game"}]),
+                             curator=True)
+        item = ReviewItem(kind="unmerge_check", canonical_id=site.gid, candidates=[[r.canonical_id, 1.0]],
+                          confidence=1.0, reason="unmerge", priority=matching.REVIEW_PRIORITY["unmerge_check"],
+                          evidence=[{"signal": "items", "value": [{"kind": "lock", "ref": "series"},
+                                                                  {"kind": "art", "ref": "x"}], "effect": 0}],
+                          pair_key=matching.pair_key("unmerge_check", [site.gid, r.canonical_id, "m"]))
+        s.add(item)
+        s.commit()
+        rid, other = item.id, r.canonical_id
+    q = site.get("/review/duplicates")
+    assert "unmerge check" in q.text and "Split Off Game" in q.text
+    assert f"/review/duplicates/{rid}/merge" not in q.text and "2 rows changed after the merge" in q.text
+    t = token(site, "/review/duplicates")
+    assert site.post(f"/review/duplicates/{rid}/merge", data={"csrf": t, "into": other}).status_code == 400
+    with site.st.maker() as s:
+        assert s.get(Canonical, site.gid).merged_into is None and s.get(Canonical, other).merged_into is None
+        assert s.get(ReviewItem, rid).status == "open"
+    assert site.post(f"/review/duplicates/{rid}/dismiss", data={"csrf": t}).status_code == 303
+    with site.st.maker() as s:
+        assert s.get(ReviewItem, rid).status == "dismissed"

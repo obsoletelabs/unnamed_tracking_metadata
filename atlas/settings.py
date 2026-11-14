@@ -47,6 +47,16 @@ class Settings(BaseSettings):
     # Sources whose observations may be published on the change feed.
     redistributable_sources: set[str] = Field(default_factory=lambda: {"curator", "manual", "community"})
 
+    # Matching and provenance (CONTRACT-C11). Environment settings in this release; the admin screen that edits
+    # them ships with the C11 UI (amendment A17 #9).
+    # "Preferred source per field" (PART 6.4): {field: [source, ...]}. Reorders sources of the provider class only.
+    field_source_preference: dict[str, list[str]] = Field(default_factory=dict)
+    # Per-origin trust ceiling for replicated observations: {node_id: class}. Unlisted: the configured upstream
+    # authority (a node in ATLAS_TRUSTED_KEYS) is `curator`, every other origin `provider` (C11 §11.7.1, H48).
+    sync_origin_class_cap: dict[str, str] = Field(default_factory=dict)
+    review_dismiss_days: int = Field(default=30, ge=0, le=3650)  # a dismissed pair stays closed this long
+    match_decision_retain_days: int = Field(default=180, ge=1, le=3650)
+
     # API safety
     max_batch: int = Field(default=1000, ge=1, le=5000)
     max_resolve: int = Field(default=200, ge=1, le=5000)
@@ -171,6 +181,17 @@ class Settings(BaseSettings):
             self.min_follower_protocol = "1.0"
         if self.review_threshold > self.auto_match_threshold:
             raise ValueError("review_threshold must not exceed auto_match_threshold")
+        from .merge import CLASS_RANK, LOCK_FIELDS
+
+        bad = sorted(c for c in self.sync_origin_class_cap.values() if c not in CLASS_RANK or c == "derived")
+        if bad:
+            raise ValueError(f"sync_origin_class_cap: unknown class {bad[0][:20]!r} (curator, publisher, community, "
+                             "provider)")
+        unknown = sorted(f for f in self.field_source_preference if f not in (*LOCK_FIELDS, "provider_ids"))
+        if unknown:
+            raise ValueError(f"field_source_preference: unknown field {unknown[0][:40]!r}")
+        if any(len(v) > 32 for v in self.field_source_preference.values()):
+            raise ValueError("field_source_preference: at most 32 sources per field")
         if self.upstream_url and not self.trusted_keys:
             raise ValueError("ATLAS_TRUSTED_KEYS must list the upstream's key when ATLAS_UPSTREAM_URL is set")
         if self.environment == "production":

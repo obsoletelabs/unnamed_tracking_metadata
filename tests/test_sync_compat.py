@@ -32,6 +32,9 @@ from atlas.models import (
 
 from .conftest import batch, build_settings
 
+# C11 (A17) reserved the merge-undo kinds for protocol 1.6.
+RESERVED_C11 = {"price": "1.5", "unmerge": "1.6", "distinct": "1.6"}
+
 # ---- a small two-node network ---------------------------------------------------------------------------
 
 
@@ -163,7 +166,7 @@ def test_registry_replaces_the_duplicated_kind_lists():
     assert set(feed_schema.kinds_advertised()) == {"obs", "artwork", "achievements", "custom", "schema", "merge",
                                                    "detach", "lock", "unlock", "key_rotation", "relation"}
     assert feed_schema.OBS_PAYLOAD == set(sync._OBS_FIELDS)
-    assert "x_future" not in feed_schema.FEED_KINDS and feed_schema.RESERVED_KINDS == {"price": "1.5"}
+    assert "x_future" not in feed_schema.FEED_KINDS and feed_schema.RESERVED_KINDS == RESERVED_C11
     assert feed_schema.FEED_KINDS["relation"].since == "1.4"  # reserved in 1.1-1.3, shipped by A15 (C6.3)
 
 
