@@ -1,0 +1,41 @@
+name: Live providers
+# Issue #26: check the provider adapters against the real APIs. Never on pull requests (forks get no secrets, and a
+# third-party outage must not block a merge). Keyless providers (Steam storefront, Open Library, Wikidata) always
+# run; each keyed provider runs only when its repository secret is set, otherwise its checks skip and say which
+# secret is missing. No secret is created by this workflow.
+on:
+  schedule:
+    - cron: "17 5 * * 1"  # Mondays 05:17 UTC
+  workflow_dispatch:
+permissions: { contents: read }
+concurrency:
+  group: live-providers
+  cancel-in-progress: false
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ATLAS_LIVE_PROVIDERS: "1"
+      ATLAS_LIVE_REPORT: live-provider-shapes.json
+    # Actions are pinned by commit (this job handles provider secrets); the comment names the tag it was.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+      - run: uv sync --frozen --extra dev
+      - name: Live provider checks
+        run: uv run pytest -q -rs tests/live
+        env:  # the secrets reach only this step, not the install step or the upload
+          ATLAS_STEAM_API_KEY: ${{ secrets.ATLAS_STEAM_API_KEY }}
+          ATLAS_RAWG_API_KEY: ${{ secrets.ATLAS_RAWG_API_KEY }}
+          ATLAS_IGDB_CLIENT_ID: ${{ secrets.ATLAS_IGDB_CLIENT_ID }}
+          ATLAS_IGDB_CLIENT_SECRET: ${{ secrets.ATLAS_IGDB_CLIENT_SECRET }}
+          ATLAS_TGDB_API_KEY: ${{ secrets.ATLAS_TGDB_API_KEY }}
+      - name: Response shapes (which fields each provider filled; no values)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: live-provider-shapes
+          path: live-provider-shapes.json
+          if-no-files-found: ignore

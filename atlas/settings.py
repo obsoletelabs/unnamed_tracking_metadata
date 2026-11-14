@@ -96,6 +96,14 @@ class Settings(BaseSettings):
     rawg_api_key: str | None = None
     igdb_client_id: str | None = None
     igdb_client_secret: str | None = None
+    # TheGamesDB API v1 key (issue #54): keyed official API, requested from the TheGamesDB forum.
+    tgdb_api_key: str | None = None
+    # Open Library (books, issue #54): keyless, data CC0. Off by default: a node opts in to the outbound calls.
+    openlibrary_enabled: bool = False
+    # Wikidata cross-store ids (issue #63): keyless, CC0. Off by default for the same reason.
+    wikidata_enabled: bool = False
+    # Price sources `atlas prices fetch` may query (issue #38), comma-separated, e.g. "steam". Empty: off.
+    price_sources: str = Field(default="", max_length=200)
     provider_ttl_seconds: int = Field(default=7 * 86400, ge=60)
     provider_negative_ttl_seconds: int = Field(default=86400, ge=60)
 
@@ -258,6 +266,11 @@ class Settings(BaseSettings):
         display title until real observations arrive."""
         return self.source_trust.get(source, RECORD_TRUST if source == "atlas-record" else self.default_trust)
 
+
+#: The sources this node's own provider adapters write (`providers.registry.build_registry`, plus the Wikidata
+#: cross-reference source). They are always reserved for curator and system ingests, whatever ATLAS_SOURCE_TRUST
+#: lists: a contributor token must not write observations indistinguishable from the node's own provider imports.
+PROVIDER_SOURCES = frozenset({"steam", "rawg", "igdb", "tgdb", "openlibrary", "wikidata"})
 
 #: The trust of the `atlas-record` source (C13 §3.3), below every listed provider (`rawg` 50 is the lowest).
 RECORD_TRUST = 1

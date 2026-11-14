@@ -1,5 +1,7 @@
 # Provider architecture
 
+Which providers Atlas supports, their access terms and where each lives: [guide/providers.md](guide/providers.md).
+
 Providers are evidence sources, not canonical authorities. An adapter may search or enrich, but the returned observation is stored with provider identity, timestamp, provenance, licence metadata where available, and confidence before reconciliation.
 
 ## Provider lifecycle

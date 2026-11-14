@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import re
+import time
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit
@@ -689,19 +690,59 @@ def propose_artwork(cid: str, p: Annotated[Page, Depends(user_form)], kind: Anno
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
-def suggest_links(p: Page, g: Any) -> list[dict[str, Any]]:
-    """Likely store matches for a game, found by its own name in every provider this node can search.
+#: At most this many of a record's linked ids are looked up in the cross-reference source per suggestion request.
+CROSSREF_LOOKUPS = 2
+CROSSREF_SLOW_SECONDS = 2.0  # after a lookup this slow, skip the rest (worst case ~2 s + one 4 s timeout)
 
-    Stores the game is already linked to are skipped. A match is marked likely when the title is the same
+
+def _crossref_suggestions(p: Page, g: Any, linked: dict[str, str]) -> list[dict[str, Any]]:
+    """Store ids for this game from the ids it already has (Wikidata, issue #63). One candidate for a store is a
+    likely match; several (the id is shared by a game and its edition) are offered without that mark."""
+    from ..providers.wikidata import PROPERTIES, media_type_of
+
+    kind = getattr(g, "media_type", None) or "game"
+    found: dict[str, list[tuple[str, str]]] = {}
+    asked = 0
+    started = time.monotonic()
+    for ns in sorted(linked):
+        if ns not in PROPERTIES or media_type_of(ns) != kind or asked >= CROSSREF_LOOKUPS:
+            continue
+        if asked and time.monotonic() - started > CROSSREF_SLOW_SECONDS:
+            break  # the first lookup was slow (uncached, Wikidata busy): do not make the page wait for another
+        asked += 1
+        for other, idents in p.st.providers.crossref(p.session, ns, str(linked[ns])).items():
+            if media_type_of(other) != kind:
+                continue  # a game is not offered a book id, nor a book a store id
+            for ident in idents:
+                if other not in linked and all(i != ident for i, _ in found.get(other, [])):
+                    found.setdefault(other, []).append((ident, ns))
+    out = []
+    for other, pairs in found.items():
+        for ident, via in pairs:
+            out.append({"provider": other, "label": integrations.store_name(other), "likely": len(pairs) == 1,
+                        "external_id": ident, "title": g.view.get("title"), "via": f"Wikidata, from its {via} id",
+                        "link": integrations.store_link(other, ident)})
+    return out
+
+
+def suggest_links(p: Page, g: Any) -> list[dict[str, Any]]:
+    """Likely store matches for a game: first the ids Wikidata lists next to an id it already has (when the
+    node enabled Wikidata), then matches found by its own name in every provider this node can search for its
+    media type.
+
+    Stores the game is already linked to are skipped. A name match is marked likely when the title is the same
     (ignoring case and punctuation) and, where both are known, the release year agrees."""
+    from ..providers.registry import media_types
+
     throttle(p, f"link-suggest:{p.me.id}", 10, 60, "Too many searches")
     title = str(g.view.get("title") or "")
     year = str(g.view.get("release_date") or "")[:4]
-    linked = set(g.view.get("provider_ids") or {})
+    linked = dict(g.view.get("provider_ids") or {})
+    kind = getattr(g, "media_type", None) or "game"
     norm = re.compile(r"\W+")
-    out: list[dict[str, Any]] = []
+    out: list[dict[str, Any]] = _crossref_suggestions(p, g, linked)
     for name in sorted(p.st.providers.providers):
-        if name in linked or not title:
+        if name in linked or not title or kind not in media_types(p.st.providers.providers[name]):
             continue
         try:
             found = [r.to_item() for r in p.st.providers.lookup(p.session, name, query=title)[:5]]
@@ -711,16 +752,21 @@ def suggest_links(p: Page, g: Any) -> list[dict[str, Any]]:
             same = norm.sub(" ", item["title"].casefold()).strip() == norm.sub(" ", title.casefold()).strip()
             item_year = str(item.get("release_date") or "")[:4]
             likely = same and (not year or not item_year or year == item_year)
+            if any(s["provider"] == name and s["external_id"] == item["external_id"] for s in out):
+                continue  # Wikidata already suggested it
             out.append({"provider": name, "label": integrations.store_name(name), "likely": likely, **item})
-    return sorted(out, key=lambda s: (not s["likely"], s["provider"]))[:12]
+    return sorted(out, key=lambda s: (not s["likely"], "via" not in s, s["provider"]))[:12]
 
 
 @router.get("/game/{cid}/links", response_class=HTMLResponse)
 def link_by_search(cid: str, p: Annotated[Page, Depends(user_page)], provider: Annotated[str, Query(max_length=40)] = "",
                    q: Annotated[str, Query(max_length=200)] = ""):
     """Find this game in a store by name (with the node's configured providers) and link the match."""
+    from ..providers.registry import media_types
+
     g, _ = live_game(p, cid)
-    names = sorted(p.st.providers.providers)
+    kind = getattr(g, "media_type", None) or "game"
+    names = sorted(n for n, prov in p.st.providers.providers.items() if kind in media_types(prov))
     query = q.strip() or ("" if provider else str(g.view.get("title") or ""))
     results, error = None, None
     suggestions = None

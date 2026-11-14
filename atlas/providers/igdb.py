@@ -65,6 +65,7 @@ def _category(row):
 class Igdb:
     name = "igdb"
     redistributable = False
+    media_types = ("game",)
     requests_per_minute = 240  # IGDB allows 4 req/s
 
     def __init__(self, client_id: str, client_secret: str) -> None:

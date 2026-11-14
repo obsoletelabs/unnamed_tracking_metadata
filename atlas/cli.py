@@ -393,10 +393,14 @@ def cmd_match(args) -> int:
 
 def cmd_prices(args) -> int:
     """`atlas prices purge`: delete price observations past their retention now (the server also does it
-    hourly). `atlas prices status`: counts, what the next purge removes, and the price channel's state."""
+    hourly). `atlas prices status`: counts, what the next purge removes, and the price channel's state.
+    `atlas prices fetch --source steam --region us`: fetch current prices for records linked to that store
+    (issue #38); refused (exit 2) unless the source is listed in ATLAS_PRICE_SOURCES."""
     from . import prices
 
-    _settings, maker = _maker()
+    settings, maker = _maker()
+    if args.action == "fetch":
+        return _prices_fetch(args, settings, maker)
     with maker() as session:
         if args.action == "purge":
             result = {"purged": prices.purge(session)}
@@ -405,6 +409,34 @@ def cmd_prices(args) -> int:
             result = prices.status(session)
     print(json.dumps(result))
     return 0
+
+
+def _prices_fetch(args, settings, maker) -> int:
+    import httpx
+
+    from . import price_sources
+
+    source = (args.source or "").lower()
+    if source not in price_sources.SOURCES:
+        print(json.dumps({"error": f"unknown price source {source!r}", "known": sorted(price_sources.SOURCES)}))
+        return 2
+    if source not in price_sources.enabled(settings):
+        print(json.dumps({"error": f"price source {source!r} is off: read its terms in docs/guide/prices.md, then "
+                                   f"add it to ATLAS_PRICE_SOURCES"}))
+        return 2
+    region = (args.region or "").lower()
+    with httpx.Client(headers={"User-Agent": "atlas-metadata/2"}) as client, maker() as session:
+        try:
+            report = price_sources.collect(session, price_sources.SOURCES[source](), region, client=client,
+                                           limit=args.limit, node=settings.public_url.split("://", 1)[-1],
+                                           dry_run=args.dry_run)
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        if not args.dry_run:
+            session.commit()
+    print(json.dumps(report.as_dict()))
+    return 1 if report.stopped else 0
 
 
 def cmd_feed(args) -> int:
@@ -517,8 +549,12 @@ def main(argv: list[str] | None = None) -> int:
     mt.add_argument("--limit", type=int, help="stop after this many records (the next run continues)")
     mt.add_argument("--restart", action="store_true", help="start from the first record again")
     mt.set_defaults(fn=cmd_match)
-    pr = sub.add_parser("prices", help="price observations (C8): purge expired rows now, or show status")
-    pr.add_argument("action", choices=["purge", "status"])
+    pr = sub.add_parser("prices", help="price observations (C8): purge expired rows, show status, or fetch")
+    pr.add_argument("action", choices=["purge", "status", "fetch"])
+    pr.add_argument("--source", help="fetch: the price source, e.g. steam (must be in ATLAS_PRICE_SOURCES)")
+    pr.add_argument("--region", default="us", help="fetch: ISO 3166-1 alpha-2 region, lower case (default us)")
+    pr.add_argument("--limit", type=int, default=500, help="fetch: at most this many linked products (default 500)")
+    pr.add_argument("--dry-run", action="store_true", help="fetch: ask the store but store nothing")
     pr.set_defaults(fn=cmd_prices)
     fd = sub.add_parser("feed", help="this node's signed feed (C13): introduce records it names but never published")
     fda = fd.add_subparsers(dest="action", required=True)

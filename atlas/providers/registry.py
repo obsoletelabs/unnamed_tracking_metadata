@@ -17,10 +17,14 @@ from ..models import ProviderCache, now
 from ..settings import Settings
 from .base import Provider, ProviderError, ProviderResult
 from .igdb import Igdb
+from .openlibrary import OpenLibrary
 from .rawg import Rawg
 from .steam import Steam
+from .tgdb import TheGamesDb
+from .wikidata import Wikidata
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,64}\Z")
+_SAFE_LINK_ID = re.compile(r"^[A-Za-z0-9_.-]{1,100}(/[A-Za-z0-9_.-]{1,100})?\Z")  # itch ids are `user/game`
 
 
 def build_registry(settings: Settings) -> dict[str, Provider]:
@@ -31,7 +35,21 @@ def build_registry(settings: Settings) -> dict[str, Provider]:
         reg["rawg"] = Rawg(settings.rawg_api_key)
     if settings.igdb_client_id and settings.igdb_client_secret:
         reg["igdb"] = Igdb(settings.igdb_client_id, settings.igdb_client_secret)
+    if settings.tgdb_api_key:
+        reg["tgdb"] = TheGamesDb(settings.tgdb_api_key)
+    if settings.openlibrary_enabled:
+        reg["openlibrary"] = OpenLibrary()
     return reg
+
+
+def build_crossref(settings: Settings) -> Wikidata | None:
+    """The cross-store id source (issue #63), when the node opted in."""
+    return Wikidata(settings.public_url) if settings.wikidata_enabled else None
+
+
+def media_types(p: Provider) -> tuple[str, ...]:
+    """The media types a provider describes; providers that do not say are game sources."""
+    return tuple(getattr(p, "media_types", ("game",)))
 
 
 @dataclass
@@ -63,12 +81,15 @@ class Fetcher:
         self._lock = threading.Lock()
         self._clock = clock
         self._failure_counts: dict[str, int] = {}
+        self.crossref_source: Wikidata | None = build_crossref(settings)
 
     def rebuild(self, settings: Settings) -> None:
         """Re-create the built-in providers from changed credentials; custom or replaced providers are kept."""
-        built_in = (Steam, Rawg, Igdb)
+        built_in = (Steam, Rawg, Igdb, TheGamesDb, OpenLibrary)
         kept = {name: p for name, p in self.providers.items() if not isinstance(p, built_in)}
         self.providers = {**build_registry(settings), **kept}
+        if self.crossref_source is None or isinstance(self.crossref_source, Wikidata):
+            self.crossref_source = build_crossref(settings)
 
     def failure_counts(self) -> dict[str, int]:
         with self._lock:
@@ -155,11 +176,20 @@ class Fetcher:
         return self._cached_call(session, provider, external_id, "achievement_stats", f"achstat:{external_id}", {},
                                  lambda _p, fn: fn(self.client, str(external_id)))
 
+    def crossref(self, session: Session, namespace: str, ident: str) -> dict[str, list[str]]:
+        """Other stores' ids for a record's `namespace:ident` (Wikidata, issue #63), cached like a lookup.
+        `{}` when the node has no cross-reference source, the id cannot be looked up, or the source is down."""
+        src = self.crossref_source
+        if src is None or not _SAFE_LINK_ID.match(str(ident)):
+            return {}
+        return self._cached_call(session, src.name, f"{namespace}:{ident}", "crossref", f"xref:{namespace}:{ident}",
+                                 {}, lambda _p, fn: fn(self.client, namespace, str(ident)), provider_obj=src)
+
     def _cached_call(self, session: Session, provider: str, external_id: str, method: str, key: str, empty: Any,
-                     call: Any) -> Any:
-        p = self.providers.get(provider)
+                     call: Any, provider_obj: Any = None) -> Any:
+        p = provider_obj if provider_obj is not None else self.providers.get(provider)
         fn = getattr(p, method, None)
-        if p is None or fn is None or not _SAFE_ID.match(str(external_id)):
+        if p is None or fn is None or not (provider_obj is not None or _SAFE_ID.match(str(external_id))):
             return empty
         row = self._cached(session, p.name, key)
         if row is not None and row.expires_at.replace(tzinfo=now().tzinfo) > now():
@@ -170,6 +200,8 @@ class Fetcher:
         try:
             data = call(p, fn)
         except ProviderError:
+            with self._lock:
+                self._failure_counts[p.name] = self._failure_counts.get(p.name, 0) + 1
             b.failures += 1
             return empty if row is None or row.negative else row.payload
         b.failures = 0
