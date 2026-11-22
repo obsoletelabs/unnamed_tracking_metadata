@@ -26,7 +26,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from .signing import DOMAIN as FEED_DOMAIN
-from .signing import body_hash, canonical_json, key_id_for, message_parts_ok, sign_message, verify_message
+from .signing import PRICE_DOMAIN, body_hash, canonical_json, key_id_for, message_parts_ok, sign_message, verify_message
 
 # ---- domains (§1.3) ---------------------------------------------------------------------------------------
 
@@ -62,7 +62,7 @@ SUPPORTED_VERSION = 1
 
 
 def all_domains() -> list[bytes]:
-    return [FEED_DOMAIN, *DOMAINS.values()]
+    return [FEED_DOMAIN, PRICE_DOMAIN, *DOMAINS.values()]
 
 
 def prefix_free(domains: list[bytes]) -> bool:

@@ -23,6 +23,8 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `GET` | `/games/{cid}/achievements` | read | Merged achievement list: name, description, kind, tier, points, icons, global percent, and a stable `key` (`ak1:…`) with `keys` and `key_identity`. Hidden ones are redacted unless `reveal=all` or `reveal=<id or key>,…` is sent with a signed-in user's token or a curator token. No per-user progress. See [Achievements](achievements.md). |
 | `GET` | `/games/{cid}/artwork` | read | Artwork by trust and priority, plus the best image per kind; `media_url` once cached, and `image_url` always. |
 | `GET` | `/games/{cid}/explain` | read | Which source and rule produced each field (provenance). |
+| `GET` | `/games/{cid}/prices` | read | The newest observed price of every offer of a record, one per provider, product, package, edition, platform, region and currency (optional `region`, `currency`, `provider`). Integer minor units with the ISO 4217 `exponent`, exact decimal strings, `sale`, `stale`. Non-redistributable prices only for curator tokens. Not part of the record's view; never in the feed. See [Prices](prices.md). |
+| `GET` | `/games/{cid}/prices/history` | read | Retained price observations of a record in one `region` (required), newest first, filtered by `currency`, `provider`, `product_id`, `edition`, `platform`, `since`, `until`; at most 1000 per page, follow `next_cursor`. With `currency`, `lowest` is the lowest retained price (the historical low within retention). See [Prices](prices.md). |
 | `GET` | `/games/{cid}/relations` | read | The relation graph around a record: `depth` hops (1-4) in both directions, at most `limit` (200) records, deterministic order, `truncated` when more exists; plus the record's `editions`. See [Relationships](relations.md). |
 | `GET` | `/media/{digest}` | read | A cached, verified image. Immutable; `nosniff`. |
 | `POST` | `/resolve` | read | Batch (max `max_resolve`): Atlas ids, provider ids and titles to canonical ids, with `reason` (id, redirect, crosswalk, conflict, type_mismatch, exact, fuzzy, ambiguous, none), `tier`, `matched_keys`, `conflict` and `redirected_from`. A conflict returns no id. Read-only. See [Tracking App](tracking-app.md#resolving-ids-post-resolve). |
@@ -46,6 +48,7 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `GET` | `/games/{cid}/observations` | curate | Raw source records behind a record (current and superseded). |
 | `PUT` | `/games/{cid}/relations` | curate | Replace the record's own outgoing relations (`{relations: [{to, type}]}`, at most 200). Self relations, cycles, a second parent of the same kind and memberships that do not point at a series or collection are refused and nothing changes. Published at `emit_protocol` 1.4, kept local below. |
 | `POST` | `/observations/{oid}/detach` | curate | Split one source record off onto its own record. |
+| `POST` | `/prices` | curate | Store up to 500 price observations (integer minor units; floats, unknown currencies or regions and inconsistent discounts are a 422). Per item: `stored`, `duplicate`, `conflict`, `unknown_record`, `expired` or `invalid`. Nothing is published. See [Prices](prices.md). |
 | `GET` | `/review` | curate | Open possible-duplicate and id-conflict items. |
 | `POST` | `/review/{rid}/dismiss` | curate | Mark a review item as not a duplicate. |
 | `POST` | `/review/{rid}/merge` | curate | Resolve a review item by merging into one of its candidates. |
@@ -65,11 +68,13 @@ Base path `/api/v2`. Send `Authorization: Bearer <token>`. Scopes: `read`, `cont
 | `GET` | `/sync/changes` | sync | Signed entries after `since`; optional `node_id` selects a retained original authority feed. |
 | `GET` | `/sync/digest` | sync | Digest of the replicated observations of this node's feed (or a retained one with `node_id`), for `atlas sync reconcile`. Observations only; cached up to 60 s (`cached_seconds`). |
 | `GET` | `/sync/info` | read | Stable trust root, current signer, signed successor proofs, available original feeds, and the federation protocol, feed kinds and capabilities this node speaks. |
+| `GET` | `/sync/price-changes` | sync | The price channel (protocol 1.5, capability `price-channel-v1`). Designed but disabled in this release: always 404. |
 
 ## admin
 
 | Method | Path | Scope | What it does |
 | --- | --- | --- | --- |
+| `GET` | `/prices/status` | admin | Stored price observations, how many the next purge removes, retention bounds, and the price channel's state (protocol 1.5, disabled in this release). |
 | `GET` | `/status` | admin | Role, feed head, replication cursors, the number of feed entries that failed to apply and the named heads per upstream. |
 | `GET` | `/sync/failures` | admin | Mirrored feed entries that could not be applied and still need attention: parked (need a newer release) or quarantined. |
 | `POST` | `/sync/failures/retry` | admin | Retry failed mirrored entries now, whatever the automatic attempt count. |

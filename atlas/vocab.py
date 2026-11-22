@@ -49,6 +49,12 @@ RELATION_OPS: tuple[str, ...] = ("add", "end")
 DATE_PRECISIONS: tuple[str, ...] = ("year", "month", "day")
 RELEASE_CATEGORIES: tuple[str, ...] = ("full", "early_access", "beta", "rerelease", "port", "demo")
 
+#: C8.1 availability of a price observation (Atlas-only; not part of the shared file, which C7 defines).
+PRICE_AVAILABILITY: tuple[str, ...] = ("available", "unavailable", "preorder", "free", "unreleased", "delisted",
+                                       "unknown")
+#: C8.1 `source_kind` of a price observation: a provider fetch or a curator/import entry (Atlas-only).
+PRICE_SOURCE_KINDS: tuple[str, ...] = ("provider", "manual")
+
 #: The protocol that ships each vocabulary value a 1.1 follower does not know (C1.1, H13). The authority
 #: refuses to write such a value into its signed feed until its `emit_protocol` reaches this protocol.
 VALUE_PROTOCOL: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "1.2"}

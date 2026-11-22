@@ -98,6 +98,54 @@ class Relation(Base):
     )
 
 
+class PriceObservation(Base):
+    """One observed price of one offer in one storefront region (CONTRACTS-v1 C8, `atlas/prices.py`).
+
+    Not an `Observation` and never merged into `Canonical.view`: prices churn, are regional and expire. Money
+    is an integer in the currency's ISO 4217 minor units (`amount_minor`, the price a buyer pays now;
+    `base_amount_minor`, the list price). Rows are deleted once `purge_after` (`observed_at + retention_days`)
+    has passed. `dedup_key` is the offer plus `observed_at`, so a re-sent observation is stored once."""
+
+    __tablename__ = "price_observation"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32))
+    product_id: Mapped[str] = mapped_column(String(128))
+    package_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    edition: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    platform: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    region: Mapped[str] = mapped_column(String(2))
+    currency: Mapped[str] = mapped_column(String(3))
+    amount_minor: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    base_amount_minor: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    discount_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    availability: Mapped[str] = mapped_column(String(16))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_kind: Mapped[str] = mapped_column(String(16))
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    redistributable: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    license_terms: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    retention_days: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
+    purge_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    dedup_key: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_by: Mapped[str] = mapped_column(String(128), default="", server_default="")
+
+    __table_args__ = (
+        CheckConstraint("amount_minor IS NULL OR amount_minor >= 0", name="ck_price_amount"),
+        CheckConstraint("base_amount_minor IS NULL OR base_amount_minor >= 0", name="ck_price_base"),
+        CheckConstraint("discount_pct IS NULL OR (discount_pct >= 0 AND discount_pct <= 100)",
+                        name="ck_price_discount"),
+        CheckConstraint("retention_days >= 1 AND retention_days <= 365", name="ck_price_retention"),
+        Index("uq_price_dedup", "dedup_key", unique=True),
+        Index("ix_price_latest", "canonical_id", "region", "currency", "observed_at"),
+        Index("ix_price_offer", "provider", "product_id", "region"),
+        Index("ix_price_purge", "purge_after"),
+    )
+
+
 class Observation(Base):
     __tablename__ = "observation"
 

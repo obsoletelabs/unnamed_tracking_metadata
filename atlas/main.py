@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import __version__, auth, backup, client_changes, custom, mail, media, oidc, ratelimit, relations, sync
+from . import __version__, auth, backup, client_changes, custom, mail, media, oidc, prices, ratelimit, relations, sync
 from .api.deps import AppState, get_session, require
 from .api.group_routes import router as group_router
 from .api.routes import router
@@ -101,6 +101,7 @@ class _TooLarge(Exception):
 
 
 def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
+    last_price_purge = 0.0
     while not stop.is_set():
         try:
             ratelimit.purge(maker)
@@ -109,6 +110,12 @@ def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event)
                 s.commit()
             with maker() as s:  # daily retention of the local client change log (C3.2)
                 if client_changes.maybe_prune(s, ctx.settings.client_changes_retain_days) is not None:
+                    s.commit()
+            if time.monotonic() - last_price_purge > 3600:  # hourly: price observations past retention (C8.2)
+                last_price_purge = time.monotonic()
+                with maker() as s:
+                    if purged := prices.purge(s):
+                        log.info("purged %d expired price observations", purged)
                     s.commit()
         except Exception as exc:
             log.warning("housekeeping failed: %s", exc)
