@@ -9,10 +9,12 @@
   <p><span class="badge warn">{{ r.kind|replace('_', ' ') }}</span> <span class="muted small">confidence {{ '%.2f'|format(r.confidence) }}</span></p>
   <div class="cols">
     <div><strong>This record</strong><br><a href="/game/{{ r.canonical.id }}">{{ r.canonical.title }}</a><div class="muted small">{{ r.canonical.year }} {{ r.canonical.developer }} · {{ r.canonical.sources }}</div></div>
-    {% for c in r.candidates %}<div><strong>Looks like</strong><br><a href="/game/{{ c.id }}">{{ c.title }}</a><div class="muted small">{{ c.year }} {{ c.developer }} · {{ c.sources }}</div>
-      <form class="inline" method="post" action="/review/duplicates/{{ r.id }}/merge">{{ csrf(p.csrf) }}<input type="hidden" name="into" value="{{ c.id }}"><button class="small" data-confirm="Merge into this record?" type="submit">Merge into this</button></form></div>{% endfor %}
+    {% for c in r.candidates %}<div><strong>{% if r.mergeable %}Looks like{% else %}Split off{% endif %}</strong><br><a href="/game/{{ c.id }}">{{ c.title }}</a><div class="muted small">{{ c.year }} {{ c.developer }} · {{ c.sources }}</div>
+      {% if r.mergeable %}<form class="inline" method="post" action="/review/duplicates/{{ r.id }}/merge">{{ csrf(p.csrf) }}<input type="hidden" name="into" value="{{ c.id }}"><button class="small" data-confirm="Merge into this record?" type="submit">Merge into this</button></form>{% endif %}</div>{% endfor %}
   </div>
-  <form method="post" action="/review/duplicates/{{ r.id }}/dismiss">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Not duplicates</button></form>
+  {% if r.mergeable %}<form method="post" action="/review/duplicates/{{ r.id }}/dismiss">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Not duplicates</button></form>
+  {% else %}<p class="small">A merge of these records was undone. {{ r.concerns }} row{{ '' if r.concerns == 1 else 's' }} changed after the merge stayed on this record: check them on both game pages and detach anything that belongs to the other one.</p>
+  <form method="post" action="/review/duplicates/{{ r.id }}/dismiss">{{ csrf(p.csrf) }}<button class="secondary small" type="submit">Checked</button></form>{% endif %}
 </article>
 {% else %}<p class="muted">No open items.</p>{% endfor %}
 {% endblock %}

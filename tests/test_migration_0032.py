@@ -24,7 +24,7 @@ from .test_postgres import pg_url  # noqa: F401  (module-scoped PostgreSQL fixtu
 NOW = "2026-11-02 10:00:00"
 INDEXES = {"uq_relation_active", "ix_relation_from", "ix_relation_to", "ix_relation_origin"}
 KEPT = "relation_0032_kept"
-HEAD = "0033"  # A16 (price observations) is the head now; it only adds its own table
+HEAD = "0034"  # A17 (matching and provenance) is the head now; A16 and A17 only add their own tables and columns
 
 
 @pytest.fixture(params=["sqlite", "postgresql"])

@@ -14,7 +14,22 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import __version__, auth, backup, client_changes, custom, mail, media, oidc, prices, ratelimit, relations, sync
+from . import (
+    __version__,
+    auth,
+    backup,
+    client_changes,
+    custom,
+    mail,
+    matching,
+    media,
+    merges,
+    oidc,
+    prices,
+    ratelimit,
+    relations,
+    sync,
+)
 from .api.deps import AppState, get_session, require
 from .api.group_routes import router as group_router
 from .api.routes import router
@@ -45,7 +60,10 @@ from .web.social import router as social_router
 
 log = logging.getLogger("atlas")
 _STATUS = {"invalid": 400, "forbidden": 403, "not_found": 404, "conflict": 409,
-           "emit_protocol": 409}  # a valid request this node cannot publish yet (C1.6)
+           "emit_protocol": 409,  # a valid request this node cannot publish yet (C1.6)
+           # C11 §11.9-11.12: merge / unmerge / lock refusals
+           "distinct": 409, "merge_too_large": 409, "already_reverted": 409, "unmerge_blocked": 409,
+           "legacy_merge": 409, "upstream_owned": 409, "stale_version": 412, "invalid_lock": 400}
 
 
 class BodyLimit:
@@ -102,6 +120,7 @@ class _TooLarge(Exception):
 
 def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event) -> None:
     last_price_purge = 0.0
+    last_decision_prune = 0.0
     while not stop.is_set():
         try:
             ratelimit.purge(maker)
@@ -116,6 +135,12 @@ def _housekeeping(maker: sessionmaker[Session], ctx: Ctx, stop: threading.Event)
                 with maker() as s:
                     if purged := prices.purge(s):
                         log.info("purged %d expired price observations", purged)
+                    s.commit()
+            if time.monotonic() - last_decision_prune > 86400:  # daily: match decision retention (C11 §11.4)
+                last_decision_prune = time.monotonic()
+                with maker() as s:
+                    if pruned := matching.prune_decisions(s, ctx.settings):
+                        log.info("pruned %d old match decisions", pruned)
                     s.commit()
         except Exception as exc:
             log.warning("housekeeping failed: %s", exc)
@@ -353,8 +378,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return resp
 
     @app.exception_handler(AtlasError)
-    async def _atlas_error(_: Request, exc: AtlasError):
-        return JSONResponse({"error": {"code": exc.code, "message": str(exc)}}, status_code=_STATUS.get(exc.code, 400))
+    @app.exception_handler(merges.MergeError)
+    async def _atlas_error(_: Request, exc: AtlasError | merges.MergeError):
+        body = {"code": exc.code, "message": str(exc)}
+        for k, v in (getattr(exc, "detail", None) or {}).items():  # C11: machine-readable refusal detail
+            body.setdefault(k, v)
+        return JSONResponse({"error": body}, status_code=_STATUS.get(exc.code, 400))
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception):

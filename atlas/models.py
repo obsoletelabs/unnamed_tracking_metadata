@@ -22,11 +22,13 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     false,
+    select,
     text,
     true,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, attributes, mapped_column
 
 from . import achievement_key
 from .ids import ulid
@@ -165,6 +167,10 @@ class Observation(Base):
     # Where it came from when received over the change feed.
     origin_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
     origin_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # C11 §11.9.1: sha256 of the canonical JSON of `payload`; NULL on rows written before migration 0034 (computed
+    # lazily on the next re-ingest of the chain). An identical re-ingest only refreshes `last_seen_at`.
+    payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_obs_key", "source", "source_scope", "external_id", "is_current"),
@@ -178,6 +184,9 @@ class Crosswalk(Base):
     namespace: Mapped[str] = mapped_column(String(50), primary_key=True)
     external_id: Mapped[str] = mapped_column(String(256), primary_key=True)
     canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), index=True)
+    # C11 §11.2.4: '' for a work key, `edition:<norm edition>` or `platform:<slug>` for a key that names one
+    # edition or one platform version of the work. Variant keys never contradict the work's own key.
+    variant: Mapped[str] = mapped_column(String(120), default="", server_default="")
 
 
 class Lock(Base):
@@ -191,6 +200,8 @@ class Lock(Base):
     set_by: Mapped[str] = mapped_column(String(128), default="")
     local_only: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    # C11 §11.8 explicit clear: the field is deliberately empty (`value` is NULL). Local only in this release.
+    cleared: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class ReviewItem(Base):
@@ -201,9 +212,177 @@ class ReviewItem(Base):
     canonical_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), index=True)
     candidates: Mapped[list[Any]] = mapped_column(JSON, default=list)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
-    status: Mapped[str] = mapped_column(String(16), default="open", index=True)  # open|merged|dismissed
+    # open | merged | dismissed | distinct | superseded | resolved (C11 §11.5)
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # C11 §11.5: why it was opened, the decision's evidence, one open item per pair, queue order.
+    reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    evidence: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    decision_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    pair_key: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_review_queue", "status", "priority", "created_at"),
+        Index("uq_review_open_pair", "pair_key", unique=True,
+              sqlite_where=text("status = 'open' AND pair_key IS NOT NULL"),
+              postgresql_where=text("status = 'open' AND pair_key IS NOT NULL")),
+    )
+
+
+class ReviewCandidate(Base):
+    """C11 §11.9.2: which records a review item names as candidates (`review_item.candidates`, as rows), so a merge,
+    unmerge or "different works" decision finds the items it touches with an indexed lookup instead of reading the
+    whole open queue. Derived: kept in step by `_sync_review_candidates` whenever an item's candidates change."""
+
+    __tablename__ = "review_candidate"
+
+    review_id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    canonical_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+
+    __table_args__ = (Index("ix_review_candidate_cid", "canonical_id", "review_id"),)
+
+
+def candidate_ids(candidates: Any) -> set[str]:
+    """The record ids of a `review_item.candidates` value ([[id, score], ...]), bounded."""
+    out: set[str] = set()
+    for c in (candidates or [])[:100] if isinstance(candidates, list) else []:
+        if isinstance(c, (list, tuple)) and c and isinstance(c[0], str) and c[0]:
+            out.add(c[0][:40])
+    return out
+
+
+class MatchDecision(Base):
+    """C11 §11.4: why one ingested observation landed where it did. Local only: it depends on this node's trust
+    configuration and records and quotes provider data, so it is never federated."""
+
+    __tablename__ = "match_decision"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    observation_id: Mapped[str | None] = mapped_column(ForeignKey("observation.id", ondelete="SET NULL"),
+                                                       nullable=True)
+    source: Mapped[str] = mapped_column(String(128))
+    source_scope: Mapped[str] = mapped_column(String(512))
+    external_id: Mapped[str] = mapped_column(String(256))
+    canonical_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(16))
+    tier: Mapped[str] = mapped_column(String(8))
+    reason: Mapped[str] = mapped_column(String(32))
+    score: Mapped[float] = mapped_column(Float)
+    margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    candidates: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    merges: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    matcher: Mapped[str] = mapped_column(String(16))
+    actor: Mapped[str] = mapped_column(String(128), default="auto", server_default="auto")
+    review_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    __table_args__ = (
+        Index("ix_match_decision_cid", "canonical_id", "created_at"),
+        Index("ix_match_decision_chain", "source", "source_scope", "external_id", "created_at"),
+    )
+
+
+class MatchRejection(Base):
+    """C11 §11.6: "these are different works" (`record`: a < b, both canonical ids) or "this source record is not
+    that work" (`chain`: a = "chain:" + 32 hex, b = canonical id). Applies to the live records of the stored ids."""
+
+    __tablename__ = "match_rejection"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    scope: Mapped[str] = mapped_column(String(8))
+    a: Mapped[str] = mapped_column(String(80))
+    b: Mapped[str] = mapped_column(String(40))
+    reason: Mapped[str] = mapped_column(String(32))
+    note: Mapped[str] = mapped_column(Text, default="", server_default="")
+    actor: Mapped[str] = mapped_column(String(128))
+    local_only: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    origin_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    origin_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    __table_args__ = (
+        Index("uq_match_rejection_active", "scope", "a", "b", unique=True,
+              sqlite_where=text("ended_at IS NULL"), postgresql_where=text("ended_at IS NULL")),
+        Index("ix_match_rejection_b", "b", sqlite_where=text("ended_at IS NULL"),
+              postgresql_where=text("ended_at IS NULL")),
+    )
+
+
+class RecordLive(Base):
+    """C11 §11.6 alias closure: a merged record id and the live record it redirects to (indexed on `live_id`), so
+    rejections, decisions and merge history of merged-in ids are found with one indexed lookup. A record without a
+    row is its own live record (amendment A17)."""
+
+    __tablename__ = "record_live"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    live_id: Mapped[str] = mapped_column(String(40), index=True)
+
+
+class FieldConflict(Base):
+    """C11 §11.7.2 conflict index: a row exists while the field's explain says `conflict: true`."""
+
+    __tablename__ = "field_conflict"
+
+    canonical_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    field: Mapped[str] = mapped_column(String(48), primary_key=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    __table_args__ = (Index("ix_field_conflict_field", "field", "canonical_id"),)
+
+
+class MergeRecord(Base):
+    """C11 §11.10.1: one merge of `src` into `dst`, written before anything moves, with the snapshot items needed
+    to undo it. `feed_seq` is the signed `merge` entry's sequence when this node published the merge."""
+
+    __tablename__ = "merge_record"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    src: Mapped[str] = mapped_column(ForeignKey("canonical.id"))
+    dst: Mapped[str] = mapped_column(ForeignKey("canonical.id"))
+    cause: Mapped[str] = mapped_column(String(16))
+    actor: Mapped[str] = mapped_column(String(128), default="")
+    decision_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    review_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    origin_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    origin_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    feed_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    src_view: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    src_explain: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    late_chains: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reverted_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    __table_args__ = (
+        Index("uq_merge_record_live", "src", unique=True, sqlite_where=text("reverted_at IS NULL"),
+              postgresql_where=text("reverted_at IS NULL")),
+        Index("ix_merge_record_dst", "dst", "created_at"),
+    )
+
+
+class MergeRecordItem(Base):
+    """One snapshot item of a merge (§11.10.1 table): what moved (`chain`, `xwalk`, `lock`, `art`, ...) or what was
+    deleted (`*_dropped`, with the full row in `data`). `data_hash` detects rows edited on `dst` after the merge."""
+
+    __tablename__ = "merge_record_item"
+
+    merge_id: Mapped[str] = mapped_column(ForeignKey("merge_record.id", ondelete="CASCADE"), primary_key=True)
+    n: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(24))
+    ref: Mapped[str] = mapped_column(String(900))
+    data: Mapped[Any] = mapped_column(JSON, nullable=True)
+    data_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (Index("ix_merge_record_item_kind", "kind", "merge_id"),)
 
 
 class ChangeLog(Base):
@@ -1187,3 +1366,27 @@ class GroupIdpConsent(Base):
     group_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     rp_node: Mapped[str] = mapped_column(String(16), primary_key=True)
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+@event.listens_for(Session, "before_flush")
+def _sync_review_candidates(session: Session, _ctx: Any, _instances: Any) -> None:
+    """Keep `review_candidate` in step with `review_item.candidates` for every item added or changed in this flush."""
+    changed = [obj for obj in session.new if isinstance(obj, ReviewItem)]
+    changed += [obj for obj in session.dirty if isinstance(obj, ReviewItem)
+                and attributes.get_history(obj, "candidates").has_changes()]
+    if not changed:
+        return
+    with session.no_autoflush:
+        for item in changed:
+            if item.id is None:
+                item.id = ulid()
+            want = candidate_ids(item.candidates)
+            have: dict[str, ReviewCandidate] = {}
+            if item not in session.new:
+                have = {r.canonical_id: r for r in session.scalars(
+                    select(ReviewCandidate).where(ReviewCandidate.review_id == item.id))}
+            for cid, row in have.items():
+                if cid not in want:
+                    session.delete(row)
+            for cid in sorted(want - set(have)):
+                session.add(ReviewCandidate(review_id=item.id, canonical_id=cid))

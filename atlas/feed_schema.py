@@ -35,6 +35,13 @@ This release designs and registers it (`PRICE_CHANNEL`) but does not emit it: `C
 capability is not advertised, the endpoint answers 404 and `PROTOCOL` stays 1.4. The feed kind `price` is
 reserved, so a follower of this release parks a `price` entry that ever appears in the main feed
 (`unsupported_kind`), and this node refuses to sign one at any emit protocol.
+
+Protocols 1.6-1.8 are provisional (CONTRACT-C11 §1.4, H36): 1.6 adds the kinds `unmerge` and `distinct` and lock
+body version 2 (`_requires` `field-clear-v1` for an explicit clear, `merge-guard-v1` for the `_no_merge` guard); 1.7
+achievements body v2 (`ach-v2`); 1.8 artwork body v2 (`art-v2`, artwork kind `trailer`). This release (A17) records
+all of them in the permanent `*_SINCE` maps and reserves them: a follower of this release parks them, and
+`check_emit` refuses them at every emit protocol. In particular a `lock` body naming `_no_merge` is never signed
+as a version 1 body (it would park every pre-C11 follower).
 """
 
 from __future__ import annotations
@@ -70,7 +77,26 @@ VALUE_FEATURE: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "
 #: `_requires` tokens reserved by later protocol minors, with the protocol that ships them. A node
 #: never emits one before its `emit_protocol` reaches that protocol (H13); this release cannot apply them.
 RESERVED_TOKENS: dict[str, str] = {"tier-platinum": "1.2", "dates-v1": "1.3", "relation-v1": "1.4",
-                                   "price-channel-v1": "1.5"}
+                                   "price-channel-v1": "1.5", "field-clear-v1": "1.6", "merge-guard-v1": "1.6",
+                                   "ach-v2": "1.7", "art-v2": "1.8"}
+
+# Permanent maps (CONTRACT-C11 §1.4 rule 1): the protocol that introduced each gated construct. `check_emit`
+# consults them for the construct's whole life, so it keeps refusing it below that protocol after the construct
+# ships (an entry leaves RESERVED_* when its applying release merges, never these maps).
+#: Feed kinds added after 1.0.
+KIND_SINCE: dict[str, str] = {"relation": "1.4", "price": "1.5", "unmerge": "1.6", "distinct": "1.6"}
+#: `_requires` tokens.
+TOKEN_SINCE: dict[str, str] = {"tier-platinum": "1.2", "dates-v1": "1.3", "relation-v1": "1.4",
+                               "price-channel-v1": "1.5", "field-clear-v1": "1.6", "merge-guard-v1": "1.6",
+                               "ach-v2": "1.7", "art-v2": "1.8"}
+#: Closed-vocabulary values added after 1.0, as (vocabulary, value).
+VALUE_SINCE: dict[tuple[str, str], str] = {("achievement_tier", "platinum"): "1.2", ("lock_field", "_no_merge"): "1.6",
+                                           ("artwork_kind", "trailer"): "1.8"}
+#: Body versions above 1, as (kind, version).
+BODY_SINCE: dict[tuple[str, int], str] = {("lock", 2): "1.6", ("unlock", 2): "1.6", ("achievements", 2): "1.7",
+                                          ("artwork", 2): "1.8"}
+#: The lock "field" of the C11 merge guard. Only ever a lock body version 2 (`merge-guard-v1`).
+NO_MERGE_FIELD = "_no_merge"
 
 _PROTOCOL = re.compile(r"(\d{1,4})\.(\d{1,4})\Z")
 ENVELOPE = ("_v", "_requires")
@@ -187,7 +213,9 @@ FEED_KINDS: dict[str, KindSpec] = {spec.name: spec for spec in (
 #: Kinds reserved by later protocols. A follower of this release parks them; this node never emits them.
 #: (`relation` was reserved for 1.4 and shipped in A15.) `price` is reserved so that a price that reaches the main
 #: feed by mistake parks instead of being dropped: prices belong to their own channel (C8.3, `PRICE_CHANNEL`).
-RESERVED_KINDS: dict[str, str] = {"price": "1.5"}
+#: `unmerge` and `distinct` (C11 §11.12, protocol 1.6) are reserved by A17: merge records, unmerge and rejections
+#: are local in this release; the federated kinds ship with C11-5.
+RESERVED_KINDS: dict[str, str] = {"price": "1.5", "unmerge": "1.6", "distinct": "1.6"}
 
 
 # ---- the price channel (C8.3, protocol 1.5; designed, emission disabled) --------------------------------
@@ -493,18 +521,34 @@ def check_emit(kind: str, body: dict[str, Any], current: str) -> dict[str, Any]:
     spec = FEED_KINDS.get(kind)
     if spec is None:
         raise ValueError(f"refusing to emit unregistered feed kind {kind!r}; add it to atlas/feed_schema.py")
-    if spec.since and parse_protocol(spec.since) > have:
-        raise EmitGateError(f"feed kind {kind!r}", spec.since, current)
+    since = KIND_SINCE.get(kind, spec.since)
+    if since and parse_protocol(since) > have:
+        raise EmitGateError(f"feed kind {kind!r}", since, current)
+    version = body.get("_v", 1)
+    if type(version) is not int or version > spec.emit:
+        # A body version this release does not write (lock v2, achievements v2, ...): never signed by it.
+        needed = BODY_SINCE.get((kind, version), PROTOCOL) if type(version) is int else PROTOCOL
+        raise EmitGateError(f"{kind} body version {str(version)[:8]}", needed, current)
+    if kind in ("lock", "unlock") and body.get("field") == NO_MERGE_FIELD:
+        # C11 §11.12: the merge guard is a lock v2 construct. A v1 body naming it would park every follower
+        # before C11 on an unknown `lock_field` value, so it is refused at every protocol.
+        raise EmitGateError("the merge guard (_no_merge) as a version 1 lock", VALUE_SINCE[("lock_field", NO_MERGE_FIELD)],
+                            current)
+    known = known_tokens()
     for token in body.get("_requires", []) or []:
-        needed = RESERVED_TOKENS.get(token)
+        needed = TOKEN_SINCE.get(token) or RESERVED_TOKENS.get(token)
         if needed and parse_protocol(needed) > have:
+            raise EmitGateError(f"the {token!r} feature", needed, current)
+        if needed and token not in known:  # reserved and not applied by this release: never signed by it
             raise EmitGateError(f"the {token!r} feature", needed, current)
     needed_tokens: list[str] = []
     for path, name in spec.values.items():
         parent, _, leaf = path.rpartition(".")
         for _where, obj in _members(body, parent) if parent else [("", body)]:
             value = obj.get(leaf)
-            needed = vocab.VALUE_PROTOCOL.get((name, value)) if isinstance(value, str) else None
+            if not isinstance(value, str):
+                continue
+            needed = vocab.VALUE_PROTOCOL.get((name, value)) or VALUE_SINCE.get((name, value))
             if needed is None:
                 continue
             if parse_protocol(needed) > have:
