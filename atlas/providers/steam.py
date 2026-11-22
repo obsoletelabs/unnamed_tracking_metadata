@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .base import ProviderResult, get_json, parse_date, strip_html
+from .base import ProviderResult, get_json, parse_release, release_ext, strip_html
 
 
 class Steam:
@@ -26,9 +26,11 @@ class Steam:
         if d.get("type") not in (None, "game", "dlc", "demo"):
             return None
         rel = d.get("release_date") or {}
+        # "19 Apr, 2011", "Apr 2011" or "2011" (C5.2 keeps the precision); an unreleased game's text is a plan
+        # ("Coming soon", "Q3 2025") and is left unknown, as before.
+        day, release = release_ext(None if rel.get("coming_soon") else parse_release(rel.get("date")))
         return ProviderResult(
-            external_id=str(external_id), title=d["name"], platform="pc",
-            release_date=None if rel.get("coming_soon") else parse_date(rel.get("date")),
+            external_id=str(external_id), title=d["name"], platform="pc", release_date=day, release=release,
             facts={
                 "description": strip_html(d.get("short_description")),
                 "developer": (d.get("developers") or [None])[0],

@@ -12,6 +12,7 @@ from sqlalchemy import select
 from .. import accounts, social
 from ..models import Canonical, Comment, Follow, ListItem, Notification, Proposal, Report, User, UserList
 from ..service import AtlasError
+from . import release_year
 from .deps import (
     SESSION_COOKIE,
     client_ip,
@@ -153,7 +154,7 @@ def view_list(lid: str, p: Annotated[Ctx, Depends(page)]):
         if g is not None and g.merged_into:
             g = p.session.get(Canonical, g.merged_into)
         items.append({"cid": g.id if g else it.canonical_id, "title": (g.view.get("title") if g and g.view else "?"),
-                      "year": ((g.view.get("release_date") or "")[:4] if g and g.view else ""), "note": it.note})
+                      "year": (release_year(g.view) if g and g.view else ""), "note": it.note})
     return render(p, "list.html", row=row, owner=owner, items=items, mine=bool(p.user and p.user.id == row.user_id))
 
 

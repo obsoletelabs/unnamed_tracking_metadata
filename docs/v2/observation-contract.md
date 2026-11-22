@@ -12,6 +12,38 @@ Reference: `unnamed_tracking_app` `src/backend/src/features/game_ingestion/contr
 
 The same media type is available on `POST /api/v2/resolve` items. Typed resolution filters both provider-ID crosswalks and title/year candidates. If an identity already belongs only to another media type, Atlas reports a conflict and does not fall back to a title match.
 
+## Release dates (`ext.release`, protocol 1.3)
+
+`release_date` keeps its meaning: a full day (`YYYY-MM-DD`) or nothing. A source that knows only a year or
+a month, or dates per platform and region, sends them in the optional `ext.release` member instead:
+
+```json
+{"external_id": "620", "title": "Portal 2", "release_date": "2011-04-19",
+ "ext": {"release": {
+   "first": {"date": "2011-04-19", "precision": "day"},
+   "entries": [
+     {"date": "2011-04-19", "precision": "day", "platform": "pc", "region": "ww", "category": "full"},
+     {"date": "2011-06", "precision": "month", "platform": "ps3", "region": "eu", "category": "full"},
+     {"date": "2010", "precision": "year", "platform": "pc", "region": "ww", "category": "early_access"}]}}}
+```
+
+- A date is `YYYY`, `YYYY-MM` or `YYYY-MM-DD` with `precision` `year`, `month` or `day` matching its shape,
+  a year between 1950 and 2100, and a real calendar day (`2024-02-29` yes, `2023-02-29` no). Nothing is
+  ever padded: `"2011"` is never `2011-01-01`. `quarter` is reserved and refused.
+- `first` is the source's first release. When `release_date` is also sent, `first` must be the same day.
+- `entries`: at most **5**, each unique on (`platform`, `region`, `edition`, `category`); platform and
+  edition compare case-insensitively. `region` is `ww`, `eu`, `na`, `asia`, `oce`, `latam` or an ISO
+  3166-1 alpha-2 code in lower case; `category` is `full`, `early_access`, `beta`, `rerelease`, `port` or
+  `demo`. An entry's `edition` must equal the observation's `edition` when both are given. A sixth entry
+  is refused (HTTP 422), never silently truncated.
+- Merge (C5.2): the first release is a hierarchical vote (year, then month, then day, each weighted by
+  source trust; a level is decided only with at least half the weight that states it), so a source that
+  says `2011` never outvotes one that says `2011-04-19`. Entries are voted per key; a record keeps the five
+  most trusted. `explain.first_release` and `explain.releases` name the winning observation, the
+  agreeing and disagreeing sources and the vote support; `explain.releases.dropped` counts entries over five.
+- Records expose `first_release`, `release_year` and `releases`; `release_date` is present only when the
+  first release is known to the day. Search filters and sorts by the first release.
+
 ## Atlas extensions (additive, namespaced under `atlas`)
 - Response includes `atlas.canonical_id`, `atlas.confidence` (0-1), `atlas.match` (`crosswalk | exact | fuzzy | ambiguous`), and `atlas.redirected_from` when a canonical was merged.
 - Ambiguous matches return candidates and are never auto-assigned.

@@ -14,9 +14,11 @@ Rules (C7.3, CONTRACTS-v1 section 1):
   says so explicitly. A derived value is never stored and never sent.
 * No boolean is used for a fact that can be unknown.
 
-Some keys are reserved for constructs later protocols ship (`relation_type` 1.4, `date_precision` and
-`release_category` 1.3). They are part of the shared file so all three repositories agree on the words
-before anyone sends them; Atlas does not accept them on any write path yet.
+`date_precision` and `release_category` ship with protocol 1.3 (partial and regional release dates, C5):
+Atlas accepts them in `ext.release` and in `releases` locks (`atlas/dates.py`), and a follower parks an
+entry with a value it does not know. `relation_type` is still reserved (1.4): it is part of the shared file
+so all three repositories agree on the words before anyone sends them; Atlas does not accept it on any
+write path yet.
 """
 
 from __future__ import annotations
@@ -41,7 +43,7 @@ NOT_APPLICABLE = "not_applicable"
 RELATION_TYPES: tuple[str, ...] = (
     "version_of", "remake_of", "remaster_of", "port_of", "dlc_of", "expansion_of", "standalone_expansion_of",
     "mod_of", "modpack_of", "total_conversion_of", "series_member", "collection_member")
-#: C5, reserved for partial release dates (protocol 1.3).
+#: C5, partial and regional release dates (protocol 1.3; validated in `atlas/dates.py`).
 DATE_PRECISIONS: tuple[str, ...] = ("year", "month", "day")
 RELEASE_CATEGORIES: tuple[str, ...] = ("full", "early_access", "beta", "rerelease", "port", "demo")
 

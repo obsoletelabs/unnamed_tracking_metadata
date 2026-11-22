@@ -11,10 +11,25 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import case, func, select
 
-from .. import accounts, auth, custom, facets, feed, groups, integrations, mail, profile, proposals, service, social, vocab
+from .. import (
+    accounts,
+    auth,
+    custom,
+    dates,
+    facets,
+    feed,
+    groups,
+    integrations,
+    mail,
+    profile,
+    proposals,
+    service,
+    social,
+    vocab,
+)
 from .. import media as images
 from ..api.routes import _guard_upstream, media_response
-from ..merge import SCALAR_FIELDS, UNION_FIELDS
+from ..merge import LOCK_FIELDS, UNION_FIELDS
 from ..models import (
     Artwork,
     ArtworkVote,
@@ -37,7 +52,7 @@ from ..models import (
 from ..models import Page as PageRow
 from ..providers import ProviderError
 from ..service import AtlasError
-from . import CSP, templates
+from . import CSP, release_year, templates
 from .deps import (
     SESSION_COOKIE,
     Page,
@@ -58,7 +73,7 @@ from .deps import (
 )
 
 router = APIRouter()
-LOCKABLE = [*SCALAR_FIELDS, *UNION_FIELDS]
+LOCKABLE = list(LOCK_FIELDS)
 PER_PAGE = 48
 
 
@@ -293,14 +308,28 @@ def home(p: Annotated[Page, Depends(page)]):
 @router.get("/search", response_class=HTMLResponse)
 def search(p: Annotated[Page, Depends(page)], q: Annotated[str, Query(max_length=200)] = "",
            page_no: Annotated[int, Query(alias="page", ge=1, le=1000)] = 1,
-           type: Annotated[str, Query(max_length=32)] = ""):
-    rows = service.search(p.session, q, PER_PAGE + 1, (page_no - 1) * PER_PAGE, media_type=type or None)
+           type: Annotated[str, Query(max_length=32)] = "",
+           released_from: Annotated[str, Query(max_length=10)] = "",
+           released_to: Annotated[str, Query(max_length=10)] = "",
+           sort: Annotated[str, Query(max_length=16)] = ""):
+    """Browse and search. `released_from`/`released_to` take a year, a month or a day (C5.2); `sort=release`
+    orders by first release with year-only dates at the start of their year."""
+    released_from, released_to = released_from.strip(), released_to.strip()
+    error = None
+    try:
+        rows = service.search(p.session, q, PER_PAGE + 1, (page_no - 1) * PER_PAGE, media_type=type or None,
+                              released_from=released_from, released_to=released_to, sort=sort or "relevance")
+    except AtlasError as exc:
+        rows, error = [], str(exc)
     more = len(rows) > PER_PAGE
     rows = rows[:PER_PAGE]
     mtypes = custom.types(p.session, enabled_only=True)
     type_label = next((item.label for item in mtypes if item.key == type), None)
-    return render(p, "search.html", q=q, results=rows, more=more, page=page_no, art=primary_art(p, [g.id for g in rows]),
-                  mtypes=mtypes, mtype=type, mtype_label=type_label)
+    filters = {k: v for k, v in (("released_from", released_from), ("released_to", released_to), ("sort", sort)) if v}
+    keep = urlencode({**({"q": q} if q else {}), **({"type": type} if type else {}), **filters})
+    return render(p, "search.html", status=400 if error else 200, q=q, results=rows, more=more, page=page_no,
+                  art=primary_art(p, [g.id for g in rows]), mtypes=mtypes, mtype=type, mtype_label=type_label,
+                  filters=filters, keep=keep, filter_error=error, sorts=service.SORTS)
 
 
 @router.get("/media/{digest}")
@@ -483,19 +512,77 @@ def _changed(current: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     return diff
 
 
+RELEASE_INPUTS = ("date", "platform", "region", "edition", "category")
+
+
+def _form_view(view: dict[str, Any]) -> dict[str, Any]:
+    """The record as the editor shows it: the first release in the date field, whatever its precision."""
+    out = dict(view)
+    first = view.get("first_release") or {}
+    if first.get("date"):
+        out["release_date"] = first["date"]
+    return out
+
+
+def _release_rows(entries: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    """Exactly `dates.MAX_RELEASES` editor rows: the given entries, then empty rows."""
+    rows = [{k: str(e.get(k) or "") for k in RELEASE_INPUTS} for e in (entries or [])[:dates.MAX_RELEASES]]
+    rows += [{"date": "", "platform": "", "region": "", "edition": "", "category": "full"}
+             for _ in range(dates.MAX_RELEASES - len(rows))]
+    return rows
+
+
+def _releases_from_form(f: dict[str, str]) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    """(rows to show again, entries to propose) from the editor's release rows. A row with nothing but its
+    default category is empty and ignored; any other row is an entry and must be valid (proposals checks).
+    Rows past the limit are never read, so more than five cannot be submitted from this form."""
+    rows, entries = [], []
+    for i in range(dates.MAX_RELEASES):
+        row = {k: (f.get(f"rel_{k}.{i}") or "").strip() for k in RELEASE_INPUTS}
+        row["category"] = row["category"] or "full"
+        rows.append(row)
+        if not any(row[k] for k in ("date", "platform", "region", "edition")):
+            continue
+        entry: dict[str, Any] = {"date": row["date"], "precision": dates.precision_of(row["date"]) or "day",
+                                 "category": row["category"]}
+        entry.update({k: row[k] for k in ("platform", "region", "edition") if row[k]})
+        entries.append(entry)
+    return rows, entries
+
+
+def _release_change(view: dict[str, Any], entries: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """The release list to propose, or None when it is empty or equal to the record's (C5.2: an empty list
+    never clears). An invalid list is passed on as entered so the proposal reports the exact error."""
+    if not entries:
+        return None
+    try:
+        cleaned = dates.clean_entries(entries)
+    except dates.DateError:
+        return entries
+    same = sorted(map(_entry_value, cleaned)) == sorted(map(_entry_value, view.get("releases") or []))
+    return None if same else cleaned
+
+
+def _entry_value(e: dict[str, Any]) -> tuple[str, ...]:
+    return (*dates.entry_key(e), e.get("date") or "")
+
+
 def _edit_ctx(p: Page, mtype: str, **extra: Any) -> dict[str, Any]:
     media_type = p.session.get(MediaType, mtype)
+    extra.setdefault("rel_rows", _release_rows(None))
     return {"lbl": labels_for(p, mtype), "mtype": mtype,
             "mtype_label": media_type.label if media_type else mtype.replace("_", " ").title(),
-            "auto": proposals.can_auto_apply(p.st.ctx, p.me), **extra}
+            "auto": proposals.can_auto_apply(p.st.ctx, p.me), "dates_gated": service.dates_gated(p.st.ctx),
+            **extra}
 
 
 @router.get("/game/{cid}/edit", response_class=HTMLResponse)
 def edit_form(cid: str, p: Annotated[Page, Depends(user_page)]):
     g, _ = live_game(p, cid)
     cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False)
-    return render(p, "edit.html", new=False, v=g.view, action=f"/game/{g.id}/edit", cancel=f"/game/{g.id}",
-                  error=None, cfields=custom_inputs(p, g.media_type, cur), **_edit_ctx(p, g.media_type))
+    return render(p, "edit.html", new=False, v=_form_view(g.view), action=f"/game/{g.id}/edit", cancel=f"/game/{g.id}",
+                  error=None, cfields=custom_inputs(p, g.media_type, cur),
+                  **_edit_ctx(p, g.media_type, rel_rows=_release_rows(g.view.get("releases"))))
 
 
 @router.post("/game/{cid}/edit")
@@ -506,7 +593,11 @@ def edit_submit(cid: str, p: Annotated[Page, Depends(user_form)], f: Annotated[d
                        f.get("platforms", ""), f.get("tags", ""), f.get("features", ""))
     new.update(_extra_values(f))
     cur = custom.merged(p.session, p.st.ctx, g.id, public_only=False)
-    payload = _changed(g.view, new)
+    payload = _changed(_form_view(g.view), new)
+    rel_rows, entries = _releases_from_form(f)
+    releases = _release_change(g.view, entries)
+    if releases is not None:
+        payload["releases"] = releases
     extra = custom_from_form(p, g.media_type, f, cur)
     if extra:
         payload["custom"] = extra
@@ -517,11 +608,11 @@ def edit_submit(cid: str, p: Annotated[Page, Depends(user_form)], f: Annotated[d
         pr = proposals.create(p.session, p.st.ctx, p.me, "edit", g.id, payload, note)
     except AtlasError as exc:
         p.session.rollback()
-        shown = {**g.view, **{k: v for k, v in new.items() if v}}
+        shown = {**_form_view(g.view), **{k: v for k, v in new.items() if v}}
         return render(p, "edit.html", status=400, new=False, v=shown, action=f"/game/{g.id}/edit",
                       cancel=f"/game/{g.id}", error=str(exc), note=note,
                       cfields=custom_inputs(p, g.media_type, {**cur, **{k: v for k, v in extra.items()}}),
-                      **_edit_ctx(p, g.media_type))
+                      **_edit_ctx(p, g.media_type, rel_rows=rel_rows))
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
@@ -543,6 +634,9 @@ def new_submit(p: Annotated[Page, Depends(user_form)], f: Annotated[dict[str, st
                        f.get("platforms", ""), f.get("tags", ""), f.get("features", ""))
     new.update(_extra_values(f))
     payload: dict[str, Any] = {k: v for k, v in new.items() if v not in ("", [])}
+    rel_rows, entries = _releases_from_form(f)
+    if entries:
+        payload["releases"] = entries
     payload["media_type"] = mtype
     ids = {}
     for line in lines(f.get("provider_ids", "")):
@@ -561,7 +655,7 @@ def new_submit(p: Annotated[Page, Depends(user_form)], f: Annotated[dict[str, st
         return render(p, "edit.html", status=400, new=True, v=new, action="/new", cancel="/", error=str(exc),
                       note=note, ids_text=f.get("provider_ids", ""),
                       mtypes=custom.types(p.session, enabled_only=True),
-                      cfields=custom_inputs(p, mtype, extra), **_edit_ctx(p, mtype))
+                      cfields=custom_inputs(p, mtype, extra), **_edit_ctx(p, mtype, rel_rows=rel_rows))
     if pr.auto_applied and pr.canonical_id:
         return go(f"/game/{pr.canonical_id}", "applied")
     return go("/me", "proposed")
@@ -931,7 +1025,7 @@ def review_revert(pid: str, p: Annotated[Page, Depends(review_form)], note: Anno
 def _brief(p: Page, cid: str) -> dict[str, Any]:
     row = p.session.get(Canonical, cid)
     v = row.view if row else {}
-    return {"id": cid, "title": v.get("title", cid), "year": (v.get("release_date") or "")[:4],
+    return {"id": cid, "title": v.get("title", cid), "year": release_year(v),
             "developer": v.get("developer", ""), "sources": ", ".join(v.get("sources", []))}
 
 
@@ -984,6 +1078,8 @@ def game_merge(cid: str, p: Annotated[Page, Depends(review_form)], into: Annotat
 def game_lock(cid: str, p: Annotated[Page, Depends(review_form)], field: Annotated[str, Form()],
               value: Annotated[str, Form(max_length=20000)]):
     val: Any = lines(value) if field in UNION_FIELDS else value.strip()
+    if field == "releases":  # one release per line: date | platform | region | edition | category
+        val = [_release_line(line) for line in lines(value)]
     try:
         local = p.st.ctx.settings.role != "authority"
         if not local:
@@ -1002,8 +1098,17 @@ def game_unlock(cid: str, p: Annotated[Page, Depends(review_form)], field: Annot
     try:
         service.clear_lock(p.session, p.st.ctx, cid, field)
     except AtlasError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        raise HTTPException(409 if exc.code == "emit_protocol" else 404, str(exc)) from exc
     return go(f"/game/{cid}", "unlocked")
+
+
+def _release_line(line: str) -> dict[str, Any]:
+    """`2011-04 | PS3 | eu | | full` as a release entry (validated by `service.set_lock`)."""
+    parts = [x.strip() for x in line.split("|")] + [""] * 5
+    entry: dict[str, Any] = {"date": parts[0], "precision": dates.precision_of(parts[0]) or "day",
+                             "category": parts[4] or "full"}
+    entry.update({k: v for k, v in zip(("platform", "region", "edition"), parts[1:4], strict=True) if v})
+    return entry
 
 
 @router.post("/observation/{oid}/detach")

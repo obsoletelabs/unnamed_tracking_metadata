@@ -89,4 +89,8 @@ Reviewers handle proposals, duplicates and reported comments ([Reviewing](review
 
 * Back up the database **and** the media volume ([Deployment](deployment.md#backups)).
 * After upgrades, check **Admin → Overview** shows the feed head and no peer errors.
+* After upgrading to the release with partial and regional release dates (migration 0031), run
+  `atlas dates rebuild` once to re-derive every record with the new merge. It works in batches
+  (`--batch`, default 500), can stop after `--limit` records, resumes where it stopped, and starts over
+  with `--restart`. Records whose result does not change keep their version.
 * Review the activity log occasionally; it is your audit trail.

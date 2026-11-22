@@ -98,13 +98,14 @@ You can also configure a single upstream with environment variables (`ATLAS_UPST
 ## Compatibility and upgrades
 
 Nodes of different releases can follow each other. Each release speaks a federation **protocol**
-(`MAJOR.MINOR`); this release speaks **1.2**. Releases before protocol negotiation did not
+(`MAJOR.MINOR`); this release speaks **1.3**. Releases before protocol negotiation did not
 advertise one and count as **1.0**.
 
-| Protocol | Adds | A 1.0 follower | A 1.1 follower |
+| Protocol | Adds | A 1.0 follower | A 1.1 or 1.2 follower |
 | --- | --- | --- | --- |
 | 1.1 | negotiation, parking, named heads, `items[].key` on achievements (reserved-optional) | applies what it knows; drops what it does not | — |
-| **1.2** | the achievement tier `platinum` (an entry with it also lists the `_requires` token `tier-platinum`) | **drops the whole achievement list** of that game | **parks** it (`unsupported_capability`) and applies it after upgrading |
+| 1.2 | the achievement tier `platinum` (an entry with it also lists the `_requires` token `tier-platinum`) | **drops the whole achievement list** of that game | a 1.1 follower **parks** it (`unsupported_capability`) and applies it after upgrading |
+| **1.3** | partial and regional release dates: `ext.release` on observations, a `release_date` lock that is a year or a month, and the `releases` lock field (each signed with the `_requires` token `dates-v1`, also advertised in `capabilities`) | **drops the observation or lock** | **parks** it (`unsupported_capability`) and applies it after upgrading; the record keeps its previous dates meanwhile, never a stripped or day-only copy |
 
 ### What a follower does with entries it does not understand
 
@@ -176,6 +177,27 @@ proposals and bulk imports publish platinum achievements; until then those write
 HTTP 409 (`"code": "emit_protocol"` in the API) and nothing is stored or signed. Mirrors and local
 nodes sign nothing, so they accept platinum whatever their own setting, and a mirror applies it from
 an upstream that emits 1.2.
+
+Raising it to **1.3** publishes partial and regional release dates. Below 1.3 an authority still stores
+them from providers, the API and the editor, and shows them locally, but signs observations without
+`ext.release` (followers see the day-only `release_date`, as before), and refuses a `release_date` lock
+that is a year or a month, a `releases` lock and removing a `releases` lock with HTTP 409
+(`"code": "emit_protocol"`), storing nothing. A day lock is unaffected. After raising it, run
+`atlas dates rebuild` on followers that upgraded with existing data, or simply let new entries arrive:
+migration 0031 already derived the first release from every record's existing date.
+
+Raising the emit protocol does **not** re-publish what was signed before. An observation stored while
+the authority emitted below 1.3 was signed without its `ext.release`, and that signed entry stays as it
+is: followers keep only its day-only `release_date`, so their first release can differ from the
+authority's until the same source sends the record again (a new import or sync signs a new observation,
+now with `ext.release`) or a curator edits or locks the date. `atlas dates rebuild` re-derives views on
+one node only and signs nothing. Raise the emit protocol before importing partial dates you want followers
+to have.
+
+A `release_date` lock written by a release before 1.3 could hold any text ("TBA"). A follower of this
+release applies such a signed lock exactly as the authority stored it and shows it in `release_date` as
+before; only new locks must be a date. A day keeps any year (a 1937 film keeps its date); a year or a month
+must be between 1950 and 2100.
 
 ### Upgrading a network
 

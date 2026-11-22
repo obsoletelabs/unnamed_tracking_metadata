@@ -1,8 +1,19 @@
 {# Shared edit/new form fields. `v` holds current values; `new` adds the title/provider-id inputs. #}
 <label for="title">Title{% if not new %} <span class="hint">(leave unchanged if correct)</span>{% endif %}</label>
 <input id="title" type="text" name="title" value="{{ v.get('title', '') }}" maxlength="500" {% if new %}required{% endif %}>
-<label for="release_date">{{ lbl.release_date }} <span class="hint">YYYY-MM-DD</span></label>
-<input id="release_date" type="text" name="release_date" value="{{ v.get('release_date', '') }}" pattern="\d{4}-\d{2}-\d{2}" maxlength="10" placeholder="2020-09-17">
+<label for="release_date">{{ lbl.release_date }} <span class="hint">first release: YYYY, YYYY-MM or YYYY-MM-DD; enter only what is known</span></label>
+<input id="release_date" type="text" name="release_date" value="{{ v.get('release_date', '') }}" pattern="\d{4}(-\d{2}(-\d{2})?)?" maxlength="10" placeholder="2020-09-17, 2020-09 or 2020" aria-describedby="release-help">
+<fieldset class="releases-edit"><legend>Release dates <span class="hint">up to {{ max_releases }}, one per platform, region, edition and type</span></legend>
+<p id="release-help" class="small muted">A year (2027) or a month (2027-06) is kept as it is and never shown as a day. Leave a row empty to skip it.{% if dates_gated %} This node keeps partial and regional dates but does not publish them to its followers while its federation emit protocol is below 1.3, and dates saved before it is raised are not published later: they reach followers only when a source or an edit sends them again.{% endif %}</p>
+<datalist id="release-regions">{% for r in region_groups %}<option value="{{ r }}">{{ region_name(r) }}</option>{% endfor %}<option value="us">United States</option><option value="gb">United Kingdom</option><option value="jp">Japan</option><option value="au">Australia</option><option value="de">Germany</option><option value="fr">France</option></datalist>
+{% for r in rel_rows %}<div class="release-row" data-release-row="{{ loop.index0 }}">
+<div><label for="rel_date.{{ loop.index0 }}">Date</label><input id="rel_date.{{ loop.index0 }}" type="text" name="rel_date.{{ loop.index0 }}" value="{{ r.date }}" pattern="\d{4}(-\d{2}(-\d{2})?)?" maxlength="10" placeholder="YYYY[-MM[-DD]]"></div>
+<div><label for="rel_platform.{{ loop.index0 }}">Platform</label><input id="rel_platform.{{ loop.index0 }}" type="text" name="rel_platform.{{ loop.index0 }}" value="{{ r.platform }}" maxlength="50" placeholder="pc, ps5…"></div>
+<div><label for="rel_region.{{ loop.index0 }}">Region</label><input id="rel_region.{{ loop.index0 }}" type="text" name="rel_region.{{ loop.index0 }}" value="{{ r.region }}" maxlength="5" list="release-regions" pattern="ww|eu|na|asia|oce|latam|[a-z]{2}" placeholder="ww, eu, jp…"></div>
+<div><label for="rel_edition.{{ loop.index0 }}">Edition</label><input id="rel_edition.{{ loop.index0 }}" type="text" name="rel_edition.{{ loop.index0 }}" value="{{ r.edition }}" maxlength="100"></div>
+<div><label for="rel_category.{{ loop.index0 }}">Type</label><select id="rel_category.{{ loop.index0 }}" name="rel_category.{{ loop.index0 }}">{% for c in release_categories %}<option value="{{ c }}" {{ 'selected' if c == r.category }}>{{ category_name(c) }}</option>{% endfor %}</select></div>
+</div>{% endfor %}
+</fieldset>
 <div class="cols"><div>
 <label for="developer">{{ lbl.developer }}</label><input id="developer" type="text" name="developer" value="{{ v.get('developer', '') }}" maxlength="200">
 </div><div>
