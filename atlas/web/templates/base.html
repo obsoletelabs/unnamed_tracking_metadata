@@ -38,6 +38,8 @@
   </nav>
 </div></header>
 <main><div class="wrap">
+{% if p.rights and p.rights.federated %}<p class="flash group-session" role="status">Signed in through another node of your group.{% if p.rights.banner %} {{ p.rights.banner }}{% endif %}</p>
+{% elif p.rights and p.rights.banner %}<p class="flash group-session" role="status">{{ p.rights.banner }}</p>{% endif %}
   {% if p.flash %}<div class="flash" role="status">{{ p.flash }}</div>{% endif %}
   {% block content %}{% endblock %}
 </div></main>

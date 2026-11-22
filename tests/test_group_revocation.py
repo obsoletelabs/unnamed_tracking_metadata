@@ -378,6 +378,63 @@ def test_old_root_objects_held_while_pending(w):
     assert x.node_id not in w.trust().members()
 
 
+def _received_root_grant(w) -> dict:
+    """A root grant signed before a succession, as it would arrive from another member: issued here, then its row
+    removed so the next `ingest_grant` is its first delivery."""
+    from atlas import ids
+    from atlas.models import GroupGrant
+
+    obj = groups.issue_grant(w.s, w.settings, w.group, w.me, account_uid=ids.ulid(), role="moderator",
+                             nodes=[w.me.node_id], days=7, root=w.root())
+    w.s.delete(w.s.get(GroupGrant, (w.gid, obj["body"]["serial"])))
+    w.s.flush()
+    return obj
+
+
+def _grant_row(w, obj):
+    from atlas.models import GroupGrant
+
+    w.s.expire_all()
+    return w.s.get(GroupGrant, (w.gid, obj["body"]["serial"]))
+
+
+def test_root_grant_held_while_succession_pending_is_released_on_cancel(w):
+    """§1.4 step 7, §1.8: a root grant received during a pending succession is held, then judged again (and kept)
+    once the succession is cancelled; a re-delivery afterwards is 'known' and the grant is in trust and state."""
+    obj = _received_root_grant(w)
+    (rec,) = w.recovery_keys()
+    succ = w.succession(1, Ed25519PrivateKey.generate(), [rec])
+    assert groups.ingest_succession(w.s, w.group, succ, groups.utcnow()) == "pending"
+    assert groups.ingest_grant(w.s, w.group, obj, groups.utcnow()) == "held"
+    assert _grant_row(w, obj).held_reason == "succession_pending"
+    assert obj["body"]["serial"] not in w.trust().grants
+    cancel_body = {"index": 1, "succession_body_hash": succ["body_hash"], "issued_at": gc.stamp()}
+    cancel = gc.make_object("group.succession_cancel", w.gid, "succession_cancel:1", cancel_body,
+                            {"kind": "recovery", "id": w.gid, "key_id": gc.key_id_of(gc.ed_public_b64(rec))}, rec)
+    assert groups.ingest_cancel(w.s, w.group, cancel, groups.utcnow()) == "cancelled"
+    w.s.commit()
+    assert _grant_row(w, obj).held_reason is None  # persisted: released, not lost
+    tr = w.trust()
+    assert obj["body"]["serial"] in tr.grants and tr.grant_valid(obj).ok
+    assert groups.ingest_grant(w.s, w.group, obj, groups.utcnow()) == "known"
+    assert obj["body"]["serial"] in {g["body"]["serial"] for g in groups.export_state(w.s, w.group, w.me)["grants"]}
+
+
+def test_root_grant_held_while_succession_pending_is_judged_by_carry_after_activation(w):
+    obj = _received_root_grant(w)
+    (rec,) = w.recovery_keys()
+    groups.ingest_succession(w.s, w.group, w.succession(1, Ed25519PrivateKey.generate(), [rec]), groups.utcnow())
+    assert groups.ingest_grant(w.s, w.group, obj, groups.utcnow()) == "held"
+    later = groups.utcnow() + timedelta(hours=25)
+    assert groups.activate_successions(w.s, w.group, later) == 1
+    w.s.commit()
+    assert _grant_row(w, obj).held_reason is None  # no longer parked on the succession
+    tr = w.trust(later)
+    assert obj["body"]["serial"] in tr.grants
+    verdict = tr.grant_valid(obj)
+    assert verdict.reason != "succession_pending"  # the carry rule decides now, not the hold
+
+
 def test_conflicting_successions_fatal(w):
     """i2: two valid successions with the same index halt the group."""
     (rec,) = w.recovery_keys()

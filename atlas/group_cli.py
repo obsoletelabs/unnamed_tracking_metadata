@@ -145,10 +145,17 @@ def cmd_invite(args) -> int:
     def run(session, settings, identity):
         group = _group(session)
         scopes = args.scopes.split(",") if args.scopes else list(groups.DEFAULT_SCOPES)
+        roles = [r for r in (args.grant_roles or "").split(",") if r]
+        nodes = [n for n in (args.grant_nodes or "").split(",") if n]
+        if "admin" in roles and not args.confirm_admin:
+            raise groups.GroupError("letting the new node grant 'admin' needs --confirm-admin (§1.3)")
         delegate = None
         if args.delegate_enrol:
             scopes = [*scopes, "group.enrol"]
-            delegate = groups.default_delegate(args.delegate_enrol)
+        if roles:
+            scopes = [*scopes, "grant.issue"]
+        if args.delegate_enrol or roles:
+            delegate = groups.default_delegate(args.delegate_enrol or 0, roles, nodes)
         row, code = group_enrol.create_invite(session, settings, group, identity, scopes, delegate, cli=True)
         print(f"address: {settings.public_url}")
         print(f"code:    {code}")
@@ -217,6 +224,56 @@ def cmd_revoke(args) -> int:
         crl = groups.revoke_node(session, settings, group, identity, args.node, args.reason, root=root,
                                  suspect_since=suspect, cli=True)
         print(f"revoked {args.node} ({args.reason}) in {crl['id']}")
+        return 0
+
+    return _run(run)
+
+
+def _root_or_none(session, settings, group, use_root: bool):
+    return groups.unlock_root(session, settings, group, _ask("Root passphrase: ")) if use_root else None
+
+
+def cmd_grant(args) -> int:
+    """`atlas group grant --account UID --role ROLE --nodes N1,N2|* --days 30` (§8.2). Signs as root when this
+    node holds the root (passphrase asked), otherwise with this node's `grant.issue` delegation."""
+    def run(session, settings, identity):
+        group = _group(session)
+        nodes = ["*"] if args.nodes.strip() == "*" else [n.strip() for n in args.nodes.split(",") if n.strip()]
+        use_root = group.root_state == "holder" and not args.as_node
+        root = _root_or_none(session, settings, group, use_root)
+        obj = groups.issue_grant(session, settings, group, identity, account_uid=args.account, role=args.role,
+                                 nodes=nodes, days=args.days, root=root, account_label=args.label or "",
+                                 note=args.note or "", cli=True)
+        print(f"granted {args.role} to {args.account} on {','.join(nodes)} until {obj['body']['not_after']}: "
+              f"{obj['body']['serial']}")
+        return 0
+
+    return _run(run)
+
+
+def cmd_grants(args) -> int:
+    def run(session, settings, identity):
+        rows = groups.grant_rows(session, _group(session), identity.node_id)
+        if args.json:
+            print(json.dumps(rows, indent=1))
+        else:
+            for r in rows:
+                print(f"{r['serial']}  {r['status']:<10} {r['role']:<11} {r['account_uid']}  "
+                      f"{','.join(r['nodes'])}  until {r['not_after']}")
+            if not rows:
+                print("no grants")
+        return 0
+
+    return _run(run)
+
+
+def cmd_revoke_grant(args) -> int:
+    def run(session, settings, identity):
+        group = _group(session)
+        issued_here = (groups.parse_serial(args.serial) or groups.Serial("", 0, None)).issuer == identity.node_id
+        root = _root_or_none(session, settings, group, not issued_here and group.root_state == "holder")
+        crl = groups.revoke_grant(session, settings, group, identity, args.serial, root=root, cli=True)
+        print(f"revoked grant {args.serial} in {crl['id']}")
         return 0
 
     return _run(run)
@@ -394,7 +451,25 @@ def register(sub) -> None:
     i = ga.add_parser("invite")
     i.add_argument("--scopes", help="comma separated; default profile.sync,group.relay,identity.assert")
     i.add_argument("--delegate-enrol", type=int, metavar="N", help="let the new node enrol up to N members")
+    i.add_argument("--grant-roles", help="let the new node sign grants of these roles: moderator,curator,admin")
+    i.add_argument("--grant-nodes", help="...on these member node ids; 'self' is the new node")
+    i.add_argument("--confirm-admin", action="store_true", help="required to include 'admin' in --grant-roles")
     i.set_defaults(fn=cmd_invite)
+    gr = ga.add_parser("grant", help="sign an administrative delegation grant (C10 §6.1)")
+    gr.add_argument("--account", required=True, help="the group account id (account_uid)")
+    gr.add_argument("--role", required=True, choices=groups.GRANT_ALL_ROLES)
+    gr.add_argument("--nodes", required=True, help="N1,N2 (member node ids) or *")
+    gr.add_argument("--days", type=int, default=groups.GRANT_DAYS)
+    gr.add_argument("--label")
+    gr.add_argument("--note")
+    gr.add_argument("--as-node", action="store_true", help="sign with this node's grant.issue delegation, not root")
+    gr.set_defaults(fn=cmd_grant)
+    gl = ga.add_parser("grants")
+    gl.add_argument("--json", action="store_true")
+    gl.set_defaults(fn=cmd_grants)
+    rg = ga.add_parser("revoke-grant")
+    rg.add_argument("serial")
+    rg.set_defaults(fn=cmd_revoke_grant)
     j = ga.add_parser("join")
     j.add_argument("--url", required=True)
     j.add_argument("--code", required=True)

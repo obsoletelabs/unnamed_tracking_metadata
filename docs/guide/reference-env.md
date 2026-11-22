@@ -40,11 +40,19 @@ Every setting is read from an environment variable named `ATLAS_<NAME>` (or from
 | `ATLAS_SYNC_MAX_PARKED_BACKLOG` | `50000` | Entries a follower keeps downloading, verifying and relaying after the first entry it had to park (it needs a newer release). Above this it pauses downloading and reports `backlog_full`. |
 | `ATLAS_MIN_FOLLOWER_PROTOCOL` | `1.0` | Lowest federation protocol a follower must speak to sync from this node (followers below it refuse). Default: the previous release's protocol. |
 | `ATLAS_EMIT_PROTOCOL` | — | Newest federation protocol this node's own feed may use. Unset = `min_follower_protocol`. Raise it in Admin → Peers once every follower is upgraded. **live** |
-| `ATLAS_GROUP_VIEW_MAX_AGE_HOURS` | `24` | Node groups: how recent (hours, 1-168) a third member's view must be before delegated or privileged group actions. |
+| `ATLAS_GROUP_VIEW_MAX_AGE_HOURS` | `24` | Node groups: how recent (hours, 1-168) a third member's view must be before delegated or privileged group actions. **live** |
 | `ATLAS_GROUP_SYNC_INTERVAL` | `60` | Node groups: seconds between pulls of every member's state (30-86400). |
 | `ATLAS_GROUP_PROFILE_SYNC` | `true` | Node groups: sync the preferences linked users chose over the private group channel. Off sends and applies nothing. **live** |
 | `ATLAS_GROUP_PROFILE_FIELDS` | — | Node groups: space-separated preference names that may be synced; empty means every registry field the user agrees to. **live** |
-| `ATLAS_GROUP_HOLD_TIMEOUT_DAYS` | `7` | Node groups: days a received preference waits for its missing history before it is applied with a review entry (1-90). |
+| `ATLAS_GROUP_HOLD_TIMEOUT_DAYS` | `7` | Node groups: days a received preference waits for its missing history before it is applied with a review entry (1-90). **live** |
+| `ATLAS_GROUP_MAX_DELEGATED_ROLE` | `none` | Node groups: the highest role a group grant may give here (`none`, `moderator`, `curator`, `admin`). The default `none` ignores every grant. **live** |
+| `ATLAS_GROUP_FEDERATED_PRIVILEGE` | `deny` | Node groups: what a session opened through another node may do with local reviewer or administrator rights: `deny` (default), `local_mfa` (after this node's own second factor) or `allow`. **live** |
+| `ATLAS_GROUP_TRUST_REMOTE_MFA` | `false` | Node groups: accept the other node's fresh (under 10 minutes) second factor in place of this node's own at a group sign-in. Off by default. **live** |
+| `ATLAS_GROUP_DELEGATED_REQUIRES_MFA` | `true` | Node groups: rights from a group grant apply only after this node's own second factor in the session. On by default. **live** |
+| `ATLAS_GROUP_AUTO_PROVISION` | `false` | Node groups: create a plain account (role user, no password, no email) at a group sign-in when none is linked here. Needs open registration. Off by default. **live** |
+| `ATLAS_GROUP_SIGNIN` | `true` | Node groups: accept sign-ins confirmed by another member. Turning it off ends every session opened that way on the next request. **live** |
+| `ATLAS_GROUP_SIGNIN_PUBLIC` | `false` | Node groups: show a sign-in button per member on the login page (this reveals group membership to visitors). Off by default. **live** |
+| `ATLAS_GROUP_DENIED_ACCOUNTS` | — | Node groups: space-separated group account ids whose grants are ignored here. **live** |
 | `ATLAS_INHERIT_SCHEMA` | `true` | Adopt the upstream authority's media types and custom fields (yours always take precedence). Editable in Admin → Settings. **live** |
 | `ATLAS_OIDC_PROVIDER_ENABLED` | `false` | Let other nodes and the Tracking App sign users in with accounts on this node (OpenID Connect). Editable in Admin → Settings. **live** |
 

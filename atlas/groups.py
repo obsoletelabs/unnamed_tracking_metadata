@@ -17,7 +17,7 @@ from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-from sqlalchemy import delete, select
+from sqlalchemy import delete, event, select
 from sqlalchemy.orm import Session
 
 from . import group_crypto as gc
@@ -28,6 +28,7 @@ from .models import (
     GroupCert,
     GroupCrl,
     GroupEnrolment,
+    GroupGrant,
     GroupMember,
     GroupNonce,
     GroupRevoked,
@@ -36,6 +37,7 @@ from .models import (
     Notification,
     OwnerGroup,
     User,
+    UserSession,
 )
 from .settings import Settings
 from .signing import ENC_PREFIX, NodeIdentity, canonical_json, key_id_for
@@ -45,7 +47,15 @@ MIN_GROUP_PROTOCOL = "1.0"
 SCOPES = ("profile.sync", "group.relay", "identity.assert", "group.enrol", "grant.issue")
 DEFAULT_SCOPES = ("profile.sync", "group.relay", "identity.assert")  # H16
 DELEGATE_SCOPES = ("group.enrol", "grant.issue")
-GRANT_ROLES = ("admin", "curator", "moderator")
+GRANT_ROLES = ("admin", "curator", "moderator")  # what a delegate may grant (§1.3)
+GRANT_ALL_ROLES = ("group_admin", "admin", "curator", "moderator")  # what a grant may carry (§6.1)
+ROLE_RANK = {"moderator": 1, "curator": 2, "admin": 3, "group_admin": 4}
+GRANT_FIELDS = frozenset({"serial", "issuer", "parent_serial", "authorized_by_grant", "account_uid", "account_label",
+                          "role", "nodes", "issued_at", "not_before", "not_after", "note"})
+GRANT_AUTHORITY = ("issuer", "parent_serial", "authorized_by_grant", "account_uid", "role", "nodes", "not_before",
+                   "not_after")
+GRANT_DAYS = 30  # default grant lifetime (H24); the genesis `grant_max_days` (at most 90) bounds it
+ACCOUNT_UID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}\Z")
 REASONS = {"key_compromise": 5, "removed": 4, "left": 3, "enrolment_aborted": 2, "superseded": 1}
 CASCADING = {"removed", "key_compromise", "left"}
 BANNING = {"removed", "key_compromise"}
@@ -272,9 +282,13 @@ def _delegate_ok(delegate: Any, policy: dict) -> bool:
         return False
 
 
-def default_delegate(max_members: int = 4) -> dict:
-    return {"may_enrol": True, "max_members": max_members, "max_serials": 2 * max_members, "may_grant_roles": [],
-            "may_grant_nodes": [], "may_grant_scopes": list(DEFAULT_SCOPES), "max_depth": 1}
+def default_delegate(max_members: int = 4, grant_roles: list[str] | None = None,
+                     grant_nodes: list[str] | None = None) -> dict:
+    """`max_members` > 0 lets the node enrol; `grant_roles` with `grant_nodes` let it sign grants (§1.3)."""
+    members = max(max_members, 1)
+    return {"may_enrol": max_members > 0, "max_members": members, "max_serials": 2 * members,
+            "may_grant_roles": list(grant_roles or []), "may_grant_nodes": list(grant_nodes or []),
+            "may_grant_scopes": list(DEFAULT_SCOPES), "max_depth": 1}
 
 
 def _member_ok(member: Any) -> bool:
@@ -333,6 +347,7 @@ class Trust:
     banned: dict[str, GroupBannedNode]
     rotations: dict[str, list]
     now: datetime
+    grants: dict[str, dict] = field(default_factory=dict)  # serial -> signed grant envelope (held rows excluded)
     _memo: dict[str, Verdict] = field(default_factory=dict)
     _busy: set[str] = field(default_factory=set)
     _keys: dict[str, tuple[str, dict[str, str]] | None] = field(default_factory=dict)
@@ -603,8 +618,139 @@ class Trust:
         roots = [c for c in self.node_certs(node_id) if c["body"]["issuer"] == "root" and self.genuine(c)]
         if not roots:
             return None
-        return any("group.enrol" in c["body"]["scopes"] and (c["body"]["delegate"] or {}).get("may_enrol")
-                   for c in roots)
+        return any(("group.enrol" in c["body"]["scopes"] and (c["body"]["delegate"] or {}).get("may_enrol"))
+                   or ("grant.issue" in c["body"]["scopes"] and c["body"]["delegate"]) for c in roots)
+
+    # -- grants (§6.1; validity follows §1.4)
+    def may_grant_now(self, node_id: str) -> dict | None:
+        """The node's in-force certificate when it is root-issued and carries `grant.issue` with a delegate."""
+        p = self.in_force(node_id)
+        if p is None or p["body"]["issuer"] != "root" or "grant.issue" not in p["body"]["scopes"]:
+            return None
+        return p if p["body"]["delegate"] else None
+
+    def grant_shape_ok(self, x: dict) -> Verdict:
+        if not gc.well_formed(x, self.group_id) or x["t"] != "group.grant":
+            return Verdict(False, "malformed")
+        b = x["body"]
+        try:
+            if set(b) != GRANT_FIELDS:
+                return Verdict(False, "malformed")
+            serial = parse_serial(b["serial"])
+            if serial is None or x["id"] != f"grant:{b['serial']}":
+                return Verdict(False, "malformed")
+            if serial.issuer == "root":
+                if b["issuer"] != "root" or x["signer"]["kind"] != "root" or b["parent_serial"] is not None \
+                        or b["authorized_by_grant"] is not None:
+                    return Verdict(False, "malformed")
+            elif b["issuer"] != serial.issuer or x["signer"] != {**x["signer"], "kind": "node", "id": serial.issuer}:
+                return Verdict(False, "signer_mismatch")
+            elif parse_serial(b["parent_serial"]) is None:
+                return Verdict(False, "malformed")
+            if b["authorized_by_grant"] is not None and parse_serial(b["authorized_by_grant"]) is None:
+                return Verdict(False, "malformed")
+            if not isinstance(b["account_uid"], str) or not ACCOUNT_UID.match(b["account_uid"]):
+                return Verdict(False, "malformed")
+            if not isinstance(b["account_label"], str) or len(b["account_label"]) > 80 \
+                    or not isinstance(b["note"], str) or len(b["note"]) > 200:
+                return Verdict(False, "malformed")
+            if b["role"] not in GRANT_ALL_ROLES:
+                return Verdict(False, "bad_role")
+            nodes = b["nodes"]
+            if not isinstance(nodes, list) or not 1 <= len(nodes) <= MAX_MEMBERS or len(set(nodes)) != len(nodes):
+                return Verdict(False, "bad_nodes")
+            if nodes != ["*"] and any(not isinstance(n, str) or not NODE_ID.match(n) for n in nodes):
+                return Verdict(False, "bad_nodes")
+            start, end, issued = t(b["not_before"]), t(b["not_after"]), t(b["issued_at"])
+            if end <= start or end - start > timedelta(days=self.policy["grant_max_days"]) + SKEW or issued > end:
+                return Verdict(False, "bad_lifetime")
+        except (KeyError, TypeError, gc.GroupCryptoError):
+            return Verdict(False, "malformed")
+        return Verdict(True)
+
+    def grant_valid(self, x: dict) -> Verdict:
+        key = f"grant:{x.get('body', {}).get('serial', '?')}:{x.get('body_hash')}"
+        if key in self._memo:
+            return self._memo[key]
+        if key in self._busy:
+            return Verdict(False, "cycle")
+        self._busy.add(key)
+        try:
+            verdict = self._grant_valid(x)
+        finally:
+            self._busy.discard(key)
+        self._memo[key] = verdict
+        return verdict
+
+    def _grant_valid(self, x: dict) -> Verdict:
+        shape = self.grant_shape_ok(x)
+        if not shape.ok:
+            return shape
+        b, now = x["body"], self.now
+        serial = parse_serial(b["serial"])
+        assert serial is not None
+        if not self.signature_ok(x):
+            return Verdict(False, "bad_signature")
+        if not (t(b["not_before"]) - SKEW <= now <= t(b["not_after"]) + SKEW) or t(b["issued_at"]) > now + SKEW:
+            return Verdict(False, "expired" if now > t(b["not_after"]) else "not_yet_valid")
+        if x["signer"]["kind"] == "root":
+            carried = self.carried(x, self.root_key_for(x))  # type: ignore[arg-type]
+            if not carried.ok:
+                return carried
+        if b["serial"] in self.revoked:
+            return Verdict(False, "revoked")
+        abg = b["authorized_by_grant"]
+        if abg is not None and abg in self.revoked:
+            return Verdict(False, "authorizer_revoked")  # cascade by authorized_by_grant (§1.6 item 1)
+        if serial.issuer != "root":
+            verdict = self._grant_delegated(x, serial)
+            if not verdict.ok:
+                return verdict
+        if abg is not None:
+            a = self.grants.get(abg)
+            if a is None:
+                return Verdict(False, "no_authorizer")
+            if not self.grant_valid(a).ok:
+                return Verdict(False, "authorizer_invalid")
+            ab = a["body"]
+            if ab["role"] != "group_admin" or (serial.issuer not in ab["nodes"] and ab["nodes"] != ["*"]):
+                return Verdict(False, "authorizer_not_group_admin_here")
+            if t(b["not_after"]) > t(ab["not_after"]) or ROLE_RANK[b["role"]] > ROLE_RANK[ab["role"]]:
+                return Verdict(False, "outlives_authorizer")
+        return Verdict(True)
+
+    def _grant_delegated(self, x: dict, serial: Serial) -> Verdict:
+        b, issuer = x["body"], serial.issuer
+        if any(r.node_id == issuer and r.reason in CASCADING for r in self.revoked.values()):
+            return Verdict(False, "issuer_revoked")
+        parent = self.certs.get(b["parent_serial"] or "")
+        if parent is None or parent["body"]["member"]["node_id"] != issuer:
+            return Verdict(False, "no_parent")
+        rev = self.revoked.get(b["parent_serial"])
+        if rev is not None and rev.reason != "superseded":
+            return Verdict(False, "parent_revoked")
+        p = self.in_force(issuer)
+        if p is None:
+            return Verdict(False, "issuer_not_member")
+        pb = p["body"]
+        if pb["issuer"] != "root":
+            return Verdict(False, "chain_too_deep")
+        if "grant.issue" not in pb["scopes"] or not pb["delegate"]:
+            return Verdict(False, "issuer_cannot_grant")
+        if b["role"] == "group_admin" or b["role"] not in pb["delegate"]["may_grant_roles"]:
+            return Verdict(False, "role_escalation")
+        if "*" in b["nodes"] or not set(b["nodes"]) <= set(pb["delegate"]["may_grant_nodes"]):
+            return Verdict(False, "node_escalation")
+        if t(b["not_after"]) > t(pb["not_after"]):
+            return Verdict(False, "outlives_issuer")
+        if serial.n > pb["delegate"]["max_serials"]:
+            return Verdict(False, "delegate_serials_exhausted")
+        return Verdict(True)
+
+    def grants_for(self, account_uid: str, node_id: str) -> list[dict]:
+        """Valid grants of `account_uid` that cover `node_id` (its id or `*`)."""
+        return [g for g in self.grants.values() if g["body"]["account_uid"] == account_uid
+                and (node_id in g["body"]["nodes"] or g["body"]["nodes"] == ["*"]) and self.grant_valid(g).ok]
 
     def sole_issuer(self, node_id: str, issuer: str) -> bool:
         """True when every genuine certificate of `node_id` was issued by `issuer`: only then may that issuer's
@@ -652,7 +798,34 @@ def trust(session: Session, group: OwnerGroup, now: datetime | None = None, extr
     rotations.update(extra_rotations or {})
     banned = {b.node_id: b for b in session.scalars(select(GroupBannedNode).where(
         GroupBannedNode.group_id == group.group_id))}
-    return Trust(group, certs, _revoked_map(session, group.group_id), banned, rotations, now or utcnow())
+    grants = {g.serial: g.body for g in session.scalars(select(GroupGrant).where(
+        GroupGrant.group_id == group.group_id, GroupGrant.held_reason.is_(None)))}
+    return Trust(group, certs, _revoked_map(session, group.group_id), banned, rotations, now or utcnow(),
+                 grants=grants)
+
+
+_REQUEST_TRUST = "atlas_request_trust"  # Session.info: the read-only Trust built for this request's checks
+
+
+def request_trust(session: Session, group: OwnerGroup, own_node: str) -> Trust:
+    """`trust(..., own_node=own_node)` built once for a request's read-only checks (the federated-session check,
+    the effective-rights computation and its freshness checks). Any flush, commit or rollback of the session drops
+    it, so nothing written later is judged against a stale certificate or grant set."""
+    key = (group.group_id, own_node)
+    cached = session.info.get(_REQUEST_TRUST)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    tr = trust(session, group, own_node=own_node)
+    session.info[_REQUEST_TRUST] = (key, tr)
+    return tr
+
+
+def _drop_request_trust(session: Session, *_args) -> None:
+    session.info.pop(_REQUEST_TRUST, None)
+
+
+for _event in ("after_flush", "after_commit", "after_rollback"):
+    event.listen(Session, _event, _drop_request_trust)
 
 
 # ---- loading, secrets, audit ------------------------------------------------------------------------------------
@@ -754,6 +927,10 @@ def ingest_cert(session: Session, group: OwnerGroup, obj: Any, now: datetime, tr
         return "collision"
     if not tr.signature_ok(obj):
         return "bad_signature"
+    if session.get(GroupGrant, (group.group_id, b["serial"])) is not None:
+        if _audit_once(session, "group_serial_collision", b["serial"], {"received": obj["body_hash"], "kind": "cert"}):
+            notify_admins(session, f"group-collision:{b['serial']}", "A group certificate reuses a grant serial")
+        return "collision"  # one serial space per issuer, certificates and grants together (§1.3)
     if obj["signer"]["kind"] == "node":
         p = tr.may_enrol_now(obj["signer"]["id"])
         if p is None:
@@ -764,6 +941,59 @@ def ingest_cert(session: Session, group: OwnerGroup, obj: Any, now: datetime, tr
     if obj["signer"]["kind"] == "root" and pending_successions(group):
         held = "succession_pending"  # §1.8: a G thief gains nothing during the window
     session.add(_cert_row(group, obj, now, held))
+    session.flush()
+    return "held" if held else "stored"
+
+
+def _grant_row(group: OwnerGroup, obj: dict, now: datetime, held: str | None = None) -> GroupGrant:
+    b = obj["body"]
+    s = parse_serial(b["serial"])
+    assert s is not None
+    return GroupGrant(group_id=group.group_id, serial=b["serial"], issuer=b["issuer"], serial_n=s.n,
+                      parent_serial=b["parent_serial"], authorized_by_grant=b["authorized_by_grant"],
+                      account_uid=b["account_uid"], role=b["role"], nodes=list(b["nodes"]),
+                      not_before=t(b["not_before"]), not_after=t(b["not_after"]), body=obj, body_hash=obj["body_hash"],
+                      received_at=now, held_reason=held)
+
+
+def ingest_grant(session: Session, group: OwnerGroup, obj: Any, now: datetime, tr: Trust | None = None) -> str:
+    """Store a grant whose shape and signature verify and whose signer may grant at all (§6.1), as `ingest_cert`
+    does for certificates: 'stored', 'known', 'held', 'collision' or a rejection reason. Validity (§1.4) is
+    evaluated on every read, at the reader's time."""
+    tr = tr or trust(session, group, now)
+    shape = tr.grant_shape_ok(obj)
+    if not shape.ok:
+        return shape.reason
+    b = obj["body"]
+    existing = session.get(GroupGrant, (group.group_id, b["serial"]))
+    if existing is not None:
+        if existing.body_hash == obj["body_hash"]:
+            return "known"
+        if not tr.signature_ok(obj):
+            return "bad_signature"
+        if _audit_once(session, "group_serial_collision", b["serial"],
+                       {"stored": existing.body_hash, "received": obj["body_hash"], "kind": "grant"}):
+            notify_admins(session, f"group-collision:{b['serial']}", "Two different group grants share one serial")
+        if any(existing.body["body"].get(f) != b.get(f) for f in GRANT_AUTHORITY):
+            existing.held_reason = "collision"  # both rejected (§1.3)
+            return "collision"
+        if obj["body_hash"] < existing.body_hash:
+            existing.body, existing.body_hash = obj, obj["body_hash"]
+        return "collision"
+    if not tr.signature_ok(obj):
+        return "bad_signature"
+    if session.get(GroupCert, (group.group_id, b["serial"])) is not None:
+        if _audit_once(session, "group_serial_collision", b["serial"], {"received": obj["body_hash"], "kind": "grant"}):
+            notify_admins(session, f"group-collision:{b['serial']}", "A group grant reuses a certificate serial")
+        return "collision"  # one serial space per issuer (§1.3): a grant may not reuse a certificate's serial
+    if obj["signer"]["kind"] == "node":
+        p = tr.may_grant_now(obj["signer"]["id"])
+        if p is None:
+            return "issuer_cannot_grant"
+        if parse_serial(b["serial"]).n > p["body"]["delegate"]["max_serials"]:  # type: ignore[union-attr]
+            return "delegate_serials_exhausted"
+    held = "succession_pending" if obj["signer"]["kind"] == "root" and pending_successions(group) else None
+    session.add(_grant_row(group, obj, now, held))
     session.flush()
     return "held" if held else "stored"
 
@@ -796,6 +1026,9 @@ def _entry_scope(tr: Trust, signer: dict, entry: Any) -> str:
     if cert is not None and (cert["body"]["member"]["node_id"] != entry.get("node_id")
                              or cert["body"]["member"]["root_public_key"] != entry.get("root_public_key")):
         return "invalid"
+    grant = tr.grants.get(entry["serial"])
+    if grant is not None and (entry.get("node_id") is not None or entry.get("root_public_key") is not None):
+        return "invalid"  # grant entries carry null node fields (§1.6)
     if signer["kind"] == "root":
         return "ok"
     issuer = signer["id"]
@@ -803,8 +1036,8 @@ def _entry_scope(tr: Trust, signer: dict, entry: Any) -> str:
         delegate = tr.was_delegate(issuer)
         if delegate is False:
             return "invalid"  # an ordinary member may only revoke its own serial, with reason `left`
-        return "deferred" if delegate is None or cert is None else "ok"
-    if entry["reason"] != "left" or entry.get("node_id") != issuer:
+        return "deferred" if delegate is None or (cert is None and grant is None) else "ok"
+    if grant is not None or entry["reason"] != "left" or entry.get("node_id") != issuer:
         return "invalid"
     return "deferred" if cert is None else "ok"  # self-leave, applied once the signer's certificate is known
 
@@ -906,7 +1139,7 @@ def ingest_crl(session: Session, group: OwnerGroup, crl: Any, now: datetime, tr:
         if row.crl_seq >= seq:
             continue
         for entry in row.body["body"]["entries"]:
-            cert = tr.certs.get(entry["serial"])
+            cert = tr.certs.get(entry["serial"]) or tr.grants.get(entry["serial"])
             pruned = cert is not None and t(cert["body"]["not_after"]) < issued - PRUNE_AFTER
             if entry["serial"] not in listed and not pruned:
                 missing.append(entry["serial"])
@@ -993,7 +1226,24 @@ def apply_crls(session: Session, group: OwnerGroup, now: datetime, actor: str | 
     if added:
         session.flush()
         audit(session, actor, "group_crl_applied", group.group_id, {"serials": added[:50]})
+        for serial in added:  # §5.6: a node gone from the group ends every sign-in session it asserted
+            row = revoked[serial]
+            if row.node_id and row.reason in CASCADING:
+                end_federated_sessions(session, group.group_id, row.node_id, f"issuer_{row.reason}", actor)
     return added
+
+
+def end_federated_sessions(session: Session, group_id: str, origin_node: str, reason: str,
+                           actor: str | None = None, user_id: str | None = None) -> int:
+    """Delete the sign-in sessions `origin_node` asserted here (all, or one user's), in the caller's transaction."""
+    q = delete(UserSession).where(UserSession.via_group == group_id, UserSession.origin_node == origin_node)
+    if user_id is not None:
+        q = q.where(UserSession.user_id == user_id)
+    count = session.execute(q.execution_options(synchronize_session=False)).rowcount or 0
+    if count:
+        audit(session, actor, "group_sessions_ended", origin_node,
+              {"reason": reason, "count": count, **({"user_id": user_id} if user_id else {})})
+    return count
 
 
 def ingest_succession(session: Session, group: OwnerGroup, obj: Any, now: datetime) -> str:
@@ -1073,9 +1323,12 @@ def ingest_cancel(session: Session, group: OwnerGroup, obj: Any, now: datetime) 
 
 
 def _release_held(session: Session, group: OwnerGroup) -> None:
-    for row in session.scalars(select(GroupCert).where(GroupCert.group_id == group.group_id,
-                                                       GroupCert.held_reason == "succession_pending")):
-        row.held_reason = None
+    """A cancelled or activated succession releases every object held for it (§1.4 step 7, §1.8): certificates
+    and grants alike are then judged on every read, by the carry rule after an activation."""
+    for model in (GroupCert, GroupGrant):
+        for row in session.scalars(select(model).where(model.group_id == group.group_id,
+                                                       model.held_reason == "succession_pending")):
+            row.held_reason = None
 
 
 def activate_successions(session: Session, group: OwnerGroup, now: datetime) -> int:
@@ -1262,6 +1515,10 @@ def state_hash(session: Session, group: OwnerGroup) -> str:
             "c": [c["body_hash"] for c in group.succession_cancels or []],
             "m": group.root_moved["body_hash"] if group.root_moved else None, "certs": certs, "crls": crls,
             "rot": rotations}
+    grants = sorted((g.serial, g.body_hash) for g in session.scalars(select(GroupGrant).where(
+        GroupGrant.group_id == group.group_id, GroupGrant.held_reason.is_(None))))
+    if grants:  # left out while a group has none, so a grant-free group hashes as it did before A12
+        data["grants"] = grants
     return gc.sha256_hex(canonical_json(data))
 
 
@@ -1313,7 +1570,9 @@ def export_state(session: Session, group: OwnerGroup, identity: NodeIdentity, no
     else:
         rotations.pop(identity.node_id, None)
     views = [v.body for v in session.scalars(select(GroupView).where(GroupView.group_id == group.group_id))]
-    return {"genesis": group.genesis, "succession": list(group.succession or []),
+    grants = [g.body for g in session.scalars(select(GroupGrant).where(
+        GroupGrant.group_id == group.group_id, GroupGrant.held_reason.is_(None)).order_by(GroupGrant.serial))]
+    return {"genesis": group.genesis, "grants": grants, "succession": list(group.succession or []),
             "succession_pending": [p["body"] for p in group.succession_pending or []],
             "succession_cancel": list(group.succession_cancels or []), "root_moved": group.root_moved,
             "certs": certs, "crls": crls, "rotations": rotations, "views": views,
@@ -1376,6 +1635,11 @@ def ingest_state(session: Session, group: OwnerGroup, state: Any, own_node: str,
     take_rotations(count=True)  # nodes first certified by a delegate in this state
     rebuild(session, group, own_node, now, settings)
     tr = trust(session, group, now, own_node=own_node)
+    if not halted:  # grants (§6.1) after every certificate their issuers' authority rests on, before the CRLs
+        grants = [g for g in state.get("grants") or [] if isinstance(g, dict)]
+        for g in sorted(grants, key=lambda g: g.get("signer", {}).get("kind") != "root"):
+            bump("grant:" + ingest_grant(session, group, g, now, tr))
+        tr = trust(session, group, now, own_node=own_node)
     for crl in state.get("crls") or []:
         bump("crl:" + ingest_crl(session, group, crl, now, tr))
     for view in state.get("views") or []:
@@ -1407,14 +1671,15 @@ class Freshness:
 
 
 def freshness(session: Session, group: OwnerGroup, own_node: str, depends_on: str | None, max_age_hours: int,
-              now: datetime | None = None) -> Freshness:
-    """May this node take a privileged action that depends on `depends_on`'s authority now?"""
+              now: datetime | None = None, tr: Trust | None = None) -> Freshness:
+    """May this node take a privileged action that depends on `depends_on`'s authority now? A caller that already
+    built `trust(..., own_node=own_node)` for this request passes it, so the certificate set is loaded once."""
     now = now or utcnow()
     if group.status == "resyncing":
         return Freshness(False, reason="resyncing")
     if group.status == "halted":
         return Freshness(False, reason="halted")
-    tr = trust(session, group, now, own_node=own_node)
+    tr = tr or trust(session, group, now, own_node=own_node)
     live = set(tr.members()) - {own_node, depends_on}
     if not live:
         return Freshness(True, waived=True, reason="freshness cannot be confirmed by a third node")
@@ -1582,14 +1847,19 @@ def unlock_root(session: Session, settings: Settings, group: OwnerGroup, passphr
 def next_root_n(session: Session, group_id: str) -> int:
     ns = [r.serial_n for r in session.scalars(select(GroupCert).where(GroupCert.group_id == group_id,
                                                                       GroupCert.issuer == "root"))]
+    ns += [r.serial_n for r in session.scalars(select(GroupGrant).where(GroupGrant.group_id == group_id,
+                                                                       GroupGrant.issuer == "root"))]
     ns += [s.n for r in session.scalars(select(GroupRevoked).where(GroupRevoked.group_id == group_id))
            if (s := parse_serial(r.serial)) is not None and s.issuer == "root"]
     return max(ns, default=0) + 1
 
 
 def next_node_n(session: Session, group_id: str, node_id: str) -> int:
+    """Certificates and grants of one delegate share its serial space; `max_serials` bounds both (§1.3)."""
     ns = [r.serial_n for r in session.scalars(select(GroupCert).where(GroupCert.group_id == group_id,
                                                                       GroupCert.issuer == node_id))]
+    ns += [r.serial_n for r in session.scalars(select(GroupGrant).where(GroupGrant.group_id == group_id,
+                                                                       GroupGrant.issuer == node_id))]
     return max(ns, default=0) + 1
 
 
@@ -1679,7 +1949,7 @@ def sign_crl(session: Session, group: OwnerGroup, new_entries: list[dict], *, ro
                        else e for e in entries]
     issued = gc.stamp(now)
     # Pruning: entries whose certificate expired more than 30 days before this CRL may be left out.
-    kept = [e for e in entries if not ((c := tr.certs.get(e["serial"])) is not None
+    kept = [e for e in entries if not ((c := tr.certs.get(e["serial"]) or tr.grants.get(e["serial"])) is not None
                                        and t(c["body"]["not_after"]) < now - PRUNE_AFTER)]
     body = {"issuer": issuer, "crl_seq": seq, "issued_at": issued, "entries": kept}
     if root is not None:
@@ -1730,6 +2000,125 @@ def revoke_node(session: Session, settings: Settings, group: OwnerGroup, identit
           {"reason": reason, "serials": [c["body"]["serial"] for c in certs], "crl": crl["id"],
            "suspect_since": gc.stamp(suspect_since) if suspect_since else None}, cli)
     return crl
+
+
+def issue_grant(session: Session, settings: Settings, group: OwnerGroup, identity: NodeIdentity, *, account_uid: str,
+                role: str, nodes: list[str], days: int = GRANT_DAYS, root: Ed25519PrivateKey | None,
+                account_label: str = "", note: str = "", authorized_by_grant: str | None = None,
+                now: datetime | None = None, actor: str | None = None, cli: bool = False) -> dict:
+    """Sign an administrative delegation grant (§6.1) as root (G unlocked) or as this node under its `grant.issue`
+    delegation, store it, check it verifies, and audit `group_grant_issued`.
+
+    `authorized_by_grant` names the group-admin grant of the human using this node's issuer power; the new grant
+    then lives no longer, and reaches no higher, than that grant, and falls with it."""
+    now = now or utcnow()
+    if group.status != "active":
+        raise GroupError(f"the group is {group.status} here; grants cannot be issued now", "conflict")
+    if role not in GRANT_ALL_ROLES:
+        raise GroupError("unknown role")
+    if not isinstance(account_uid, str) or not ACCOUNT_UID.match(account_uid):
+        raise GroupError("the account is not a group account id (a ULID)")
+    nodes = list(dict.fromkeys(nodes))
+    if not nodes or (nodes != ["*"] and any(not NODE_ID.match(n) for n in nodes)):
+        raise GroupError("name the member nodes the grant covers, or * for every member")
+    policy = group.genesis["body"]["policy"]
+    if type(days) is not int or not 1 <= days <= policy["grant_max_days"]:
+        raise GroupError(f"a grant lasts 1 to {policy['grant_max_days']} days")
+    tr = rebuild(session, group, identity.node_id, now)
+    unknown = [n for n in nodes if n != "*" and n not in tr.members()]
+    if unknown:
+        raise GroupError(f"not a current member: {', '.join(gc_fp(n) for n in unknown)}", "not_found")
+    start, end = now, now + timedelta(days=days)
+    if root is not None:
+        if authorized_by_grant is not None:
+            raise GroupError("a root grant rests on the root alone")
+        serial = root_serial(next_root_n(session, group.group_id))
+        signer = {"kind": "root", "id": group.group_id, "key_id": group.root_key_id}
+        issuer, parent, private = "root", None, root
+    else:
+        if role == "group_admin" or nodes == ["*"]:
+            raise GroupError("only the group root may grant group_admin or cover every node (*)", "forbidden")
+        own = tr.may_grant_now(identity.node_id)
+        if own is None:
+            raise GroupError("this node may not grant (no grant.issue delegation)", "forbidden")
+        delegate = own["body"]["delegate"]
+        if role not in delegate["may_grant_roles"]:
+            raise GroupError(f"this node may grant only: {', '.join(delegate['may_grant_roles']) or 'nothing'}",
+                             "forbidden")
+        outside = [n for n in nodes if n not in delegate["may_grant_nodes"]]
+        if outside:
+            raise GroupError(f"this node may not grant for {', '.join(gc_fp(n) for n in outside)}", "forbidden")
+        fresh = freshness(session, group, identity.node_id, None, settings.group_view_max_age_hours, now)
+        if not fresh.ok:
+            raise GroupError(f"a delegated grant needs a fresh view of the group: {fresh.reason}", "conflict")
+        n = next_node_n(session, group.group_id, identity.node_id)
+        if n > delegate["max_serials"]:
+            raise GroupError("this node has used every serial its delegation allows; ask the root to renew it",
+                             "conflict")
+        serial = f"{identity.node_id}/{n}"
+        signer = {"kind": "node", "id": identity.node_id, "key_id": identity.key_id}
+        issuer, parent, private = identity.node_id, own["body"]["serial"], identity.private
+        end = min(end, t(own["body"]["not_after"]))
+        if authorized_by_grant is not None:
+            a = tr.grants.get(authorized_by_grant)
+            if a is None or not tr.grant_valid(a).ok or a["body"]["role"] != "group_admin":
+                raise GroupError("the authorizing group-admin grant is not valid", "forbidden")
+            end = min(end, t(a["body"]["not_after"]))
+    body = {"serial": serial, "issuer": issuer, "parent_serial": parent, "authorized_by_grant": authorized_by_grant,
+            "account_uid": account_uid, "account_label": account_label.strip()[:80], "role": role, "nodes": nodes,
+            "issued_at": gc.stamp(start), "not_before": gc.stamp(start), "not_after": gc.stamp(end),
+            "note": note.strip()[:200]}
+    obj = gc.make_object("group.grant", group.group_id, f"grant:{serial}", body, signer, private)
+    outcome = ingest_grant(session, group, obj, now, tr)
+    if outcome != "stored":
+        raise GroupError(f"the new grant was not stored ({outcome})", "conflict")
+    verdict = trust(session, group, now, own_node=identity.node_id).grant_valid(obj)
+    if not verdict.ok:
+        raise GroupError(f"the new grant does not verify ({verdict.reason})", "conflict")
+    rebuild(session, group, identity.node_id, now)
+    audit(session, actor, "group_grant_issued", serial,
+          {"account_uid": account_uid, "role": role, "nodes": nodes, "issuer": issuer,
+           "authorized_by_grant": authorized_by_grant, "not_after": body["not_after"]}, cli)
+    return obj
+
+
+def revoke_grant(session: Session, settings: Settings, group: OwnerGroup, identity: NodeIdentity, serial: str, *,
+                 root: Ed25519PrivateKey | None, now: datetime | None = None, actor: str | None = None,
+                 cli: bool = False) -> dict:
+    """Revoke one grant (§1.6: root any, a delegate only what it issued). Grants it authorized fall with it."""
+    now = now or utcnow()
+    tr = rebuild(session, group, identity.node_id, now)
+    if serial not in tr.grants:
+        raise GroupError("no such grant", "not_found")
+    if serial in tr.revoked:
+        raise GroupError("that grant is already revoked", "conflict")
+    if root is None and (parse_serial(serial) or Serial("", 0, None)).issuer != identity.node_id:
+        raise GroupError("this node may revoke only the grants it issued; the root revokes any", "forbidden")
+    entry = {"serial": serial, "node_id": None, "root_public_key": None, "revoked_at": gc.stamp(now),
+             "reason": "removed", "suspect_since": None}
+    crl = sign_crl(session, group, [entry], root=root, identity=identity, now=now)
+    tr = rebuild(session, group, identity.node_id, now)
+    fallen = sorted(s for s, g in tr.grants.items() if g["body"]["authorized_by_grant"] == serial)
+    audit(session, actor, "group_grant_revoked", serial,
+          {"crl": crl["id"], "account_uid": tr.grants[serial]["body"]["account_uid"], "cascaded": fallen[:50]}, cli)
+    return crl
+
+
+def grant_rows(session: Session, group: OwnerGroup, own_node: str, now: datetime | None = None) -> list[dict]:
+    """Every stored grant with its status here, for the admin page and `atlas group grants`."""
+    now = now or utcnow()
+    tr = trust(session, group, now, own_node=own_node)
+    out = []
+    for row in session.scalars(select(GroupGrant).where(GroupGrant.group_id == group.group_id)
+                               .order_by(GroupGrant.received_at)):
+        b = row.body["body"]
+        verdict = tr.grant_valid(row.body) if row.held_reason is None else Verdict(False, row.held_reason)
+        out.append({"serial": row.serial, "account_uid": b["account_uid"], "account_label": b["account_label"],
+                    "role": b["role"], "nodes": list(b["nodes"]), "issuer": b["issuer"],
+                    "authorized_by_grant": b["authorized_by_grant"], "not_after": b["not_after"],
+                    "status": "valid" if verdict.ok else verdict.reason,
+                    "here": verdict.ok and (own_node in b["nodes"] or b["nodes"] == ["*"]), "note": b["note"]})
+    return out
 
 
 def renew(session: Session, settings: Settings, group: OwnerGroup, identity: NodeIdentity, nodes: list[str] | None,

@@ -105,7 +105,7 @@ def test_migration_0029_up_seed_down_and_up_again(url):
 
 
 def test_migration_0029_on_an_empty_database(url):
-    db.upgrade(url)
+    db.upgrade(url, "0029")  # pinned: 0030 (A12) is the head now
     engine = create_engine(url)
     assert version(engine) == "0029"
     with engine.connect() as c:

@@ -33,4 +33,18 @@
 <label for="password">Current password{% if not has_password %} (or sign in again with your linked provider){% endif %}</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="200" {{ 'required' if has_password }}>
 <p><button type="submit">Set up two-factor sign-in</button></p></form>
 {% else %}<p class="error" role="alert">Setup is unavailable until the operator configures ATLAS_SECRET_KEY to encrypt authenticator secrets.</p>{% endif %}</section>{% endif %}
+{% if linked or activity %}
+<section class="card" id="federated"><h2>Activity through your node group</h2>
+<p class="small muted">The last 90 days on this node: sign-ins here through another node, confirmations this node gave other nodes for you, links, and sign-outs everywhere.</p>
+{% if activity %}<table class="federated-activity"><thead><tr><th>When</th><th>What</th><th>Node</th></tr></thead><tbody>
+{% for a in activity %}<tr><td class="small">{{ when(a.when) }}</td><td>{% if a.action == 'group_signin' %}Signed in here through another node{% elif a.action == 'group_signin_refused' %}Sign-in through another node refused{% elif a.action == 'group_assertion_issued' %}This node confirmed you to another node ({{ 'sign-in' if a.purpose == 'signin' else 'link' }}){% elif a.action == 'account_linked' %}Linked{% elif a.action == 'account_unlinked' %}Unlinked{% elif a.action == 'group_signout_all' %}Signed out of all nodes{% else %}Sessions from another node ended{% if a.reason %} ({{ a.reason }}){% endif %}{% endif %}</td>
+<td>{% if a.node %}<span class="mono small">{{ a.fp }}</span> {{ a.node_name }}{% endif %}</td></tr>{% endfor %}
+</tbody></table>
+<p class="small muted">Something here that was not you? Unlink that node under <a href="/me/linked-nodes">Linked nodes</a> and sign out everywhere below.</p>
+{% else %}<p class="muted">Nothing yet.</p>{% endif %}
+{% if linked %}<form method="post" action="/me/security/signout-all">{{ csrf(p.csrf) }}
+<p><button class="danger" type="submit" data-confirm="Sign out on this node and on every linked node that allows it?">Sign out of all nodes</button></p>
+<p class="small muted">Ends every session here, and asks the other nodes holding your account to end theirs (each follows your choice on that node).</p></form>{% endif %}
+</section>
+{% endif %}
 {% endblock %}

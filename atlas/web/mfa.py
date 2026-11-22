@@ -13,7 +13,7 @@ from .. import accounts, mfa, secrets_box
 from ..models import UserMfa, UserSession, now
 from ..service import AtlasError
 from .deps import SESSION_COOKIE, Page, client_ip, go, secure_cookies, throttle, user_form, user_page
-from .routes import render
+from .routes import render, when
 
 router = APIRouter()
 
@@ -21,6 +21,9 @@ router = APIRouter()
 def _reauth(p: Page, password: str) -> None:
     throttle(p, f"mfa:manage:{p.me.id}", 10, 900)
     if not accounts.reauthenticated(p.me, password, p.login):
+        if p.login.via_group is not None and p.me.password_hash == "!":
+            raise HTTPException(403, "You signed in through your node group. Sign in on this node itself to "
+                                "change two-factor settings.")
         raise HTTPException(400, "Confirm your current password, or sign in again with your linked provider.")
 
 
@@ -43,9 +46,15 @@ def _security(p: Page, *, codes: list[str] | None = None, error: str | None = No
             secret = secrets_box.decrypt(p.st.ctx.settings, factor.secret_enc)
         except secrets_box.SecretsError:
             error = "The setup key is unavailable. Ask the operator to check ATLAS_SECRET_KEY."
+    from .. import group_channel, group_signin, groups
+
+    group = groups.active(p.session)
+    linked = group is not None and group_channel.local_link(p.session, group.group_id, p.me.id) is not None
     return render(p, "security.html", status=status, factor=factor, setup_secret=secret, codes=codes,
                   error=error, required=mfa.required(p.st.ctx.settings, p.me),
-                  available=secrets_box.available(p.st.ctx.settings), has_password=p.me.password_hash != "!")
+                  available=secrets_box.available(p.st.ctx.settings), has_password=p.me.password_hash != "!",
+                  linked=linked, activity=group_signin.activity(p.session, p.me) if group is not None else [],
+                  when=when)
 
 
 @router.get("/me/security", response_class=HTMLResponse)
@@ -73,6 +82,10 @@ def enable(p: Annotated[Page, Depends(user_form)], code: Annotated[str, Form(max
     factor.enabled_at = now()
     codes = mfa.recovery_codes(factor)
     p.login.mfa_verified_at = now()
+    if p.login.via_group is not None and p.me.password_hash != "!":
+        # this node's own factor, enrolled in a federated session after the local password was confirmed (C10 §5.5);
+        # a password-less account cannot reach here (`_reauth` refuses federated sessions without a password)
+        p.login.amr = [*(p.login.amr or []), accounts.LOCAL_OTP]
     p.session.execute(delete(UserSession).where(UserSession.user_id == p.me.id, UserSession.id != p.login.id))
     accounts.audit(p.session, p.me.id, "mfa_enabled", p.me.id)
     return _security(p, codes=codes)
@@ -94,6 +107,10 @@ def confirm(p: Annotated[Page, Depends(user_form)], code: Annotated[str, Form(ma
     old_id = p.login.id
     secret, login = accounts.create_session(p.session, p.st.ctx.settings, p.me)
     login.mfa_verified_at = now()
+    if p.login.via_group is not None:  # keep the provenance; mark this node's own second factor (C10 §5.5)
+        login.via_group, login.origin_node, login.assertion_id = (p.login.via_group, p.login.origin_node,
+                                                                   p.login.assertion_id)
+        login.amr = [*(a for a in p.login.amr or [] if a != accounts.LOCAL_OTP), accounts.LOCAL_OTP]
     p.session.execute(delete(UserSession).where(UserSession.id == old_id))
     accounts.audit(p.session, p.me.id, "mfa_verified", p.me.id)
     response = go("/me")
@@ -126,3 +143,16 @@ def regenerate(p: Annotated[Page, Depends(user_form)], code: Annotated[str, Form
     codes = mfa.recovery_codes(factor)
     accounts.audit(p.session, p.me.id, "mfa_recovery_rotated", p.me.id)
     return _security(p, codes=codes)
+
+
+@router.post("/me/security/signout-all")
+def signout_all(p: Annotated[Page, Depends(user_form)]):
+    """C10 §5.6 "Sign out of all nodes": every session here ends, and linked nodes are told (each one honours it
+    only where this user's consent there allows)."""
+    from .. import group_signin
+
+    throttle(p, f"signout-all:{p.me.id}", 10, 3600)
+    group_signin.signout_all(p.session, p.st.ctx.settings, p.st.ctx.identity, p.me)
+    response = go("/", "bye")
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response

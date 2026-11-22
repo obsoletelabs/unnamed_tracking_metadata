@@ -1,9 +1,9 @@
 # Node groups (owner federation)
 
 A **node group** joins the Atlas nodes that one owner runs (for example a home server, a VPS and a laptop) so
-that they recognise each other. This release builds the group itself: membership certificates, revocation,
-enrolment and recovery. Profile sync and cross-node sign-in come in later releases; nothing about your accounts
-is shared by joining a group.
+that they recognise each other: membership certificates, revocation, enrolment and recovery; linked accounts
+with synced preferences; signing in on one node through another; and administrative roles granted across the
+group. Joining a group shares nothing about your accounts until a user links them.
 
 Membership is private. It is never written to the public signed feed or `/api/v2/changes`, `/sync/info` does
 not mention it, and every group endpoint answers the same `404 Not Found` to anyone who cannot prove membership.
@@ -123,6 +123,75 @@ history (`atlas group new-epoch` on the real node, after the clone is shut down)
 continued. After a restore
 from backup a node starts a new history and fetches what it lost from the others.
 
+## Signing in through another node
+
+A user whose account is linked on two members can open one signed in through the other. Nothing is matched by
+email address, username or display name: only the group account id that the link created. No password hash,
+session, second factor or email address ever leaves a node.
+
+- **From the node you are signed in on:** **Linked nodes** shows **Open *Node* signed in** for each member that
+  holds your account. It sends a signed ticket that is valid for 120 seconds and works once, and the other node
+  then asks this one to confirm you (a consent page with that node's fingerprint).
+- **From the login page:** off by default, because the buttons show visitors which group the node belongs to.
+  Turn on **Show group sign-in buttons on the login page** (`group_signin_public`) under **Admin → Node group → Local
+  policy**. One button appears per member that holds at least one account linked here.
+- The confirmation is signed for this node alone, lives 120 seconds, works once, and must come back to the browser
+  that started the sign-in (a dedicated `atlas_grp_bind` cookie). The other node's address always comes from its
+  certificate, never from the request.
+- The new session belongs to this node only. Its sign-in methods, the node that vouched for it and the
+  confirmation id are recorded with it, and **Admin** marks such sessions **Via group**. A session opened this way
+  can never vouch for you on a third node: sign in there with a password first.
+- **Second factor:** when you use one on this node, it is still asked for, unless **Accept the other node's two-factor
+  step** (`group_trust_remote_mfa`, off) is on and that node's own code is less than 10 minutes old.
+- **No privilege by default:** a session opened through another node has user rights only, even for a local
+  administrator (`group_federated_privilege`: `deny`; `local_mfa` asks for this node's own code; `allow`). A banner
+  says how to get the rights back: sign in here with your password.
+- **New accounts** are created at a group sign-in only with **Create an account here on first group sign-in**
+  (`group_auto_provision`, off) and open registration: role user, no password, no email address. The other node
+  must first be confirmed as holding that group account: the very first sign-in is refused with "try again after the
+  next sync". While this setting is on, this node fetches the account's link record from the node that holds it,
+  once the person agreed to sign in here. Profile values are never fetched for an account that is not linked here.
+- **Two-factor and other confirmations** in a session opened through another node need this node's own password.
+  An account without a password here (sign-in only through another provider) cannot set up two-factor or confirm
+  sensitive changes from such a session. It signs in on this node directly to do that.
+- **Delegated administrators** (a group grant) cannot create API tokens or change anyone's role: both would outlive
+  the grant.
+- **Ending sessions.** A session opened through another node ends on its next request when that node is revoked or
+  no longer holds your account, when you unlink, or when group sign-in is turned off (`group_signin`). **Security →
+  Sign out of all nodes** ends your sessions here and asks every linked node to end its own; each one follows the
+  choice you made there when linking. **Security** also lists the last 90 days of activity through the group.
+
+## Group roles (delegation)
+
+A **grant** gives one group account a role on some members: `moderator` (the report queue and comment actions
+only), `curator` (edit review as well), `admin` (the administration pages), or `group_admin` (`admin`, and it may
+also sign grants with a member's delegation). Grants last up to 30 days by default (`--days`, at most the group's
+limit), are signed, and reach every member with the group state.
+
+- The **root** signs any grant (`atlas group grant --account UID --role admin --nodes NODE1,NODE2|*`, root
+  passphrase). Only the root grants `group_admin` or covers every member (`*`).
+- A member invited with **Grant roles** (`atlas group invite --grant-roles moderator,curator --grant-nodes
+  self,NODE`) signs grants of those roles for those members, never longer than its own certificate. Including
+  `admin` needs `--confirm-admin`. A grant signed this way by a group admin names that admin's own grant and falls
+  with it.
+- `atlas group grants [--json]` lists them with their status here; `atlas group revoke-grant SERIAL` revokes one
+  (the root revokes any grant, a member revokes those it signed). Revoking a member, or the grant that authorized
+  others, revokes everything that rested on it.
+
+**Local policy always wins.** Under **Admin → Node group → Local policy** (local administrators only):
+
+| Setting | Default | Effect |
+|---|---|---|
+| Highest role a group grant may give here (`group_max_delegated_role`) | `none` | Grants are ignored until you raise it. `group_admin` keeps its extra power only at `admin`. |
+| Delegated rights need this node's two-factor step (`group_delegated_requires_mfa`) | on | The role applies after this node's own code in the session. |
+| Group accounts whose grants are ignored here (`group_denied_accounts`) | empty | Those accounts get nothing from any grant here. |
+
+A grant never lowers a local role and never makes anyone a local administrator. Only a local administrator signed
+in here may change the group, the local policy or other administrators, rotate the signing key, create
+administrator tokens, or change OpenID Connect account creation. A grant is paused while this node has no recent
+view of the group (see [Freshness](#freshness)). Every action taken with a grant, or in a session opened through
+another node, is audited with the group, the vouching node and the grant serial.
+
 ## Leaving, and losing the root
 
 - `atlas group leave` revokes this node's own certificate; the others learn it on their next pull.
@@ -151,7 +220,8 @@ from backup a node starts a new history and fetches what it lost from the others
   collector appears only while the node is in a group). Restrict `/metrics` with the `metrics` token scope if
   that matters.
 - `/metrics` also carries channel counts (`atlas_group_stream_lag`, `atlas_group_entries`, `atlas_group_rejected`
-  by closed reason, `atlas_profile_conflicts_open`, `atlas_group_change_rows`): never a field name, value or account.
+  by closed reason, `atlas_profile_conflicts_open`, `atlas_group_change_rows`) and `atlas_group_signins{result="ok|refused"}`
+  over the last 24 hours: never a field name, value or account.
 
 ## Downgrading
 
@@ -162,3 +232,6 @@ Migration `0029` adds the channel and profile tables and copies every account's 
 them; `app_user.bio` and `app_user.profile_public` stay up to date for older code. Downgrading to `0028` drops
 those tables: accounts keep their bio and visibility, but other preferences, their history, the review queue
 and the account links are lost.
+
+Migration `0030` adds the grant table and the session provenance columns. Downgrading to `0029` first ends every
+session opened through another node, then drops them; grants come back with the next sync after an upgrade.
