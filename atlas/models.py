@@ -12,6 +12,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -22,6 +23,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     false,
+    text,
     true,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -57,6 +59,43 @@ class Canonical(Base):
     merged_into: Mapped[str | None] = mapped_column(ForeignKey("canonical.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class Relation(Base):
+    """A directed relation between two works (CONTRACTS-v1 C6.3): `from_id` is the DLC, port, remake or member,
+    `to_id` the parent, base work, series or collection. Types are `vocab.RELATION_TYPES`.
+
+    Rows are never deleted: removing a relation sets `ended_at` (and `end_reason`), so history and the feed's
+    `end` entries stay explainable. An *active* row (`ended_at IS NULL`) always joins two live records: a merge
+    moves it to the survivor or ends it (`atlas.relations.move`)."""
+
+    __tablename__ = "relation"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=ulid)
+    from_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), nullable=False)
+    to_id: Mapped[str] = mapped_column(ForeignKey("canonical.id"), nullable=False)
+    type: Mapped[str] = mapped_column(String(32))
+    source: Mapped[str] = mapped_column(String(128))
+    # True when it may enter this node's signed feed (a curator relation on an authority) or came from one.
+    redistributable: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Additions to C6.3 (CONTRACT-AMENDMENTS A15): who added it, why it ended, where it came from over the feed,
+    # and the seq of this node's own `add` entry when it was published.
+    created_by: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    end_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    origin_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    origin_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    feed_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("from_id <> to_id", name="ck_relation_not_self"),
+        Index("uq_relation_active", "from_id", "to_id", "type", unique=True,
+              sqlite_where=text("ended_at IS NULL"), postgresql_where=text("ended_at IS NULL")),
+        Index("ix_relation_from", "from_id", "ended_at"),
+        Index("ix_relation_to", "to_id", "ended_at"),
+        Index("ix_relation_origin", "origin_node", "origin_seq"),
+    )
 
 
 class Observation(Base):

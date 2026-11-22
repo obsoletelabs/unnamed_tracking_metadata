@@ -235,6 +235,22 @@ def upgrade(url: str, revision: str = "head", settings: Any = None) -> None:
     from alembic import command
 
     command.upgrade(alembic_config(url, settings), revision)
+    if revision == "head":
+        finish_data_steps(url, settings)
+
+
+def finish_data_steps(url: str, settings: Any = None) -> None:
+    """Data steps a migration leaves to application code, run once the schema is current (and again at start
+    until done): after migration 0032 restored kept relations, replay the merges made while downgraded."""
+    from . import relations
+
+    engine = make_engine(url)
+    try:
+        with make_sessionmaker(engine, settings)() as session:
+            if relations.finish_restore(session) is not None:
+                session.commit()
+    finally:
+        engine.dispose()
 
 
 def downgrade(url: str, revision: str, settings: Any = None) -> None:

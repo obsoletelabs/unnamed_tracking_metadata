@@ -28,6 +28,12 @@ day such as 2023-02-29, an unknown region, two rows for the same platform, regio
 reported and your input is kept. A less precise date never replaces a more precise one it agrees with:
 "2011" next to a source's "2011-04-19" leaves the day.
 
+### Related records and editions
+
+A **Related** section on a record page links the records it belongs to (the game a DLC is for, the original
+of a port or remake, its series and the collections or bundles that include it), the records that belong to it,
+and its editions. See [Relationships and editions](relations.md).
+
 ## Creating an account
 
 **Create account** needs a username (3–32 letters, digits, `-`, `_`) and a password of at least the node's minimum length (10 by default). An email address is optional on a private node; **central (authority) nodes require one** and ask you to confirm it before you can contribute. We send a link; opening it shows a button to confirm (so mail scanners cannot confirm for you).

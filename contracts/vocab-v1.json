@@ -53,6 +53,7 @@
     "detach",
     "lock",
     "unlock",
-    "key_rotation"
+    "key_rotation",
+    "relation"
   ]
 }

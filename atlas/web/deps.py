@@ -26,6 +26,7 @@ FLASH = {
     "verified": "Your email address is confirmed.", "mailsent": "We sent you an email. Check your inbox.",
     "voted": "Vote saved.", "artretry": "Download retry scheduled. The images are fetched in the background shortly.",
     "artnone": "No uncached images to retry.", "reset": "Your password was changed. Sign in with the new one.",
+    "relation-added": "Relation added.", "relation-removed": "Relation removed.",
 }
 
 

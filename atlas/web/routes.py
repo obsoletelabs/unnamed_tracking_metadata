@@ -23,6 +23,7 @@ from .. import (
     mail,
     profile,
     proposals,
+    relations,
     service,
     social,
     vocab,
@@ -400,6 +401,7 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
                   art_total=len(art), art_cached=len(cached),
                   art_kinds=facets.KINDS, activity=activity,
                   achievements=facets.merged_achievements(s, ctx, g.id),
+                  rel=relations.of(s, g.id, limit=RELATION_PREVIEW), rel_labels=relations.LABELS,
                   redirected_from=p.request.query_params.get("from"), **extra)
 
 
@@ -1122,6 +1124,86 @@ def observation_detach(oid: str, p: Annotated[Page, Depends(review_form)]):
     except AtlasError as exc:
         raise HTTPException(409, str(exc)) from exc
     return go(f"/game/{new.id}", "detached")
+
+
+# ---- relations between works (C6) ---------------------------------------------------------------------
+
+RELATION_PREVIEW = 50  # per list on the record page; the editor and the API show up to 200
+
+
+def _relations_page(p: Page, g: Canonical, *, q: str = "", kind: str = "", error: str | None = None,
+                    status: int = 200):
+    s = p.session
+    q = q.strip()[:200]
+    results: list[Canonical] | None = None
+    if q:
+        taken = {g.id}
+        results = [r for r in service.search(s, q, 21) if r.id not in taken][:20]
+    # bounded: MAX_OUTGOING local rows plus at most MAX_OUTGOING from the upstream feed
+    own = list(s.scalars(select(relations.Relation).where(relations.Relation.from_id == g.id,
+                                                          relations.Relation.ended_at.is_(None))
+                         .order_by(relations.Relation.id).limit(2 * relations.MAX_OUTGOING)))
+    history = relations.history(s, g.id)
+    brief = relations._brief(s, [r.to_id for r in own] + [c for r in history for c in (r.from_id, r.to_id)])
+    titles = {cid: (b.get("title") or "(new record)") for cid, b in brief.items()}
+    own.sort(key=lambda r: (relations.type_order(r.type), titles.get(r.to_id, "").casefold(), r.to_id))
+    return render(p, "relations_edit.html", status=status, g=g, v=g.view, own=own,
+                  titles={r.to_id: titles.get(r.to_id, "(new record)") for r in own}, rel=relations.of(s, g.id),
+                  rel_labels=relations.LABELS, types=relations.TYPES,
+                  member_target=relations.MEMBER_TARGET, q=q, kind=kind if kind in relations.TYPES else "",
+                  results=results, error=error, history=history,
+                  history_titles={c: titles.get(c, "(new record)") for r in history for c in (r.from_id, r.to_id)},
+                  gated=relations.gated(p.st.ctx), gate_message=relations.gate_message(p.st.ctx),
+                  local=p.st.ctx.settings.role != "authority")
+
+
+@router.get("/game/{cid}/relations", response_class=HTMLResponse)
+def relations_edit(cid: str, p: Annotated[Page, Depends(review_page)], q: Annotated[str, Query(max_length=200)] = "",
+                   type: Annotated[str, Query(max_length=32)] = ""):
+    """The relation editor: the record's own relations with Remove buttons, and a title search to add one."""
+    try:
+        g, redirected = live_game(p, cid)
+    except AtlasError as exc:
+        raise HTTPException(404, "No such record.") from exc
+    if redirected:
+        return RedirectResponse(f"/game/{g.id}/relations", status_code=301)
+    return _relations_page(p, g, q=q, kind=type)
+
+
+def _relation_change(p: Page, cid: str, change, kind: str = "") -> Any:
+    try:
+        g, _redirected = live_game(p, cid)
+    except AtlasError as exc:
+        raise HTTPException(404, "No such record.") from exc
+    try:
+        change(g)
+    except AtlasError as exc:
+        p.session.rollback()
+        g, _redirected = live_game(p, cid)
+        return _relations_page(p, g, q=p.request.query_params.get("q", ""), kind=kind, error=str(exc),
+                               status=400 if exc.code == "invalid" else 404 if exc.code == "not_found" else 409)
+    return None
+
+
+@router.post("/game/{cid}/relations/add")
+def relations_add(cid: str, p: Annotated[Page, Depends(review_form)], to: Annotated[str, Form(max_length=40)],
+                  type: Annotated[str, Form(max_length=32)], q: Annotated[str, Form(max_length=200)] = ""):
+    local = p.st.ctx.settings.role != "authority"
+    failed = _relation_change(p, cid, lambda g: relations.add(p.session, p.st.ctx, g.id, to.strip(), type,
+                                                              actor=p.me.username, local_only=local), type)
+    if failed is not None:
+        return failed
+    return go(f"/game/{cid}/relations" + (f"?{urlencode({'q': q, 'type': type})}" if q else ""), "relation-added")
+
+
+@router.post("/game/{cid}/relations/remove")
+def relations_remove(cid: str, p: Annotated[Page, Depends(review_form)], to: Annotated[str, Form(max_length=40)],
+                     type: Annotated[str, Form(max_length=32)]):
+    failed = _relation_change(p, cid, lambda g: relations.end(p.session, p.st.ctx, g.id, to.strip(), type,
+                                                              actor=p.me.username))
+    if failed is not None:
+        return failed
+    return go(f"/game/{cid}/relations", "relation-removed")
 
 
 # ---- administration -----------------------------------------------------------------------------------
