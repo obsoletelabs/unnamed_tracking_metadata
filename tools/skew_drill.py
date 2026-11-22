@@ -20,6 +20,12 @@ negotiation), not a branch: once this release is merged, the branch head would n
 release. Bump it when the next release ships.
 
 `python -m tools.skew_drill [--previous-ref <commit or tag>] [--output skew.json]`
+
+`--scenario platinum` (skew-1.1, contract C7.5) runs a 1.1 release as the follower instead: an authority of
+this release at emit protocol 1.2 publishes a platinum achievement list; the 1.1 follower must park it
+(`unsupported_capability`, token `tier-platinum`), keep its previous complete list and hold back later
+entries, and converge after an in-place upgrade. No 1.1 release is tagged yet, so `--previous-ref` (or
+`--previous-dir`) is required for it.
 """
 
 from __future__ import annotations
@@ -40,7 +46,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from atlas import feed, sync
+from atlas import feed, feed_schema, sync
 from atlas.ids import canonical_id, ulid
 from atlas.signing import load_identity
 
@@ -197,9 +203,10 @@ def run(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) 
 
         info = new_authority.client.get("/api/v2/sync/info", headers=new_authority.headers()).json()
         old_info = old_authority.client.get("/api/v2/sync/info", headers=old_authority.headers()).json()
-        assert info["protocol"] == "1.1" and info["emit_protocol"] == "1.0" and info["contract"] == 1
+        assert info["protocol"] == feed_schema.PROTOCOL and info["emit_protocol"] == "1.0" and info["contract"] == 1
         assert "protocol" not in old_info and old_info["contract"] == 1
-        checks.append("this release advertises protocol 1.1 / emit 1.0; the previous release advertises none (= 1.0)")
+        checks.append(f"this release advertises protocol {feed_schema.PROTOCOL} / emit 1.0; the previous release "
+                      "advertises none (= 1.0)")
 
         # 1.0 follower <- 1.1 authority.
         first = new_authority.publish("Skew New Authority Game")
@@ -261,14 +268,98 @@ def run(previous_ref: str = DEFAULT_PREVIOUS, previous_dir: Path | None = None) 
     return report
 
 
+def _prepare(root: Path, previous_ref: str, previous_dir: Path | None) -> tuple[Path, Path, str]:
+    if previous_dir is None:
+        (root / "previous").mkdir()
+        return prepare_previous(previous_ref, root / "previous")
+    return previous_dir, _venv_python(previous_dir), "local"
+
+
+def _achievements(node: Node, cid: str) -> set[tuple[str, str | None, str]]:
+    response = node.client.get(f"/api/v2/games/{cid}/achievements", headers=node.headers())
+    assert response.status_code == 200, f"achievements on {node.name}: {response.status_code}"
+    return {(a["name"], a["tier"], a["key"]) for a in response.json()["results"]}
+
+
+def run_platinum(previous_ref: str, previous_dir: Path | None = None) -> dict[str, Any]:
+    """skew-1.1: a real 1.1 follower meets platinum from a 1.2 authority (C7.5)."""
+    report: dict[str, Any] = {"drill": "skew-1.1-platinum", "started_at": datetime.now(UTC).isoformat(),
+                              "checks": [], "transport": "isolated loopback HTTP, development mode, SQLite"}
+    checks = report["checks"]
+    with tempfile.TemporaryDirectory(prefix="atlas-skew11-", ignore_cleanup_errors=True) as folder, ExitStack() as stack:
+        root = Path(folder)
+        source, python, commit = _prepare(root, previous_ref, previous_dir)
+        report["previous"] = {"ref": previous_ref if previous_dir is None else str(previous_dir), "commit": commit}
+        report["current"] = {"commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
+                                                      text=True).stdout.strip()}
+        authority = Node(root, "authority-1.2", "authority", extra_env={"ATLAS_EMIT_PROTOCOL": "1.2"})
+        follower = PreviousNode(root, "local-1.1", "local", source, python)
+        for node in (authority, follower):
+            stack.callback(node.close)
+            node.start()
+        old_info = follower.client.get("/api/v2/sync/info", headers=follower.headers()).json()
+        info = authority.client.get("/api/v2/sync/info", headers=authority.headers()).json()
+        assert old_info.get("protocol") == "1.1", old_info.get("protocol")
+        assert (info["protocol"], info["emit_protocol"]) == (feed_schema.PROTOCOL, "1.2"), info
+        checks.append(f"the follower runs a 1.1 release; the authority speaks {info['protocol']} and emits 1.2")
+
+        cid = authority.publish("Skew Trophy Hall")
+        curator = authority.headers(authority.admin_token)
+        start = [{"name": "Start", "tier": "bronze"}]
+        assert authority.client.put(f"/api/v2/games/{cid}/achievements", headers=curator,
+                                    json={"items": start}).status_code == 200
+        peer = follower.add_peer(authority)
+        assert follower.sync(peer) is None
+        before = _achievements(follower, cid)
+        assert {(n, t) for n, t, _ in before} == {("Start", "bronze")}, before
+        response = authority.client.put(f"/api/v2/games/{cid}/achievements", headers=curator,
+                                        json={"items": [*start, {"name": "Everything", "tier": "platinum"}]})
+        assert response.status_code == 200, response.text
+        with authority.state.maker() as session:
+            platinum_seq = feed.head_seq(session)
+        later = authority.publish("Skew After Platinum")
+        follower.sync(peer)
+        status = follower.client.get("/api/v2/sync/status", headers=follower.headers(follower.admin_token)).json()
+        up = status["upstreams"][authority.identity.node_id]
+        assert up["state"] == "parked" and up["parked"]["first_seq"] == platinum_seq, up
+        assert up["parked"]["first_reason"] == "unsupported_capability" and up["parked"]["first_kind"] == "achievements"
+        assert up["applied_head"] == platinum_seq - 1 and up["verified_head"] == platinum_seq + 1, up
+        assert _achievements(follower, cid) == before  # not dropped, not partial: the previous list stays
+        assert follower.client.get(f"/api/v2/games/{later}", headers=follower.headers()).status_code == 404
+        checks.append(f"the 1.1 follower parks the platinum list at seq {platinum_seq} (unsupported_capability), "
+                      "keeps its previous complete list, holds back the later record and still verifies and "
+                      "retains the later entry")
+
+        follower.upgrade()
+        replay = follower.cli("sync", "replay")
+        assert replay.returncode == 0, (replay.stdout, replay.stderr)
+        assert _achievements(follower, cid) == _achievements(authority, cid)
+        assert {t for _, t, _ in _achievements(follower, cid)} == {"bronze", "platinum"}
+        assert follower.game(later)["title"] == "Skew After Platinum"
+        status = follower.cli("sync", "status", "--json")
+        assert status.returncode == 0, (status.stdout, status.stderr)
+        checks.append("after upgrading the follower in place, replay applies the parked list and the later record: "
+                      "names, tiers and keys equal the authority's, and `atlas sync status` exits 0")
+    report["status"] = "passed"
+    report["finished_at"] = datetime.now(UTC).isoformat()
+    return report
+
+
 def main_cli() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--previous-ref", default=DEFAULT_PREVIOUS, help="git ref of the previous release")
     parser.add_argument("--previous-dir", type=Path,
                         help="an existing checkout of the previous release with its own .venv (skips git and uv)")
     parser.add_argument("--output", type=Path, help="write the JSON report here")
+    parser.add_argument("--scenario", choices=("1.0", "platinum"), default="1.0",
+                        help="1.0: the previous 1.0 release (default); platinum: a 1.1 release meets platinum")
     args = parser.parse_args()
-    report = run(args.previous_ref, args.previous_dir)
+    if args.scenario == "platinum":
+        if args.previous_dir is None and args.previous_ref == DEFAULT_PREVIOUS:
+            parser.error("--scenario platinum needs --previous-ref or --previous-dir of a 1.1 release")
+        report = run_platinum(args.previous_ref, args.previous_dir)
+    else:
+        report = run(args.previous_ref, args.previous_dir)
     text = json.dumps(report, indent=2) + "\n"
     if args.output:
         args.output.write_text(text, encoding="utf-8")

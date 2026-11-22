@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import case, func, select
 
-from .. import accounts, auth, custom, facets, feed, groups, integrations, mail, profile, proposals, service, social
+from .. import accounts, auth, custom, facets, feed, groups, integrations, mail, profile, proposals, service, social, vocab
 from .. import media as images
 from ..api.routes import _guard_upstream, media_response
 from ..merge import SCALAR_FIELDS, UNION_FIELDS
@@ -350,6 +350,12 @@ def game(cid: str, p: Annotated[Page, Depends(page)]):
     defs = {f.key: f for f in custom.fields_for(s, g.media_type, public=True)}
     values = custom.merged(s, ctx, g.id)
     details = [{"f": defs[k], "value": values[k]} for k in defs if k in values]
+    single = vocab.crossplay_projection(values.get("crossplay"), values.get("players_max")) == vocab.NOT_APPLICABLE
+    if g.media_type == "game" and "crossplay" in defs and single:
+        # C7.2: derived for display only (never stored, never in the API), and never shown as "no"
+        order = list(defs)
+        at = next((i for i, d in enumerate(details) if order.index(d["f"].key) > order.index("crossplay")), len(details))
+        details.insert(at, {"f": defs["crossplay"], "value": "Single-player", "derived": True})
     social_ctx: dict[str, Any] = {"comments": social.thread(s, canonical_id=g.id, viewer=p.user, ctx=ctx),
                                   "comments_on": ctx.settings.comments_enabled, "lists_on": ctx.settings.lists_enabled}
     if p.user:
@@ -762,7 +768,7 @@ def propose_achievements(cid: str, p: Annotated[Page, Depends(user_form)],
         pr = proposals.create(p.session, p.st.ctx, p.me, "achievements", g.id,
                               {"items": items}, note)
     except AtlasError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(409 if exc.code == "emit_protocol" else 400, str(exc)) from exc
     return go(f"/game/{g.id}", "applied" if pr.auto_applied else "proposed")
 
 
@@ -907,8 +913,8 @@ def review_decide(pid: str, p: Annotated[Page, Depends(review_form)], decision: 
     try:
         proposals.review(p.session, p.st.ctx, p.me, pid, approve=decision == "approve", note=note)
     except AtlasError as exc:
-        raise HTTPException({"not_found": 404, "forbidden": 403}.get(exc.code, 409 if exc.code == "conflict" else 400),
-                            str(exc)) from exc
+        raise HTTPException({"not_found": 404, "forbidden": 403}.get(
+            exc.code, 409 if exc.code in ("conflict", "emit_protocol") else 400), str(exc)) from exc
     return go("/review", "approved" if decision == "approve" else "rejected")
 
 
@@ -917,7 +923,8 @@ def review_revert(pid: str, p: Annotated[Page, Depends(review_form)], note: Anno
     try:
         pr = proposals.revert(p.session, p.st.ctx, p.me, pid, note)
     except AtlasError as exc:
-        raise HTTPException(409 if exc.code == "conflict" else 404 if exc.code == "not_found" else 400, str(exc)) from exc
+        raise HTTPException(409 if exc.code in ("conflict", "emit_protocol") else 404 if exc.code == "not_found" else 400,
+                            str(exc)) from exc
     return go(f"/game/{pr.canonical_id}" if pr.canonical_id else "/review", "reverted")
 
 

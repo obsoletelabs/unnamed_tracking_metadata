@@ -1109,7 +1109,9 @@ def reconcile(session: Session, client: httpx.Client, upstream_url: str, token: 
 def replay_marker() -> str:
     from . import __version__
 
-    return f"{__version__}|{PROTOCOL}|" + hashlib.sha256(feed_schema.markdown_table().encode()).hexdigest()[:16]
+    # the vocabularies are part of the registry: a release that learns a new value (platinum, 1.2) replays
+    registry = feed_schema.markdown_table() + repr(sorted((k, sorted(v)) for k, v in feed_schema.vocabularies().items()))
+    return f"{__version__}|{PROTOCOL}|" + hashlib.sha256(registry.encode()).hexdigest()[:16]
 
 
 def startup_replay(maker: sessionmaker[Session], ctx: Ctx) -> dict[str, Any] | None:

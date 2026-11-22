@@ -5,6 +5,7 @@
 <p><a href="/game/{{ g.id }}#achievements">← Back to {{ title }}</a></p>
 <h1>Edit achievements</h1>
 <p>You are editing the list <strong>this community</strong> contributes for {{ title }}: what you save replaces that list, in the order shown. Other sources (for example Steam) keep their own entries; where they have a value, theirs wins and yours fills the gaps, so an empty field means <em>nothing is assigned by you</em>. Nothing changes until you press <strong>Submit proposal</strong>, and it is reviewed like other contributions.</p>
+<p class="small muted" data-tier-help>Tiers: bronze, silver, gold, and platinum for completing the whole list.{% if platinum_gated %} Platinum is not available on this node yet: its federation emit protocol is below 1.2.{% endif %}</p>
 
 {% if diff %}
 <section class="card" aria-live="polite">
@@ -36,7 +37,7 @@
 
 <details class="card"><summary>Bulk import (one per line)</summary>
 <form method="post" action="/game/{{ g.id }}/achievements">{{ csrf(p.csrf) }}
-<label for="alist">One per line: <code>Name | Description | extras</code>. Extras, in any order: <code>progression</code> / <code>missable</code> / <code>win condition</code>, <code>bronze</code> / <code>silver</code> / <code>gold</code>, points (a number), <code>hidden</code>, an icon address (a second address is the locked icon). These are <em>added</em> to the list above.</label>
+<label for="alist">One per line: <code>Name | Description | extras</code>. Extras, in any order: <code>progression</code> / <code>missable</code> / <code>win condition</code>, <code>bronze</code> / <code>silver</code> / <code>gold</code> / <code>platinum</code>, points (a number), <code>hidden</code>, an icon address (a second address is the locked icon). These are <em>added</em> to the list above.</label>
 <textarea id="alist" name="lines" required></textarea>
 <label for="anote2">Source / note</label><textarea id="anote2" name="note" maxlength="2000"></textarea>
 <p><button type="submit">Submit bulk import</button></p></form></details>
